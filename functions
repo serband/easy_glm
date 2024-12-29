@@ -1,0 +1,495 @@
+
+
+
+from typing import List, Optional
+import duckdb
+import polars as pl
+import numpy as np
+import random
+import pyarrow
+from glum import GeneralizedLinearRegressorCV
+from glum import TweedieDistribution
+
+
+
+
+import polars as pl
+# read in the flights dataset 
+flights = pl.read_csv("D:\\DataStore\\flights.csv", infer_schema_length=100000)
+
+
+
+
+
+
+
+flights = (flights.with_columns(
+    pl.when(pl.lit(np.random.rand(flights.height) < 0.7))
+    .then(1)
+    .otherwise(0)
+    .alias("traintest")))
+
+
+
+
+# functions used in model building
+# def o_l_matrix(col_name, brks):
+#     return [
+#         f"CASE WHEN '{col_name}' IS NULL THEN CASE WHEN AVG('{col_name}') OVER () < {val} THEN 1 ELSE 0 END ELSE CASE WHEN '{col_name}' < {val} THEN 1 ELSE 0 END END AS '{col_name}{val}'" 
+#         for val in brks
+#     ]
+
+def o_l_matrix(col_name, brks):
+    return [
+        f"CASE WHEN {col_name} IS NULL THEN CASE WHEN AVG({col_name}) OVER () < {val} THEN 1 ELSE 0 END ELSE CASE WHEN {col_name} < {val} THEN 1 ELSE 0 END END AS '{col_name}{val}'" 
+        for val in brks
+    ]
+
+def lump_fun(col_name, levels):
+    """Create lumped categories for character variables"""
+    levels_str = ", ".join(f"'{str(level)}'" for level in levels)
+    return f"CASE WHEN CAST({col_name} AS VARCHAR) IN ({levels_str}) THEN CAST({col_name} AS VARCHAR) ELSE 'Other' END AS {col_name}_lumped"
+
+
+
+# function used to prepare a dataset for model building
+# uses duckdb as the backend to do the heavy lifting
+# if df is provided, it will be used to create a new table in the database
+# if con is provided, it will be used to connect to an existing database
+# if con is not provided, a new in-memory database will be created
+# the function will check if the specified table exists in the database
+# and will raise an error if it does not
+# the function will then combine the additional_columns and traintest_column while ensuring no duplicates
+# and will then check if each variable in modelling_variables exists in the database
+# and will raise a warning if it does not
+# the function will then create a list of expressions to be used in the model building process
+# and will then combine all expressions into a single SQL query
+# the function will then execute the query using duckdb and return the result   
+
+
+
+
+def lump_rare_levels_pl(column_series, total_count=None, threshold=0.001, fill_value='Unknown'):
+    """
+    Lumps rare factor levels into an 'Other' category if they are below the threshold. Handles NoneType values by filling them.
+    
+    Args:
+    column_series (pl.Series): The column to process as a Polars Series.
+    total_count (int, optional): The total number of rows in the DataFrame. If not provided, 
+                                 it will be inferred from the length of the series.
+    threshold (float): The minimum proportion for a level to not be lumped into 'Other'.
+    fill_value (str): The value to replace NoneType values with.
+    
+    Returns:
+    pl.Series: A series with the rare levels lumped.
+    """
+    # Fill NoneType values with the placeholder
+    column_series = column_series.fill_null(fill_value)
+    
+    # Calculate total count if not provided
+    if total_count is None:
+        total_count = column_series.len()
+    
+    # Calculate the frequency of each level
+    level_counts = column_series.to_frame().group_by(column_series.name).agg(pl.count().alias('counts'))
+    
+    # Identify levels that are below the threshold and collect them into a list
+    rare_levels = level_counts.filter(pl.col('counts') / total_count < threshold)[column_series.name].to_list()
+    
+    # Define a custom expression to replace rare levels with 'Other'
+    lump_expression = pl.when(pl.col(column_series.name).is_in(rare_levels)).then(pl.lit('Other')).otherwise(pl.col(column_series.name))
+    
+    # Apply the expression to the series and return the modified series
+    return column_series.to_frame().with_columns(lump_expression.alias(column_series.name))[column_series.name]
+
+
+# Example usage:
+
+np.unique(lump_rare_levels_pl(flights['city']))
+
+
+
+def prepare_data(modelling_variables: List[str], additional_columns: Optional[List[str]] = None, traintest_column: Optional[str] = None, df: Optional[pl.DataFrame] = None, table_name: str = "dataset", formats: dict = {}, con: Optional[duckdb.DuckDBPyConnection] = None):
+    # If no connection is provided, create one
+    if con is None:
+        if df is not None:
+            con = duckdb.connect(":memory:")
+            # Write the dataframe to the in-memory database
+            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM df")
+        else:
+            con = duckdb.connect()
+    else:
+        # Check if the provided connection is a duckdb connection
+        if not isinstance(con, duckdb.DuckDBPyConnection):
+            print("Warning: The provided connection is not a duckdb connection. The function will attempt to process the task on the connection provided but it has not been tested on other database engines.")
+
+    # Check if the specified table exists
+    tables = con.execute("SHOW TABLES").fetchall()
+    if table_name not in [t[0] for t in tables]:
+        raise ValueError(f"The specified table '{table_name}' does not exist in the database. Available tables are: {', '.join([t[0] for t in tables])}")
+
+    # Initialize the expressions list
+    expressions = []
+
+    # Combine additional_columns and traintest_column while ensuring no duplicates
+    if additional_columns is None:
+        additional_columns = []
+    if traintest_column and traintest_column not in additional_columns:
+        additional_columns.append(traintest_column)
+
+    for var in modelling_variables:
+        if var not in con.execute(f"PRAGMA table_info({table_name})").df()['name'].tolist():
+            print(f"Warning: Column '{var}' not found in the table. Skipping.")
+            continue
+
+        if var in formats:
+            dict_values = formats[var]
+            if all(isinstance(x, (int, float)) for x in dict_values):
+                # Numeric variable: apply O_L_matrix
+                expressions.extend(o_l_matrix(var, dict_values))
+            else:
+                # Categorical variable: apply lump_fun
+                expressions.append(lump_fun(var, dict_values))
+        else:
+            # Variable not in dictionary: keep as is
+            expressions.append(f"'{var}'")
+
+    # Add additional columns if they exist in the dataset
+    for col in additional_columns:
+        if col in con.execute(f"PRAGMA table_info({table_name})").df()['name'].tolist():
+            expressions.append(col)
+        else:
+            print(f"Warning: Additional column '{col}' not found in the table. Skipping.")
+
+    # Combine all expressions into a single SQL query
+    query = f"SELECT {', '.join(expressions)} FROM {table_name}"
+
+    # Execute the query using duckdb
+    result = con.execute(query).df()
+
+    # Close the connection if it was created in this function
+    if df is not None and con is not None:
+        con.close()
+
+    result = pl.DataFrame(result)
+
+    return result
+
+
+
+# Example usage:
+# array is your numpy array representing the column you want to process.
+
+
+
+
+
+def generate_blueprint(dataframe, threshold=0.0025):
+    blueprint = {}
+    for column in dataframe.columns:
+        try:
+            col_data = dataframe[column]
+            dtype = col_data.dtype
+            
+            if dtype in [pl.Float32, pl.Float64, pl.Int32, pl.Int64]:
+                # For numeric columns, calculate 5th percentile quantiles and get unique values
+                quantiles = np.arange(0.05, 1.05, 0.05).tolist()
+                breaks = [col_data.quantile(q) for q in quantiles]
+                unique_breaks = list(set(breaks))  # Get unique breaks
+                unique_breaks.sort()  # Sort the unique breaks
+                blueprint[column] = unique_breaks
+            else:
+                # For non-numeric columns, lump rare levels using the lump_rare_levels_np function
+                # and remove 'Other' as a level
+                # col_data_np = col_data.to_numpy()
+                lumped_levels = lump_rare_levels_pl(dataframe[column], threshold=threshold)
+                levels = np.unique(lumped_levels).tolist()
+                if 'Other' in levels:
+                    levels.remove('Other')
+                blueprint[column] = levels
+        
+        except Exception as e:
+            print(f"Error processing column '{column}': {str(e)}")
+            blueprint[column] = f"Error: Unable to process this column. Error message: {str(e)}"
+    
+    return blueprint
+
+# generate the blueprint for the flights dataset 
+d = generate_blueprint(flights)
+
+
+
+
+
+# test that the function works
+# yes it does
+prepped = prepare_data(df = flights, modelling_variables=['veh_age','operation'], additional_columns=['ex','nu_cl'], formats=d, traintest_column='traintest', table_name='flights')
+np.unique(prepped['operation_lumped'])
+
+flights.columns
+
+
+
+flights.group_by("co_ownership").count().sort("count", descending=True)
+
+# function that will create a ratetable for a given variable. function will accept a dataframe, a model and a variable name and return a ratetable for that variable
+def ratetable(dataframe, model, variable):
+    
+     
+    # get the unique values of the variable
+    unique_values = dataframe[variable].unique()
+    # select a random line from the dataframe
+    df_baseline = dataframe.sample(1)
+
+    # prepare df_baseline with the prepare_data function
+    df_baseline_prepped = prepare_data(
+        modelling_variables=[variable],
+        additional_columns=['ex','nu_cl'],
+        traintest_column='traintest',
+        df=df_baseline,
+        table_name='dataset',
+        formats=d )
+    
+
+    # create a dataframe to store the results
+    results = pd.DataFrame()
+    # loop through the unique values
+    for value in unique_values:
+        # create a dataframe with the value
+        df = pd.DataFrame({variable: [value]})
+        # get the prediction for the value
+        prediction = model.predict(df)
+        # create a dataframe with the value and the prediction
+        df['prediction'] = prediction
+        # append the dataframe to the results dataframe
+        results = results.append(df)
+    # return the results dataframe
+    return results
+
+
+
+
+
+
+# need to create a function that will fit a model via CV and return the average performance metrics across the folds.
+# the function should take in the dataframe, the target variable, and the list of independent variables from the blueprint
+# the function should ask for the type of GLM to be used (binomial, poisson, tweedie, gamma, normal) along with the optional sample weights (if any)
+# this function will be used to return the dataframe and graph showing the performance improvement froma  baseline model for each of teh variables in the blueprint
+# the idea is we dont want to fit a GLM with every variable as it will take too long and we want to trim down the numbers of variables to rate on
+
+# build a function that fits a a model and returns the performance metrics
+# use the glum library for the GLM
+
+# below is the sample code provided by glum on how to fit a poisson glm
+# i need to turn this into a function that can be used to fit a model and return the performance metrics
+# the function should take in the dataframe, the target variable, and the list of independent variables from the blueprint
+# the function should ask for the type of GLM to be used (binomial, poisson, tweedie, gamma, normal) along with the optional sample weights (if any)
+# the fit_glm function will always process the data through the prepare_data function first to convert the data into the correct format 
+def fit_glm(dataframe, target, indep_vars, glm_type, train_test_column, sample_weights=None, formats=None):
+    # Check if any of the required inputs are not entered
+    if dataframe is None or target is None or indep_vars is None or glm_type is None or train_test_column is None:
+        return "Error: check inputs."
+    
+    # Prepare the data
+    additional_columns = [target]
+    if sample_weights:
+        additional_columns.append(sample_weights)
+    
+    prepped = prepare_data(
+        modelling_variables=indep_vars,
+        additional_columns=additional_columns,
+        traintest_column=train_test_column,
+        df=dataframe,
+        table_name='dataset',
+        formats=formats  # Pass the formats dictionary to prepare_data
+    )
+
+    # Masks
+    trainmask = prepped[train_test_column] == 1
+
+    # Define predictors
+    predictors = set(prepped.columns).difference([target, train_test_column, sample_weights])
+
+    # Define new target variable. If there is a weights col then divide the target by the weights otherwise keep as is
+    if sample_weights:
+        ytrain = (prepped.filter(pl.col(train_test_column) == 1)[target] / prepped.filter(pl.col(train_test_column) == 1)[sample_weights]).to_numpy()
+    else:
+        ytrain = prepped.filter(pl.col(train_test_column) == 1)[target].to_numpy()
+
+    # Define weights if they exist otherwise set to none
+    if sample_weights:
+        wtrain = prepped.filter(pl.col(train_test_column) == 1)[sample_weights].to_numpy()
+    else:
+        wtrain = None
+
+    Xtrain = prepped.filter(pl.col(train_test_column) == 1).select(list(predictors)).to_pandas()
+
+    # Define the model
+    model = GeneralizedLinearRegressorCV(family=glm_type, l1_ratio=1, fit_intercept=True, cv=5, scale_predictors=False)
+    
+    model.fit(
+        Xtrain,
+        ytrain,
+        sample_weight=wtrain
+    )
+    
+    performance = model.score(Xtrain, ytrain, sample_weight=wtrain)
+   
+    # build the ratetable for the model. it needs to loop through each of the variables provided in the indep_vars list
+    # and return the ratetable for each variable
+    ratetables = {}
+    
+    # define the ratetable function
+    # take a random line of data from the dataframe and run it through the prepare_data function from above
+    df_baseline = dataframe.sample(1)
+
+    df_baseline_prepped = prepare_data(
+        modelling_variables=indep_vars,
+        additional_columns=additional_columns,
+        traintest_column=train_test_column,
+        df=df_baseline,
+        table_name='dataset',
+        formats=formats  # Pass the formats
+        )
+    
+    # make a prediction on the baseline data
+    baseline_prediction = model.predict(df_baseline_prepped)
+
+    # duplicate the dataset for the length of the unique values in the variable and replace the variable with the unique values
+
+    
+    for var in indep_vars:
+        ratetables[var] = ratetable(dataframe, model, var)
+    
+    return model, performance
+
+
+model_results = fit_glm(dataframe=flights, target='nu_cl', indep_vars=['veh_age'], glm_type='poisson', train_test_column='traintest', sample_weights='ex', formats = d)
+
+model, performance = model_results
+
+d['veh_age']
+
+
+def generate_ratetable(var, dataframe, model, formats=None):
+    
+    # if formats is not provided, use the blueprint to generate the formats
+    if formats is None:
+        formats = generate_blueprint(dataframe)
+    
+    # select a random line from the dataframe
+    df = dataframe.sample(1)
+
+    # prepare the dataframe
+    df_prepped = prepare_data(
+        modelling_variables=[var],
+        df=df,
+        table_name='dataset',
+        formats=formats
+    )
+
+    # make predictions with the prepared dataframe
+    baseline_prediction = model.predict(df_prepped)
+
+
+    # now we need to make a new dataframe with the unique values of the variable
+    unique_values = formats[var]
+    length_unique = len(unique_values)
+    
+    # duplicate df the length of the unique values using polars 
+    df_repeated = df.select([pl.col("*").repeat_by(length_unique)]).explode("*")
+    
+    # replace the variable with the unique values
+    df_repeated = df_repeated.with_columns(pl.Series(var, unique_values))
+
+    # prepare the new dataframe 
+    df_prepped = prepare_data(
+        modelling_variables=[var],
+        df=df_repeated,
+        table_name='dataset',
+        formats=formats
+    )
+
+    # make predictions with the prepared dataframe
+    new_predictions = model.predict(df_prepped)
+
+    # scaled predictions 
+    new_predictions = new_predictions / baseline_prediction
+    
+    return new_predictions
+
+    
+generate_ratetable('veh_age', flights, model, formats= d)
+
+
+
+d['veh_age']
+
+
+
+    unique_values = dataframe[var].unique()
+    # select a random line from the dataframe
+    df = dataframe.sample(1)
+
+    # 
+
+    # create a dataframe to store the results
+    results = pd.DataFrame()
+    # loop through the unique values
+    for value in unique_values:
+        # create a dataframe with the value
+        df = pd.DataFrame({var: [value]})
+        # get the prediction for the value
+        prediction = model.predict(df)
+        # create a dataframe with the value and the prediction
+        df['prediction'] = prediction
+        # append the dataframe to the results dataframe
+        results = results.append(df)
+    # return the results dataframe
+    return results
+
+
+prepare_data(df = flights, modelling_variables=['veh_age'], additional_columns=['ex','nu_cl'], formats=d, traintest_column='traintest', table_name='dataset')
+
+
+
+
+
+
+    # X_train_p = glm_categorizer.fit_transform(df[indep_vars])
+    # y_train_p = df[target]
+    # if sample_weights is not None:
+    #     w_train_p = df[sample_weights]
+    # else:
+    #     w_train_p = None
+    # f_glm1 = GeneralizedLinearRegressor(family=glm_type, alpha_search=True, l1_ratio=1, fit_intercept=True)
+    # f_glm1.fit(X_train_p, y_train_p, sample_weight=w_train_p)
+
+
+z = df['ClaimNb'].values
+weight = df['Exposure'].values
+y = z / weight # claims frequency
+
+ss = ShuffleSplit(n_splits=1, test_size=0.1, random_state=42)
+train, test = next(ss.split(y))
+
+categoricals = ["VehBrand", "VehGas", "Region", "Area", "DrivAge", "VehAge", "VehPower"]
+predictors = categoricals + ["BonusMalus", "Density"]
+glm_categorizer = Categorizer(columns=categoricals)
+
+X_train_p = glm_categorizer.fit_transform(df[predictors].iloc[train])
+X_test_p = glm_categorizer.transform(df[predictors].iloc[test])
+y_train_p, y_test_p = y[train], y[test]
+w_train_p, w_test_p = weight[train], weight[test]
+z_train_p, z_test_p = z[train], z[test]
+
+f_glm1 = GeneralizedLinearRegressor(family='poisson', alpha_search=True, l1_ratio=1, fit_intercept=True)
+
+f_glm1.fit(
+    X_train_p,
+    y_train_p,
+    sample_weight=w_train_p
+);
+
+pd.DataFrame({'coefficient': np.concatenate(([f_glm1.intercept_], f_glm1.coef_))},
+             index=['intercept'] + f_glm1.feature_names_).T
