@@ -1,18 +1,22 @@
-from typing import List, Optional
+
 import duckdb
 import polars as pl
-from .transforms import o_matrix, lump_fun
+
+from .transforms import lump_fun, o_matrix
+
 
 def prepare_data(
-    modelling_variables: List[str],
-    additional_columns: Optional[List[str]] = None,
-    traintest_column: Optional[str] = None,
-    df: Optional[pl.DataFrame] = None,
+    modelling_variables: list[str],
+    additional_columns: list[str] | None = None,
+    traintest_column: str | None = None,
+    df: pl.DataFrame | None = None,
     table_name: str = "dataset",
-    formats: dict = {},
-    con: Optional[duckdb.DuckDBPyConnection] = None,
+    formats: dict | None = None,
+    con: duckdb.DuckDBPyConnection | None = None,
 ) -> pl.DataFrame:
     """Apply blueprint-driven SQL style transformations via DuckDB."""
+    if formats is None:
+        formats = {}
     if con is None:
         if df is not None:
             con = duckdb.connect(":memory:")
@@ -28,7 +32,7 @@ def prepare_data(
             f"The specified table '{table_name}' does not exist in the database. "
             f"Available tables are: {', '.join([t[0] for t in tables])}"
         )
-    expressions: List[str] = []
+    expressions: list[str] = []
     if additional_columns is None:
         additional_columns = []
     if traintest_column and traintest_column not in additional_columns:
@@ -39,7 +43,7 @@ def prepare_data(
             continue
         if var in formats:
             dict_values = formats[var]
-            if all(isinstance(x, (int, float)) for x in dict_values):
+            if all(isinstance(x, int | float) for x in dict_values):
                 expressions.extend(o_matrix(var, dict_values))
             else:
                 expressions.append(lump_fun(var, dict_values))

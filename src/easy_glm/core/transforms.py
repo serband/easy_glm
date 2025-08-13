@@ -1,8 +1,8 @@
-from typing import List
 import numpy as np
 import polars as pl
 
-def o_matrix(col_name: str, brks) -> List[str]:
+
+def o_matrix(col_name: str, brks) -> list[str]:
     if not isinstance(col_name, str):
         raise TypeError("col_name must be a string")
     if not col_name.strip():
@@ -18,7 +18,7 @@ def o_matrix(col_name: str, brks) -> List[str]:
         )
     return sql_statements
 
-def lump_fun(col_name: str, levels: List, other_category: str = 'Other') -> str:
+def lump_fun(col_name: str, levels: list, other_category: str = 'Other') -> str:
     if not isinstance(col_name, str) or not col_name.strip():
         raise ValueError("col_name must be non-empty string")
     if isinstance(levels, np.ndarray):
@@ -26,17 +26,17 @@ def lump_fun(col_name: str, levels: List, other_category: str = 'Other') -> str:
     if not isinstance(levels, list) or not levels:
         raise ValueError("levels must be a non-empty list")
     cleaned = []
-    for l in levels:
-        if l is None:
+    for level in levels:
+        if level is None:
             raise ValueError("None level not allowed")
-        cleaned.append(str(l).replace("'", "''"))
+        cleaned.append(str(level).replace("'", "''"))
     unique_levels = list(dict.fromkeys(cleaned))
     levels_str = ", ".join(f"'{lvl}'" for lvl in unique_levels)
     return (
         f"CASE WHEN CAST({col_name} AS VARCHAR) IN ({levels_str}) THEN CAST({col_name} AS VARCHAR) ELSE '{other_category}' END AS {col_name}_lumped"
     )
 
-def lump_rare_levels_pl(column_series: pl.Series, total_count: int = None, threshold: float = 0.001, fill_value: str = 'Unknown') -> pl.Series:
+def lump_rare_levels_pl(column_series: pl.Series, total_count: int | None = None, threshold: float = 0.001, fill_value: str = 'Unknown') -> pl.Series:
     if total_count is None:
         total_count = column_series.len()
     level_counts = column_series.to_frame().group_by(column_series.name).agg(pl.len().alias('counts'))

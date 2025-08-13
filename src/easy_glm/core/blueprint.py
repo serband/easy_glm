@@ -1,15 +1,18 @@
-from typing import Dict, Any
+from typing import Any
+
 import numpy as np
 import polars as pl
+
 from .transforms import lump_rare_levels_pl
 
-def generate_blueprint(dataframe: pl.DataFrame, threshold: float = 0.0025) -> Dict[str, Any]:
+
+def generate_blueprint(dataframe: pl.DataFrame, threshold: float = 0.0025) -> dict[str, Any]:
     """Generate preprocessing blueprint for each column.
 
     Numeric columns -> quantile breakpoints (5%..100% step 5%)
     Categorical columns -> retained levels after lumping rare ones to 'Other'.
     """
-    blueprint: Dict[str, Any] = {}
+    blueprint: dict[str, Any] = {}
     for column in dataframe.columns:
         try:
             col_data = dataframe[column]

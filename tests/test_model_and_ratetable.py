@@ -1,7 +1,14 @@
 import numpy as np
 import polars as pl
+
+from easy_glm import (
+    fit_lasso_glm,
+    generate_blueprint,
+    predict_with_model,
+    prepare_data,
+    ratetable,
+)
 from easy_glm.core.data import load_external_dataframe
-from easy_glm import generate_blueprint, prepare_data, fit_lasso_glm, ratetable, predict_with_model
 
 
 def _sample_dataset(n: int = 400) -> pl.DataFrame:
@@ -31,7 +38,7 @@ def test_fit_lasso_glm_and_predict():
         model_type="Poisson",
         weight_col="Exposure",
         train_test_col="traintest",
-        DivideTargetByWeight=True,
+        divide_target_by_weight=True,
     )
     new_slice_raw = df.head(5)
     new_slice_prepped = prepare_data(
@@ -63,7 +70,7 @@ def test_ratetable_basic():
         model_type="Poisson",
         weight_col="Exposure",
         train_test_col="traintest",
-        DivideTargetByWeight=True,
+        divide_target_by_weight=True,
     )
     levels = bp["VehAge"]
     tbl = ratetable(
@@ -84,7 +91,7 @@ def test_ratetable_basic():
 
 
 def test_transforms_helpers_roundtrip():
-    from easy_glm.core.transforms import o_matrix, lump_fun
+    from easy_glm.core.transforms import lump_fun, o_matrix
 
     breaks = [1, 2, 3]
     cases = o_matrix("NumCol", breaks)

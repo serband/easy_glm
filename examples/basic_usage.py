@@ -1,9 +1,10 @@
 """Minimal usage example for easy_glm after installation.
 Run with: python -m examples.basic_usage (from project root when editable-installed)
 """
-import easy_glm
-import polars as pl
 import numpy as np
+import polars as pl
+
+import easy_glm
 
 # Load demo dataset
 raw = easy_glm.load_external_dataframe()

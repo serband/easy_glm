@@ -1,12 +1,14 @@
-from typing import Optional, Sequence, Callable, Any
-import polars as pl
-import pandas as pd
-import pandas.api.types as ptypes
-import numpy as np
+import functools
+from collections.abc import Callable, Sequence
+from typing import Any
+
 import dask.dataframe as dd
+import numpy as np
+import pandas.api.types as ptypes
+import polars as pl
 from dask_ml.preprocessing import Categorizer
 from glum import GeneralizedLinearRegressor
-import functools
+
 
 def typechecked_ratetable(func: Callable) -> Callable:
     @functools.wraps(func)
@@ -17,7 +19,7 @@ def typechecked_ratetable(func: Callable) -> Callable:
             raise TypeError("dataset must be a polars.DataFrame")
         if "col_name" in kwargs and not isinstance(kwargs["col_name"], str):
             raise TypeError("col_name must be a string")
-        if "levels" in kwargs and not isinstance(kwargs["levels"], (list, tuple, np.ndarray)):
+        if "levels" in kwargs and not isinstance(kwargs["levels"], list | tuple | np.ndarray):
             raise TypeError("levels must be a sequence")
         return func(*args, **kwargs)
     return wrapper
@@ -29,8 +31,8 @@ def ratetable(
     dataset: pl.DataFrame,
     col_name: str,
     levels: Sequence[Any],
-    prepare: Optional[Callable[[pl.DataFrame], pl.DataFrame]] = None,
-    random_seed: Optional[int] = None,
+    prepare: Callable[[pl.DataFrame], pl.DataFrame] | None = None,
+    random_seed: int | None = None,
     include_raw: bool = True,
 ) -> pl.DataFrame:
     random_row = dataset.sample(n=1, shuffle=True, seed=random_seed)

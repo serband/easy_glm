@@ -5,10 +5,11 @@ Uses uv and venv for dependency management.
 """
 
 import os
-import sys
-import subprocess
 import platform
+import subprocess
+import sys
 from pathlib import Path
+
 
 def run_command(cmd, shell=False):
     """Run a command and return the result."""
@@ -46,32 +47,32 @@ def get_activation_command():
 def install_dependencies():
     """Install dependencies using uv."""
     print("Installing dependencies with uv...")
-    
+
     # Get the appropriate pip command for the virtual environment
     if platform.system() == "Windows":
         pip_cmd = ["uv", "pip", "install"]
     else:
         pip_cmd = ["uv", "pip", "install"]
-    
+
     # Install development dependencies
     success, stdout, stderr = run_command(pip_cmd + ["-r", "requirements-dev.txt"])
     if not success:
         print(f"Error installing dependencies: {stderr}")
         return False
-    
+
     # Install package in editable mode
     print("Installing package in editable mode...")
     success, stdout, stderr = run_command(pip_cmd + ["-e", "."])
     if not success:
         print(f"Error installing package: {stderr}")
         return False
-    
+
     return True
 
 def main():
     """Main setup function."""
     print("🚀 Setting up easy_glm development environment...")
-    
+
     # Check if uv is installed
     if not check_uv_installed():
         print("❌ uv is not installed. Please install uv first:")
@@ -79,25 +80,25 @@ def main():
         print("   For Windows: powershell -c \"irm https://astral.sh/uv/install.ps1 | iex\"")
         print("   Or visit: https://github.com/astral-sh/uv")
         sys.exit(1)
-    
+
     # Create virtual environment
     if not create_venv():
         print("❌ Failed to create virtual environment")
         sys.exit(1)
-    
+
     # Set UV_PYTHON environment variable to use the venv python
     if platform.system() == "Windows":
         python_path = str(Path.cwd() / "venv" / "Scripts" / "python.exe")
     else:
         python_path = str(Path.cwd() / "venv" / "bin" / "python")
-    
+
     os.environ["UV_PYTHON"] = python_path
-    
+
     # Install dependencies
     if not install_dependencies():
         print("❌ Failed to install dependencies")
         sys.exit(1)
-    
+
     print("✅ Setup complete! 🎉")
     print()
     print("To activate the environment, run:")
@@ -110,4 +111,4 @@ def main():
     print("   pytest")
 
 if __name__ == "__main__":
-    main() 
+    main()

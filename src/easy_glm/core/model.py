@@ -1,19 +1,19 @@
-from typing import Optional
+import dask.dataframe as dd
 import numpy as np
 import pandas as pd
 import pandas.api.types as ptypes
-import dask.dataframe as dd
+import polars as pl
 from dask_ml.preprocessing import Categorizer
 from glum import GeneralizedLinearRegressor
-import polars as pl
+
 
 def fit_lasso_glm(
     dataframe: pl.DataFrame,
     target: str,
     train_test_col: str,
     model_type: str,
-    weight_col: Optional[str] = None,
-    DivideTargetByWeight: bool = False,
+    weight_col: str | None = None,
+    divide_target_by_weight: bool = False,
 ) -> GeneralizedLinearRegressor:
     """Fit a L1-regularized GLM (Poisson/Gamma) using glum."""
     df = dataframe.to_pandas()
@@ -42,7 +42,7 @@ def fit_lasso_glm(
         w = df[weight_col]
         if bool(((w <= 0) | np.isinf(w) | w.isna()).any()):
             raise ValueError("Weight column has invalid values (<=0, inf, NaN).")
-    if (not DivideTargetByWeight) and (weight_col is not None):
+    if (not divide_target_by_weight) and (weight_col is not None):
         df[target] = df[target] / df[weight_col]
     train_df = df[df[train_test_col] == 1]
     if train_df.empty:
@@ -57,7 +57,7 @@ def fit_lasso_glm(
         ddf = Categorizer(columns=text_cols).fit_transform(ddf)
         train_df = ddf.compute()
     features = [c for c in train_df.columns if c not in exclude]
-    X = train_df[features]
+    x_data = train_df[features]
     y = train_df[target].to_numpy().ravel()
     sw = train_df[weight_col].to_numpy().ravel() if weight_col else None
     model = GeneralizedLinearRegressor(
@@ -67,7 +67,7 @@ def fit_lasso_glm(
         alpha_search=True,
         scale_predictors=True,
     )
-    model.fit(X, y, sample_weight=sw)
+    model.fit(x_data, y, sample_weight=sw)
     return model
 
 

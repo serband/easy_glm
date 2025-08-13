@@ -1,18 +1,21 @@
-from typing import Dict, Any, List
+from typing import Any
+
 import polars as pl
 from glum import GeneralizedLinearRegressor
+
 from .prepare import prepare_data
 from .ratetable import ratetable
+
 
 def generate_all_ratetables(
     model: GeneralizedLinearRegressor,
     dataset: pl.DataFrame,
-    predictor_variables: List[str],
-    blueprint: Dict[str, Any],
+    predictor_variables: list[str],
+    blueprint: dict[str, Any],
     random_seed: int = 42,
-) -> Dict[str, pl.DataFrame]:
+) -> dict[str, pl.DataFrame]:
     """Generate rate tables for each predictor in predictor_variables."""
-    all_ratetables: Dict[str, pl.DataFrame] = {}
+    all_ratetables: dict[str, pl.DataFrame] = {}
     for var in predictor_variables:
         levels = blueprint.get(var)
         if levels is None:

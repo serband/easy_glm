@@ -1,21 +1,8 @@
-from .core.prepare import prepare_data
-from .core.model import fit_lasso_glm
-from .core.blueprint import generate_blueprint
-from .core.transforms import lump_rare_levels_pl, lump_fun, o_matrix
-from .core.data import load_external_dataframe
-from .core.ratetable import ratetable
-from .core.all_ratetables import generate_all_ratetables
-from .core.plots import plot_all_ratetables
+"""Legacy placeholder module.
 
-__all__ = [
-    "prepare_data",
-    "fit_lasso_glm",
-    "generate_blueprint",
-    "lump_rare_levels_pl",
-    "lump_fun",
-    "o_matrix",
-    "load_external_dataframe",
-    "ratetable",
-    "generate_all_ratetables",
-    "plot_all_ratetables"
-]
+The real package code lives under ``src/easy_glm``.
+This file is retained only to avoid accidental namespace confusion and will
+be removed in a future cleanup. Intentionally empty to satisfy linters.
+"""
+
+__all__: list[str] = []

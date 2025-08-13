@@ -1,6 +1,6 @@
-import polars as pl
 from easy_glm.core.blueprint import generate_blueprint
 from easy_glm.core.data import load_external_dataframe
+
 
 def test_generate_blueprint_basic():
     """
@@ -14,8 +14,8 @@ def test_generate_blueprint_basic():
         assert col in blueprint
         assert isinstance(blueprint[col], list)
         # Numeric columns should have floats/ints, categoricals should have strings
-        if all(isinstance(x, (float, int)) for x in blueprint[col]):
-            assert all(isinstance(x, (float, int)) for x in blueprint[col])
+        if all(isinstance(x, float | int) for x in blueprint[col]):
+            assert all(isinstance(x, float | int) for x in blueprint[col])
         else:
             assert all(isinstance(x, str) for x in blueprint[col])
     # No error messages for these columns
