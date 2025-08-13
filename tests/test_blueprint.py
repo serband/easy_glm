@@ -10,7 +10,7 @@ def test_generate_blueprint_basic():
     blueprint = generate_blueprint(df)
     assert isinstance(blueprint, dict)
     # Check some expected columns
-    for col in ['VehAge', 'VehBrand', 'DrivAge', 'Region']:
+    for col in ["VehAge", "VehBrand", "DrivAge", "Region"]:
         assert col in blueprint
         assert isinstance(blueprint[col], list)
         # Numeric columns should have floats/ints, categoricals should have strings
@@ -19,8 +19,11 @@ def test_generate_blueprint_basic():
         else:
             assert all(isinstance(x, str) for x in blueprint[col])
     # No error messages for these columns
-    for col in ['VehAge', 'VehBrand']:
-        assert not (isinstance(blueprint[col], str) and blueprint[col].startswith('Error:'))
+    for col in ["VehAge", "VehBrand"]:
+        assert not (
+            isinstance(blueprint[col], str) and blueprint[col].startswith("Error:")
+        )
+
 
 if __name__ == "__main__":
     test_generate_blueprint_basic()

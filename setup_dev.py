@@ -14,17 +14,21 @@ from pathlib import Path
 def run_command(cmd, shell=False):
     """Run a command and return the result."""
     try:
-        result = subprocess.run(cmd, shell=shell, check=True, capture_output=True, text=True)
+        result = subprocess.run(
+            cmd, shell=shell, check=True, capture_output=True, text=True
+        )
         return result.returncode == 0, result.stdout, result.stderr
     except subprocess.CalledProcessError as e:
         return False, e.stdout, e.stderr
     except FileNotFoundError:
         return False, "", "Command not found"
 
+
 def check_uv_installed():
     """Check if uv is installed."""
     success, _, _ = run_command(["uv", "--version"])
     return success
+
 
 def create_venv():
     """Create virtual environment if it doesn't exist."""
@@ -37,12 +41,14 @@ def create_venv():
             return False
     return True
 
+
 def get_activation_command():
     """Get the appropriate activation command for the platform."""
     if platform.system() == "Windows":
         return r"venv\Scripts\activate"
     else:
         return "source venv/bin/activate"
+
 
 def install_dependencies():
     """Install dependencies using uv."""
@@ -69,6 +75,7 @@ def install_dependencies():
 
     return True
 
+
 def main():
     """Main setup function."""
     print("🚀 Setting up easy_glm development environment...")
@@ -76,8 +83,12 @@ def main():
     # Check if uv is installed
     if not check_uv_installed():
         print("❌ uv is not installed. Please install uv first:")
-        print("   For Unix/Linux/macOS: curl -LsSf https://astral.sh/uv/install.sh | sh")
-        print("   For Windows: powershell -c \"irm https://astral.sh/uv/install.ps1 | iex\"")
+        print(
+            "   For Unix/Linux/macOS: curl -LsSf https://astral.sh/uv/install.sh | sh"
+        )
+        print(
+            '   For Windows: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"'
+        )
         print("   Or visit: https://github.com/astral-sh/uv")
         sys.exit(1)
 
@@ -109,6 +120,7 @@ def main():
     print()
     print("To run tests, use:")
     print("   pytest")
+
 
 if __name__ == "__main__":
     main()

@@ -1,6 +1,7 @@
 """Minimal usage example for easy_glm after installation.
 Run with: python -m examples.basic_usage (from project root when editable-installed)
 """
+
 import numpy as np
 import polars as pl
 
@@ -14,7 +15,7 @@ raw = raw.with_columns(
     (pl.Series(np.random.rand(raw.height)) < 0.7).cast(pl.Int8).alias("traintest")
 )
 
-predictors = ["VehAge","Region","VehGas","DrivAge","BonusMalus","Density"]
+predictors = ["VehAge", "Region", "VehGas", "DrivAge", "BonusMalus", "Density"]
 
 # Build blueprint (bin numeric & gather categorical levels)
 blueprint = easy_glm.generate_blueprint(raw)
@@ -23,10 +24,10 @@ blueprint = easy_glm.generate_blueprint(raw)
 prepped = easy_glm.prepare_data(
     df=raw,
     modelling_variables=predictors,
-    additional_columns=["Exposure","ClaimNb","traintest"],
+    additional_columns=["Exposure", "ClaimNb", "traintest"],
     formats=blueprint,
     traintest_column="traintest",
-    table_name="cars"
+    table_name="cars",
 )
 
 # Fit L1 GLM (Poisson frequency model)

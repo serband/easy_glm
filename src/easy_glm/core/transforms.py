@@ -18,7 +18,8 @@ def o_matrix(col_name: str, brks) -> list[str]:
         )
     return sql_statements
 
-def lump_fun(col_name: str, levels: list, other_category: str = 'Other') -> str:
+
+def lump_fun(col_name: str, levels: list, other_category: str = "Other") -> str:
     if not isinstance(col_name, str) or not col_name.strip():
         raise ValueError("col_name must be non-empty string")
     if isinstance(levels, np.ndarray):
@@ -32,14 +33,30 @@ def lump_fun(col_name: str, levels: list, other_category: str = 'Other') -> str:
         cleaned.append(str(level).replace("'", "''"))
     unique_levels = list(dict.fromkeys(cleaned))
     levels_str = ", ".join(f"'{lvl}'" for lvl in unique_levels)
-    return (
-        f"CASE WHEN CAST({col_name} AS VARCHAR) IN ({levels_str}) THEN CAST({col_name} AS VARCHAR) ELSE '{other_category}' END AS {col_name}_lumped"
-    )
+    return f"CASE WHEN CAST({col_name} AS VARCHAR) IN ({levels_str}) THEN CAST({col_name} AS VARCHAR) ELSE '{other_category}' END AS {col_name}_lumped"
 
-def lump_rare_levels_pl(column_series: pl.Series, total_count: int | None = None, threshold: float = 0.001, fill_value: str = 'Unknown') -> pl.Series:
+
+def lump_rare_levels_pl(
+    column_series: pl.Series,
+    total_count: int | None = None,
+    threshold: float = 0.001,
+    fill_value: str = "Unknown",
+) -> pl.Series:
     if total_count is None:
         total_count = column_series.len()
-    level_counts = column_series.to_frame().group_by(column_series.name).agg(pl.len().alias('counts'))
-    rare_levels = level_counts.filter(pl.col('counts') / total_count < threshold)[column_series.name].to_list()
-    expr = pl.when(pl.col(column_series.name).is_in(rare_levels)).then(pl.lit('Other')).otherwise(pl.col(column_series.name))
-    return column_series.to_frame().with_columns(expr.alias(column_series.name))[column_series.name]
+    level_counts = (
+        column_series.to_frame()
+        .group_by(column_series.name)
+        .agg(pl.len().alias("counts"))
+    )
+    rare_levels = level_counts.filter(pl.col("counts") / total_count < threshold)[
+        column_series.name
+    ].to_list()
+    expr = (
+        pl.when(pl.col(column_series.name).is_in(rare_levels))
+        .then(pl.lit("Other"))
+        .otherwise(pl.col(column_series.name))
+    )
+    return column_series.to_frame().with_columns(expr.alias(column_series.name))[
+        column_series.name
+    ]

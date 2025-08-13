@@ -28,10 +28,12 @@ def fit_lasso_glm(
     fam = model_type.lower()
     if fam not in {"poisson", "gamma"}:
         raise ValueError("model_type must be 'Poisson' or 'Gamma'.")
+
     def invalid_target_exists(pdf: pd.DataFrame, col: str, allow_zero: bool) -> bool:
         s = pdf[col]
         bad = ((s < 0) if allow_zero else (s <= 0)) | np.isinf(s) | s.isna()
         return bool(bad.any())
+
     if fam == "poisson":
         if invalid_target_exists(df, target, allow_zero=True):
             raise ValueError("Invalid Poisson target values (<0, inf, or NaN).")
@@ -48,10 +50,14 @@ def fit_lasso_glm(
     if train_df.empty:
         raise ValueError("Training subset is empty (no rows with traintest==1).")
     exclude = {target, train_test_col} | ({weight_col} if weight_col else set())
+
     def is_text_like(series: pd.Series) -> bool:
         dt = series.dtype
         return ptypes.is_object_dtype(dt) or ptypes.is_string_dtype(dt)
-    text_cols = [c for c in train_df.columns if c not in exclude and is_text_like(train_df[c])]
+
+    text_cols = [
+        c for c in train_df.columns if c not in exclude and is_text_like(train_df[c])
+    ]
     if text_cols:
         ddf = dd.from_pandas(train_df, npartitions=1)
         ddf = Categorizer(columns=text_cols).fit_transform(ddf)
@@ -71,13 +77,19 @@ def fit_lasso_glm(
     return model
 
 
-def _encode_like_training(df: pd.DataFrame, model: GeneralizedLinearRegressor) -> pd.DataFrame:
+def _encode_like_training(
+    df: pd.DataFrame, model: GeneralizedLinearRegressor
+) -> pd.DataFrame:
     """Best-effort encoding of object/string columns to mimic fit pipeline.
 
     This mirrors the minimal categorizer logic used in fit_lasso_glm so that
     downstream prediction on raw (possibly string-typed) data won't error.
     """
-    obj_cols = [c for c in df.columns if ptypes.is_object_dtype(df[c].dtype) or ptypes.is_string_dtype(df[c].dtype)]
+    obj_cols = [
+        c
+        for c in df.columns
+        if ptypes.is_object_dtype(df[c].dtype) or ptypes.is_string_dtype(df[c].dtype)
+    ]
     if obj_cols:
         ddf = dd.from_pandas(df, npartitions=1)
         ddf = Categorizer(columns=obj_cols).fit_transform(ddf)
