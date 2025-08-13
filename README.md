@@ -1,6 +1,6 @@
 # easy_glm
 
-Python package to automate building insurance ratetables using (fused) LASSO regularised GLMs. Internally it leverages [GLUM](https://glum.readthedocs.io/en/latest/) for fitting, providing a higher-level interface tailored to insurance pricing workflows (blueprints, preprocessing, model fitting, rate table extraction & plotting). Inspired by the R package [aglm](https://github.com/kkondo1981/aglm).
+Python package to automate building insurance ratetables using (fused) LASSO regularised GLMs. Internally it leverages [GLUM](https://glum.readthedocs.io/en/latest/) for fitting, providing a higher-level interface tailored to insurance pricing workflows (blueprints, preprocessing, model fitting, rate table extraction & plotting). Inspired by the R package [aglm](https://github.com/kkondo1981/aglm). Packaged with a modern `src/` layout.
 
 ## Installation & Setup
 
@@ -8,7 +8,7 @@ This project uses `uv` for fast dependency management and `venv` for virtual env
 
 ### Prerequisites
 
-1. **Python 3.10+** - Make sure you have Python 3.10 or later installed
+1. **Python 3.10–3.13** - CI tests these versions.
 2. **uv** - Fast Python package installer and resolver
 
 Install `uv`:
@@ -69,6 +69,8 @@ If you prefer to set up manually:
 ## Usage Example
 
 Here's a complete example of how to use `easy_glm` to build and visualize insurance rate tables.
+
+For a minimal runnable script, see `examples/basic_usage.py`.
 
 ### 1. Import Libraries and Load Data
 
@@ -137,7 +139,19 @@ model = easy_glm.fit_lasso_glm(
 )
 ```
 
-### 5. Generate All Rate Tables
+### 5. Predict on New Data (Optional)
+
+If you have already prepared data (i.e. ran `prepare_data` with the same blueprint & predictors) you can obtain predictions using the helper:
+
+```python
+# Assume `prepped_data` as above and `model` fitted
+new_rows_prepped = prepped_data.head(10).select(pl.all().exclude(["ClaimNb", "Exposure", "traintest"]))
+preds = easy_glm.predict_with_model(model, new_rows_prepped)
+```
+
+If you start from raw rows, run `prepare_data` first with the same `formats` (blueprint) and predictor list.
+
+### 6. Generate All Rate Tables
 
 With a fitted model, you can now generate the rate tables for all predictor variables. The `generate_all_ratetables` function loops through each variable and calculates its relativity.
 
@@ -154,7 +168,7 @@ all_tables = easy_glm.generate_all_ratetables(
 print(all_tables['VehAge'])
 ```
 
-### 6. Plot the Rate Tables
+### 7. Plot the Rate Tables
 
 Finally, visualize the relativities using the `plot_all_ratetables` function. This will generate a plot for each variable, making it easy to interpret the model's results.
 - **Numeric variables** are shown as line plots.
@@ -201,14 +215,15 @@ pytest
 
 ```
 easy_glm/
-├── easy_glm/           # Main package directory
-├── pyproject.toml      # Modern Python packaging configuration
-├── requirements.txt    # Production dependencies
-├── requirements-dev.txt # Development dependencies
-├── setup_dev.py        # Cross-platform setup script
-├── setup_dev.ps1       # Windows PowerShell setup script
-├── setup_dev.sh        # Unix/Linux/macOS setup script
-└── README.md           # This file
+├── src/easy_glm/        # Library code (packaged)
+│   └── core/            # Core implementation modules
+├── tests/               # Pytest test suite
+├── examples/            # Usage examples
+├── test.py              # Lightweight smoke script
+├── pyproject.toml       # Packaging configuration
+├── requirements*.txt    # Dependency constraint files
+├── setup_dev.*          # Dev environment helpers
+└── README.md
 ```
 
 ## Dependencies
@@ -232,11 +247,21 @@ easy_glm/
 
 ## Additional Usage Ideas
 
-Roadmap examples (to be implemented / documented):
-* Export ratetables to CSV / Parquet bundle
-* Inverse transform scoring for new data
-* Automated monotonic binning option
+Roadmap ideas:
+* Export all ratetables to CSV / Parquet bundle
+* Inverse transform scoring for new raw data (auto-prepare + predict)
+* Automated monotonic binning / isotonic smoothing option
 * CLI entry point (`python -m easy_glm build ...`)
+* Optional caching of downloaded demo dataset
+* Configurable blueprint strategies (equal-frequency vs fixed breaks)
+
+### Test Performance Tuning
+
+CI sets `EASY_GLM_MAX_ROWS=500` to limit dataset size for quicker tests. You can mimic locally:
+```bash
+export EASY_GLM_MAX_ROWS=500
+pytest -q
+```
 
 ## Contributing
 

@@ -54,8 +54,11 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]
 include = ["easy_glm*"]
+
+[tool.setuptools.package-dir]
+"" = "src"
 
 [tool.black]
 line-length = 88
