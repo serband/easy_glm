@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "easy_glm"
+version = "0.1.0"
+description = "A package to quickly create insurance pricing models using GLMs and export models as ratetables"
+readme = "README.md"
+authors = [
+    {name = "Serban Dragne", email = "sadragne@gmail.com"}
+]
+license = {text = "MIT"}
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "duckdb>=1.3.0",
+    "polars>=1.17.0",
+    "numpy>=1.24.0",
+    "pyarrow>=14.0.0",
+    "glum>=3.0.0",
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+    "scikit-learn>=1.3.0",
+    "pandas>=2.0.0",
+    "dask-ml>=2025.1.0",   # important
+    "numba>=0.61.0",       # forces Py3.13-compatible
+    "llvmlite>=0.44.0"     # forces Py3.13-compatible
+]
+
+
+[project.urls]
+Homepage = "https://github.com/serband/easy_glm"
+Repository = "https://github.com/serband/easy_glm"
+Issues = "https://github.com/serband/easy_glm/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "jupyter>=1.0.0",
+    "ipykernel>=6.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["easy_glm*"]
+
+[tool.black]
+line-length = 88
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+select = ["E", "F", "W", "I", "N", "B", "C4", "UP"]
+ignore = ["E501"] 

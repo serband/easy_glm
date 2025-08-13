@@ -1,0 +1,46 @@
+## Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+pip-wheel-metadata/
+.Python
+
+## Virtual environments
+venv/
+.venv/
+env/
+
+## Jupyter / IPython
+.ipynb_checkpoints/
+
+## Tools / IDE
+.vscode/
+.idea/
+*.code-workspace
+
+## OS files
+.DS_Store
+Thumbs.db
+
+## Logs / coverage
+*.log
+coverage.xml
+.coverage*
+htmlcov/
+
+## Data / temp (adjust as needed)
+data/
+*.tmp
+*.temp
+tmp/
+
+## Local experimentation
+scratch*/
+playground*/
+
+## R history (found existing .Rhistory)
+.Rhistory
