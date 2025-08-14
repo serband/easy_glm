@@ -1,6 +1,6 @@
 # easy_glm
 
-Python package to automate building insurance ratetables using (fused) LASSO regularised GLMs. Internally it leverages [GLUM](https://glum.readthedocs.io/en/latest/) for fitting, providing a higher-level interface tailored to insurance pricing workflows (blueprints, preprocessing, model fitting, rate table extraction & plotting). Inspired by the R package [aglm](https://github.com/kkondo1981/aglm). Packaged with a modern `src/` layout.
+Python package to automate building insurance ratetables using (fused) LASSO regularised GLMs. Internally it leverages [glum](https://glum.readthedocs.io/en/latest/) for fitting, providing a higher-level interface tailored to insurance pricing workflows (blueprints, preprocessing, model fitting, rate table extraction & plotting). Inspired by the R package [aglm](https://github.com/kkondo1981/aglm). Packaged with a modern `src/` layout.
 
 ## Installation & Setup
 
