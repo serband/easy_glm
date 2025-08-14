@@ -20,6 +20,16 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
+### Installing from Git (Single Command)
+
+You can install the package directly from Git using a single command:
+
+```bash
+uv pip install git+https://github.com/serband/easy_glm.git
+```
+
+This is the fastest way to get started with easy_glm without cloning the repository.
+
 ### Quick Setup
 
 Choose one of the following methods to set up your development environment:
