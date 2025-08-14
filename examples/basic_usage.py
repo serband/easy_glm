@@ -37,7 +37,7 @@ model = easy_glm.fit_lasso_glm(
     model_type="Poisson",
     weight_col="Exposure",
     train_test_col="traintest",
-    DivideTargetByWeight=True,
+    divide_target_by_weight=True,
 )
 
 # One rate table

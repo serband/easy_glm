@@ -29,7 +29,12 @@ Choose one of the following methods to set up your development environment:
 python setup_dev.py
 ```
 
-#### Option 2: Platform-specific scripts
+#### Option 2: Direct installation from Git
+```bash
+uv pip install git+https://github.com/serband/easy_glm.git
+```
+
+#### Option 3: Platform-specific scripts
 
 **On Windows (PowerShell):**
 ```powershell
@@ -135,7 +140,7 @@ model = easy_glm.fit_lasso_glm(
     model_type="Poisson", 
     weight_col="Exposure", 
     train_test_col="traintest",
-    DivideTargetByWeight=True
+    divide_target_by_weight=True
 )
 ```
 
@@ -275,4 +280,3 @@ pytest
 ## License
 
 MIT – see `LICENSE`.
-
