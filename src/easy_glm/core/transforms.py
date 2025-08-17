@@ -3,6 +3,10 @@ import polars as pl
 
 
 def o_matrix(col_name: str, brks) -> list[str]:
+    """
+    Note:
+        Null values in the column are imputed with the column's average value.
+    """
     if not isinstance(col_name, str):
         raise TypeError("col_name must be a string")
     if not col_name.strip():
@@ -20,6 +24,10 @@ def o_matrix(col_name: str, brks) -> list[str]:
 
 
 def lump_fun(col_name: str, levels: list, other_category: str = "Other") -> str:
+    """
+    Note:
+        Null values in the column will be lumped into the `other_category`.
+    """
     if not isinstance(col_name, str) or not col_name.strip():
         raise ValueError("col_name must be non-empty string")
     if isinstance(levels, np.ndarray):

@@ -13,7 +13,12 @@ def prepare_data(
     formats: dict | None = None,
     con: duckdb.DuckDBPyConnection | None = None,
 ) -> pl.DataFrame:
-    """Apply blueprint-driven SQL style transformations via DuckDB."""
+    """Apply blueprint-driven SQL style transformations via DuckDB.
+
+    Note:
+        If a column's blueprint is empty, it will be skipped during data preparation.
+        If all columns are skipped, an empty DataFrame will be returned.
+    """
     if formats is None:
         formats = {}
     if con is None:
@@ -47,6 +52,8 @@ def prepare_data(
             continue
         if var in formats:
             dict_values = formats[var]
+            if not dict_values:
+                continue
             if all(isinstance(x, int | float) for x in dict_values):
                 expressions.extend(o_matrix(var, dict_values))
             else:
@@ -60,6 +67,8 @@ def prepare_data(
             print(
                 f"Warning: Additional column '{col}' not found in the table. Skipping."
             )
+    if not expressions:
+        return pl.DataFrame()
     query = f"SELECT {', '.join(expressions)} FROM {table_name}"
     result_df = con.execute(query).df()
     if df is not None and con is not None:

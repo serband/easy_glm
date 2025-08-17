@@ -13,20 +13,33 @@ def generate_blueprint(
 
     Numeric columns -> quantile breakpoints (5%..100% step 5%)
     Categorical columns -> retained levels after lumping rare ones to 'Other'.
+
+    Note:
+        Null values are dropped from each column before generating the blueprint.
+        If a column contains only null values, its blueprint will be an empty list.
     """
     blueprint: dict[str, Any] = {}
     for column in dataframe.columns:
         try:
             col_data = dataframe[column]
+            
+            # Filter out nulls for processing
+            col_data_non_null = col_data.drop_nulls()
+
+            # Handle all null columns or empty after dropping nulls
+            if col_data_non_null.is_empty():
+                blueprint[column] = []
+                continue
+
             dtype = col_data.dtype
             if dtype in [pl.Float32, pl.Float64, pl.Int32, pl.Int64]:
                 quantiles = np.arange(0.05, 1.05, 0.05).tolist()
-                breaks = [col_data.quantile(q) for q in quantiles]
+                breaks = [col_data_non_null.quantile(q) for q in quantiles]
                 unique_breaks = sorted(set(breaks))
                 blueprint[column] = unique_breaks
             else:
                 lumped_levels = lump_rare_levels_pl(
-                    dataframe[column], threshold=threshold
+                    col_data_non_null, threshold=threshold
                 )
                 levels = np.unique(lumped_levels).tolist()
                 if "Other" in levels:
