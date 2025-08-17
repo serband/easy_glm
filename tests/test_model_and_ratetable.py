@@ -11,13 +11,26 @@ from easy_glm import (
 from easy_glm.core.data import load_external_dataframe
 
 
-def _sample_dataset(n: int = 400) -> pl.DataFrame:
+def _sample_dataset(n: int = 400, missing_frac: float = 0.1) -> pl.DataFrame:
     df = load_external_dataframe()
     if df.height > n:
         df = df.head(n)
     rng = np.random.default_rng(42)
     mask = (rng.random(df.height) < 0.7).astype(np.int8)
-    return df.with_columns(pl.Series("traintest", mask))
+    df = df.with_columns(pl.Series("traintest", mask))
+
+    # Introduce missing values
+    if missing_frac > 0:
+        for col_name, col_type in df.schema.items():
+            if col_name in ["VehAge", "Region"]:  # Target specific columns for NA
+                na_mask = rng.random(df.height) < missing_frac
+                df = df.with_columns(
+                    pl.when(na_mask)
+                    .then(None)
+                    .otherwise(df[col_name])
+                    .alias(col_name)
+                )
+    return df
 
 
 def test_fit_lasso_glm_and_predict():

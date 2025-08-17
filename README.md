@@ -1,6 +1,6 @@
 # easy_glm
 
-Python package to automate building insurance ratetables using (fused) LASSO regularised GLMs. Internally it leverages [GLUM](https://glum.readthedocs.io/en/latest/) for fitting, providing a higher-level interface tailored to insurance pricing workflows (blueprints, preprocessing, model fitting, rate table extraction & plotting). Inspired by the R package [aglm](https://github.com/kkondo1981/aglm). Packaged with a modern `src/` layout.
+Python package to automate building insurance ratetables using (fused) LASSO regularised GLMs. Internally it leverages [glum](https://glum.readthedocs.io/en/latest/) for fitting, providing a higher-level interface tailored to insurance pricing workflows (blueprints, preprocessing, model fitting, rate table extraction & plotting). Inspired by the R package [aglm](https://github.com/kkondo1981/aglm). Packaged with a modern `src/` layout.
 
 ## Installation & Setup
 
@@ -20,6 +20,16 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
+### Installing from Git (Single Command)
+
+You can install the package directly from Git using a single command:
+
+```bash
+uv pip install git+https://github.com/serband/easy_glm.git
+```
+
+This is the fastest way to get started with easy_glm without cloning the repository.
+
 ### Quick Setup
 
 Choose one of the following methods to set up your development environment:
@@ -29,7 +39,12 @@ Choose one of the following methods to set up your development environment:
 python setup_dev.py
 ```
 
-#### Option 2: Platform-specific scripts
+#### Option 2: Direct installation from Git
+```bash
+uv pip install git+https://github.com/serband/easy_glm.git
+```
+
+#### Option 3: Platform-specific scripts
 
 **On Windows (PowerShell):**
 ```powershell
@@ -135,7 +150,7 @@ model = easy_glm.fit_lasso_glm(
     model_type="Poisson", 
     weight_col="Exposure", 
     train_test_col="traintest",
-    DivideTargetByWeight=True
+    divide_target_by_weight=True
 )
 ```
 
@@ -275,4 +290,3 @@ pytest
 ## License
 
 MIT – see `LICENSE`.
-
