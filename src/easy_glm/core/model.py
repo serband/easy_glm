@@ -44,7 +44,7 @@ def fit_lasso_glm(
         w = df[weight_col]
         if bool(((w <= 0) | np.isinf(w) | w.isna()).any()):
             raise ValueError("Weight column has invalid values (<=0, inf, NaN).")
-    if (not divide_target_by_weight) and (weight_col is not None):
+    if divide_target_by_weight and (weight_col is not None):
         df[target] = df[target] / df[weight_col]
     train_df = df[df[train_test_col] == 1]
     if train_df.empty:

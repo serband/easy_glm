@@ -1,7 +1,7 @@
 import duckdb
 import polars as pl
 
-from .transforms import lump_fun, o_matrix
+from .transforms import lump_fun, o_matrix, quote_identifier
 
 
 def prepare_data(
@@ -24,7 +24,9 @@ def prepare_data(
     if con is None:
         if df is not None:
             con = duckdb.connect(":memory:")
-            con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM df")
+            con.execute(
+                f"CREATE TABLE {quote_identifier(table_name)} AS SELECT * FROM df"
+            )
         else:
             con = duckdb.connect()
     else:
@@ -32,6 +34,7 @@ def prepare_data(
             print(
                 "Warning: The provided connection is not a duckdb connection. Proceeding anyway."
             )
+    table_reference = quote_identifier(table_name)
     tables = con.execute("SHOW TABLES").fetchall()
     if table_name not in [t[0] for t in tables]:
         raise ValueError(
@@ -46,7 +49,9 @@ def prepare_data(
     for var in modelling_variables:
         if (
             var
-            not in con.execute(f"PRAGMA table_info({table_name})").df()["name"].tolist()
+            not in con.execute(f"PRAGMA table_info({table_reference})")
+            .df()["name"]
+            .tolist()
         ):
             print(f"Warning: Column '{var}' not found in the table. Skipping.")
             continue
@@ -59,17 +64,22 @@ def prepare_data(
             else:
                 expressions.append(lump_fun(var, dict_values))
         else:
-            expressions.append(f"'{var}'")
+            expressions.append(quote_identifier(var))
     for col in additional_columns:
-        if col in con.execute(f"PRAGMA table_info({table_name})").df()["name"].tolist():
-            expressions.append(col)
+        if (
+            col
+            in con.execute(f"PRAGMA table_info({table_reference})")
+            .df()["name"]
+            .tolist()
+        ):
+            expressions.append(quote_identifier(col))
         else:
             print(
                 f"Warning: Additional column '{col}' not found in the table. Skipping."
             )
     if not expressions:
         return pl.DataFrame()
-    query = f"SELECT {', '.join(expressions)} FROM {table_name}"
+    query = f"SELECT {', '.join(expressions)} FROM {table_reference}"
     result_df = con.execute(query).df()
     if df is not None and con is not None:
         con.close()

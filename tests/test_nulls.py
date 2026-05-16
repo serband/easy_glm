@@ -88,3 +88,39 @@ def test_prepare_data_majority_nulls():
         "Other",
         "Other",
     ]
+
+
+def test_prepare_data_handles_identifiers_with_spaces_and_reserved_words():
+    df = pl.DataFrame(
+        {
+            "vehicle age": [1.0, 3.0, None],
+            "select": ["A", "B", "C"],
+        }
+    )
+    blueprint = {
+        "vehicle age": [2.0],
+        "select": ["A", "B"],
+    }
+
+    prepared_df = prepare_data(
+        modelling_variables=["vehicle age", "select"],
+        df=df,
+        formats=blueprint,
+        table_name="policy data",
+    )
+
+    assert prepared_df.columns == ["vehicle age2.0", "select_lumped"]
+    assert prepared_df["select_lumped"].to_list() == ["A", "B", "Other"]
+
+
+def test_prepare_data_preserves_unformatted_columns():
+    df = pl.DataFrame({"raw score": [10, 20, 30]})
+
+    prepared_df = prepare_data(
+        modelling_variables=["raw score"],
+        df=df,
+        formats={},
+    )
+
+    assert prepared_df.columns == ["raw score"]
+    assert prepared_df["raw score"].to_list() == [10, 20, 30]

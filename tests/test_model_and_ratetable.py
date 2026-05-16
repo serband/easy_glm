@@ -1,6 +1,8 @@
 import numpy as np
 import polars as pl
+import pytest
 
+import easy_glm.core.model as model_module
 from easy_glm import (
     fit_lasso_glm,
     generate_blueprint,
@@ -8,31 +10,51 @@ from easy_glm import (
     prepare_data,
     ratetable,
 )
-from easy_glm.core.data import load_external_dataframe
 
 
-def _sample_dataset(n: int = 400, missing_frac: float = 0.1) -> pl.DataFrame:
-    df = load_external_dataframe()
-    if df.height > n:
-        df = df.head(n)
-    rng = np.random.default_rng(42)
-    mask = (rng.random(df.height) < 0.7).astype(np.int8)
-    df = df.with_columns(pl.Series("traintest", mask))
+@pytest.mark.parametrize(
+    ("divide_target_by_weight", "expected_y"),
+    [(True, [1.0, 2.0]), (False, [2.0, 4.0])],
+)
+def test_fit_lasso_glm_divides_target_only_when_requested(
+    monkeypatch, divide_target_by_weight, expected_y
+):
+    class CapturingRegressor:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
 
-    # Introduce missing values
-    if missing_frac > 0:
-        for col_name, _col_type in df.schema.items():
-            if col_name in ["VehAge", "Region"]:  # Target specific columns for NA
-                na_mask = rng.random(df.height) < missing_frac
-                df = df.with_columns(
-                    pl.when(na_mask).then(None).otherwise(df[col_name]).alias(col_name)
-                )
-    return df
+        def fit(self, x_data, y, sample_weight=None):
+            self.x_data = x_data
+            self.y = y
+            self.sample_weight = sample_weight
+            return self
+
+    monkeypatch.setattr(model_module, "GeneralizedLinearRegressor", CapturingRegressor)
+    df = pl.DataFrame(
+        {
+            "feature": [0.0, 1.0],
+            "ClaimNb": [2.0, 4.0],
+            "Exposure": [2.0, 2.0],
+            "traintest": [1, 1],
+        }
+    )
+
+    fitted = fit_lasso_glm(
+        dataframe=df,
+        target="ClaimNb",
+        model_type="Poisson",
+        weight_col="Exposure",
+        train_test_col="traintest",
+        divide_target_by_weight=divide_target_by_weight,
+    )
+
+    assert fitted.y.tolist() == expected_y
+    assert fitted.sample_weight.tolist() == [2.0, 2.0]
 
 
-def test_fit_lasso_glm_and_predict():
-    df = _sample_dataset()
-    predictors = ["VehAge", "Region", "VehGas"]
+def test_fit_lasso_glm_and_predict(synthetic_insurance_data):
+    df = synthetic_insurance_data
+    predictors = ["VehAge", "Region", "DrivAge"]
     bp = generate_blueprint(df)
     prepped = prepare_data(
         df=df,
@@ -62,9 +84,9 @@ def test_fit_lasso_glm_and_predict():
     assert np.all(np.isfinite(preds))
 
 
-def test_ratetable_basic():
-    df = _sample_dataset()
-    predictors = ["VehAge", "Region", "VehGas"]
+def test_ratetable_basic(synthetic_insurance_data):
+    df = synthetic_insurance_data
+    predictors = ["VehAge", "Region", "DrivAge"]
     bp = generate_blueprint(df)
     prepped = prepare_data(
         df=df,

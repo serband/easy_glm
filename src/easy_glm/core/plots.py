@@ -1,14 +1,15 @@
 from typing import Any
 
-import matplotlib.pyplot as plt
 import polars as pl
-import seaborn as sns
 
 
 def plot_all_ratetables(
     all_tables: dict[str, pl.DataFrame], blueprint: dict[str, Any]
 ):  # pragma: no cover - visual
     """Plot relativity curves for each rate table (line for numeric, bar for categorical)."""
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
     for var_name, table in all_tables.items():
         if not isinstance(table, pl.DataFrame) or table.is_empty():
             print(f"Skipping '{var_name}' as it's not a valid DataFrame.")

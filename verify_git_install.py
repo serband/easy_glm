@@ -17,34 +17,29 @@ def verify_installation():
 
         print("   ✅ Package imported successfully")
 
-        # Test 2: Load external dataframe
-        print("2. Testing data loading...")
-        df = easy_glm.load_external_dataframe()
-        print(
-            f"   ✅ Loaded dataframe with {df.shape[0]} rows and {df.shape[1]} columns"
+        # Test 2: Build a tiny synthetic dataframe without network access
+        print("2. Testing synthetic data setup...")
+        import polars as pl
+
+        sample_df = pl.DataFrame(
+            {
+                "VehAge": [1.0, 3.0, 7.0, 10.0],
+                "Region": ["North", "South", "North", "Urban"],
+                "Exposure": [1.0, 0.5, 0.75, 1.0],
+                "ClaimNb": [0, 1, 0, 2],
+                "traintest": [1, 1, 0, 1],
+            }
         )
+        print("   ✅ Synthetic dataframe created")
 
         # Test 3: Test core functionality
         print("3. Testing core functionality...")
-        import numpy as np
-        import polars as pl
-
-        # Create a small sample for faster testing
-        sample_df = df.head(1000)
-
-        # Add train/test column
-        sample_df = sample_df.with_columns(
-            (pl.Series(np.random.rand(sample_df.height)) < 0.7)
-            .cast(pl.Int8)
-            .alias("traintest")
-        )
-
         # Generate blueprint
         blueprint = easy_glm.generate_blueprint(sample_df)
         print("   ✅ Blueprint generation successful")
 
         # Test 4: Prepare data
-        predictors = ["VehAge", "Region", "VehGas"]
+        predictors = ["VehAge", "Region"]
         _ = easy_glm.prepare_data(
             df=sample_df,
             modelling_variables=predictors,
