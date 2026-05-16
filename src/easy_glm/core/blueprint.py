@@ -22,7 +22,7 @@ def generate_blueprint(
     for column in dataframe.columns:
         try:
             col_data = dataframe[column]
-            
+
             # Filter out nulls for processing
             col_data_non_null = col_data.drop_nulls()
 

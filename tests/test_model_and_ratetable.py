@@ -21,14 +21,11 @@ def _sample_dataset(n: int = 400, missing_frac: float = 0.1) -> pl.DataFrame:
 
     # Introduce missing values
     if missing_frac > 0:
-        for col_name, col_type in df.schema.items():
+        for col_name, _col_type in df.schema.items():
             if col_name in ["VehAge", "Region"]:  # Target specific columns for NA
                 na_mask = rng.random(df.height) < missing_frac
                 df = df.with_columns(
-                    pl.when(na_mask)
-                    .then(None)
-                    .otherwise(df[col_name])
-                    .alias(col_name)
+                    pl.when(na_mask).then(None).otherwise(df[col_name]).alias(col_name)
                 )
     return df
 
