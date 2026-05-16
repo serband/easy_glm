@@ -2,6 +2,15 @@ import numpy as np
 import polars as pl
 
 
+def quote_identifier(identifier: str) -> str:
+    if not isinstance(identifier, str):
+        raise TypeError("identifier must be a string")
+    if not identifier.strip():
+        raise ValueError("identifier cannot be empty")
+    escaped_identifier = identifier.replace('"', '""')
+    return f'"{escaped_identifier}"'
+
+
 def o_matrix(col_name: str, brks) -> list[str]:
     """
     Note:
@@ -16,9 +25,14 @@ def o_matrix(col_name: str, brks) -> list[str]:
     if not isinstance(brks, list) or len(brks) == 0:
         raise ValueError("brks must be a non-empty list")
     sql_statements = []
+    quoted_col_name = quote_identifier(col_name)
     for val in brks:
+        alias = quote_identifier(f"{col_name}{val}")
         sql_statements.append(
-            f"CASE WHEN {col_name} IS NULL THEN CASE WHEN AVG({col_name}) OVER () < {val} THEN 1 ELSE 0 END ELSE CASE WHEN {col_name} < {val} THEN 1 ELSE 0 END END AS '{col_name}{val}'"
+            f"CASE WHEN {quoted_col_name} IS NULL THEN "
+            f"CASE WHEN AVG({quoted_col_name}) OVER () < {val} THEN 1 ELSE 0 END "
+            f"ELSE CASE WHEN {quoted_col_name} < {val} THEN 1 ELSE 0 END END "
+            f"AS {alias}"
         )
     return sql_statements
 
@@ -41,7 +55,14 @@ def lump_fun(col_name: str, levels: list, other_category: str = "Other") -> str:
         cleaned.append(str(level).replace("'", "''"))
     unique_levels = list(dict.fromkeys(cleaned))
     levels_str = ", ".join(f"'{lvl}'" for lvl in unique_levels)
-    return f"CASE WHEN CAST({col_name} AS VARCHAR) IN ({levels_str}) THEN CAST({col_name} AS VARCHAR) ELSE '{other_category}' END AS {col_name}_lumped"
+    quoted_col_name = quote_identifier(col_name)
+    alias = quote_identifier(f"{col_name}_lumped")
+    escaped_other_category = other_category.replace("'", "''")
+    return (
+        f"CASE WHEN CAST({quoted_col_name} AS VARCHAR) IN ({levels_str}) "
+        f"THEN CAST({quoted_col_name} AS VARCHAR) "
+        f"ELSE '{escaped_other_category}' END AS {alias}"
+    )
 
 
 def lump_rare_levels_pl(

@@ -1,16 +1,14 @@
 from easy_glm.core.blueprint import generate_blueprint
-from easy_glm.core.data import load_external_dataframe
 
 
-def test_generate_blueprint_basic():
+def test_generate_blueprint_basic(synthetic_insurance_data):
     """
-    Test that generate_blueprint returns expected keys and value types for the French Motor dataset.
+    Test that generate_blueprint returns expected keys and value types.
     """
-    df = load_external_dataframe()
-    blueprint = generate_blueprint(df)
+    blueprint = generate_blueprint(synthetic_insurance_data)
     assert isinstance(blueprint, dict)
     # Check some expected columns
-    for col in ["VehAge", "VehBrand", "DrivAge", "Region"]:
+    for col in ["VehAge", "DrivAge", "Region"]:
         assert col in blueprint
         assert isinstance(blueprint[col], list)
         # Numeric columns should have floats/ints, categoricals should have strings
@@ -19,7 +17,7 @@ def test_generate_blueprint_basic():
         else:
             assert all(isinstance(x, str) for x in blueprint[col])
     # No error messages for these columns
-    for col in ["VehAge", "VehBrand"]:
+    for col in ["VehAge", "Region"]:
         assert not (
             isinstance(blueprint[col], str) and blueprint[col].startswith("Error:")
         )

@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 
-def test_installation():
+def verify_installation():
     """Test that easy_glm can be installed and imported."""
     print("Testing easy_glm installation...")
 
@@ -28,12 +28,17 @@ def test_installation():
         )
         print(result.stdout)
 
-        # Test loading external dataframe
+        # Test core functionality without network access
         result = subprocess.run(
             [
                 venv_python,
                 "-c",
-                "import easy_glm; df = easy_glm.load_external_dataframe(); print(f'✅ Loaded dataframe with {df.shape[0]} rows and {df.shape[1]} columns')",
+                (
+                    "import easy_glm, polars as pl; "
+                    "df = pl.DataFrame({'x': [1.0, 2.0], 'cat': ['A', 'B']}); "
+                    "blueprint = easy_glm.generate_blueprint(df); "
+                    "print(f'✅ Generated blueprint for {len(blueprint)} columns')"
+                ),
             ],
             capture_output=True,
             text=True,
@@ -51,7 +56,7 @@ def test_installation():
 
 
 if __name__ == "__main__":
-    if test_installation():
+    if verify_installation():
         print("\n🎉 Installation verification completed successfully!")
         sys.exit(0)
     else:
