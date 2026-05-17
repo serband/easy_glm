@@ -54,26 +54,89 @@ def install_dependencies():
     """Install dependencies using uv."""
     print("Installing dependencies with uv...")
 
-    # Get the appropriate pip command for the virtual environment
-    if platform.system() == "Windows":
-        pip_cmd = ["uv", "pip", "install"]
-    else:
-        pip_cmd = ["uv", "pip", "install"]
+    pip_cmd = ["uv", "pip", "install"]
 
-    # Install development dependencies
     success, stdout, stderr = run_command(pip_cmd + ["-r", "requirements-dev.txt"])
     if not success:
         print(f"Error installing dependencies: {stderr}")
         return False
 
-    # Install package in editable mode
     print("Installing package in editable mode...")
     success, stdout, stderr = run_command(pip_cmd + ["-e", "."])
     if not success:
         print(f"Error installing package: {stderr}")
         return False
 
+    if platform.system() == "Windows":
+        python_path = str(Path.cwd() / "venv" / "Scripts" / "python.exe")
+    else:
+        python_path = str(Path.cwd() / "venv" / "bin" / "python")
+
+    _ensure_importable(python_path)
+
     return True
+
+
+def _ensure_importable(python_path: str) -> None:
+    """Ensure easy_glm is importable.
+
+    On some Python versions (notably 3.14), editable installs via ``.pth``
+    files are silently broken.  As a fallback, symlink the source package
+    directly into site-packages.
+    """
+    check = subprocess.run(
+        [python_path, "-c", "import easy_glm"],
+        capture_output=True,
+        text=True,
+    )
+    if check.returncode == 0:
+        return
+
+    print("Editable install not importable — creating symlink fallback ...")
+    site_packages = _get_site_packages(python_path)
+    src_pkg = Path.cwd() / "src" / "easy_glm"
+    dest = site_packages / "easy_glm"
+
+    if platform.system() == "Windows":
+        _symlink_windows(src_pkg, dest)
+    else:
+        dest.unlink(missing_ok=True)
+        dest.symlink_to(src_pkg, target_is_directory=True)
+
+    check2 = subprocess.run(
+        [python_path, "-c", "import easy_glm"],
+        capture_output=True,
+        text=True,
+    )
+    if check2.returncode != 0:
+        print("Warning: symlink didn't fix it — set PYTHONPATH=src manually")
+
+
+def _symlink_windows(src: Path, dest: Path) -> None:
+    try:
+        os.symlink(src, dest, target_is_directory=True)
+    except OSError:
+        try:
+            subprocess.run(
+                ["mklink", "/J", str(dest), str(src)],
+                shell=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError:
+            print(
+                "Warning: Could not create symlink on Windows. "
+                "You may need to run as Administrator or enable Developer Mode."
+            )
+
+
+def _get_site_packages(python_path: str) -> Path:
+    result = subprocess.run(
+        [python_path, "-c", "import site; print(site.getsitepackages()[0])"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return Path(result.stdout.strip())
 
 
 def main():

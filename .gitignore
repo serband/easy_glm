@@ -44,3 +44,9 @@ playground*/
 
 ## R history (found existing .Rhistory)
 .Rhistory
+
+## Generated model files
+*.easyglm
+
+## Generated plots
+actual_vs_expected.png
