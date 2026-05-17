@@ -11,6 +11,12 @@ Build, lint, and tests
 - Type checks (if pyproject includes mypy): `mypy .`  # optional if configured
 - Run all quality steps: `black . && ruff check . && pytest -q`
 
+Installation
+- `python setup_dev.py` — handles editable install + symlink fallback for Python 3.14
+- If `import easy_glm` fails: `ln -sf $(pwd)/src/easy_glm .venv/lib/python*/site-packages/easy_glm`
+- After source changes in engine/ or core/: `pip install .` (non-editable) or use the symlink approach
+- `PYTHONPATH=src` also works as a quick workaround
+
 Code style and conventions
 - Imports: standard library first, third-party second, local imports last; group with blank lines.
 - Formatting: adhere to Black; line length 88; trailing commas where helpful.
@@ -19,6 +25,14 @@ Code style and conventions
 - Error handling: raise specific exceptions; avoid bare `except:`; include meaningful messages.
 - Tests: small, fast unit tests; use `pytest`; follow existing test style in `tests/`.
 - Documentation: docstrings for public API; comments sparing but clear.
+
+Module layout
+- `src/easy_glm/core/` — Blueprint, prepare, model fitting, rate tables, EasyGLM pipeline
+- `src/easy_glm/engine/` — RateModel (From/To/Relativity tables, versioning, .easyglm JSON export, scoring with exposure). Key files: `rate_model.py` (predict, snapshots, serialisation), `_scoring.py` (np.searchsorted fast path), `models.py` (dataclasses)
+- `src/easy_glm/ui/` — Streamlit relativity editor (optional, requires `ui` extras)
+- `tests/test_engine.py` — RateModel tests (prediction, snapshots, JSON roundtrip, exposure)
+- `tests/test_scoring.py` — Isolated scoring tests (numeric searchsorted, categorical lookups)
+- `examples/basic_usage.py` — Full pipeline demo including .easyglm export, scoring, A/E plotting
 
 Cursor and Copilot rules
 - Cursor rules: see `.cursor/rules/` or `.cursorrules` for guidance and include them here if present.

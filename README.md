@@ -131,7 +131,7 @@ predictor_variables = ['VehAge', 'Region', 'VehGas', 'DrivAge', 'BonusMalus', 'D
 prepped_data = easy_glm.prepare_data(
     df=df, 
     modelling_variables=predictor_variables, 
-    additional_columns=['Exposure', 'ClaimNb'], 
+    additional_columns=['Exposure', 'ClaimNb', 'traintest'], 
     formats=blueprint, 
     traintest_column='traintest', 
     table_name='cars'
@@ -166,6 +166,12 @@ preds = easy_glm.predict_with_model(model, new_rows_prepped)
 
 If you start from raw rows, run `prepare_data` first with the same `formats` (blueprint) and predictor list.
 
+**Alternatively, use the `EasyGLM` pipeline** (see [section below](#8-easyglm-pipeline-one-shot-approach)) — it handles blueprint prepping internally, so you can predict directly from raw data:
+
+```python
+preds = eglm.predict(raw_data)
+```
+
 ### 6. Generate All Rate Tables
 
 With a fitted model, you can now generate the rate tables for all predictor variables. The `generate_all_ratetables` function loops through each variable and calculates its relativity.
@@ -195,6 +201,117 @@ easy_glm.plot_all_ratetables(all_tables, blueprint)
 ```
 
 This will produce a series of plots, one for each variable.
+
+### 8. Export as .easyglm & Score on New Data
+
+The `RateModel` (in `easy_glm.engine`) converts rate tables into a portable JSON format
+(``.easyglm``) with From/To/Relativity lookup tables, metadata, and versioning for audit trails.
+This is the format you use to deploy the model and score new data.
+
+**Create and export:**
+
+```python
+from easy_glm.engine import RateModel
+
+rm = RateModel.from_rate_tables(
+    all_tables=all_tables,
+    blueprint=blueprint,
+    base_rate=0.1,
+    model_type="poisson",
+    target="ClaimNb",
+    weight_col="Exposure",
+    exposure_col="Exposure",
+)
+rm.to_json("model.easyglm")
+```
+
+Or use the convenience wrapper:
+
+```python
+from easy_glm.engine import create_rate_model
+
+rm = create_rate_model(all_tables, blueprint, base_rate=0.1,
+                       model_type="poisson", exposure_col="Exposure",
+                       save_to="model.easyglm")
+```
+
+**Score new data:**
+
+```python
+loaded = RateModel.from_json("model.easyglm")
+preds = loaded.predict(new_data)                     # uses stored exposure
+preds = loaded.predict(new_data, exposure_col=None)   # skip exposure
+preds = loaded.predict(new_data, exposure_col="Exp2") # override exposure column
+```
+
+**Calibration (Actual vs Expected):**
+
+See `examples/basic_usage.py` for the full end-to-end workflow including scoring on the test
+set, bucketing with `qcut`, and per-variable actual-vs-expected matplotlib charts.
+
+### 9. EasyGLM Pipeline (One-Shot Approach)
+
+The `EasyGLM` class bundles blueprint generation, data preparation, model fitting (with cross-validation by default), and rate table extraction into a single pipeline. It also handles serialization so you can save and reload trained models.
+
+**Fit + predict + save in one shot:**
+
+```python
+import easy_glm
+
+# Load data and create train/test split (same as Section 1)
+raw = easy_glm.load_external_dataframe()
+raw = raw.with_columns(
+    pl.when(pl.lit(np.random.rand(raw.height) < 0.7))
+    .then(1).otherwise(0).alias("traintest")
+)
+
+predictors = ["VehAge", "Region", "VehGas", "DrivAge", "BonusMalus", "Density"]
+
+# One call: blueprint → prep → fit (CV by default) → rate tables
+eglm = easy_glm.EasyGLM.fit(
+    data=raw,
+    target="ClaimNb",
+    model_type="Poisson",
+    predictors=predictors,
+    weight_col="Exposure",
+    divide_target_by_weight=True,
+    base_rate=0.05,
+)
+
+# Predict on raw data — blueprint prepping is handled internally
+preds = eglm.predict(raw.head(10))
+
+# Access rate tables directly
+for name, tbl in eglm.relativities.items():
+    print(f"{name}:\n{tbl.head(3)}")
+
+# Serialize the entire pipeline
+eglm.save("my_model")
+
+# Reload later
+reloaded = easy_glm.EasyGLM.load("my_model")
+```
+
+#### CV vs non-CV
+
+By default, `EasyGLM.fit()` uses `GeneralizedLinearRegressorCV` for automatic alpha and l1_ratio selection via cross-validation. To disable CV and use the simpler `alpha_search` approach, pass `use_cv=False`:
+
+```python
+eglm = easy_glm.EasyGLM.fit(
+    data=raw, target="ClaimNb", model_type="Poisson",
+    predictors=predictors, weight_col="Exposure",
+    divide_target_by_weight=True, use_cv=False,
+)
+```
+
+You can also customise CV parameters:
+
+```python
+eglm = easy_glm.EasyGLM.fit(
+    ...,
+    cv_params={"l1_ratio": [1.0], "n_alphas": 10, "max_iter": 200},
+)
+```
 
 ## Development
 
@@ -231,10 +348,11 @@ pytest
 ```
 easy_glm/
 ├── src/easy_glm/        # Library code (packaged)
-│   └── core/            # Core implementation modules
+│   ├── core/            # Blueprint, transforms, model, ratetable, EasyGLM
+│   ├── engine/          # RateModel with versioning & editor
+│   └── ui/              # Streamlit editor for relativities
 ├── tests/               # Pytest test suite
 ├── examples/            # Usage examples
-├── test.py              # Lightweight smoke script
 ├── pyproject.toml       # Packaging configuration
 ├── requirements*.txt    # Dependency constraint files
 ├── setup_dev.*          # Dev environment helpers
@@ -253,6 +371,13 @@ easy_glm/
 - **matplotlib**: Plotting library
 - **seaborn**: Statistical data visualization
 - **scikit-learn**: Machine learning utilities
+- **dask-ml**: Text column encoding for model fitting
+- **numba** / **llvmlite**: JIT compilation (required by glum)
+- **rdata**: R .rda data file parsing (dataset loading)
+
+### Optional Dependencies
+- **ui**: `streamlit`, `plotly` — relativity editor web UI
+- **viz**: `plotnine` — ggplot-style plotting
 
 ### Development Dependencies
 - **pytest**: Testing framework
@@ -263,12 +388,13 @@ easy_glm/
 ## Additional Usage Ideas
 
 Roadmap ideas:
-* Export all ratetables to CSV / Parquet bundle
-* Inverse transform scoring for new raw data (auto-prepare + predict)
+* ~~Export all ratetables to .easyglm portable model~~ ✓ (via `RateModel.to_json()`)
+* ~~Inverse transform scoring for new raw data (auto-prepare + predict)~~ ✓ (via `EasyGLM.predict`)
 * Automated monotonic binning / isotonic smoothing option
 * CLI entry point (`python -m easy_glm build ...`)
 * Optional caching of downloaded demo dataset
 * Configurable blueprint strategies (equal-frequency vs fixed breaks)
+* GAMChanger-style UI for interactive relativity editing
 
 ### Test Performance Tuning
 
