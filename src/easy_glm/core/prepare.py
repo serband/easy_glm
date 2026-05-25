@@ -21,7 +21,9 @@ def prepare_data(
     """
     if formats is None:
         formats = {}
+    _own_connection = False
     if con is None:
+        _own_connection = True
         if df is not None:
             con = duckdb.connect(":memory:")
             con.execute(
@@ -78,9 +80,11 @@ def prepare_data(
                 f"Warning: Additional column '{col}' not found in the table. Skipping."
             )
     if not expressions:
+        if _own_connection:
+            con.close()
         return pl.DataFrame()
     query = f"SELECT {', '.join(expressions)} FROM {table_reference}"
     result_df = con.execute(query).df()
-    if df is not None and con is not None:
+    if _own_connection:
         con.close()
     return pl.DataFrame(result_df)

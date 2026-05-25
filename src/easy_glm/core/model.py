@@ -1,10 +1,8 @@
-import dask.dataframe as dd
 import numpy as np
 import pandas as pd
 import pandas.api.types as ptypes
 import polars as pl
-from dask_ml.preprocessing import Categorizer
-from glum import GeneralizedLinearRegressor
+from glum import GeneralizedLinearRegressor, GeneralizedLinearRegressorCV
 
 
 def fit_lasso_glm(
@@ -14,8 +12,26 @@ def fit_lasso_glm(
     model_type: str,
     weight_col: str | None = None,
     divide_target_by_weight: bool = False,
-) -> GeneralizedLinearRegressor:
-    """Fit a L1-regularized GLM (Poisson/Gamma) using glum."""
+    use_cv: bool = True,
+    cv_params: dict | None = None,
+) -> GeneralizedLinearRegressor | GeneralizedLinearRegressorCV:
+    """Fit a L1-regularized GLM (Poisson/Gamma/Gaussian/Binomial) using glum.
+
+    Args:
+        dataframe: Input Polars DataFrame.
+        target: Name of the target column.
+        train_test_col: Column with 1=train, 0=test.
+        model_type: 'Poisson', 'Gamma', 'Gaussian', or 'Binomial'.
+        weight_col: Optional sample weight column.
+        divide_target_by_weight: If True, divide target by weight before fitting.
+        use_cv: If True (default), use GeneralizedLinearRegressorCV for
+            cross-validated alpha/l1_ratio selection. If False, use
+            GeneralizedLinearRegressor with alpha_search.
+        cv_params: Optional dict of keyword arguments forwarded to
+            GeneralizedLinearRegressorCV. Applied on top of defaults:
+            alphas=None, l1_ratio=[0, 0.5, 1.0], max_iter=150,
+            fit_intercept=True, scale_predictors=True.
+    """
     df = dataframe.to_pandas()
     if df.shape[0] == 0:
         raise ValueError("The input DataFrame is empty.")
@@ -26,20 +42,31 @@ def fit_lasso_glm(
         if c not in df.columns:
             raise ValueError(f"Missing column '{c}'.")
     fam = model_type.lower()
-    if fam not in {"poisson", "gamma"}:
-        raise ValueError("model_type must be 'Poisson' or 'Gamma'.")
+    if fam not in {"poisson", "gamma", "gaussian", "binomial"}:
+        raise ValueError(
+            "model_type must be 'Poisson', 'Gamma', 'Gaussian', or 'Binomial'."
+        )
 
-    def invalid_target_exists(pdf: pd.DataFrame, col: str, allow_zero: bool) -> bool:
-        s = pdf[col]
-        bad = ((s < 0) if allow_zero else (s <= 0)) | np.isinf(s) | s.isna()
-        return bool(bad.any())
+    def _any_bad(s: pd.Series) -> bool:
+        return bool((np.isinf(s) | s.isna()).any())
 
     if fam == "poisson":
-        if invalid_target_exists(df, target, allow_zero=True):
+        s = df[target]
+        if bool(((s < 0) | np.isinf(s) | s.isna()).any()):
             raise ValueError("Invalid Poisson target values (<0, inf, or NaN).")
-    else:
-        if invalid_target_exists(df, target, allow_zero=False):
+    elif fam == "gamma":
+        s = df[target]
+        if bool(((s <= 0) | np.isinf(s) | s.isna()).any()):
             raise ValueError("Invalid Gamma target values (<=0, inf, or NaN).")
+    elif fam == "gaussian":
+        if _any_bad(df[target]):
+            raise ValueError("Invalid Gaussian target values (inf or NaN).")
+    elif fam == "binomial":
+        s = df[target]
+        if bool(((s < 0) | (s > 1) | np.isinf(s) | s.isna()).any()):
+            raise ValueError(
+                "Invalid Binomial target values (outside [0, 1], inf, or NaN)."
+            )
     if weight_col:
         w = df[weight_col]
         if bool(((w <= 0) | np.isinf(w) | w.isna()).any()):
@@ -58,54 +85,66 @@ def fit_lasso_glm(
     text_cols = [
         c for c in train_df.columns if c not in exclude and is_text_like(train_df[c])
     ]
-    if text_cols:
-        ddf = dd.from_pandas(train_df, npartitions=1)
-        ddf = Categorizer(columns=text_cols).fit_transform(ddf)
-        train_df = ddf.compute()
+    for col in text_cols:
+        train_df[col] = train_df[col].astype("category")
+
     features = [c for c in train_df.columns if c not in exclude]
     x_data = train_df[features]
     y = train_df[target].to_numpy().ravel()
     sw = train_df[weight_col].to_numpy().ravel() if weight_col else None
-    model = GeneralizedLinearRegressor(
-        family=fam,
-        l1_ratio=1,
-        fit_intercept=True,
-        alpha_search=True,
-        scale_predictors=True,
-    )
+
+    if use_cv:
+        cv_defaults: dict = {
+            "family": fam,
+            "alphas": None,
+            "l1_ratio": [0, 0.5, 1.0],
+            "max_iter": 150,
+            "fit_intercept": True,
+            "scale_predictors": True,
+        }
+        if cv_params:
+            cv_defaults.update(cv_params)
+        model = GeneralizedLinearRegressorCV(**cv_defaults)
+    else:
+        model = GeneralizedLinearRegressor(
+            family=fam,
+            l1_ratio=1,
+            fit_intercept=True,
+            alpha_search=True,
+            scale_predictors=True,
+        )
     model.fit(x_data, y, sample_weight=sw)
     return model
 
 
 def _encode_like_training(
-    df: pd.DataFrame, model: GeneralizedLinearRegressor
+    df: pd.DataFrame, model: GeneralizedLinearRegressor | GeneralizedLinearRegressorCV
 ) -> pd.DataFrame:
     """Best-effort encoding of object/string columns to mimic fit pipeline.
 
-    This mirrors the minimal categorizer logic used in fit_lasso_glm so that
-    downstream prediction on raw (possibly string-typed) data won't error.
+    Converts object/string columns to integer category codes so that
+    glum (which requires numeric input) can predict without error.
     """
     obj_cols = [
         c
         for c in df.columns
         if ptypes.is_object_dtype(df[c].dtype) or ptypes.is_string_dtype(df[c].dtype)
     ]
-    if obj_cols:
-        ddf = dd.from_pandas(df, npartitions=1)
-        ddf = Categorizer(columns=obj_cols).fit_transform(ddf)
-        df = ddf.compute()
+    for col in obj_cols:
+        df[col] = df[col].astype("category")
     return df
 
 
 def predict_with_model(
-    model: GeneralizedLinearRegressor,
+    model: GeneralizedLinearRegressor | GeneralizedLinearRegressorCV,
     new_data: pl.DataFrame | pd.DataFrame,
     return_polars: bool = False,
 ) -> np.ndarray | pl.Series:
     """Generate predictions on new data.
 
     Args:
-        model: Fitted GeneralizedLinearRegressor from glum.
+        model: Fitted GeneralizedLinearRegressor or GeneralizedLinearRegressorCV
+            from glum.
         new_data: Polars or pandas DataFrame containing the required feature columns.
         return_polars: If True, return a Polars Series; else a NumPy array.
 

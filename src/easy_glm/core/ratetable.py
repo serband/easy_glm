@@ -2,21 +2,25 @@ import functools
 from collections.abc import Callable, Sequence
 from typing import Any
 
-import dask.dataframe as dd
 import numpy as np
 import pandas.api.types as ptypes
 import polars as pl
-from dask_ml.preprocessing import Categorizer
-from glum import GeneralizedLinearRegressor
+from glum import (
+    GeneralizedLinearRegressor,
+    GeneralizedLinearRegressorCV,
+)
 
 
 def typechecked_ratetable(func: Callable) -> Callable:
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         if "model" in kwargs and not isinstance(
-            kwargs["model"], GeneralizedLinearRegressor
+            kwargs["model"], GeneralizedLinearRegressor | GeneralizedLinearRegressorCV
         ):
-            raise TypeError("model must be a GeneralizedLinearRegressor")
+            raise TypeError(
+                "model must be a GeneralizedLinearRegressor or "
+                "GeneralizedLinearRegressorCV"
+            )
         if "dataset" in kwargs and not isinstance(kwargs["dataset"], pl.DataFrame):
             raise TypeError("dataset must be a polars.DataFrame")
         if "col_name" in kwargs and not isinstance(kwargs["col_name"], str):
@@ -33,7 +37,7 @@ def typechecked_ratetable(func: Callable) -> Callable:
 @typechecked_ratetable
 def ratetable(
     *,
-    model: GeneralizedLinearRegressor,
+    model: GeneralizedLinearRegressor | GeneralizedLinearRegressorCV,
     dataset: pl.DataFrame,
     col_name: str,
     levels: Sequence[Any],
@@ -53,10 +57,8 @@ def ratetable(
         for c in pdf.columns
         if ptypes.is_object_dtype(pdf[c].dtype) or ptypes.is_string_dtype(pdf[c].dtype)
     ]
-    if obj_cols:
-        ddf = dd.from_pandas(pdf, npartitions=1)
-        ddf = Categorizer(columns=obj_cols).fit_transform(ddf)
-        pdf = ddf.compute()
+    for col in obj_cols:
+        pdf[col] = pdf[col].astype("category")
     preds = np.asarray(model.predict(pdf), dtype=float)
     base = np.median(preds)
     relativity = preds / base if base != 0 else np.nan

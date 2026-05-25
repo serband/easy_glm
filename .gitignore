@@ -50,3 +50,6 @@ playground*/
 
 ## Generated plots
 actual_vs_expected.png
+model.easyglm
+editor_data.parquet
+french_motor.easyglm

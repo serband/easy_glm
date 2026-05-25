@@ -4,6 +4,7 @@ import pytest
 
 import easy_glm.core.model as model_module
 from easy_glm import (
+    EasyGLM,
     fit_lasso_glm,
     generate_blueprint,
     predict_with_model,
@@ -46,6 +47,7 @@ def test_fit_lasso_glm_divides_target_only_when_requested(
         weight_col="Exposure",
         train_test_col="traintest",
         divide_target_by_weight=divide_target_by_weight,
+        use_cv=False,
     )
 
     assert fitted.y.tolist() == expected_y
@@ -71,6 +73,7 @@ def test_fit_lasso_glm_and_predict(synthetic_insurance_data):
         weight_col="Exposure",
         train_test_col="traintest",
         divide_target_by_weight=True,
+        use_cv=False,
     )
     new_slice_raw = df.head(5)
     new_slice_prepped = prepare_data(
@@ -103,6 +106,7 @@ def test_ratetable_basic(synthetic_insurance_data):
         weight_col="Exposure",
         train_test_col="traintest",
         divide_target_by_weight=True,
+        use_cv=False,
     )
     levels = bp["VehAge"]
     tbl = ratetable(
@@ -132,3 +136,134 @@ def test_transforms_helpers_roundtrip():
 
     sql_expr = lump_fun("CatCol", ["A", "B", "C"])
     assert "CatCol_lumped" in sql_expr
+
+
+def test_fit_lasso_glm_cv(synthetic_insurance_data):
+    df = synthetic_insurance_data
+    predictors = ["VehAge", "Region", "DrivAge"]
+    bp = generate_blueprint(df)
+    prepped = prepare_data(
+        df=df,
+        modelling_variables=predictors,
+        additional_columns=["Exposure", "ClaimNb", "traintest"],
+        formats=bp,
+        traintest_column="traintest",
+        table_name="cars",
+    )
+    model = fit_lasso_glm(
+        dataframe=prepped,
+        target="ClaimNb",
+        model_type="Poisson",
+        weight_col="Exposure",
+        train_test_col="traintest",
+        divide_target_by_weight=True,
+        use_cv=True,
+        cv_params={"l1_ratio": [1.0], "n_alphas": 5},
+    )
+    assert model.coef_ is not None
+    assert model.intercept_ is not None
+    assert hasattr(model, "alpha_")
+    preds = predict_with_model(
+        model, prepped.drop(["Exposure", "ClaimNb", "traintest"])
+    )
+    assert len(preds) == len(prepped)
+    assert np.all(np.isfinite(preds))
+
+
+def test_fit_lasso_glm_no_cv(synthetic_insurance_data):
+    df = synthetic_insurance_data
+    predictors = ["VehAge", "Region", "DrivAge"]
+    bp = generate_blueprint(df)
+    prepped = prepare_data(
+        df=df,
+        modelling_variables=predictors,
+        additional_columns=["Exposure", "ClaimNb", "traintest"],
+        formats=bp,
+        traintest_column="traintest",
+        table_name="cars",
+    )
+    model = fit_lasso_glm(
+        dataframe=prepped,
+        target="ClaimNb",
+        model_type="Poisson",
+        weight_col="Exposure",
+        train_test_col="traintest",
+        divide_target_by_weight=True,
+        use_cv=False,
+    )
+    assert model.coef_ is not None
+    assert model.intercept_ is not None
+    preds = predict_with_model(
+        model, prepped.drop(["Exposure", "ClaimNb", "traintest"])
+    )
+    assert len(preds) == len(prepped)
+    assert np.all(np.isfinite(preds))
+
+
+def test_easyglm_fit_and_predict(synthetic_insurance_data):
+    df = synthetic_insurance_data
+    predictors = ["VehAge", "Region", "DrivAge"]
+
+    eglm = EasyGLM.fit(
+        data=df,
+        target="ClaimNb",
+        model_type="Poisson",
+        predictors=predictors,
+        weight_col="Exposure",
+        divide_target_by_weight=True,
+        use_cv=False,
+        base_rate=0.05,
+    )
+
+    assert eglm.model is not None
+    assert eglm.blueprint is not None
+    assert len(eglm.blueprint) >= len(predictors)
+    assert eglm.rate_model is not None
+    assert eglm.base_rate == 0.05
+    assert set(eglm.predictors) == set(predictors)
+
+    preds = eglm.predict(df.head(10))
+    assert isinstance(preds, pl.Series)
+    assert len(preds) == 10
+
+    tables = eglm.relativities
+    assert set(tables.keys()) == set(predictors)
+
+    s = eglm.summary()
+    assert s["model_type"] == "Poisson"
+    assert s["target"] == "ClaimNb"
+    assert s["weight_col"] == "Exposure"
+
+
+def test_easyglm_serialization(synthetic_insurance_data, tmp_path):
+    df = synthetic_insurance_data
+    predictors = ["VehAge", "Region", "DrivAge"]
+
+    eglm = EasyGLM.fit(
+        data=df,
+        target="ClaimNb",
+        model_type="Poisson",
+        predictors=predictors,
+        weight_col="Exposure",
+        divide_target_by_weight=True,
+        use_cv=False,
+        base_rate=0.05,
+    )
+
+    model_dir = tmp_path / "test_model"
+    eglm.save(model_dir)
+
+    assert (model_dir / "glm_model.joblib").exists()
+    assert (model_dir / "blueprint.json").exists()
+    assert (model_dir / "rate_model.json").exists()
+    assert (model_dir / "config.json").exists()
+    assert (model_dir / "rate_tables").is_dir()
+
+    loaded = EasyGLM.load(model_dir)
+    assert loaded.base_rate == eglm.base_rate
+    assert loaded.predictors == eglm.predictors
+    assert loaded.model is not None
+
+    original_preds = eglm.predict(df.head(5)).to_list()
+    loaded_preds = loaded.predict(df.head(5)).to_list()
+    assert original_preds == loaded_preds

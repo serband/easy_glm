@@ -1,14 +1,17 @@
 from typing import Any
 
 import polars as pl
-from glum import GeneralizedLinearRegressor
+from glum import (
+    GeneralizedLinearRegressor,
+    GeneralizedLinearRegressorCV,
+)
 
 from .prepare import prepare_data
 from .ratetable import ratetable
 
 
 def generate_all_ratetables(
-    model: GeneralizedLinearRegressor,
+    model: GeneralizedLinearRegressor | GeneralizedLinearRegressorCV,
     dataset: pl.DataFrame,
     predictor_variables: list[str],
     blueprint: dict[str, Any],

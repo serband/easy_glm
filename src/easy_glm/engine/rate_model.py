@@ -272,11 +272,61 @@ class RateModel:
                 config.relativities = None
                 config.cat_map = None
                 config.fallback = 1.0
+                self._precompute_variables(self.variables)
                 return
 
         raise ValueError(
             f"No row found with from={from_!r}, to={to_!r} in variable '{var}'"
         )
+
+    @property
+    def non_constant_variables(self) -> dict[str, VariableConfig]:
+        """Variables whose relativities are not all equal.
+
+        Returns only variables with at least two distinct relativity values
+        (within 5-decimal tolerance). Variables where all bins have the same
+        relativity (e.g. all 1.0) are excluded — they contribute no signal.
+        """
+        result: dict[str, VariableConfig] = {}
+        for name, config in self.variables.items():
+            rels = [r.relativity for r in config.table]
+            if len(set(round(r, 5) for r in rels)) > 1:
+                result[name] = config
+        return result
+
+    def compute_ae_for_variable(
+        self,
+        data: pl.DataFrame,
+        variable: str,
+        formula: str = "sum_weighted",
+    ) -> dict:
+        """Compute actual vs expected metrics for a single variable.
+
+        The data is split by train/test if ``train_test_col`` is present
+        in metadata and the column exists in ``data``. Otherwise all data
+        is used as a single split.
+
+        Parameters
+        ----------
+        data : pl.DataFrame
+            Dataset containing the target, weight, variable, and optionally
+            train/test columns.
+        variable : str
+            Variable name (must exist in ``self.variables``).
+        formula : str
+            One of ``"sum_weighted"``, ``"sum_unweighted"``,
+            ``"sum_over_weight"``.
+
+        Returns
+        -------
+        dict
+            Keys: ``"variable"``, ``"subsets"`` (dict of ``"train"`` / ``"test"`` / ``"all"``).
+            Each subset value is a list of per-bin dicts with keys
+            ``"level"``, ``"actual"``, ``"expected"``, ``"exposure"``.
+        """
+        from easy_glm.ui.metrics import compute_actual_expected
+
+        return compute_actual_expected(self, data, variable, formula=formula)
 
     def create_snapshot(self, description: str) -> int:
         version = len(self.snapshots) + 1
@@ -325,6 +375,20 @@ class RateModel:
         if snapshot.metadata:
             self.metadata = ModelMetadata(**snapshot.metadata)
         self.current_version = version
+
+    def clone(self) -> RateModel:
+        """Create an independent deep copy of this RateModel.
+
+        The clone shares no mutable references with the original.
+        Mutations to the clone's relativities or snapshots will never
+        affect the original, and vice versa.
+
+        Returns
+        -------
+        RateModel
+            A fully independent copy.
+        """
+        return self._from_dict(self._to_dict())
 
     def list_snapshots(self) -> list[dict[str, Any]]:
         return [
