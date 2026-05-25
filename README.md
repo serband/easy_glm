@@ -58,26 +58,20 @@ python setup_dev.py
 
 ---
 
-## Usage Example
+## Usage
 
-For a complete runnable script, see `examples/basic_usage.py`.
+### Quick Start (One-Shot Pipeline)
 
-### 1. Load Data & Build a CV-Fitted Model
-
-easy_glm uses cross-validation by default to find the optimal
-LASSO regularisation strength. The `EasyGLM` class bundles
-blueprint generation, data preparation, model fitting, and rate
-table extraction into a single call.
+The `EasyGLM` class bundles the entire workflow — blueprint
+generation, data preparation, CV model fitting, and rate table
+extraction — into a single call.
 
 ```python
 import easy_glm
 import polars as pl
 import numpy as np
 
-# Load the French Motor dataset (cached after first download)
 df = easy_glm.load_external_dataframe()
-
-# Train/test split
 df = df.with_columns(
     pl.when(pl.lit(np.random.rand(df.height) < 0.7))
     .then(1).otherwise(0).alias("traintest")
@@ -85,7 +79,6 @@ df = df.with_columns(
 
 predictors = ["VehAge", "Region", "VehGas", "DrivAge", "BonusMalus", "Density"]
 
-# One-shot pipeline with CV: blueprint → prep → fit → rate tables
 eglm = easy_glm.EasyGLM.fit(
     data=df,
     target="ClaimNb",
@@ -93,69 +86,218 @@ eglm = easy_glm.EasyGLM.fit(
     predictors=predictors,
     weight_col="Exposure",
     divide_target_by_weight=True,
-    use_cv=True,            # cross-validate regularisation strength
+    use_cv=True,
     base_rate=0.05,
 )
 
-print(f"CV selected alpha: {eglm.model.alpha_:.6f}")
+print(f"CV alpha: {eglm.model.alpha_:.6f}")
+print(f"Intercept: {eglm.model.intercept_:.4f}")
+
+# Predict on raw data
+preds = eglm.predict(df.head(10))
+
+# Export as .easyglm (portable JSON model)
+eglm.rate_model.to_json("model.easyglm")
+
+# Serialize the entire pipeline (including blueprint + fitted GLM)
+eglm.save("my_model")
+reloaded = easy_glm.EasyGLM.load("my_model")
 ```
 
-### 2. Export as .easyglm & Score New Data
+### Step-by-Step Workflow
+
+If you need fine-grained control over each stage:
+
+#### 1. Generate a Blueprint
 
 ```python
-# Export the portable model
-eglm.rate_model.to_json("french_motor.easyglm")
-
-# Reload and score
-from easy_glm.engine import RateModel
-
-rm = RateModel.from_json("french_motor.easyglm")
-test = df.filter(pl.col("traintest") == 0)
-preds = rm.predict(test)
-
-# Overall calibration
-print(f"Test A/E: {test['ClaimNb'].sum() / preds.sum():.4f}")
+blueprint = easy_glm.generate_blueprint(df)
+# {'VehAge': [0.0, 2.0, 4.0, ...], 'Region': ['North', 'South', 'Urban', ...], ...}
 ```
 
-### 3. Refine Relativities with the Editor
+The blueprint auto-detects numeric vs categorical columns.
+Numeric columns get quantile breakpoints (5% steps). Categorical
+columns get retained levels after lumping rare ones into 'Other'.
 
-Launch the editor to visually adjust the model's relativities.
-The original model is never modified — all edits go into a working
-copy, which you can save as a named revision.
+#### 2. Prepare Data
+
+```python
+prepped = easy_glm.prepare_data(
+    df=df,
+    modelling_variables=predictors,
+    additional_columns=["Exposure", "ClaimNb", "traintest"],
+    formats=blueprint,
+    traintest_column="traintest",
+    table_name="cars",
+)
+# Numeric vars → binarised via o-matrix expansion
+# Categorical vars → lumped via CASE WHEN logic
+```
+
+#### 3. Fit the LASSO GLM
+
+```python
+model = easy_glm.fit_lasso_glm(
+    dataframe=prepped,
+    target="ClaimNb",
+    model_type="Poisson",
+    weight_col="Exposure",
+    train_test_col="traintest",
+    divide_target_by_weight=True,
+    use_cv=True,              # CV selects optimal alpha / l1_ratio
+)
+```
+
+Available families: `"Poisson"`, `"Gamma"`, `"Gaussian"`, `"Binomial"`.
+
+#### 4. Extract Rate Tables
+
+```python
+all_tables = easy_glm.generate_all_ratetables(
+    model=model,
+    dataset=df,
+    predictor_variables=predictors,
+    blueprint=blueprint,
+)
+# Returns a dict[str, pl.DataFrame] — one table per variable
+print(all_tables["DrivAge"].head())
+```
+
+#### 5. Build a RateModel for Scoring
+
+```python
+from easy_glm.engine import RateModel
+
+rm = RateModel.from_rate_tables(
+    all_tables=all_tables,
+    blueprint=blueprint,
+    base_rate=0.05,
+    model_type="poisson",
+    target="ClaimNb",
+    weight_col="Exposure",
+    exposure_col="Exposure",
+    train_test_col="traintest",
+)
+```
+
+#### 6. Score & Validate
+
+```python
+# Score new data
+test = df.filter(pl.col("traintest") == 0)
+preds = rm.predict(test)
+print(f"Test A/E: {test['ClaimNb'].sum() / preds.sum():.4f}")
+
+# Score without exposure multiplication
+raw_preds = rm.predict(test, exposure_col=None)
+
+# Use a differently-named exposure column
+renamed = test.rename({"Exposure": "Exp"})
+preds = rm.predict(renamed, exposure_col="Exp")
+
+# Compute actual vs expected for a single variable
+ae = rm.compute_ae_for_variable(test, "DrivAge")
+for bucket in ae["subsets"]["train"]:
+    print(f"{bucket['level']}: actual={bucket['actual']:.3f}, "
+          f"expected={bucket['expected']:.3f}")
+```
+
+#### 7. Serialize the Rate Model
+
+```python
+rm.to_json("french_motor.easyglm")
+
+# Reload — predictions are identical
+loaded = RateModel.from_json("french_motor.easyglm")
+np.testing.assert_array_equal(rm.predict(test), loaded.predict(test))
+```
+
+The `.easyglm` format is human-readable JSON containing From/To/Relativity
+lookup tables, model metadata, and a full history of versioned snapshots.
+
+### Relativity Editor
+
+Launch the interactive editor to visually refine the model's relativities.
+The original model is never modified — all edits go into a working copy.
 
 ```python
 rm.launch_editor(data=df)
 ```
 
-**What you'll see:**
+This opens a new browser tab (non-blocking — your Python session continues).
 
-- **Overlaid relativity chart** — original (gray dashed) and revised
-  (blue solid) on the same axes, so you can see exactly what changed.
-- **Overlaid A/E chart** — faded original vs. solid revised,
-  with exposure bars behind. Auto-recomputes on every edit.
-- **Editable table** — shows *Original* relativity (read-only) alongside
-  *Revised* (editable). Change a value, and both charts update.
-- **Sidebar** — lists only variables with non-constant relativities.
-  Click any variable to jump to it.
+**Editor layout:**
 
-**Saving your work:**
+| Section | Description |
+|---|---|
+| **Sidebar** | Variable overview (non-constant only), column mapping, A/E formula, save/reset controls, saved models list |
+| **Relativity chart** | Overlaid original (gray dashed) and revised (blue solid) relativities on the same axes |
+| **A/E chart** | Overlaid faded-original vs solid-revised actual vs expected, with exposure bars behind |
+| **Editable table** | *Original* column (read-only) alongside *Revised* column (editable) — change a value and both charts update |
+| **Distribution** | Expandable histogram of the selected variable |
 
-Type a name (e.g. `my_revision_v1`) and click **Save Working Copy**.
-The revision is stored in-memory and appears in the Saved Models list.
-Click **Download** to export it as a `.easyglm` file.
+**Workflow:**
 
-**Resetting:**
+1. Select a variable from the sidebar to see its relativities
+2. Edit the *Revised* values in the table — the charts update reactively
+3. Toggle **Auto-recompute** off for large datasets, then click **Recompute A/E** manually
+4. Type a name and click **Save Working Copy** to store the revision in-memory
+5. Click **Download** to export the revision as a `.easyglm` file
+6. Click **Reset Working Copy** to discard all edits and start over
 
-Click **Reset Working Copy** to discard all edits and start fresh from
-the original model.
-
-### 4. Using a Saved Revision
+**Using a saved revision:**
 
 ```python
-# The revision is a standard RateModel — score with it directly
+# Saved models are standard RateModel instances
 revised = RateModel.from_json("my_revision_v1.easyglm")
-revised_preds = revised.predict(test)
-print(f"Revised test A/E: {test['ClaimNb'].sum() / revised_preds.sum():.4f}")
+new_preds = revised.predict(test)
+```
+
+### Complete End-to-End Script
+
+```python
+import easy_glm
+import polars as pl
+import numpy as np
+from easy_glm.engine import RateModel
+
+# 1. Load and split data
+df = easy_glm.load_external_dataframe()
+df = df.with_columns(
+    pl.when(pl.lit(np.random.rand(df.height)) < 0.7)
+    .then(1).otherwise(0).alias("traintest")
+)
+
+predictors = ["VehAge", "Region", "VehGas", "DrivAge", "BonusMalus", "Density"]
+
+# 2. Build model with CV
+eglm = easy_glm.EasyGLM.fit(
+    data=df, target="ClaimNb", model_type="Poisson",
+    predictors=predictors, weight_col="Exposure",
+    divide_target_by_weight=True, use_cv=True, base_rate=0.05,
+)
+
+# 3. Export and score
+eglm.rate_model.to_json("model.easyglm")
+rm = RateModel.from_json("model.easyglm")
+
+test = df.filter(pl.col("traintest") == 0)
+preds = rm.predict(test)
+ratio = test["ClaimNb"].sum() / preds.sum()
+print(f"Overall test A/E: {ratio:.4f}")
+
+# 4. Per-variable calibration
+for var in rm.non_constant_variables:
+    ae = rm.compute_ae_for_variable(test, var)
+    ratios = []
+    for bucket in ae["subsets"].get("test", ae["subsets"]["all"]):
+        if bucket["expected"] > 0:
+            ratios.append(bucket["actual"] / bucket["expected"])
+    if ratios:
+        print(f"  {var}: A/E range [{min(ratios):.3f}, {max(ratios):.3f}]")
+
+# 5. Launch the editor to refine
+rm.launch_editor(data=df)
 ```
 
 ---
