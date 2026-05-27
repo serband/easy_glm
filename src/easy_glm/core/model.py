@@ -4,6 +4,40 @@ import pandas.api.types as ptypes
 import polars as pl
 from glum import GeneralizedLinearRegressor, GeneralizedLinearRegressorCV
 
+TRAIN_FLAG = 1
+HOLDOUT_FLAG = 0
+
+
+def validate_train_test_column(
+    data: pl.DataFrame,
+    train_test_col: str,
+    *,
+    require_training_rows: bool = True,
+) -> None:
+    """Ensure ``train_test_col`` exists and uses 1 = train, 0 = holdout."""
+    if train_test_col not in data.columns:
+        raise ValueError(
+            f"Column '{train_test_col}' not found in data. Add a train/holdout "
+            f"indicator column: {TRAIN_FLAG} = train (used for fitting), "
+            f"{HOLDOUT_FLAG} = holdout (validation only). Pass its name as "
+            "train_test_col."
+        )
+    flags = data[train_test_col].drop_nulls().unique().sort().to_list()
+    invalid = [v for v in flags if v not in (TRAIN_FLAG, HOLDOUT_FLAG)]
+    if invalid:
+        raise ValueError(
+            f"Column '{train_test_col}' must contain only {TRAIN_FLAG} (train) "
+            f"and {HOLDOUT_FLAG} (holdout); found: {invalid}"
+        )
+    if (
+        require_training_rows
+        and data.filter(pl.col(train_test_col) == TRAIN_FLAG).is_empty()
+    ):
+        raise ValueError(
+            f"No training rows in '{train_test_col}' (expected value {TRAIN_FLAG}). "
+            "Check your train/holdout split."
+        )
+
 
 def fit_lasso_glm(
     dataframe: pl.DataFrame,
@@ -15,10 +49,19 @@ def fit_lasso_glm(
     use_cv: bool = True,
     cv_params: dict | None = None,
 ) -> GeneralizedLinearRegressor | GeneralizedLinearRegressorCV:
-    """Fit a L1-regularized GLM (Poisson/Gamma/Gaussian/Binomial) using glum.
+    """Fit a L1-regularized GLM on **prepared** feature data (pipeline step 3).
+
+    This is a low-level building block. Most users should call
+    :meth:`~easy_glm.EasyGLM.fit` instead, which runs blueprint generation and
+    :func:`~easy_glm.prepare_data` before calling this function.
+
+    The input ``dataframe`` must already be passed through
+    :func:`~easy_glm.prepare_data` (o-matrix expansion for numerics, lumping
+    for categoricals). It must include ``target``, ``train_test_col``, and
+    optionally ``weight_col``.
 
     Args:
-        dataframe: Input Polars DataFrame.
+        dataframe: Prepared Polars DataFrame (output of ``prepare_data``).
         target: Name of the target column.
         train_test_col: Column with 1=train, 0=test.
         model_type: 'Poisson', 'Gamma', 'Gaussian', or 'Binomial'.
@@ -32,9 +75,11 @@ def fit_lasso_glm(
             alphas=None, l1_ratio=[0, 0.5, 1.0], max_iter=150,
             fit_intercept=True, scale_predictors=True.
     """
-    df = dataframe.to_pandas()
-    if df.shape[0] == 0:
+    if dataframe.is_empty():
         raise ValueError("The input DataFrame is empty.")
+    validate_train_test_column(dataframe, train_test_col)
+    df = dataframe.to_pandas()
+
     if df.columns.duplicated().any():
         raise ValueError("Duplicate column names.")
     required = [target, train_test_col] + ([weight_col] if weight_col else [])
@@ -73,9 +118,11 @@ def fit_lasso_glm(
             raise ValueError("Weight column has invalid values (<=0, inf, NaN).")
     if divide_target_by_weight and (weight_col is not None):
         df[target] = df[target] / df[weight_col]
-    train_df = df[df[train_test_col] == 1]
+    train_df = df[df[train_test_col] == TRAIN_FLAG]
     if train_df.empty:
-        raise ValueError("Training subset is empty (no rows with traintest==1).")
+        raise ValueError(
+            f"Training subset is empty (no rows with {train_test_col}=={TRAIN_FLAG})."
+        )
     exclude = {target, train_test_col} | ({weight_col} if weight_col else set())
 
     def is_text_like(series: pd.Series) -> bool:

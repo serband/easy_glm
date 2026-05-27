@@ -39,6 +39,17 @@ print('OK')
 
 ---
 
+## Public API (layers)
+
+1. **Recommended:** `EasyGLM.fit()` — full pipeline (calls `fit_lasso_glm` internally).
+2. **Advanced steps:** `generate_blueprint` → `prepare_data` → `fit_lasso_glm` →
+   `generate_all_ratetables` → `RateModel.from_rate_tables` / `from_glm_model`.
+3. **Scoring:** `RateModel` (lookup tables); `predict_with_model` (raw glum on prepared data).
+
+`fit_lasso_glm` is **not** a duplicate of `EasyGLM.fit`; it only fits on prepared data.
+
+---
+
 ## Architecture & Module Layout
 
 ```

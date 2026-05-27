@@ -235,6 +235,133 @@ def test_easyglm_fit_and_predict(synthetic_insurance_data):
     assert s["weight_col"] == "Exposure"
 
 
+def test_easyglm_matches_manual_pipeline(synthetic_insurance_data):
+    """EasyGLM.fit must match the documented step-by-step workflow."""
+    from easy_glm import generate_all_ratetables
+    from easy_glm.engine import RateModel
+
+    df = synthetic_insurance_data
+    predictors = ["VehAge", "Region", "DrivAge"]
+    base_rate = 0.05
+    random_seed = 99
+
+    eglm = EasyGLM.fit(
+        data=df,
+        target="ClaimNb",
+        model_type="Poisson",
+        predictors=predictors,
+        weight_col="Exposure",
+        divide_target_by_weight=True,
+        use_cv=False,
+        base_rate=base_rate,
+        random_seed=random_seed,
+    )
+
+    train_df = df.filter(pl.col("traintest") == 1)
+    bp = generate_blueprint(train_df)
+    prepped = prepare_data(
+        df=df,
+        modelling_variables=predictors,
+        additional_columns=["Exposure", "ClaimNb", "traintest"],
+        formats=bp,
+        traintest_column=None,
+        table_name="line_prepped",
+    )
+    model = fit_lasso_glm(
+        dataframe=prepped,
+        target="ClaimNb",
+        model_type="Poisson",
+        weight_col="Exposure",
+        train_test_col="traintest",
+        divide_target_by_weight=True,
+        use_cv=False,
+    )
+    tables = generate_all_ratetables(
+        model=model,
+        dataset=df,
+        predictor_variables=predictors,
+        blueprint=bp,
+        random_seed=random_seed,
+    )
+    manual_rm = RateModel.from_rate_tables(
+        all_tables=tables,
+        blueprint=bp,
+        base_rate=base_rate,
+        model_type="Poisson",
+        target="ClaimNb",
+        weight_col="Exposure",
+        exposure_col="Exposure",
+        train_test_col="traintest",
+        predictor_variables=predictors,
+    )
+
+    sample = df.head(20)
+    np.testing.assert_array_almost_equal(
+        eglm.rate_model.predict(sample),
+        manual_rm.predict(sample),
+    )
+    assert set(eglm.relativities.keys()) == set(tables.keys())
+
+
+def test_easyglm_blueprint_uses_training_rows_only(synthetic_insurance_data):
+    df = synthetic_insurance_data
+    predictors = ["VehAge", "Region", "DrivAge"]
+
+    eglm = EasyGLM.fit(
+        data=df,
+        target="ClaimNb",
+        model_type="Poisson",
+        predictors=predictors,
+        weight_col="Exposure",
+        train_test_col="traintest",
+        divide_target_by_weight=True,
+        use_cv=False,
+    )
+
+    train_bp = generate_blueprint(df.filter(pl.col("traintest") == 1))
+    for var in predictors:
+        assert eglm.blueprint[var] == train_bp[var]
+
+
+def test_easyglm_requires_train_test_col(synthetic_insurance_data):
+    df = synthetic_insurance_data.drop("traintest")
+    with pytest.raises(ValueError, match="traintest"):
+        EasyGLM.fit(
+            data=df,
+            target="ClaimNb",
+            model_type="Poisson",
+            predictors=["VehAge"],
+            train_test_col="traintest",
+            use_cv=False,
+        )
+
+
+def test_easyglm_custom_train_test_col_name(synthetic_insurance_data):
+    df = synthetic_insurance_data.rename({"traintest": "is_train"})
+    eglm = EasyGLM.fit(
+        data=df,
+        target="ClaimNb",
+        model_type="Poisson",
+        predictors=["VehAge", "Region"],
+        weight_col="Exposure",
+        train_test_col="is_train",
+        divide_target_by_weight=True,
+        use_cv=False,
+    )
+    assert eglm.rate_model.metadata.train_test_col == "is_train"
+    holdout = df.filter(pl.col("is_train") == 0)
+    preds = eglm.rate_model.predict(holdout)
+    assert len(preds) == holdout.height
+
+
+def test_validate_train_test_column_rejects_invalid_values():
+    from easy_glm.core.model import validate_train_test_column
+
+    df = pl.DataFrame({"split": [1, 2, 0]})
+    with pytest.raises(ValueError, match="only 1"):
+        validate_train_test_column(df, "split")
+
+
 def test_easyglm_serialization(synthetic_insurance_data, tmp_path):
     df = synthetic_insurance_data
     predictors = ["VehAge", "Region", "DrivAge"]

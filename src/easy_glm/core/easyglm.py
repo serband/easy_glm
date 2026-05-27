@@ -13,11 +13,23 @@ from easy_glm.engine.rate_model import RateModel
 
 from .all_ratetables import generate_all_ratetables
 from .blueprint import generate_blueprint
-from .model import fit_lasso_glm
+from .model import (
+    TRAIN_FLAG,
+    fit_lasso_glm,
+    predict_with_model,
+    validate_train_test_column,
+)
 from .prepare import prepare_data
 
 
 class EasyGLM:
+    """End-to-end insurance GLM pipeline (recommended entry point).
+
+    Use :meth:`fit` to run blueprint → prepare → LASSO GLM → rate tables →
+    :class:`~easy_glm.engine.RateModel`. For manual control over each stage,
+    use the step functions documented in :mod:`easy_glm`.
+    """
+
     def __init__(
         self,
         blueprint: dict[str, Any],
@@ -46,9 +58,21 @@ class EasyGLM:
         use_cv: bool = True,
         cv_params: dict | None = None,
         base_rate: float = 1.0,
+        exposure_col: str | None = None,
         random_seed: int = 42,
     ) -> EasyGLM:
-        blueprint = generate_blueprint(data)
+        """Fit on training rows only (``train_test_col == 1``).
+
+        Args:
+            data: Full dataset (train + holdout). Must include a split column.
+            train_test_col: Name of the train/holdout column in ``data``
+                (default ``"traintest"``). **1 = train**, **0 = holdout**.
+        """
+        validate_train_test_column(data, train_test_col)
+
+        train_data = data.filter(pl.col(train_test_col) == TRAIN_FLAG)
+
+        blueprint = generate_blueprint(train_data)
 
         additional_cols = [target, train_test_col]
         if weight_col:
@@ -74,6 +98,8 @@ class EasyGLM:
             cv_params=cv_params,
         )
 
+        effective_exposure = exposure_col if exposure_col is not None else weight_col
+
         all_tables = generate_all_ratetables(
             model=model,
             dataset=data,
@@ -89,6 +115,7 @@ class EasyGLM:
             model_type=model_type,
             target=target,
             weight_col=weight_col,
+            exposure_col=effective_exposure,
             train_test_col=train_test_col,
             predictor_variables=predictors,
         )
@@ -102,15 +129,14 @@ class EasyGLM:
         )
 
     def predict(self, raw_data: pl.DataFrame) -> pl.Series:
+        """GLM predictions on raw data (prepares features using stored blueprint)."""
         prepped = prepare_data(
             df=raw_data,
             modelling_variables=self.predictors,
             formats=self.blueprint,
             table_name="line_prepped",
         )
-        pdf = prepped.to_pandas()
-        preds = self.model.predict(pdf)
-        return pl.Series(name="prediction", values=preds)
+        return predict_with_model(self.model, prepped, return_polars=True)
 
     @property
     def relativities(self) -> dict[str, pl.DataFrame]:
