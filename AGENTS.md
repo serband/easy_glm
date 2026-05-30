@@ -12,6 +12,28 @@ Purpose: Provide build/test commands, architecture guidance, and code style guid
 - Format: `black .`
 - Run all quality steps: `black . && ruff check . && pytest -q`
 
+## Releasing
+
+Every `v*` tag pushed to GitHub auto-publishes to PyPI via Trusted Publishing.
+
+```bash
+# 1. Bump version in pyproject.toml
+#    version = "0.2.3"
+
+# 2. Commit and push
+git add pyproject.toml
+git commit -m "v0.2.3: description of changes"
+git push origin main
+
+# 3. Tag and push the tag (must start with 'v' to trigger publish)
+git tag v0.2.3
+git push origin v0.2.3
+```
+
+The workflow lives at `.github/workflows/publish.yml`. PyPI authenticates
+via OpenID Connect (no tokens) — the project's Trusted Publisher is
+configured at https://pypi.org/manage/project/easy-glm/settings/publishing/.
+
 ## Quick Verification
 
 ```bash
