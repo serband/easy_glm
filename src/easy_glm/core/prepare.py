@@ -1,7 +1,7 @@
 import duckdb
 import polars as pl
 
-from .transforms import lump_fun, o_matrix, quote_identifier
+from .transforms import lump_fun, o_matrix, one_hot_fun, quote_identifier
 
 
 def prepare_data(
@@ -30,11 +30,14 @@ def prepare_data(
                 f"CREATE TABLE {quote_identifier(table_name)} AS SELECT * FROM df"
             )
         else:
-            con = duckdb.connect()
+            raise ValueError(
+                "Either 'df' or 'con' must be provided to prepare_data."
+            )
     else:
-        if not isinstance(con, duckdb.DuckDBPyConnection):  # pragma: no cover
-            print(
-                "Warning: The provided connection is not a duckdb connection. Proceeding anyway."
+        if not isinstance(con, duckdb.DuckDBPyConnection):
+            raise TypeError(
+                "The 'con' argument must be a duckdb.DuckDBPyConnection, "
+                f"got {type(con).__name__}"
             )
     table_reference = quote_identifier(table_name)
     tables = con.execute("SHOW TABLES").fetchall()
@@ -64,7 +67,7 @@ def prepare_data(
             if all(isinstance(x, int | float) for x in dict_values):
                 expressions.extend(o_matrix(var, dict_values))
             else:
-                expressions.append(lump_fun(var, dict_values))
+                expressions.extend(one_hot_fun(var, dict_values))
         else:
             expressions.append(quote_identifier(var))
     for col in additional_columns:

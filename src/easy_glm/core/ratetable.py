@@ -45,6 +45,23 @@ def ratetable(
     random_seed: int | None = None,
     include_raw: bool = True,
 ) -> pl.DataFrame:
+    """Build a rate table for a single predictor.
+
+    Picks one representative row from *dataset*, duplicates it once per
+    factor level, replaces the target column with each level, computes
+    predictions through *model*, and derives relativities relative to the
+    median prediction.
+
+    Because a GLM with log link is multiplicative
+    (``prediction = exp(intercept + β₁x₁ + … + βₙxₙ)``), the relativity
+    **ratios** between two levels of the same variable are independent of
+    the other feature values — the single-row approach gives the correct
+    shape.  The median baseline only affects the absolute scale of the
+    relativities, not their relative ordering.
+
+    For models with interactions or non-linear terms, consider using a
+    full-dataset marginal-effects approach instead.
+    """
     random_row = dataset.sample(n=1, shuffle=True, seed=random_seed)
     duplicated = pl.concat([random_row] * len(levels), how="vertical").with_columns(
         pl.Series(col_name, list(levels))
@@ -61,8 +78,8 @@ def ratetable(
         pdf[col] = pdf[col].astype("category")
     preds = np.asarray(model.predict(pdf), dtype=float)
     base = np.median(preds)
-    relativity = preds / base if base != 0 else np.nan
-    out = {col_name: list(levels), "relativity": relativity.tolist()}
+    relativity = preds / base if base != 0 else np.full_like(preds, np.nan)
+    out: dict[str, Any] = {col_name: list(levels), "relativity": relativity.tolist()}
     if include_raw:
         out["prediction"] = preds.tolist()
     return pl.DataFrame(out).sort(col_name)

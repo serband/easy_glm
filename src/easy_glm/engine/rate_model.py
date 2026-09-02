@@ -201,8 +201,17 @@ class RateModel:
         column_map: dict[str, str] | None = None,
         exposure_col: str | None = _UNSET,
     ) -> np.ndarray:
-        if version is not None:
-            self.switch_to(version)
+        if version is not None and version != self.current_version:
+            saved_version = self.current_version
+            try:
+                self.switch_to(version)
+                return self.predict(
+                    data,
+                    column_map=column_map,
+                    exposure_col=exposure_col,
+                )
+            finally:
+                self.switch_to(saved_version)
 
         mapping = column_map or self.column_mapping
         if mapping:
@@ -272,7 +281,7 @@ class RateModel:
                 config.relativities = None
                 config.cat_map = None
                 config.fallback = 1.0
-                self._precompute_variables(self.variables)
+                self._precompute_variables({var: config})
                 return
 
         raise ValueError(

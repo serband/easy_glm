@@ -40,8 +40,6 @@ from .core.model import fit_lasso_glm, predict_with_model
 from .core.plots import plot_all_ratetables
 from .core.prepare import prepare_data
 from .core.ratetable import ratetable
-from .core.transforms import lump_fun, lump_rare_levels_pl, o_matrix
-
 __all__ = [
     # High-level pipeline (start here)
     "EasyGLM",
@@ -54,8 +52,4 @@ __all__ = [
     "ratetable",
     "generate_all_ratetables",
     "plot_all_ratetables",
-    # SQL transform helpers (low-level)
-    "o_matrix",
-    "lump_fun",
-    "lump_rare_levels_pl",
 ]

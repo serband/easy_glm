@@ -18,7 +18,4 @@ __all__ = [
     "ratetable",
     "generate_all_ratetables",
     "plot_all_ratetables",
-    "o_matrix",
-    "lump_fun",
-    "lump_rare_levels_pl",
 ]

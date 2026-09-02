@@ -3,6 +3,7 @@ from __future__ import annotations
 import polars as pl
 
 from easy_glm.engine import RateModel
+from easy_glm.engine.models import level_labels
 
 FORMULAS: dict[str, str] = {
     "sum_weighted": "sum(target × weight) / sum(weight)",
@@ -36,7 +37,7 @@ def compute_actual_expected(
 
     config = rm.variables[variable]
     rows = config.table
-    level_edges = _level_labels(rows)
+    level_edges = level_labels(rows)
 
     results: dict[str, list[dict]] = {}
     for subset_name, subset in subsets.items():
@@ -72,22 +73,6 @@ def compute_actual_expected(
             )
 
     return {"subsets": results, "variable": variable}
-
-
-def _level_labels(rows) -> list[str]:
-    labels: list[str] = []
-    for row in rows:
-        if row.from_ is None and row.to_ is None:
-            labels.append("Other / Unknown")
-        elif row.from_ is None:
-            labels.append(f"< {row.to_}")
-        elif row.to_ is None:
-            labels.append(f"≥ {row.from_}")
-        elif row.from_ == row.to_:
-            labels.append(str(row.from_))
-        else:
-            labels.append(f"[{row.from_}, {row.to_})")
-    return labels
 
 
 def _mask_for_row(data: pl.DataFrame, variable: str, row) -> pl.Series:

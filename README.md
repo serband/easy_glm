@@ -29,10 +29,7 @@ import numpy as np
 
 df = easy_glm.load_external_dataframe()
 df = df.with_columns(
-    pl.when(pl.lit(np.random.rand(df.height) < 0.7))
-    .then(1)
-    .otherwise(0)
-    .alias("traintest")
+    pl.Series("traintest", np.random.rand(len(df)) < 0.7, dtype=pl.Int64)
 )
 
 predictors = ["VehAge", "Region", "VehGas", "DrivAge", "BonusMalus", "Density"]
@@ -48,12 +45,37 @@ eglm = easy_glm.EasyGLM.fit(
     use_cv=True,
     base_rate=0.05,
 )
+```
 
+### View relativities
+
+After fitting, per-variable relativities are on **`eglm.relativities`** — a dict of
+Polars tables (one per predictor). Each table has the factor level (or bin) and
+its **relativity** (1.0 = reference). Values are normalised within the variable
+so you can compare shape across bands, not absolute premium.
+
+```python
+# One variable
+print(eglm.relativities["DrivAge"])
+
+# All variables
+for name, table in eglm.relativities.items():
+    print(f"\n=== {name} ===")
+    print(table)
+
+# Optional: matplotlib charts (numeric = line, categorical = bar)
+easy_glm.plot_all_ratetables(eglm.relativities, eglm.blueprint)
+```
+
+The same tables are stored on disk if you call `eglm.save("my_model")` under
+`my_model/rate_tables/*.parquet`. For production scoring and the editor, use
+`eglm.rate_model` (see below).
+
+```python
 test = df.filter(pl.col("traintest") == 0)
 preds = eglm.rate_model.predict(test)
 print(f"Test A/E: {test['ClaimNb'].sum() / preds.sum():.4f}")
 
-# Ship the model
 eglm.rate_model.to_json("model.easyglm")
 ```
 

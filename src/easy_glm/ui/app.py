@@ -14,7 +14,7 @@ import polars as pl
 import streamlit as st
 
 from easy_glm.engine import RateModel
-from easy_glm.engine.models import FromToRow
+from easy_glm.engine.models import FromToRow, level_label
 from easy_glm.ui import _parse_args
 from easy_glm.ui.charts import (
     build_actual_vs_expected,
@@ -115,18 +115,6 @@ def _apply_mapping(dataframe: pl.DataFrame, mapping: dict[str, str]) -> pl.DataF
     if rename:
         return dataframe.rename(rename)
     return dataframe
-
-
-def _row_label(row: FromToRow) -> str:
-    if row.from_ is None and row.to_ is None:
-        return "Other / Unknown"
-    if row.from_ is None:
-        return f"< {row.to_}"
-    if row.to_ is None:
-        return f"≥ {row.from_}"
-    if row.from_ == row.to_:
-        return str(row.from_)
-    return f"[{row.from_}, {row.to_})"
 
 
 def _compute_ae_for_model(
@@ -523,7 +511,7 @@ for i, row in enumerate(config_b.table):
     rows_data.append(
         {
             "id": i,
-            "label": _row_label(row),
+            "label": level_label(row),
             "original": row.relativity,
             "revised": config_w.table[i].relativity,
         }

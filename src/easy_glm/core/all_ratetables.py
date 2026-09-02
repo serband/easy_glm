@@ -10,6 +10,23 @@ from .prepare import prepare_data
 from .ratetable import ratetable
 
 
+def _make_prepare_fn(
+    predictor_variables: list[str],
+    blueprint: dict[str, Any],
+):
+    """Return a callable suitable as ``ratetable(..., prepare=...)``."""
+
+    def _prepare(df: pl.DataFrame) -> pl.DataFrame:
+        return prepare_data(
+            df=df,
+            modelling_variables=predictor_variables,
+            formats=blueprint,
+            table_name="line_prepped",
+        )
+
+    return _prepare
+
+
 def generate_all_ratetables(
     model: GeneralizedLinearRegressor | GeneralizedLinearRegressorCV,
     dataset: pl.DataFrame,
@@ -18,18 +35,13 @@ def generate_all_ratetables(
     random_seed: int = 42,
 ) -> dict[str, pl.DataFrame]:
     """Generate rate tables for each predictor in predictor_variables."""
+    prepare_fn = _make_prepare_fn(predictor_variables, blueprint)
     all_ratetables: dict[str, pl.DataFrame] = {}
     for var in predictor_variables:
         levels = blueprint.get(var)
         if levels is None:
             print(f"Warning: No blueprint found for variable '{var}'. Skipping.")
             continue
-        prepare_fn = lambda d: prepare_data(  # noqa: E731
-            df=d,
-            modelling_variables=predictor_variables,
-            formats=blueprint,
-            table_name="line_prepped",
-        )
         tbl = ratetable(
             model=model,
             dataset=dataset,

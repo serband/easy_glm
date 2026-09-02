@@ -124,17 +124,6 @@ def fit_lasso_glm(
             f"Training subset is empty (no rows with {train_test_col}=={TRAIN_FLAG})."
         )
     exclude = {target, train_test_col} | ({weight_col} if weight_col else set())
-
-    def is_text_like(series: pd.Series) -> bool:
-        dt = series.dtype
-        return ptypes.is_object_dtype(dt) or ptypes.is_string_dtype(dt)
-
-    text_cols = [
-        c for c in train_df.columns if c not in exclude and is_text_like(train_df[c])
-    ]
-    for col in text_cols:
-        train_df[col] = train_df[col].astype("category")
-
     features = [c for c in train_df.columns if c not in exclude]
     x_data = train_df[features]
     y = train_df[target].to_numpy().ravel()

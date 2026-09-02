@@ -77,17 +77,14 @@ def test_prepare_data_majority_nulls():
     prepared_df = prepare_data(
         modelling_variables=["numeric_col", "categorical_col"], df=df, formats=blueprint
     )
-    assert prepared_df.shape == (5, 3)
+    assert prepared_df.shape == (5, 4)
     assert "numeric_col1.0" in prepared_df.columns
     assert "numeric_col3.0" in prepared_df.columns
-    assert "categorical_col_lumped" in prepared_df.columns
-    assert prepared_df["categorical_col_lumped"].to_list() == [
-        "A",
-        "Other",
-        "C",
-        "Other",
-        "Other",
-    ]
+    assert "categorical_col_C" in prepared_df.columns
+    assert "categorical_col_Other" in prepared_df.columns
+    # Reference level 'A' → all zeros; 'C' → categorical_col_C=1; NULL → Other=1
+    assert prepared_df["categorical_col_C"].to_list() == [0, 0, 1, 0, 0]
+    assert prepared_df["categorical_col_Other"].to_list() == [0, 1, 0, 1, 1]
 
 
 def test_prepare_data_handles_identifiers_with_spaces_and_reserved_words():
@@ -109,8 +106,9 @@ def test_prepare_data_handles_identifiers_with_spaces_and_reserved_words():
         table_name="policy data",
     )
 
-    assert prepared_df.columns == ["vehicle age2.0", "select_lumped"]
-    assert prepared_df["select_lumped"].to_list() == ["A", "B", "Other"]
+    assert prepared_df.columns == ["vehicle age2.0", "select_B", "select_Other"]
+    assert prepared_df["select_B"].to_list() == [0, 1, 0]
+    assert prepared_df["select_Other"].to_list() == [0, 0, 1]
 
 
 def test_prepare_data_preserves_unformatted_columns():
