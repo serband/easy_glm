@@ -35,11 +35,15 @@ def _data(seed: int = 3, n: int = 4000) -> pl.DataFrame:
     )
     expo = rng.uniform(0.2, 1.0, n)
     current = rng.uniform(150.0, 900.0, n)  # e.g. current premium
+    dens = rng.integers(1, 3000, n).astype(float)
+    young_r2 = (age < 25) & (region == "R2")  # a genuine interaction
     mu = np.exp(
         -2.0
         - 0.03 * np.maximum(45 - age, 0)
         + 0.05 * (power - 7)
+        + 0.0001 * dens
         + np.where(region == "R1", 0.0, 0.25)
+        + np.where(young_r2, 0.6, 0.0)
     )
     claims = rng.poisson(mu * expo).astype(float)
     age[rng.random(n) < 0.05] = np.nan
@@ -55,6 +59,7 @@ def _data(seed: int = 3, n: int = 4000) -> pl.DataFrame:
                 [None if v is None else int(v) for v in power], dtype=pl.Int64
             ),
             "Region": region,
+            "Density": dens,
             "logprem": np.log(current),
             "prem": current,
         }
@@ -95,6 +100,35 @@ CASES = {
         "categorical": ["VehPower"],
         "offset": "logprem",
     },
+    # two-way interactions on top of the mains: cells are tied to the parents'
+    # rate-table rows, so nulls (numeric null row) and unseen levels (Other row)
+    # must land in the same cell for the GLM and the scorer
+    "interaction_num_cat": {
+        "predictors": ["DrivAge", "Region"],
+        "categorical": None,
+        "offset": None,
+        "interactions": [("DrivAge", "Region")],
+    },
+    "interaction_num_num": {
+        "predictors": ["DrivAge", "Density"],
+        "categorical": None,
+        "offset": None,
+        "interactions": [("DrivAge", "Density")],
+        # coarse knots so the 3,200 training rows fill the cells
+        "knots": {"DrivAge": [25, 40, 60], "Density": [500, 1500]},
+    },
+    "interaction_cat_cat": {
+        "predictors": ["VehPower", "Region"],
+        "categorical": ["VehPower"],
+        "offset": None,
+        "interactions": [("VehPower", "Region")],
+    },
+    "interaction_with_offset": {
+        "predictors": ["DrivAge", "VehPower", "Region"],
+        "categorical": ["VehPower"],
+        "offset": "logprem",
+        "interactions": [("DrivAge", "Region"), ("VehPower", "Region")],
+    },
 }
 
 
@@ -104,7 +138,13 @@ def fitted(request):
     df = _data()
     train = df.head(3200)
     spec = DesignSpec.from_data(
-        train, case["predictors"], categorical=case["categorical"], min_level_share=0.02
+        train,
+        case["predictors"],
+        categorical=case["categorical"],
+        min_level_share=0.02,
+        knots=case.get("knots"),
+        interactions=case.get("interactions"),
+        min_cell_exposure=0.005,
     )
     fit = fit_glm(
         train,
@@ -124,6 +164,15 @@ def test_rate_model_reproduces_glm(fitted):
     name, fit, rm, score_df = fitted
     assert score_df["DrivAge"].null_count() > 0 and score_df["Region"].null_count() > 0
     assert (score_df["Region"] == "UNSEEN").sum() > 0
+    if name.startswith("interaction"):
+        # the fit must actually use cells, otherwise the case proves nothing
+        assert any(c.type == "interaction" for c in rm.variables.values())
+        cells = [
+            c
+            for k, c in zip(fit.spec.features, fit.coef, strict=True)
+            if k.kind == "cell"
+        ]
+        assert cells and any(c != 0 for c in cells), "no interaction cell was fitted"
     np.testing.assert_allclose(
         rm.predict(score_df, exposure_col=None),
         fit.predict(score_df),

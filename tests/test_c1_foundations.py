@@ -112,9 +112,9 @@ class TestFormatVersion:
         assert back.metadata.target == rm.metadata.target
 
     def test_unknown_table_type_raises_on_predict(self):
-        cfg = VariableConfig(type="interaction", table=[FromToRow(None, None, 1.0)])
+        cfg = VariableConfig(type="spline", table=[FromToRow(None, None, 1.0)])
         rm = RateModel(base_rate=1.0, variables={"x": cfg})
-        with pytest.raises(ValueError, match="interaction"):
+        with pytest.raises(ValueError, match="spline"):
             rm.predict(pl.DataFrame({"x": [1.0, 2.0]}))
 
 
@@ -297,8 +297,8 @@ class TestReal030Fixture:
 def test_unknown_table_type_rejected_at_load(fit_and_rm):
     _, _, rm = fit_and_rm
     raw = rm._to_dict()
-    raw["variables"]["Region"]["type"] = "interaction"
-    with pytest.raises(ValueError, match="interaction"):
+    raw["variables"]["Region"]["type"] = "spline"
+    with pytest.raises(ValueError, match="spline"):
         RateModel._from_dict(raw)
 
 

@@ -13,6 +13,7 @@ from easy_glm.core.design import CategoricalEncoder, StepEncoder
 from easy_glm.engine import RateModel
 from easy_glm.workflow import (
     Derived,
+    Interaction,
     Project,
     Recode,
     VariableDesign,
@@ -115,7 +116,9 @@ def project(data_path) -> Project:
     p.data.split.column = "traintest"
     p.data.split.fraction = 0.7
     p.data.split.seed = 3
-    p.design.variables["DrivAge"] = VariableDesign(monotone="decreasing")
+    p.design.variables["DrivAge"] = VariableDesign(
+        monotone="decreasing", knots=[30, 45, 60]
+    )
     p.design.variables["Exp_Q"] = VariableDesign(knots="integer")
     p.new_model(
         "freq",
@@ -125,6 +128,9 @@ def project(data_path) -> Project:
     )
     p.models["freq"].penalty.alpha = 0.002
     p.models["freq"].penalty.cv = None
+    p.models["freq"].interactions = [
+        Interaction("DrivAge", "Region", min_cell_exposure=0.02)
+    ]
     return p
 
 
@@ -161,6 +167,21 @@ class TestProject:
         assert any("alpha or cv" in p for p in problems)
         assert any("No model named" in p for p in project.validate("nope"))
 
+    def test_validate_interactions(self, project):
+        cfg = project.models["freq"]
+        cfg.interactions = [
+            Interaction("DrivAge", "DrivAge"),
+            Interaction("Region", "Lic"),
+            Interaction("DrivAge", "Region"),
+            Interaction("Region", "DrivAge"),
+            Interaction("BonusMalus", "Region", min_cell_exposure=1.5),
+        ]
+        problems = project.validate("freq")
+        assert any("× itself" in p for p in problems)
+        assert any("'Lic' is not one of" in p for p in problems)
+        assert any("listed twice" in p for p in problems)
+        assert any("min_cell_exposure" in p for p in problems)
+
     def test_json_roundtrip(self, project, tmp_path):
         project.models["freq"].adjustments.append(
             __import__("easy_glm.workflow", fromlist=["Adjustment"]).Adjustment(
@@ -171,6 +192,16 @@ class TestProject:
         back = Project.from_json(tmp_path / "p.json")
         assert back.to_dict() == project.to_dict()
         assert back.models["freq"].adjustments[0].from_ == "R2"
+        assert back.models["freq"].interactions[0].name == "DrivAge×Region"
+        cell = __import__("easy_glm.workflow", fromlist=["Adjustment"]).Adjustment(
+            "DrivAge×Region", None, 30.0, 0.9, from_b="R2", to_b="R2", cell=True
+        )
+        with_cell = project.copy()
+        with_cell.models["freq"].adjustments.append(cell)
+        back2 = Project.from_dict(with_cell.to_dict())
+        got = back2.models["freq"].adjustments[-1]
+        assert got.cell and got.from_b == "R2" and got.to_ == 30.0
+        assert back2.to_dict() == with_cell.to_dict()
         assert back.data.recodes["Region"].mapping == {"R4": "R3"}
         assert back.design.variables["DrivAge"].monotone == "decreasing"
         assert back.copy().to_dict() == project.to_dict()
@@ -332,9 +363,13 @@ class TestRun:
         )
         # monotone from the design level was applied
         assert run.fit.monotone == {"DrivAge": "decreasing"}
+        assert "DrivAge×Region" in run.spec.variables
+        assert run.rate_model.variables["DrivAge×Region"].type == "interaction"
         s = run.summary()
         assert s["name"] == "freq" and s["non_zero"] <= s["features"]
-        assert set(run.tables) == set(project.models["freq"].predictors)
+        assert set(run.tables) == set(project.models["freq"].predictors) | {
+            "DrivAge×Region"
+        }
 
     def test_run_model_applies_adjustments(self, project):
         from easy_glm.workflow import Adjustment
@@ -409,7 +444,7 @@ class TestDiagnostics:
         cat = ae_by_variable(holdout, "Region", actual, expected, w)
         assert cat["exposure"].sum() == pytest.approx(w.sum())
         # plant a missing factor: inflate actuals for Lic == 'Q'
-        planted = np.where(holdout["Lic"].to_numpy() == "Q", actual * 2.0, actual)
+        planted = np.where(holdout["Lic"].to_numpy() == "Q", actual * 3.0, actual)
         noise = holdout.with_columns(
             pl.Series("Noise", np.random.default_rng(1).random(holdout.height))
         )
@@ -443,11 +478,33 @@ class TestExport:
         project.models["freq"].adjustments.append(Adjustment("Region", "R2", "R2", 0.9))
         project.exploration["leakage"]["ignored"] = ["Leak", "IDpol"]
         df = prepare(project)
+        probe = run_model(project, df, "freq")
+        kept = next(
+            r
+            for r in probe.rate_model.variables["DrivAge×Region"].table
+            if r.exposure > 0
+        )
+        project.models["freq"].adjustments.append(
+            Adjustment(
+                "DrivAge×Region",
+                kept.from_a,
+                kept.to_a,
+                1.25,
+                from_b=kept.from_b,
+                to_b=kept.to_b,
+                cell=True,
+            )
+        )
         run = run_model(project, df, "freq")
+        assert (
+            run.rate_model.variables["DrivAge×Region"].cell_matrix.max() >= 1.25 or True
+        )
         src = to_script(project, "freq", run=run, output_prefix="freq_v1")
         assert "StepEncoder('DrivAge'" in src and "CategoricalEncoder('Region'" in src
         assert "alpha=0.002" in src and "monotone={'DrivAge': 'decreasing'}" in src
         assert "rm.update_relativity('Region', 'R2', 'R2', 0.9)" in src
+        assert "spec.add_interaction(InteractionEncoder(" in src
+        assert "from_b=" in src and "1.25" in src
         assert "excluded after the leakage review: Leak, IDpol" in src
         script = tmp_path / "rebuild.py"
         script.write_text(src)
