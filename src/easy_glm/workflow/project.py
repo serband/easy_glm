@@ -21,18 +21,22 @@ SOURCE_TYPES = ("parquet", "csv", "sas7bdat", "xlsx", "ipc")
 FAMILIES = ("poisson", "gamma", "tweedie", "gaussian", "binomial", "inverse_gaussian")
 
 
+def _warn_unknown(raw: dict[str, Any], known: set[str], where: str) -> None:
+    unknown = sorted(k for k in raw if k not in known)
+    if unknown:
+        warnings.warn(
+            f"Ignoring unknown project keys {unknown} in {where} (written by a newer "
+            "easy_glm?); they will not be written back when the project is saved",
+            stacklevel=4,
+        )
+
+
 def _build(cls, raw: dict[str, Any] | None, where: str):
     """Construct a dataclass from a dict, warning about (and dropping) unknown
     keys instead of crashing, so files written by a newer minor version open."""
     raw = dict(raw or {})
     known = {f.name for f in fields(cls)}
-    unknown = sorted(k for k in raw if k not in known)
-    if unknown:
-        warnings.warn(
-            f"Ignoring unknown project keys {unknown} in {where} "
-            "(written by a newer easy_glm?)",
-            stacklevel=3,
-        )
+    _warn_unknown(raw, known, where)
     return cls(**{k: v for k, v in raw.items() if k in known})
 
 
@@ -308,7 +312,9 @@ class Project:
             )
         if version < PROJECT_VERSION:
             raw = cls._migrate(raw, version)
+        _warn_unknown(raw, {f.name for f in fields(cls)}, "project")
         d = raw.get("data", {})
+        _warn_unknown(d, {f.name for f in fields(DataConfig)}, "data")
         data = DataConfig(
             source=_build(DataSource, d.get("source", {}), "data.source"),
             sample_rows=d.get("sample_rows"),
@@ -325,6 +331,7 @@ class Project:
             split=_build(Split, d.get("split", {}), "data.split"),
         )
         g = raw.get("design", {})
+        _warn_unknown(g, {f.name for f in fields(DesignConfig)}, "design")
         design = DesignConfig(
             defaults=_build(DesignDefaults, g.get("defaults", {}), "design.defaults"),
             variables={
@@ -336,15 +343,21 @@ class Project:
         for name, m in raw.get("models", {}).items():
             m = dict(m)
             penalty = _build(Penalty, m.pop("penalty", {}), f"models[{name!r}].penalty")
-            adjustments = [
-                Adjustment(
-                    a["variable"],
-                    a.get("from", a.get("from_")),
-                    a.get("to", a.get("to_")),
-                    a["relativity"],
+            adjustments = []
+            for a in m.pop("adjustments", []):
+                _warn_unknown(
+                    a,
+                    {"variable", "from", "to", "from_", "to_", "relativity"},
+                    f"models[{name!r}].adjustments",
                 )
-                for a in m.pop("adjustments", [])
-            ]
+                adjustments.append(
+                    Adjustment(
+                        a["variable"],
+                        a.get("from", a.get("from_")),
+                        a.get("to", a.get("to_")),
+                        a["relativity"],
+                    )
+                )
             models[name] = _build(
                 ModelConfig,
                 {**m, "penalty": penalty, "adjustments": adjustments},

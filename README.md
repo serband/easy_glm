@@ -83,7 +83,8 @@ print(f"Test A/E: {test['ClaimNb'].sum() / preds.sum():.4f}")
 
 eglm.save("my_model")                          # spec + glum model + tables
 eglm.rate_model.to_json("model.easyglm")       # scorer only
-eglm.to_excel("rate_tables.xlsx")              # Summary, Coefficients, one sheet per variable
+eglm.to_excel("rate_tables.xlsx")              # fitted tables + coefficients
+eglm.rate_model.to_excel("rate_tables_adjusted.xlsx")   # tables as scored, incl. editor changes
 ```
 
 Any `RateModel` — including one edited in the browser and downloaded as

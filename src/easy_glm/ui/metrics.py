@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import polars as pl
 
 from easy_glm.engine import RateModel
@@ -10,6 +11,33 @@ FORMULAS: dict[str, str] = {
     "sum_unweighted": "sum(target) / count",
     "sum_over_weight": "sum(target) / sum(weight)",
 }
+
+
+def default_formula(metadata) -> str:
+    """A/E formula implied by the model's metadata.
+
+    A count target divided by an exposure weight (``divide_target_by_weight``)
+    needs ``sum(target) / sum(weight)`` for both actual and expected; anything
+    else (a rate target, or a 0.3 file where the flag is unknown) uses the
+    exposure-weighted mean.
+    """
+    if (
+        metadata is not None
+        and metadata.divide_target_by_weight
+        and metadata.weight_col
+    ):
+        return "sum_over_weight"
+    return "sum_weighted"
+
+
+def _predictions_on_total_scale(rm: RateModel, data: pl.DataFrame) -> np.ndarray:
+    """Expected values on the same scale as the target column: for a count model
+    whose RateModel has no exposure column, multiply by the weight so that
+    ``sum(expected) / sum(weight)`` is a rate like ``sum(claims) / sum(weight)``."""
+    meta = rm.metadata
+    if meta.divide_target_by_weight and meta.exposure_col is None and meta.weight_col:
+        return rm.predict(data, exposure_col=meta.weight_col)
+    return rm.predict(data)
 
 
 def compute_actual_expected(
@@ -27,7 +55,7 @@ def compute_actual_expected(
     if target not in data.columns:
         raise ValueError(f"Target column '{target}' not found in data")
 
-    predictions = rm.predict(data)
+    predictions = _predictions_on_total_scale(rm, data)
     data = data.with_columns(pred=pl.Series("pred", predictions))
 
     subsets = {"all": data}

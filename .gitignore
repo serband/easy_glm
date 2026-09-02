@@ -61,3 +61,4 @@ discardpy
 scripts/job-logs.txt
 french_motor_spec.json
 french_motor.easyglm
+/*.easyglm

@@ -31,9 +31,36 @@ _SCORERS: dict[str, Any] = {
 _METADATA_FIELDS = {f.name for f in fields(ModelMetadata)}
 
 
+def _warn_if_levels_unmatched(
+    name: str, col: pl.Series, config: VariableConfig
+) -> None:
+    """Warn when most rows of a categorical fall to the Other row: usually the
+    column arrived with a different type (4.0 vs "4") or renamed levels."""
+    if col.len() == 0:
+        return
+    matched = col.cast(pl.Utf8).is_in(list(config.cat_map)).fill_null(False)
+    share = 1.0 - matched.sum() / col.len()
+    if share > 0.5:
+        sample = col.drop_nulls().cast(pl.Utf8).unique().head(3).to_list()
+        warnings.warn(
+            f"Categorical variable {name!r}: {share:.0%} of rows matched none of its "
+            f"{len(config.cat_map)} trained levels and were scored as Other. Values seen: "
+            f"{sample}; trained levels e.g. {list(config.cat_map)[:3]}. Check the column's "
+            "type (integer vs float vs text) and level names.",
+            stacklevel=3,
+        )
+
+
 def _metadata_from_dict(raw: dict[str, Any] | None) -> ModelMetadata:
     """Build metadata tolerating missing (older files) and unknown (newer files) keys."""
     raw = raw or {}
+    unknown = sorted(k for k in raw if k not in _METADATA_FIELDS)
+    if unknown:
+        warnings.warn(
+            f"Ignoring unknown model metadata keys {unknown} (written by a newer "
+            "easy_glm?); they will not be written back",
+            stacklevel=3,
+        )
     known = {k: v for k, v in raw.items() if k in _METADATA_FIELDS}
     if "predictor_variables" in known and known["predictor_variables"] is None:
         known["predictor_variables"] = []
@@ -256,7 +283,14 @@ class RateModel:
                     f"version of easy_glm cannot score (known: {sorted(_SCORERS)}). "
                     "The model file probably comes from a newer easy_glm."
                 )
-            result *= scorer(col, config)
+            rel = scorer(col, config)
+            if (
+                config.type == "categorical"
+                and config.cat_map
+                and len(config.cat_map) > 1
+            ):
+                _warn_if_levels_unmatched(name, col, config)
+            result *= rel
 
         result = self._apply_offset(result, data)
         result = self._apply_exposure(result, data, exposure_col)
@@ -568,7 +602,7 @@ class RateModel:
 
     @classmethod
     def _from_dict(cls, raw: dict[str, Any]) -> RateModel:
-        version = int(raw.get("format_version", 1))
+        version = int(raw.get("format_version") or 1)
         if version > FORMAT_VERSION:
             raise ValueError(
                 f"This .easyglm file is format version {version}; this easy_glm "
@@ -586,6 +620,12 @@ class RateModel:
                 )
                 for r in vdata["table"]
             ]
+            if vdata["type"] not in _SCORERS:
+                raise ValueError(
+                    f"Variable {name!r} has table type {vdata['type']!r}, which this "
+                    f"version of easy_glm cannot score (known: {sorted(_SCORERS)}). "
+                    "The model file probably comes from a newer easy_glm."
+                )
             variables[name] = VariableConfig(type=vdata["type"], table=table)
 
         cls._precompute_variables(variables)

@@ -21,7 +21,7 @@ from easy_glm.ui.charts import (
     build_histogram,
     build_relativity_comparison,
 )
-from easy_glm.ui.metrics import FORMULAS, compute_actual_expected
+from easy_glm.ui.metrics import FORMULAS, compute_actual_expected, default_formula
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -93,15 +93,10 @@ if "actual_formula" not in st.session_state:
     # exposure-weighted mean. --formula=... overrides.
     _formula = args.get("formula")
     if _formula not in FORMULAS:
-        _meta = (
+        _formula = default_formula(
             st.session_state.baseline_rm.metadata
             if st.session_state.baseline_rm is not None
             else None
-        )
-        _formula = (
-            "sum_over_weight"
-            if _meta is not None and _meta.divide_target_by_weight and _meta.weight_col
-            else "sum_weighted"
         )
     st.session_state.actual_formula = _formula
 

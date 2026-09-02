@@ -229,8 +229,7 @@ def _detail(train: pl.DataFrame, predictors: list[str]) -> None:
         st.caption(
             f"Design columns: {enc.n_features} · bins: {len(enc.bins())} · null indicator: {enc.null_indicator}"
         )
-    else:
-        assert isinstance(enc, CategoricalEncoder)
+    elif isinstance(enc, CategoricalEncoder):
         c2.markdown(
             f"**Reference level:** `{enc.reference}`  \n**Kept levels:** {len(enc.levels)} (+ Other)"
         )

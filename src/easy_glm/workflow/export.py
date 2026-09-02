@@ -40,11 +40,12 @@ def _spec_code(spec: DesignSpec) -> str:
             parts.append(
                 f"    {var!r}: StepEncoder({var!r}, {_list(enc.knots)}, null_indicator={enc.null_indicator}),"
             )
-        else:
-            assert isinstance(enc, CategoricalEncoder)
+        elif isinstance(enc, CategoricalEncoder):
             parts.append(
                 f"    {var!r}: CategoricalEncoder({var!r}, {_list(enc.levels)}),"
             )
+        else:
+            raise NotImplementedError(f"No script rule for {type(enc).__name__}")
     return "spec = DesignSpec({\n" + "\n".join(parts) + "\n})"
 
 

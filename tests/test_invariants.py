@@ -9,7 +9,9 @@ Invariants
 1. ``RateModel.predict(df, exposure_col=None) == fit.predict(df)`` (rtol 1e-10).
 2. A JSON round-trip of the RateModel scores identically.
 3. ``RateModel.to_excel`` writes the relativities the scorer uses, including
-   manual adjustments.
+   manual adjustments. (The 0.3 defect was in the workbench download and the
+   exported script, which used the fitted view; those paths are guarded in
+   ``tests/test_c1_foundations.py``.)
 """
 
 from __future__ import annotations
@@ -42,12 +44,16 @@ def _data(seed: int = 3, n: int = 4000) -> pl.DataFrame:
     claims = rng.poisson(mu * expo).astype(float)
     age[rng.random(n) < 0.05] = np.nan
     region[rng.random(n) < 0.04] = None
+    power = power.astype(object)
+    power[rng.random(n) < 0.03] = None  # nulls in the integer-typed categorical too
     df = pl.DataFrame(
         {
             "ClaimNb": claims,
             "Exposure": expo,
             "DrivAge": age,
-            "VehPower": power,
+            "VehPower": pl.Series(
+                [None if v is None else int(v) for v in power], dtype=pl.Int64
+            ),
             "Region": region,
             "logprem": np.log(current),
             "prem": current,

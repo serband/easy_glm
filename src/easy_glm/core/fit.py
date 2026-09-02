@@ -178,8 +178,15 @@ class GLMFit:
     ) -> np.ndarray:
         """Predictions on the response scale (per unit of weight if the target
         was divided by the weight). Uses the stored offset column if present."""
-        if offset is None and self.offset_col and self.offset_col in data.columns:
-            offset = data[self.offset_col].to_numpy()
+        if offset is None and self.offset_col:
+            if self.offset_col in data.columns:
+                offset = data[self.offset_col].cast(pl.Float64).to_numpy()
+            else:
+                warnings.warn(
+                    f"Offset column '{self.offset_col}' not found in data — "
+                    "predictions exclude the offset",
+                    stacklevel=2,
+                )
         return np.asarray(
             self.model.predict(self.design_matrix(data), offset=offset), dtype=float
         )
