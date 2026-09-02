@@ -424,3 +424,30 @@ smoothing preserves the exposure-weighted mean of **log** relativities.
 ### R8. Domain questions
 Nine domain questions with defaults are in `docs/checks/00-questions-for-the-actuary.md`.
 Building proceeds on the defaults; answers change parameters, not architecture.
+
+### R9. Workstream G decided by the spike (2026-09-02)
+Spike deliverables: `docs/spikes/g-scale/` (report, results, re-runnable bench,
+prototype `StepMatrix`). Decisions:
+* **No float32 anywhere.** With glum 3.4.1 float32 designs stop converging at
+  1M+ rows (hit `max_iter`, 0.2–0.4 % from the float64 fit), `coef_` comes back
+  float32, and an uncast float64 `sample_weight` segfaults tabmat. Float64 only.
+* **Design = tabmat `SplitMatrix` of bin-index `StepMatrix` blocks (new
+  `core/stepmatrix.py`, cumulative-sum trick, ~170 lines, 9 `MatrixBase`
+  methods + `_cross_sandwich`) plus `CategoricalMatrix` blocks.** Measured: 1M
+  rows 0.7 GB / 2.6 s (today 2.8 GB / 3.6 s); 5M rows 2.0 GB / 16 s (today pages
+  at 5.6 GB / 103 s); coefficients agree with dense float64 to 1.2e-13 with the
+  same non-zero set. Memory scales with variables, not knots.
+* **Acceptance for G**: float64 representations agree to 1e-10 with the same
+  non-zero set (the exactness invariant is untouched); design bytes formula
+  `n·(4·v_step + 8·n_null + 4·v_cat)` asserted by the benchmark; 5M × ~200
+  columns under 3 GB peak.
+* **Aggregation by identical design row** is exact (2e-13) but compresses
+  real data little (1.5× on French motor); ship as opt-in `aggregate=True` for
+  coarse designs, not the default.
+* Scoring always goes through the float64 rate-table lookup from bin codes,
+  never `model.predict(X)`; `spec.build` must stop materialising `hstack`
+  transients (3.5 GB at 5M today).
+* Known obstacles: `StepMatrix` blocks must precede other blocks in the
+  `SplitMatrix` (cross-sandwich dispatch); glum's `check_array_tabmat_compliant`
+  needs a one-line shim (upstream PR later); the prototype sandwich is ~3× slower
+  than tabmat's C kernel at 5M (acceptable; two optimisations listed in the report).
