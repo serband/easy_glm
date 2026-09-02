@@ -14,13 +14,11 @@ import polars as pl
 import streamlit as st
 
 from easy_glm.engine import RateModel
-from easy_glm.engine.models import FromToRow
+from easy_glm.engine.models import level_label
 from easy_glm.ui import _parse_args
 from easy_glm.ui.charts import (
-    build_actual_vs_expected,
     build_ae_comparison,
     build_histogram,
-    build_relativity_chart,
     build_relativity_comparison,
 )
 from easy_glm.ui.metrics import FORMULAS, compute_actual_expected
@@ -90,7 +88,12 @@ if "dirty" not in st.session_state:
     st.session_state.dirty = False
 
 if "actual_formula" not in st.session_state:
-    st.session_state.actual_formula = "sum_weighted"
+    # --formula=sum_over_weight is the right choice for count targets with an
+    # exposure weight (actual = sum(claims) / sum(exposure)).
+    _formula = args.get("formula", "sum_weighted")
+    st.session_state.actual_formula = (
+        _formula if _formula in FORMULAS else "sum_weighted"
+    )
 
 # ---------------------------------------------------------------------------
 # Convenience accessors
@@ -115,18 +118,6 @@ def _apply_mapping(dataframe: pl.DataFrame, mapping: dict[str, str]) -> pl.DataF
     if rename:
         return dataframe.rename(rename)
     return dataframe
-
-
-def _row_label(row: FromToRow) -> str:
-    if row.from_ is None and row.to_ is None:
-        return "Other / Unknown"
-    if row.from_ is None:
-        return f"< {row.to_}"
-    if row.to_ is None:
-        return f"≥ {row.from_}"
-    if row.from_ == row.to_:
-        return str(row.from_)
-    return f"[{row.from_}, {row.to_})"
 
 
 def _compute_ae_for_model(
@@ -459,7 +450,7 @@ st.title("Relativity Editor")
 st.caption(
     f"Model: {meta.model_type or 'unknown'} · "
     f"Base rate: {baseline.base_rate:.6f}"
-    + (f" · Unsaved changes" if st.session_state.dirty else "")
+    + (" · Unsaved changes" if st.session_state.dirty else "")
 )
 
 if not var_names:
@@ -523,7 +514,7 @@ for i, row in enumerate(config_b.table):
     rows_data.append(
         {
             "id": i,
-            "label": _row_label(row),
+            "label": level_label(row),
             "original": row.relativity,
             "revised": config_w.table[i].relativity,
         }

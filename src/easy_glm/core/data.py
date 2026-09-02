@@ -45,7 +45,7 @@ def load_external_dataframe(
     if cache and cache_file.exists():
         return pl.read_parquet(str(cache_file))
 
-    with urllib.request.urlopen(url) as response:
+    with urllib.request.urlopen(url, timeout=30) as response:
         data = response.read()
     parsed_data = rdata.parser.parse_data(data)
     converted_data = rdata.conversion.convert(parsed_data)

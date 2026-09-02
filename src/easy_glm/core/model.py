@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pandas as pd
 import pandas.api.types as ptypes
@@ -74,7 +76,17 @@ def fit_lasso_glm(
             GeneralizedLinearRegressorCV. Applied on top of defaults:
             alphas=None, l1_ratio=[0, 0.5, 1.0], max_iter=150,
             fit_intercept=True, scale_predictors=True.
+
+    .. deprecated:: 0.3
+        Use :func:`easy_glm.fit_glm`. Note that ``use_cv=False`` here returns
+        the *least* regularised end of glum's alpha path.
     """
+    warnings.warn(
+        "fit_lasso_glm is deprecated since easy_glm 0.3 and will be removed in 0.4; "
+        "use fit_glm instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if dataframe.is_empty():
         raise ValueError("The input DataFrame is empty.")
     validate_train_test_column(dataframe, train_test_col)
@@ -124,17 +136,6 @@ def fit_lasso_glm(
             f"Training subset is empty (no rows with {train_test_col}=={TRAIN_FLAG})."
         )
     exclude = {target, train_test_col} | ({weight_col} if weight_col else set())
-
-    def is_text_like(series: pd.Series) -> bool:
-        dt = series.dtype
-        return ptypes.is_object_dtype(dt) or ptypes.is_string_dtype(dt)
-
-    text_cols = [
-        c for c in train_df.columns if c not in exclude and is_text_like(train_df[c])
-    ]
-    for col in text_cols:
-        train_df[col] = train_df[col].astype("category")
-
     features = [c for c in train_df.columns if c not in exclude]
     x_data = train_df[features]
     y = train_df[target].to_numpy().ravel()

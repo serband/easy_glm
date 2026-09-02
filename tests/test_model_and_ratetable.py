@@ -4,13 +4,18 @@ import pytest
 
 import easy_glm.core.model as model_module
 from easy_glm import (
+    DesignSpec,
     EasyGLM,
+    fit_glm,
     fit_lasso_glm,
     generate_blueprint,
     predict_with_model,
     prepare_data,
     ratetable,
+    to_rate_model,
 )
+
+pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
 
 @pytest.mark.parametrize(
@@ -211,13 +216,13 @@ def test_easyglm_fit_and_predict(synthetic_insurance_data):
         predictors=predictors,
         weight_col="Exposure",
         divide_target_by_weight=True,
-        use_cv=False,
+        alpha=0.01,
         base_rate=0.05,
     )
 
     assert eglm.model is not None
     assert eglm.blueprint is not None
-    assert len(eglm.blueprint) >= len(predictors)
+    assert len(eglm.blueprint) == len(predictors)
     assert eglm.rate_model is not None
     assert eglm.base_rate == 0.05
     assert set(eglm.predictors) == set(predictors)
@@ -237,13 +242,8 @@ def test_easyglm_fit_and_predict(synthetic_insurance_data):
 
 def test_easyglm_matches_manual_pipeline(synthetic_insurance_data):
     """EasyGLM.fit must match the documented step-by-step workflow."""
-    from easy_glm import generate_all_ratetables
-    from easy_glm.engine import RateModel
-
     df = synthetic_insurance_data
     predictors = ["VehAge", "Region", "DrivAge"]
-    base_rate = 0.05
-    random_seed = 99
 
     eglm = EasyGLM.fit(
         data=df,
@@ -252,55 +252,32 @@ def test_easyglm_matches_manual_pipeline(synthetic_insurance_data):
         predictors=predictors,
         weight_col="Exposure",
         divide_target_by_weight=True,
-        use_cv=False,
-        base_rate=base_rate,
-        random_seed=random_seed,
+        alpha=0.01,
     )
 
     train_df = df.filter(pl.col("traintest") == 1)
-    bp = generate_blueprint(train_df)
-    prepped = prepare_data(
-        df=df,
-        modelling_variables=predictors,
-        additional_columns=["Exposure", "ClaimNb", "traintest"],
-        formats=bp,
-        traintest_column=None,
-        table_name="line_prepped",
-    )
-    model = fit_lasso_glm(
-        dataframe=prepped,
-        target="ClaimNb",
-        model_type="Poisson",
+    spec = DesignSpec.from_data(train_df, predictors, weight_col="Exposure")
+    fit = fit_glm(
+        train_df,
+        spec,
+        "ClaimNb",
+        family="poisson",
         weight_col="Exposure",
-        train_test_col="traintest",
         divide_target_by_weight=True,
-        use_cv=False,
+        alpha=0.01,
     )
-    tables = generate_all_ratetables(
-        model=model,
-        dataset=df,
-        predictor_variables=predictors,
-        blueprint=bp,
-        random_seed=random_seed,
-    )
-    manual_rm = RateModel.from_rate_tables(
-        all_tables=tables,
-        blueprint=bp,
-        base_rate=base_rate,
-        model_type="Poisson",
-        target="ClaimNb",
-        weight_col="Exposure",
-        exposure_col="Exposure",
-        train_test_col="traintest",
-        predictor_variables=predictors,
-    )
+    manual_rm = to_rate_model(fit, exposure_col="Exposure", train_test_col="traintest")
 
     sample = df.head(20)
-    np.testing.assert_array_almost_equal(
-        eglm.rate_model.predict(sample),
-        manual_rm.predict(sample),
+    np.testing.assert_allclose(
+        eglm.rate_model.predict(sample), manual_rm.predict(sample), rtol=1e-10
     )
-    assert set(eglm.relativities.keys()) == set(tables.keys())
+    np.testing.assert_allclose(
+        eglm.rate_model.predict(sample, exposure_col=None),
+        fit.predict(sample),
+        rtol=1e-10,
+    )
+    assert set(eglm.relativities.keys()) == set(predictors)
 
 
 def test_easyglm_blueprint_uses_training_rows_only(synthetic_insurance_data):
@@ -315,12 +292,15 @@ def test_easyglm_blueprint_uses_training_rows_only(synthetic_insurance_data):
         weight_col="Exposure",
         train_test_col="traintest",
         divide_target_by_weight=True,
-        use_cv=False,
+        alpha=0.01,
     )
 
-    train_bp = generate_blueprint(df.filter(pl.col("traintest") == 1))
-    for var in predictors:
-        assert eglm.blueprint[var] == train_bp[var]
+    train_spec = DesignSpec.from_data(
+        df.filter(pl.col("traintest") == 1), predictors, weight_col="Exposure"
+    )
+    assert eglm.spec.to_dict() == train_spec.to_dict()
+    full_spec = DesignSpec.from_data(df, predictors, weight_col="Exposure")
+    assert eglm.spec.to_dict() != full_spec.to_dict()
 
 
 def test_easyglm_requires_train_test_col(synthetic_insurance_data):
@@ -332,7 +312,7 @@ def test_easyglm_requires_train_test_col(synthetic_insurance_data):
             model_type="Poisson",
             predictors=["VehAge"],
             train_test_col="traintest",
-            use_cv=False,
+            alpha=0.01,
         )
 
 
@@ -346,7 +326,7 @@ def test_easyglm_custom_train_test_col_name(synthetic_insurance_data):
         weight_col="Exposure",
         train_test_col="is_train",
         divide_target_by_weight=True,
-        use_cv=False,
+        alpha=0.01,
     )
     assert eglm.rate_model.metadata.train_test_col == "is_train"
     holdout = df.filter(pl.col("is_train") == 0)
@@ -373,7 +353,7 @@ def test_easyglm_serialization(synthetic_insurance_data, tmp_path):
         predictors=predictors,
         weight_col="Exposure",
         divide_target_by_weight=True,
-        use_cv=False,
+        alpha=0.01,
         base_rate=0.05,
     )
 
@@ -381,7 +361,7 @@ def test_easyglm_serialization(synthetic_insurance_data, tmp_path):
     eglm.save(model_dir)
 
     assert (model_dir / "glm_model.joblib").exists()
-    assert (model_dir / "blueprint.json").exists()
+    assert (model_dir / "spec.json").exists()
     assert (model_dir / "rate_model.json").exists()
     assert (model_dir / "config.json").exists()
     assert (model_dir / "rate_tables").is_dir()

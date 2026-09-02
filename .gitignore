@@ -53,3 +53,11 @@ actual_vs_expected.png
 model.easyglm
 editor_data.parquet
 french_motor.easyglm
+
+# local artifacts
+my_model/
+demo_model/
+discardpy
+scripts/job-logs.txt
+french_motor_spec.json
+french_motor.easyglm

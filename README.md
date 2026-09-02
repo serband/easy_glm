@@ -15,12 +15,14 @@ pip install git+https://github.com/serband/easy_glm.git
 
 ## 1. Fit a model (one shot)
 
-Most of the time you only need **`EasyGLM.fit`**. It bins numeric factors, lumps
-sparse categoricals, runs cross-validated LASSO, and builds lookup-table relativities.
+Most of the time you only need **`EasyGLM.fit`**. It builds a *design spec*
+(step knots for numeric factors, one-hot with an `Other` bucket for
+categoricals), fits an L1-penalised GLM with glum, and reads **exact** rate
+tables and a calibrated base rate straight off the coefficients.
 
 Add a **`traintest`** column to your data: **1 = train** (fitting), **0 = holdout**
 (validation). Pass the full dataframe; only `traintest == 1` rows are used to
-build bins and fit the GLM.
+build the spec and fit the GLM.
 
 ```python
 import easy_glm
@@ -29,10 +31,7 @@ import numpy as np
 
 df = easy_glm.load_external_dataframe()
 df = df.with_columns(
-    pl.when(pl.lit(np.random.rand(df.height) < 0.7))
-    .then(1)
-    .otherwise(0)
-    .alias("traintest")
+    pl.Series("traintest", np.random.rand(len(df)) < 0.7, dtype=pl.Int64)
 )
 
 predictors = ["VehAge", "Region", "VehGas", "DrivAge", "BonusMalus", "Density"]
@@ -44,107 +43,99 @@ eglm = easy_glm.EasyGLM.fit(
     predictors=predictors,
     weight_col="Exposure",
     train_test_col="traintest",
-    divide_target_by_weight=True,
-    use_cv=True,
-    base_rate=0.05,
+    divide_target_by_weight=True,   # frequency = ClaimNb / Exposure
+    cv=5,                           # or alpha=0.001 for a quick fit
+    monotone={"BonusMalus": "increasing"},   # optional sign constraints
 )
-
-test = df.filter(pl.col("traintest") == 0)
-preds = eglm.rate_model.predict(test)
-print(f"Test A/E: {test['ClaimNb'].sum() / preds.sum():.4f}")
-
-# Ship the model
-eglm.rate_model.to_json("model.easyglm")
+print(eglm)
 ```
 
-Families: `"Poisson"`, `"Gamma"`, `"Gaussian"`, `"Binomial"`.
+Families: `"Poisson"`, `"Gamma"`, `"Tweedie"`, `"Gaussian"` (all log link),
+`"Binomial"` (logit; no multiplicative tables).
 
-If your split column is not named `traintest`, pass `train_test_col="your_column"`.
+### View relativities
 
-**Performance.** On large portfolios (e.g. the bundled French motor set, ~680k rows),
-default `use_cv=True` can take **several minutes** — glum searches many alphas ×
-`l1_ratio` values. For interactive work, use a smaller sample, turn CV off, or
-narrow the search:
+Per-variable tables are on **`eglm.relativities`** — a dict of Polars frames with
+`from` / `to` (bin edges or level), `label`, `coef`, `relativity` and `is_base`.
+Relativity 1.0 sits on the most exposed bin of each variable; the null / `Other`
+row is last. `eglm.coef_table(drop_zero=True)` lists the knots and levels the
+lasso kept.
 
 ```python
-# faster iteration (~seconds on full French motor data)
-eglm = easy_glm.EasyGLM.fit(..., use_cv=False)
+print(eglm.relativities["DrivAge"])
+print(eglm.coef_table(drop_zero=True))
 
-# still CV, but much smaller grid
-eglm = easy_glm.EasyGLM.fit(
-    ...,
-    use_cv=True,
-    cv_params={"n_alphas": 5, "l1_ratio": [1.0]},
-)
+# Optional: matplotlib charts
+easy_glm.plot_all_ratetables(eglm.relativities)
 ```
+
+### Score
+
+`eglm.rate_model` is a portable lookup-table scorer. It **reproduces the GLM
+exactly** (to floating-point precision), nulls and unseen levels included, and
+its base rate is calibrated automatically (pass `base_rate=` to override).
+
+```python
+test = df.filter(pl.col("traintest") == 0)
+preds = eglm.rate_model.predict(test)          # multiplied by Exposure
+freq = eglm.predict(test)                      # GLM, per unit exposure
+print(f"Test A/E: {test['ClaimNb'].sum() / preds.sum():.4f}")
+
+eglm.save("my_model")                          # spec + glum model + tables
+eglm.rate_model.to_json("model.easyglm")       # scorer only
+eglm.to_excel("rate_tables.xlsx")              # Summary, Coefficients, one sheet per variable
+```
+
+Any `RateModel` — including one edited in the browser and downloaded as
+`.easyglm` — exports the same way: `RateModel.from_json("revised.easyglm").to_excel("revised.xlsx")`.
+
+**Performance.** On the bundled French motor set (~680k rows, 6 predictors) a
+fixed-`alpha` fit takes about a second and `cv=5` over a 20-point alpha path
+around 10–20 seconds; peak memory is ~1 GB (the design matrix is dense float64).
 
 ---
 
-## 2. Fit step-by-step (when you need control)
+## 2. Building blocks (when you need control)
 
-Use the segmented pipeline if you want a **custom blueprint**, several fits on the
-same prepared data, or to inspect tables between stages.
-
-`EasyGLM.fit` runs these steps internally — `fit_lasso_glm` is **not** a separate
-product; it only fits on **already prepared** columns (step 3).
+`EasyGLM.fit` is three calls you can make yourself:
 
 | Step | Function | What it does |
 |------|----------|--------------|
-| 1 | `generate_blueprint(train_df)` | Quantile breaks (numeric), lump rare levels (categorical) — **train only** |
-| 2 | `prepare_data(...)` | DuckDB transforms → model-ready features |
-| 3 | `fit_lasso_glm(prepped, ..., train_test_col=...)` | CV LASSO on rows where split **== 1** |
-| 4 | `generate_all_ratetables(...)` | One relativity table per predictor |
-| 5 | `RateModel.from_rate_tables(...)` | Portable scorer + editor input |
+| 1 | `DesignSpec.from_data(train_df, predictors)` | Quantile knots per numeric, frequency-ordered levels per categorical — **train only**. JSON round-trip; edit by hand. |
+| 2 | `fit_glm(train_df, spec, target, ...)` | glum L1/elastic-net fit on `spec.build(train_df)`; `alpha=` or `cv=`; `monotone=` |
+| 3 | `rate_tables(fit)` / `to_rate_model(fit)` | Exact relativities + base rate from the coefficients |
 
 ```python
-from easy_glm.engine import RateModel
+from easy_glm import DesignSpec, fit_glm, rate_tables, to_rate_model
 
 train_df = df.filter(pl.col("traintest") == 1)
 
-blueprint = easy_glm.generate_blueprint(train_df)
-
-prepped = easy_glm.prepare_data(
-    df=df,
-    modelling_variables=predictors,
-    additional_columns=["Exposure", "ClaimNb", "traintest"],
-    formats=blueprint,
-    traintest_column="traintest",
-    table_name="cars",
-)
-
-model = easy_glm.fit_lasso_glm(
-    dataframe=prepped,
-    target="ClaimNb",
-    model_type="Poisson",
+spec = DesignSpec.from_data(
+    train_df, predictors,
+    n_bins=20, min_level_share=0.0025,
+    knots={"VehAge": list(range(1, 21))},     # hand-picked knots
     weight_col="Exposure",
-    train_test_col="traintest",
-    divide_target_by_weight=True,
-    use_cv=True,
 )
 
-all_tables = easy_glm.generate_all_ratetables(
-    model=model,
-    dataset=df,
-    predictor_variables=predictors,
-    blueprint=blueprint,
+fit = fit_glm(
+    train_df, spec, target="ClaimNb", family="poisson",
+    weight_col="Exposure", divide_target_by_weight=True,
+    alpha=0.001, monotone={"DrivAge": "decreasing"},
 )
+print(fit.coef_table(drop_zero=True))
 
-rm = RateModel.from_rate_tables(
-    all_tables=all_tables,
-    blueprint=blueprint,
-    base_rate=0.05,
-    model_type="poisson",
-    target="ClaimNb",
-    weight_col="Exposure",
-    exposure_col="Exposure",
-    train_test_col="traintest",
-)
+tables = rate_tables(fit)
+rm = to_rate_model(fit, exposure_col="Exposure", train_test_col="traintest")
 rm.to_json("model.easyglm")
 ```
 
-Shortcut for steps 4–5: `RateModel.from_glm_model(model, dataset=df, blueprint=blueprint, ...)`.
-
 Full script: [`examples/advanced_pipeline.py`](examples/advanced_pipeline.py).
+
+> **Upgrading from 0.2?** `generate_blueprint`, `prepare_data`, `fit_lasso_glm`,
+> `ratetable` and `generate_all_ratetables` still work but are deprecated and
+> will be removed in 0.4 (`prepare_data` needs `pip install "easy_glm[legacy]"`
+> for DuckDB). Models saved by 0.2 must be refitted. `use_cv=False` now requires
+> `alpha=`: the old fast path silently returned an almost unregularised model.
 
 ---
 
@@ -184,11 +175,38 @@ Install UI dependencies if needed: `pip install "easy_glm[ui]"` (Streamlit + Plo
 
 ---
 
+## 4. The Workbench — the whole workflow in the browser
+
+```bash
+pip install "easy_glm[ui]"
+easy-glm-workbench                      # or: python -m easy_glm.app my.easyglm-project.json
+```
+
+An Emblem-style GUI over the same engine. Nine pages, one project file:
+
+| Page | What you do |
+|------|-------------|
+| Project & data | open/save a project, point at parquet / csv / sas7bdat / xlsx, optional sample |
+| Variables | roles (target, weight, exposure, offset, split, id, predictor, ignore), renames, type overrides, **level recodes**, derived columns (polars expressions), row filters |
+| Explore | exposure & observed rate by band; **leakage report** (single-factor deviance explained, target proxies, identifier-like columns, post-outcome names) with one-click ignore / acknowledge |
+| Split | indicator column or seeded random split; train/holdout balance |
+| Design | per-predictor knots (quantile / integer / custom), null column, level share, monotone direction; exposure + rate preview per bin |
+| Model | family, target/weight/offset, penalty (fixed alpha or CV), predictors; fit; coefficients kept; regularisation path |
+| Diagnostics | A/E by any variable (in or out of the model, champion vs challenger), lift & Gini, double lift vs a challenger or a premium column, residual factor search |
+| Rate tables | relativities with A/E, inline edits saved as adjustments (no refit), Excel / `.easyglm` download |
+| Export | the whole workflow as a **runnable Python script** (explicit knots, levels, resolved alpha, adjustments), project JSON, artefacts |
+
+Everything the GUI does edits a `Project` spec (`easy_glm.workflow`) that is autosaved
+as JSON; the exported script reproduces the GUI model exactly (this is tested).
+Design notes: [`docs/WORKBENCH_PLAN.md`](docs/WORKBENCH_PLAN.md).
+
+---
+
 ## Install (development)
 
 ```bash
-python setup_dev.py          # editable install + venv
-# or: uv pip install git+https://github.com/serband/easy_glm.git
+uv venv && uv pip install -e ".[dev,ui]"
+# or: python scripts/setup_dev.py
 ```
 
 Python **3.10–3.13**. Optional extras: `[ui]`, `[dev]`, `[viz]`.
@@ -198,16 +216,21 @@ Python **3.10–3.13**. Optional extras: `[ui]`, `[dev]`, `[viz]`.
 ## Architecture
 
 ```
-Raw data → blueprint → prepare_data → fit_lasso_glm → rate tables → RateModel (.easyglm)
-                                              ↑
-                                    EasyGLM.fit() runs all of this
+Raw data → DesignSpec → fit_glm (glum) → rate_tables / to_rate_model → RateModel (.easyglm)
+                                   ↑
+                         EasyGLM.fit() runs all of this
 ```
 
 | Component | Role |
 |-----------|------|
+| `DesignSpec` | Feature definitions (step knots, levels); builds the design matrix; JSON |
+| `fit_glm` / `GLMFit` | Penalised glum fit, coefficient table, predictions |
+| `rate_tables` / `to_rate_model` | Exact relativities and base rate from coefficients |
+| `to_excel` / `write_rate_tables_xlsx` | Rate tables as an `.xlsx` workbook (one sheet per variable) |
+| `easy_glm.workflow` | `Project` spec, prep steps, leakage report, diagnostics, `run_model`, `to_script` |
+| `easy_glm.app` | Streamlit workbench over the workflow engine |
 | `EasyGLM` | One-call fit, save/load full pipeline |
 | `RateModel` | Production scoring, A/E, JSON roundtrip, editor |
-| `fit_lasso_glm` | Low-level glum fit on prepared features only |
 
 Package layout, benchmarks, and module map: see [`AGENTS.md`](AGENTS.md).
 
@@ -225,9 +248,11 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Roadmap
 
-- [ ] Automated monotonic binning / isotonic smoothing
+- [x] Monotone constraints (`monotone={"DrivAge": "decreasing"}`)
+- [x] Configurable knots / levels per variable (`DesignSpec`)
+- [ ] Two-way interactions (`A × B` tables)
+- [ ] Piecewise-linear (L-dummy) terms
 - [ ] CLI (`python -m easy_glm build ...`)
-- [ ] Configurable blueprint strategies
 - [ ] Drag-to-edit relativities (GAMChanger-style)
 - [ ] Multi-model A/E comparison in the editor
 

@@ -1,7 +1,14 @@
-import duckdb
+from __future__ import annotations
+
+import warnings
+from typing import TYPE_CHECKING
+
 import polars as pl
 
-from .transforms import lump_fun, o_matrix, quote_identifier
+from .transforms import o_matrix, one_hot_fun, quote_identifier
+
+if TYPE_CHECKING:  # pragma: no cover
+    import duckdb
 
 
 def prepare_data(
@@ -18,7 +25,19 @@ def prepare_data(
     Note:
         If a column's blueprint is empty, it will be skipped during data preparation.
         If all columns are skipped, an empty DataFrame will be returned.
+
+    .. deprecated:: 0.3
+        Use :meth:`easy_glm.DesignSpec.build`. Requires the optional
+        ``duckdb`` dependency (``pip install "easy_glm[legacy]"``).
     """
+    warnings.warn(
+        "prepare_data is deprecated since easy_glm 0.3 and will be removed in 0.4; "
+        "use DesignSpec.build instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    import duckdb
+
     if formats is None:
         formats = {}
     _own_connection = False
@@ -30,11 +49,12 @@ def prepare_data(
                 f"CREATE TABLE {quote_identifier(table_name)} AS SELECT * FROM df"
             )
         else:
-            con = duckdb.connect()
+            raise ValueError("Either 'df' or 'con' must be provided to prepare_data.")
     else:
-        if not isinstance(con, duckdb.DuckDBPyConnection):  # pragma: no cover
-            print(
-                "Warning: The provided connection is not a duckdb connection. Proceeding anyway."
+        if not isinstance(con, duckdb.DuckDBPyConnection):
+            raise TypeError(
+                "The 'con' argument must be a duckdb.DuckDBPyConnection, "
+                f"got {type(con).__name__}"
             )
     table_reference = quote_identifier(table_name)
     tables = con.execute("SHOW TABLES").fetchall()
@@ -64,7 +84,7 @@ def prepare_data(
             if all(isinstance(x, int | float) for x in dict_values):
                 expressions.extend(o_matrix(var, dict_values))
             else:
-                expressions.append(lump_fun(var, dict_values))
+                expressions.extend(one_hot_fun(var, dict_values))
         else:
             expressions.append(quote_identifier(var))
     for col in additional_columns:

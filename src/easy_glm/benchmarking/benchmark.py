@@ -166,7 +166,8 @@ def _run_dataset_benchmarks(
     df: pl.DataFrame,
 ) -> list[dict[str, Any]]:
     family_key = dataset_name.lower()
-    fam_label = _FAMILIES[family_key]
+    if family_key not in _FAMILIES:
+        raise ValueError(f"Unknown benchmark family {dataset_name!r}")
     results: list[dict[str, Any]] = []
 
     x_train, y_train, w_train, x_test, y_test, w_test = _prep_train_test(df)
@@ -179,14 +180,14 @@ def _run_dataset_benchmarks(
     rows = [
         (
             "easy_glm (no CV)",
-            lambda x=x_train, y=y_train, w=w_train, fl=fam_label: _fit_easy_glm(
-                x, y, w, fl, use_cv=False
+            lambda x=x_train, y=y_train, w=w_train, fk=family_key: _fit_easy_glm(
+                x, y, w, fk, use_cv=False
             ),
         ),
         (
             "easy_glm (CV)",
-            lambda x=x_train, y=y_train, w=w_train, fl=fam_label: _fit_easy_glm(
-                x, y, w, fl, use_cv=True
+            lambda x=x_train, y=y_train, w=w_train, fk=family_key: _fit_easy_glm(
+                x, y, w, fk, use_cv=True
             ),
         ),
         (

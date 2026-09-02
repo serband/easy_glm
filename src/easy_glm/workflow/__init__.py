@@ -1,0 +1,97 @@
+"""Declarative modelling workflow: Project spec → prep → explore → run → export.
+
+This is the GUI-agnostic engine behind the workbench (``easy_glm.app``); every
+function here is usable from plain Python as well.
+"""
+
+from .diagnostics import (
+    ae_by_variable,
+    alpha_path,
+    deviance_stats,
+    double_lift,
+    gini,
+    lift_table,
+    model_metrics,
+    residual_factor_search,
+    totals,
+    unit_values,
+)
+from .explore import leakage_report, single_factor_strength, univariate
+from .export import to_script
+from .prep import (
+    add_split_column,
+    apply_variables,
+    column_summary,
+    eval_expr,
+    infer_source_type,
+    load_source,
+    prepare,
+    train_holdout,
+)
+from .project import (
+    Adjustment,
+    DataConfig,
+    DataSource,
+    Derived,
+    DesignConfig,
+    DesignDefaults,
+    ModelConfig,
+    Penalty,
+    Project,
+    Recode,
+    Split,
+    VariableDesign,
+)
+from .run import (
+    ModelRun,
+    build_design,
+    encoder_for,
+    exposure_for,
+    monotone_for,
+    rebuild_rate_model,
+    run_model,
+)
+
+__all__ = [
+    "Project",
+    "DataConfig",
+    "DataSource",
+    "Recode",
+    "Derived",
+    "Split",
+    "DesignConfig",
+    "DesignDefaults",
+    "VariableDesign",
+    "ModelConfig",
+    "Penalty",
+    "Adjustment",
+    "load_source",
+    "infer_source_type",
+    "eval_expr",
+    "apply_variables",
+    "add_split_column",
+    "train_holdout",
+    "prepare",
+    "column_summary",
+    "univariate",
+    "leakage_report",
+    "single_factor_strength",
+    "build_design",
+    "encoder_for",
+    "monotone_for",
+    "run_model",
+    "rebuild_rate_model",
+    "exposure_for",
+    "ModelRun",
+    "totals",
+    "unit_values",
+    "deviance_stats",
+    "lift_table",
+    "gini",
+    "double_lift",
+    "ae_by_variable",
+    "residual_factor_search",
+    "alpha_path",
+    "model_metrics",
+    "to_script",
+]

@@ -4,28 +4,12 @@ import plotly.graph_objects as go
 import polars as pl
 from plotly.subplots import make_subplots
 
-from easy_glm.engine.models import FromToRow, VariableConfig
+from easy_glm.engine.models import VariableConfig, level_labels
 
 BLUE = "#1f77b4"
 ORANGE = "#ff7f0e"
 GREEN = "#2ca02c"
 RED = "#d62728"
-
-
-def _level_labels(rows: list[FromToRow]) -> list[str]:
-    labels: list[str] = []
-    for row in rows:
-        if row.from_ is None and row.to_ is None:
-            labels.append("Other / Unknown")
-        elif row.from_ is None:
-            labels.append(f"< {row.to_}")
-        elif row.to_ is None:
-            labels.append(f"≥ {row.from_}")
-        elif row.from_ == row.to_:
-            labels.append(str(row.from_))
-        else:
-            labels.append(f"[{row.from_}, {row.to_})")
-    return labels
 
 
 def build_histogram(
@@ -64,7 +48,7 @@ def build_relativity_chart(
     variable: str,
     height: int = 400,
 ) -> go.Figure:
-    labels = _level_labels(config.table)
+    labels = level_labels(config.table)
     rels = [row.relativity for row in config.table]
     fig = go.Figure()
 
@@ -125,7 +109,7 @@ def build_relativity_comparison(
     height: int = 400,
 ) -> go.Figure:
     """Overlay baseline (dashed) and working copy (solid) relativities."""
-    labels = _level_labels(baseline.table)
+    labels = level_labels(baseline.table)
     rels_base = [r.relativity for r in baseline.table]
     rels_work = [r.relativity for r in working.table]
     fig = go.Figure()
@@ -205,7 +189,6 @@ def build_ae_comparison(
     """Overlay baseline and working copy Actual vs Expected."""
     subsets_b = metrics_base["subsets"]
     subsets_w = metrics_work.get("subsets", subsets_b)
-    has_split = "train" in subsets_b and "test" in subsets_b
 
     train_rows = subsets_b.get("train", subsets_b.get("all", []))
     labels = [r["level"] for r in train_rows] if train_rows else []

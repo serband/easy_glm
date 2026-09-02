@@ -1,135 +1,116 @@
-"""Step-by-step pipeline (advanced): blueprint → prep → fit_lasso_glm → RateModel.
+"""Step-by-step pipeline: DesignSpec → fit_glm → rate tables → RateModel.
 
-Use this when you need control between stages. Most users should prefer
-``examples/basic_usage.py`` (``EasyGLM.fit``).
+Use this when you need control between stages (hand-tuned knots, several
+fits on one design, monotone constraints, inspecting coefficients). Most
+users should start with ``basic_usage.py`` (``EasyGLM.fit``).
 
-Run from project root:
-    PYTHONPATH=src python examples/advanced_pipeline.py
+Run as a script:
+    python examples/advanced_pipeline.py
 """
 
-import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 
 import easy_glm
 from easy_glm.engine import RateModel
 
-raw = easy_glm.load_external_dataframe()
-raw = raw.with_columns(
-    (pl.Series(np.random.rand(raw.height)) < 0.7).cast(pl.Int8).alias("traintest")
+# ---------------------------------------------------------------------------
+# 0. Load data & split
+# ---------------------------------------------------------------------------
+
+df = easy_glm.load_external_dataframe()
+rng = np.random.default_rng(42)
+df = df.with_columns(pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64))
+train_df = df.filter(pl.col("traintest") == 1)
+holdout = df.filter(pl.col("traintest") == 0)
+
+PREDICTORS = ["VehAge", "Region", "VehGas", "DrivAge", "BonusMalus", "Density"]
+
+# ---------------------------------------------------------------------------
+# 1. Design spec — how each predictor becomes features. Built on TRAIN rows
+#    only. Numeric -> step knots (1{x >= k}), categorical -> one-hot + Other.
+# ---------------------------------------------------------------------------
+
+spec = easy_glm.DesignSpec.from_data(
+    train_df,
+    PREDICTORS,
+    n_bins=20,  # quantile knots per numeric variable
+    min_level_share=0.0025,  # rarer levels are lumped into "Other"
+    knots={"VehAge": list(range(1, 21))},  # or hand-pick knots per variable
+    weight_col="Exposure",  # level frequencies weighted by exposure
 )
-
-predictors = ["VehAge", "Region", "VehGas", "DrivAge", "BonusMalus", "Density"]
-
-blueprint = easy_glm.generate_blueprint(raw)
-
-prepped = easy_glm.prepare_data(
-    df=raw,
-    modelling_variables=predictors,
-    additional_columns=["Exposure", "ClaimNb", "traintest"],
-    formats=blueprint,
-    traintest_column="traintest",
-    table_name="cars",
+print(spec)
+print("VehAge knots:", spec["VehAge"].knots[:5], "...")
+print(
+    "Region levels:",
+    spec["Region"].levels[:4],
+    "... reference =",
+    spec["Region"].reference,
 )
+print("Design matrix:", spec.n_features, "columns")
+spec.to_json("french_motor_spec.json")  # JSON round-trip; edit by hand if you like
 
-model = easy_glm.fit_lasso_glm(
-    dataframe=prepped,
+# ---------------------------------------------------------------------------
+# 2. Fit — L1-penalised GLM via glum on spec.build(train). Pass alpha for a
+#    quick fit or cv=k to pick it by cross-validation. Optional monotone
+#    constraints on numeric variables (sign bounds on the step increments).
+# ---------------------------------------------------------------------------
+
+fit = easy_glm.fit_glm(
+    train_df,
+    spec,
     target="ClaimNb",
-    model_type="Poisson",
+    family="poisson",
     weight_col="Exposure",
-    train_test_col="traintest",
-    use_cv=True,
-    divide_target_by_weight=True,
+    divide_target_by_weight=True,  # frequency = ClaimNb / Exposure
+    alpha=0.001,  # or: cv=5, n_alphas=20
+    monotone={"BonusMalus": "increasing"},
 )
+print(fit)
+print(fit.coef_table(drop_zero=True))  # only the knots/levels the lasso kept
 
-vehage_tbl = easy_glm.ratetable(
-    model=model,
-    dataset=raw,
-    col_name="VehAge",
-    levels=blueprint["VehAge"],
-    prepare=lambda d: easy_glm.prepare_data(
-        df=d,
-        modelling_variables=predictors,
-        formats=blueprint,
-        table_name="line_prepped",
-    ),
-    random_seed=42,
-)
-print(vehage_tbl.head())
+# ---------------------------------------------------------------------------
+# 3. Rate tables — exact, straight off the coefficients. Relativity 1.0 sits
+#    on the most exposed bin (base="modal"); base_rate is the prediction for
+#    that base risk.
+# ---------------------------------------------------------------------------
 
-all_tables = easy_glm.generate_all_ratetables(
-    model=model,
-    dataset=raw,
-    predictor_variables=predictors,
-    blueprint=blueprint,
-)
-print(f"Generated {len(all_tables)} rate tables: {list(all_tables)}")
+tables = easy_glm.rate_tables(fit)
+print("\nVehAge table:")
+print(tables["VehAge"])
+print("base rate:", easy_glm.base_rate(fit))
 
-rm = RateModel.from_rate_tables(
-    all_tables=all_tables,
-    blueprint=blueprint,
-    base_rate=0.1,
-    model_type="poisson",
-    target="ClaimNb",
-    weight_col="Exposure",
-    exposure_col="Exposure",
-    train_test_col="traintest",
+# ---------------------------------------------------------------------------
+# 4. RateModel — portable lookup-table scorer; reproduces the GLM exactly.
+# ---------------------------------------------------------------------------
+
+rm = easy_glm.to_rate_model(fit, exposure_col="Exposure", train_test_col="traintest")
+glm_pred = fit.predict(holdout)  # per unit exposure
+rm_pred = rm.predict(holdout, exposure_col=None)
+print("\nmax |RateModel / GLM - 1| on holdout:", np.abs(rm_pred / glm_pred - 1).max())
+# → ~1e-16
+
+# ---------------------------------------------------------------------------
+# 5. A/E on holdout, per variable
+# ---------------------------------------------------------------------------
+
+holdout_freq = holdout.with_columns(
+    (pl.col("ClaimNb") / pl.col("Exposure")).alias("ClaimNb")
 )
+overall = holdout["ClaimNb"].sum() / rm.predict(holdout).sum()
+print(f"\nOverall holdout A/E: {overall:.4f}")
+for var in PREDICTORS:
+    buckets = rm.compute_ae_for_variable(holdout_freq, var)["subsets"]["all"]
+    actual = sum(b["actual"] * b["exposure"] for b in buckets)
+    expected = sum(b["expected"] * b["exposure"] for b in buckets)
+    print(f"  {var:12s} A/E = {actual / expected:.4f}  ({len(buckets)} rows)")
+
+# ---------------------------------------------------------------------------
+# 6. Optional charts, save & reload
+# ---------------------------------------------------------------------------
+
+# easy_glm.plot_all_ratetables(tables)
+
 rm.to_json("french_motor.easyglm")
-print("Exported model to french_motor.easyglm")
-
 loaded = RateModel.from_json("french_motor.easyglm")
-
-sample = raw.head(3)
-print(f"Predictions (with exposure): {loaded.predict(sample)}")
-
-test_data = raw.filter(pl.col("traintest") == 0)
-test_preds = loaded.predict(test_data)
-print(f"Overall Test A/E: {test_data['ClaimNb'].sum() / test_preds.sum():.4f}")
-
-if __name__ == "__main__":
-    # Optional matplotlib A/E grid (same as former basic_usage.py)
-    scored = test_data.with_columns(pred=pl.Series("pred", test_preds))
-    plt.style.use("seaborn-v0_8-whitegrid")
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10), facecolor="white")
-    axes = axes.flatten()
-    for i, var in enumerate(predictors):
-        bins = blueprint[var]
-        is_num = bins and isinstance(bins[0], int | float)
-        ae = (
-            scored.with_columns(
-                grouping=(
-                    pl.col(var).qcut(10, allow_duplicates=True)
-                    if is_num
-                    else pl.col(var).cast(pl.Utf8)
-                ),
-                _val=pl.col(var) if is_num else pl.lit(None),
-            )
-            .group_by("grouping")
-            .agg(
-                actual=pl.col("ClaimNb").sum() / pl.col("Exposure").sum(),
-                expected=pl.col("pred").sum() / pl.col("Exposure").sum(),
-                exposure=pl.col("Exposure").sum(),
-                mid=pl.col("_val").mean() if is_num else pl.lit(None),
-            )
-            .sort("grouping")
-        ).to_pandas()
-        x = range(len(ae))
-        ax = axes[i]
-        labels = ae["mid"].round(1) if is_num else ae["grouping"]
-        ax.bar(
-            x,
-            ae["exposure"] / ae["exposure"].sum(),
-            color="#c0c0c0",
-            alpha=0.6,
-            zorder=1,
-        )
-        ax.plot(x, ae["actual"], "o-", color="#1f77b4", linewidth=2, zorder=3)
-        ax.plot(x, ae["expected"], "s--", color="#ff7f0e", linewidth=2, zorder=3)
-        ax.set_title(var, fontweight="bold")
-        ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
-        ax.grid(True, alpha=0.3)
-    fig.suptitle("Actual vs Expected — test set", fontsize=13, fontweight="bold")
-    fig.tight_layout()
-    plt.show()
+print("\nReloaded predictions:", loaded.predict(holdout.head(3)))

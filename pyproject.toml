@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easy_glm"
-version = "0.2.2"
+version = "0.3.0"
 description = "Automate insurance pricing with LASSO-regularised GLMs – blueprint generation, preprocessing, model fitting, rate table extraction & plotting. Built on glum."
 readme = "README.md"
 authors = [
@@ -23,7 +23,6 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "duckdb>=1.3.0",
     "polars>=1.17.0",
     "numpy>=1.24.0",
     "pyarrow>=14.0.0",
@@ -32,11 +31,14 @@ dependencies = [
     "seaborn>=0.12.0",
     "scikit-learn>=1.3.0",
     "pandas>=2.0.0",
-    "numba>=0.61.0",       # ensures Py3.13-compatible llvmlite
-    "llvmlite>=0.44.0",    # ensures Py3.13-compatible
     "rdata>=0.9.0",        # for R data file parsing
+    "joblib>=1.0.0",
+    "xlsxwriter>=3.0.0",   # Excel rate-table export
 ]
 
+
+[project.scripts]
+easy-glm-workbench = "easy_glm.app.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/serband/easy_glm"
@@ -45,6 +47,9 @@ Issues = "https://github.com/serband/easy_glm/issues"
 
 [project.optional-dependencies]
 dev = [
+    "duckdb>=1.3.0",       # legacy prepare_data tests
+    "streamlit>=1.45.0",   # workbench + editor tests (AppTest)
+    "plotly>=5.15.0",
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "black>=23.0.0",
@@ -55,11 +60,18 @@ dev = [
     "twine>=4.0.0",
 ]
 ui = [
-    "streamlit>=1.28.0",
+    "streamlit>=1.45.0",   # workbench uses st.navigation, badges, width="stretch"
     "plotly>=5.15.0",
 ]
 viz = [
     "plotnine>=0.14.0",
+]
+legacy = [
+    "duckdb>=1.3.0",       # deprecated prepare_data() path
+]
+benchmark = [
+    "statsmodels>=0.14.0",
+    "catboost>=1.2.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -76,7 +88,13 @@ target-version = ['py310']
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+# exploratory / one-off scripts are formatted but not linted
+extend-exclude = ["scripts", "examples/new_scoring_prototype.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "B", "C4", "UP"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Streamlit pages: short module aliases (S = state, C = charts) and plotly's dict() idiom
+"src/easy_glm/app/*" = ["N812", "C408"]

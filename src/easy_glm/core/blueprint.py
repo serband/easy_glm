@@ -1,3 +1,4 @@
+import warnings
 from typing import Any
 
 import numpy as np
@@ -17,37 +18,58 @@ def generate_blueprint(
     Note:
         Null values are dropped from each column before generating the blueprint.
         If a column contains only null values, its blueprint will be an empty list.
+
+    .. deprecated:: 0.3
+        Use :meth:`easy_glm.DesignSpec.from_data`.
     """
+    warnings.warn(
+        "generate_blueprint is deprecated since easy_glm 0.3 and will be removed in 0.4; "
+        "use DesignSpec.from_data instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     blueprint: dict[str, Any] = {}
     for column in dataframe.columns:
-        try:
-            col_data = dataframe[column]
+        col_data = dataframe[column]
 
-            # Filter out nulls for processing
-            col_data_non_null = col_data.drop_nulls()
+        # Filter out nulls for processing
+        col_data_non_null = col_data.drop_nulls()
 
-            # Handle all null columns or empty after dropping nulls
-            if col_data_non_null.is_empty():
+        # Handle all null columns or empty after dropping nulls
+        if col_data_non_null.is_empty():
+            blueprint[column] = []
+            continue
+
+        dtype = col_data.dtype
+        if dtype in [pl.Float32, pl.Float64, pl.Int32, pl.Int64]:
+            quantiles = np.arange(0.05, 1.05, 0.05).tolist()
+            try:
+                breaks = [col_data_non_null.quantile(q) for q in quantiles]
+            except Exception:
+                warnings.warn(
+                    f"Could not compute quantiles for column '{column}'; "
+                    f"using empty blueprint",
+                    stacklevel=2,
+                )
                 blueprint[column] = []
                 continue
-
-            dtype = col_data.dtype
-            if dtype in [pl.Float32, pl.Float64, pl.Int32, pl.Int64]:
-                quantiles = np.arange(0.05, 1.05, 0.05).tolist()
-                breaks = [col_data_non_null.quantile(q) for q in quantiles]
-                unique_breaks = sorted(set(breaks))
-                blueprint[column] = unique_breaks
-            else:
+            unique_breaks = sorted(set(breaks))
+            blueprint[column] = unique_breaks
+        else:
+            try:
                 lumped_levels = lump_rare_levels_pl(
                     col_data_non_null, threshold=threshold
                 )
-                levels = np.unique(lumped_levels).tolist()
-                if "Other" in levels:
-                    levels.remove("Other")
-                blueprint[column] = levels
-        except Exception as e:  # pragma: no cover - defensive
-            print(f"Error processing column '{column}': {e}")
-            blueprint[column] = (
-                f"Error: Unable to process this column. Error message: {e}"
-            )
+            except Exception:
+                warnings.warn(
+                    f"Could not lump rare levels for column '{column}'; "
+                    f"using empty blueprint",
+                    stacklevel=2,
+                )
+                blueprint[column] = []
+                continue
+            levels = np.unique(lumped_levels).tolist()
+            if "Other" in levels:
+                levels.remove("Other")
+            blueprint[column] = levels
     return blueprint

@@ -31,6 +31,9 @@ class VariableConfig:
     relativities: np.ndarray | None = None
     cat_map: dict[str, float] | None = None
     fallback: float = 1.0
+    #: numeric only: relativity applied to null values, taken from an optional
+    #: ``FromToRow(None, None, ...)`` row. ``None`` means nulls are an error.
+    null_relativity: float | None = None
 
 
 @dataclass
@@ -59,3 +62,30 @@ class Snapshot:
 class SessionState:
     column_mapping: dict[str, str] = field(default_factory=dict)
     actual_formula: str = "sum_weighted"
+
+
+def level_label(row: FromToRow) -> str:
+    """Human-readable label for a ``FromToRow`` bin.
+
+    ``None``-delimited ends mean open interval::
+
+        < 18    (from_=None,  to_=18)
+        ≥ 38    (from_=38,    to_=None)
+        Other   (from_=None,  to_=None)
+        North   (from_="North", to_="North")
+        [18, 23) (from_=18, to_=23, unequal)
+    """
+    if row.from_ is None and row.to_ is None:
+        return "Other / Unknown"
+    if row.from_ is None:
+        return f"< {row.to_}"
+    if row.to_ is None:
+        return f"≥ {row.from_}"
+    if row.from_ == row.to_:
+        return str(row.from_)
+    return f"[{row.from_}, {row.to_})"
+
+
+def level_labels(rows: list[FromToRow]) -> list[str]:
+    """Convenience: ``[level_label(r) for r in rows]``."""
+    return [level_label(r) for r in rows]
