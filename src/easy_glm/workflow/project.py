@@ -100,8 +100,10 @@ class DataConfig:
 class VariableDesign:
     """Per-variable overrides of the design defaults. ``None`` = inherit."""
 
-    kind: str | None = None  # "step" | "categorical" | None (infer from dtype)
+    kind: str | None = None  # "step" | "linear" | "categorical" | None (infer)
     knots: str | list[float] = "quantile"  # "quantile" | "integer" | explicit list
+    #: linear only: (lo, hi) the value is clipped to; None = training min/max
+    clamp: list[float] | None = None
     n_bins: int | None = None
     null_indicator: bool | None = None
     min_level_share: float | None = None
@@ -273,10 +275,21 @@ class Project:
         if self.data.split.mode == "random" and not 0 < self.data.split.fraction < 1:
             problems.append("split.fraction must be in (0, 1)")
         for var, vd in self.design.variables.items():
-            if vd.kind not in (None, "step", "categorical"):
-                problems.append(f"design[{var!r}].kind must be 'step' or 'categorical'")
+            if vd.kind not in (None, "step", "linear", "categorical"):
+                problems.append(
+                    f"design[{var!r}].kind must be 'step', 'linear' or 'categorical'"
+                )
             if vd.monotone not in (None, "increasing", "decreasing"):
                 problems.append(f"design[{var!r}].monotone invalid")
+            if vd.monotone and vd.kind == "linear":
+                problems.append(
+                    f"design[{var!r}]: monotone constraints are not available for "
+                    "piecewise-linear terms; use a step design or drop the constraint"
+                )
+            if vd.clamp is not None and (
+                len(vd.clamp) != 2 or not float(vd.clamp[0]) < float(vd.clamp[1])
+            ):
+                problems.append(f"design[{var!r}].clamp must be [lo, hi] with lo < hi)")
             if isinstance(vd.knots, str) and vd.knots not in ("quantile", "integer"):
                 problems.append(
                     f"design[{var!r}].knots must be 'quantile', 'integer' or a list"
@@ -305,6 +318,12 @@ class Project:
             for v, d in cfg.monotone.items():
                 if d not in ("increasing", "decreasing"):
                     problems.append(f"{name}: monotone[{v!r}] invalid")
+                vd = self.design.variables.get(v)
+                if vd is not None and vd.kind == "linear":
+                    problems.append(
+                        f"{name}: monotone[{v!r}] — {v!r} is a piecewise-linear term; "
+                        "monotone constraints are not available for linear terms"
+                    )
             seen_pairs: set[frozenset[str]] = set()
             for it in cfg.interactions:
                 if it.a == it.b:

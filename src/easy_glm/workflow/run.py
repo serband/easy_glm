@@ -19,6 +19,7 @@ from easy_glm.core.design import (
     InteractionEncoder,
     StepEncoder,
     frequent_levels,
+    linear_encoder_from_data,
     quantile_knots,
 )
 from easy_glm.core.fit import GLMFit, fit_glm
@@ -56,9 +57,9 @@ def encoder_for(
     d = project.design.defaults
     numeric = series.dtype in NUMERIC_DTYPES
     kind = vd.kind or ("step" if numeric else "categorical")
-    if kind == "step":
+    if kind in ("step", "linear"):
         if not numeric:
-            raise ValueError(f"{variable!r} is not numeric; cannot use a step design")
+            raise ValueError(f"{variable!r} is not numeric; cannot use a {kind} design")
         n_bins = vd.n_bins or d.n_bins
         if isinstance(vd.knots, list | tuple):
             knots: list[float] | None = [float(k) for k in vd.knots]
@@ -68,11 +69,21 @@ def encoder_for(
             )
         else:
             knots = quantile_knots(series, n_bins)
+        null_ind = d.null_indicator if vd.null_indicator is None else vd.null_indicator
+        if kind == "linear":
+            clamp = (float(vd.clamp[0]), float(vd.clamp[1])) if vd.clamp else None
+            return linear_encoder_from_data(
+                variable,
+                series,
+                knots=knots or [],
+                n_bins=n_bins,
+                clamp=clamp,
+                null_indicator=null_ind,
+            )
         if not knots:
             raise ValueError(
                 f"Cannot derive knots for {variable!r} (constant or all-null on train)"
             )
-        null_ind = d.null_indicator if vd.null_indicator is None else vd.null_indicator
         return StepEncoder(variable, knots, null_indicator=null_ind)
     levels = vd.levels or frequent_levels(
         series,

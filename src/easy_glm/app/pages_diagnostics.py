@@ -121,8 +121,8 @@ def render() -> None:
         )
         n_bins = c2.slider("Bands (numeric, not in model)", 5, 50, 20, key="diag_bins")
         knots = (
-            run.spec[var].knots
-            if var in run.spec and hasattr(run.spec[var], "knots")
+            run.spec[var].band_edges()
+            if var in run.spec and hasattr(run.spec[var], "band_edges")
             else None
         )
         tbl = ae_by_variable(

@@ -6,7 +6,12 @@ import pandas as pd
 import polars as pl
 import streamlit as st
 
-from easy_glm.core.design import NUMERIC_DTYPES, CategoricalEncoder, StepEncoder
+from easy_glm.core.design import (
+    NUMERIC_DTYPES,
+    CategoricalEncoder,
+    LinearEncoder,
+    StepEncoder,
+)
 from easy_glm.workflow import VariableDesign, encoder_for, univariate
 
 from . import charts as C
@@ -14,7 +19,7 @@ from . import state as S
 from . import ui
 
 KNOT_OPTIONS = ["quantile", "integer", "custom"]
-KIND_OPTIONS = ["auto", "step", "categorical"]
+KIND_OPTIONS = ["auto", "step", "linear", "categorical"]
 MONO_OPTIONS = ["none", "increasing", "decreasing"]
 
 
@@ -228,6 +233,62 @@ def _detail(train: pl.DataFrame, predictors: list[str]) -> None:
         )
         st.caption(
             f"Design columns: {enc.n_features} · bins: {len(enc.bins())} · null indicator: {enc.null_indicator}"
+        )
+    elif isinstance(enc, LinearEncoder):
+        c2.markdown(
+            f"**Piecewise-linear** · clamp `{enc.lo:g}` – `{enc.hi:g}` "
+            f"(flat outside) · {len(enc.knots)} interior knot(s)"
+        )
+        knots_txt = st.text_area(
+            "Knots where the slope may change (comma-separated; editing switches to custom)",
+            ", ".join(f"{k:g}" for k in enc.knots),
+            height=90,
+            key=f"knots_{var}",
+        )
+        clamp_txt = st.text_input(
+            "Clamp range lo, hi (blank = training min/max)",
+            ", ".join(f"{v:g}" for v in vd.clamp) if vd.clamp else "",
+            key=f"clamp_{var}",
+        )
+        if st.button("Apply knots / clamp", key=f"apply_knots_{var}"):
+            try:
+                knots = sorted(
+                    {
+                        float(x)
+                        for x in knots_txt.replace("\n", ",").split(",")
+                        if x.strip()
+                    }
+                )
+                clamp = [float(x) for x in clamp_txt.split(",") if x.strip()]
+            except ValueError:
+                st.error("Knots and clamp must be numbers")
+            else:
+                if clamp and (len(clamp) != 2 or not clamp[0] < clamp[1]):
+                    st.error("Clamp must be two numbers, lo < hi")
+                else:
+                    vd.knots = knots
+                    vd.clamp = clamp or None
+                    p.design.variables[var] = vd
+                    S.touch()
+                    st.rerun()
+        u = univariate(
+            train,
+            var,
+            target=p.target,
+            weight=p.weight,
+            divide_target_by_weight=divide,
+            knots=enc.band_edges(),
+        )
+        st.plotly_chart(
+            C.exposure_rate_chart(
+                u["table"],
+                title=f"{var}: linear in {len(enc.knots) + 1} band(s) between {enc.lo:g} and {enc.hi:g}",
+            ),
+            width="stretch",
+        )
+        st.caption(
+            f"Design columns: {enc.n_features} · rows in the rate table: {enc.n_rows} · "
+            f"null indicator: {enc.null_indicator}"
         )
     elif isinstance(enc, CategoricalEncoder):
         c2.markdown(

@@ -8,6 +8,7 @@ from easy_glm.core.design import (
     CategoricalEncoder,
     DesignSpec,
     InteractionEncoder,
+    LinearEncoder,
     StepEncoder,
 )
 
@@ -49,6 +50,12 @@ def _spec_code(spec: DesignSpec) -> str:
         elif isinstance(enc, CategoricalEncoder):
             parts.append(
                 f"    {var!r}: CategoricalEncoder({var!r}, {_list(enc.levels)}),"
+            )
+        elif isinstance(enc, LinearEncoder):
+            parts.append(
+                f"    {var!r}: LinearEncoder({var!r}, {_list(enc.knots)}, "
+                f"clamp=({_lit(enc.lo)}, {_lit(enc.hi)}), "
+                f"null_indicator={enc.null_indicator}),"
             )
         elif isinstance(enc, InteractionEncoder):
             inter.append(enc)
@@ -161,6 +168,7 @@ def to_script(
         "    CategoricalEncoder,",
         "    DesignSpec,",
         "    InteractionEncoder,",
+        "    LinearEncoder,",
         "    StepEncoder,",
         "    fit_glm,",
         "    to_rate_model,",
@@ -233,6 +241,17 @@ def to_script(
             *(
                 [f"    interactions={[(it.a, it.b) for it in cfg.interactions]!r},"]
                 if cfg.interactions
+                else []
+            ),
+            *(
+                [f"    linear={linear_vars!r},"]
+                if (
+                    linear_vars := [
+                        v
+                        for v, vd in project.design.variables.items()
+                        if vd.kind == "linear" and v in cfg.predictors
+                    ]
+                )
                 else []
             ),
             ")",

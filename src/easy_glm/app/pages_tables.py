@@ -77,7 +77,8 @@ def render() -> None:
         )
         if not frame.is_empty():
             actual, expected, w = totals(frame, cfg, run.predict(frame))
-            knots = run.spec[var].knots if hasattr(run.spec[var], "knots") else None
+            enc = run.spec[var]
+            knots = enc.band_edges() if hasattr(enc, "band_edges") else None
             tbl = ae_by_variable(frame, var, actual, expected, w, knots=knots)
             st.plotly_chart(
                 C.ae_chart(
