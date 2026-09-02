@@ -177,6 +177,77 @@ Four layers, all automated except the last:
 **F — CLI / packaging**
 - Tests: `easy-glm run project.json` in a subprocess produces the script, tables, `.easyglm` and report; `mypy` clean on `core`/`workflow`; the 3.14 CI leg passes.
 
+## GUI quality: use it like a professional, then try to break it
+
+Automated page tests prove nothing crashes on the happy path. Two more kinds of
+testing run on every workbench change, both scripted with Playwright against a
+real server so they are repeatable, plus an unscripted session by a "breaker"
+agent whose only brief is to misuse the tool.
+
+### Persona runs (scripted, kept in `tests/e2e/`)
+
+**Actuary — rate review.** Open the bike-style project (SAS-like column names,
+a current-premium column). Set roles, recode the PO-score band, add the
+`Drvr1Exp_Q/M` derived columns, filter to positive premium, random split, fit
+frequency with `log(current premium)` as offset, add `Cover × VehTerms`, look
+at A/E by every rating factor on holdout, cap one relativity, export Excel and
+the script, reopen the project file and confirm the fit and adjustments are
+still there. Assertions: every step succeeds, exported script reproduces
+predictions, Excel has one sheet per factor plus the interaction matrix.
+
+**Data scientist — model comparison.** French motor: fit `freq_v1` (CV lasso),
+clone to `freq_v2` with an interaction and a linear Density term, Compare page
+shows both, double lift, residual factor search on v1 finds the interaction
+pair, promote v2 to champion, HTML report contains both models. Assertions:
+metrics tables agree with `workflow.model_metrics`; report opens headless with
+no console errors.
+
+### Break-it catalogue (scripted where possible, extended by the breaker agent)
+
+Data & files: empty file; one-row file; a CSV with mixed types in a column;
+column names with spaces, dots, unicode and leading digits; two columns
+differing only by case; a 3,000-level categorical; an all-null column; a
+constant column; negative and zero exposure; NaN and ±inf in the target;
+a 2 GB path that does not exist; uploading the project JSON as data and data
+as the project.
+
+Variables: target = weight = split (same column); rename a column onto an
+existing name; rename to an empty string; recode every level to the same value;
+recode to an empty string; a derived column that references itself; a derived
+expression that raises (division by a string); a filter that drops every row;
+a filter that keeps one row; deleting a column used by a model.
+
+Split & design: 100% / 0% training fraction; split column with three values;
+integer knots on a float column with a 1e9 range; a custom knot list with
+duplicates, text, one knot above the max; `n_bins = 200` on a binary column;
+min level share = 0.5; monotone on a categorical.
+
+Model: zero predictors; predictors only the id column; alpha = 0; alpha = 1e9;
+CV with 2 folds on 30 rows; Tweedie on negative targets; binomial on counts;
+divide by weight with no weight; rename the target after fitting; delete the
+champion model; create a model named `""` or with a slash; fit twice quickly
+(double click).
+
+Rate tables & export: set a relativity to 0, to −1, to `1e12`, to text; edit
+the null row; reset while editing; download every artefact for an unfitted
+model; export with a level named `Other`; a variable named `from`.
+
+Session: refresh mid-fit; open the same project in two tabs and edit both;
+autosave to a read-only path; close the terminal that launched the server and
+reopen; back/forward browser buttons; very narrow viewport.
+
+**Rule for every finding:** the tool must never show a raw traceback or lose
+the project. Acceptable outcomes are a clear message, a disabled control, or a
+graceful fallback. Each finding gets a test that reproduces it before the fix.
+
+### The breaker agent
+
+Runs after the reviewer signs off on a workbench piece, against the live app,
+with the catalogue as a starting point and instructions to invent more. It
+writes `docs/reviews/<piece>-breakage.md`: what it did, what happened,
+severity (data loss / crash / misleading output / cosmetic). Data loss and
+crashes block the merge.
+
 ## Working protocol (builder / reviewer / actuary)
 
 Roles
@@ -202,7 +273,9 @@ Loop per piece
 5. Actuarial check delivered to you with the numbers, pictures and questions.
 
 Rules
-- No merge without reviewer sign-off, green CI and a written actuarial check.
+- No merge without reviewer sign-off, green CI and a written actuarial check;
+  workbench pieces additionally need the breaker's report with no open data-loss
+  or crash findings.
 - The reviewer may not edit code; the builder may not edit the review verdict.
 - Every finding names a failure scenario; "I'd do it differently" is a nit.
 - Questions to the actuary are domain questions only, batched, and each one
