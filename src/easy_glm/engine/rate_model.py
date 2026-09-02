@@ -11,9 +11,15 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from ._scoring import score_categorical, score_interaction, score_numeric
+from ._scoring import (
+    score_categorical,
+    score_interaction,
+    score_linear,
+    score_numeric,
+)
 from .models import (
     INTERACTION_SEP,
+    BandRow,
     CellRow,
     Change,
     FromToRow,
@@ -33,13 +39,25 @@ FORMAT_VERSION = 2
 _SCORERS: dict[str, Any] = {
     "numeric": lambda col, cfg: score_numeric(col.to_numpy(), cfg),
     "categorical": score_categorical,
+    "linear": lambda col, cfg: score_linear(col.cast(pl.Float64).to_numpy(), cfg),
 }
+#: table types whose rows are numeric bands (``from``/``to`` are floats)
+_NUMERIC_TYPES = frozenset({"numeric", "linear"})
+#: relative tolerance for the continuity of a linear table at its interior edges
+_CONTINUITY_RTOL = 1e-6
 #: table types this release can read and score ("interaction" needs two columns
 #: and is dispatched separately in :meth:`RateModel.predict`)
 KNOWN_TYPES = frozenset(_SCORERS) | {"interaction"}
 
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
+    if isinstance(row, BandRow):
+        return {
+            "from": row.from_,
+            "to": row.to_,
+            "relativity": row.relativity,
+            "slope": row.slope,
+        }
     if isinstance(row, CellRow):
         return {
             "from_a": row.from_a,
@@ -53,6 +71,10 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
 
 
 def _row_from_dict(r: dict[str, Any]) -> Any:
+    if "slope" in r:
+        return BandRow(
+            r["from"], r["to"], r["relativity"], float(r.get("slope") or 0.0)
+        )
     if "from_a" in r:
         return CellRow(
             r["from_a"],
@@ -98,7 +120,7 @@ def _coerce_edge(value: Any, parent: VariableConfig) -> Any:
     numeric bands, string for levels; None stays None)."""
     if value is None:
         return None
-    if parent.type == "numeric":
+    if parent.type in _NUMERIC_TYPES:
         return float(value)
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
@@ -201,6 +223,13 @@ class RateModel:
         ``from_a``, ``to_a``, ``from_b``, ``to_b``, ``relativity`` and optionally
         ``exposure``; every row must name a cell of the parents' rows, and cells
         that are not listed adjust by 1.0.
+
+        A **piecewise-linear** table has an extra ``slope`` column: ``relativity``
+        is the value at the band start and the relativity inside the band is
+        ``relativity * exp(slope * (x - from))``. Its first and last bands are
+        open and flat (``slope`` 0), interior bands must be continuous (a band's
+        end value equals the next band's start value) and the optional
+        ``x_base`` is not needed for scoring.
         """
         pred_vars = predictor_variables or list(tables)
         for var in pred_vars:
@@ -209,7 +238,11 @@ class RateModel:
         is_cell = {v: "from_a" in tables[v].columns for v in pred_vars}
         variables: dict[str, VariableConfig] = {}
         for var in pred_vars:  # mains first: interactions need their parents
-            if not is_cell[var]:
+            if is_cell[var]:
+                continue
+            if "slope" in tables[var].columns:
+                variables[var] = cls._config_from_linear_table(var, tables[var])
+            else:
                 variables[var] = cls._config_from_table(var, tables[var])
         for var in pred_vars:
             if is_cell[var]:
@@ -334,6 +367,73 @@ class RateModel:
             )
             rows.append(FromToRow(None, None, 1.0))
         return VariableConfig(type="categorical", table=rows)
+
+    @staticmethod
+    def _config_from_linear_table(name: str, table: pl.DataFrame) -> VariableConfig:
+        missing = {"from", "to", "relativity", "slope"} - set(table.columns)
+        if missing:
+            raise ValueError(
+                f"Linear table for {name!r} lacks columns {sorted(missing)}"
+            )
+        rows: list[BandRow] = []
+        null_rows: list[BandRow] = []
+        for lo, hi, rel, slope in table.select(
+            "from", "to", "relativity", "slope"
+        ).iter_rows():
+            if rel is None:
+                raise ValueError(f"Linear table for {name!r} has a null relativity")
+            if float(rel) <= 0:
+                raise ValueError(
+                    f"Linear table for {name!r} has a non-positive relativity "
+                    f"({rel}); a log-linear band needs relativities > 0"
+                )
+            row = BandRow(
+                None if lo is None else float(lo),
+                None if hi is None else float(hi),
+                float(rel),
+                float(slope or 0.0),
+            )
+            (null_rows if lo is None and hi is None else rows).append(row)
+        if len(null_rows) > 1:
+            raise ValueError(
+                f"Linear table for {name!r} has {len(null_rows)} rows with both "
+                "'from' and 'to' empty; only one null row is allowed"
+            )
+        if len(rows) < 3:
+            raise ValueError(
+                f"Linear table for {name!r} needs an open lower band, at least one "
+                "sloped band and an open upper band"
+            )
+        rows.sort(key=lambda r: (r.from_ is not None, r.from_ or 0.0))
+        if rows[0].from_ is not None or rows[-1].to_ is not None:
+            raise ValueError(
+                f"Linear table for {name!r} must start with an open lower band and "
+                "end with an open upper band (the flat parts outside the clamp range)"
+            )
+        for a, b in zip(rows[:-1], rows[1:], strict=True):
+            if a.to_ is None or b.from_ is None or a.to_ != b.from_:
+                raise ValueError(
+                    f"Linear table for {name!r}: band ending at {a.to_!r} is followed "
+                    f"by a band starting at {b.from_!r}; bands must tile the line"
+                )
+        if rows[0].slope != 0.0 or rows[-1].slope != 0.0:
+            raise ValueError(
+                f"Linear table for {name!r}: the open end bands must have slope 0 "
+                "(the curve is flat outside the clamp range)"
+            )
+        sloped = rows[1:-1]
+        for a, b in zip(sloped[:-1], sloped[1:], strict=True):
+            end = a.relativity_to
+            if abs(end - b.relativity) > _CONTINUITY_RTOL * max(
+                abs(b.relativity), 1e-300
+            ):
+                raise ValueError(
+                    f"Linear table for {name!r} is not continuous at {b.from_!r}: the "
+                    f"band before ends at {end:.6g} but the next band starts at "
+                    f"{b.relativity:.6g}. Edit band values with "
+                    "RateModel.update_relativity, which keeps the curve continuous"
+                )
+        return VariableConfig(type="linear", table=rows + null_rows)
 
     @staticmethod
     def _config_from_cell_table(
@@ -511,6 +611,10 @@ class RateModel:
                     return
             raise ValueError(f"No cell {key!r} in interaction '{var}'")
 
+        if config.type == "linear":
+            self._update_linear(var, config, from_, to_, float(new_value))
+            return
+
         for row in config.table:
             if row.from_ == from_ and row.to_ == to_:
                 old_value = row.relativity
@@ -538,6 +642,62 @@ class RateModel:
         raise ValueError(
             f"No row found with from={from_!r}, to={to_!r} in variable '{var}'"
         )
+
+    def _update_linear(
+        self, var: str, config: VariableConfig, from_: Any, to_: Any, new_value: float
+    ) -> None:
+        """Band-edit rule for piecewise-linear tables.
+
+        A band's ``relativity`` is the value of the curve at its start node.
+        Editing a **sloped band** moves that node: the band's own slope is
+        re-derived towards the next node (the next band's start value, or the
+        upper flat row's value for the last band) and the previous band's slope
+        towards the moved node, so the curve stays continuous; when the moved
+        node is the lower clamp, the ``(None, lo)`` flat row follows it. Editing a
+        **flat end row** or the **null row** changes only that row (a step).
+        """
+        if not new_value > 0:
+            raise ValueError(
+                f"Linear variable '{var}': relativities must be > 0, got {new_value}"
+            )
+        rows = config.table
+        idx = next(
+            (i for i, r in enumerate(rows) if r.from_ == from_ and r.to_ == to_), None
+        )
+        if idx is None:
+            raise ValueError(
+                f"No row found with from={from_!r}, to={to_!r} in variable '{var}'"
+            )
+        row = rows[idx]
+        old_value = row.relativity
+        row.relativity = new_value
+        if row.from_ is not None and row.to_ is not None:  # a sloped band
+            nxt = rows[idx + 1]
+            row.slope = (np.log(nxt.relativity) - np.log(new_value)) / (
+                row.to_ - row.from_
+            )
+            prev = rows[idx - 1]
+            if prev.from_ is not None and prev.to_ is not None:
+                prev.slope = (np.log(new_value) - np.log(prev.relativity)) / (
+                    prev.to_ - prev.from_
+                )
+            else:  # the (None, lo) flat row mirrors the value at lo
+                prev.relativity = new_value
+        self._pending_changes.append(
+            Change(
+                variable=var,
+                from_=from_,
+                to_=to_,
+                old_relativity=old_value,
+                new_relativity=new_value,
+            )
+        )
+        config.breakpoints = None
+        config.relativities = None
+        config.slopes = None
+        config.starts = None
+        config.null_relativity = None
+        self._precompute_variables({var: config})
 
     @property
     def non_constant_variables(self) -> dict[str, VariableConfig]:
@@ -640,6 +800,8 @@ class RateModel:
             self.variables[name].null_relativity = None
             self.variables[name].level_index = None
             self.variables[name].cell_matrix = None
+            self.variables[name].slopes = None
+            self.variables[name].starts = None
         RateModel._precompute_variables(self.variables)
         self.column_mapping = dict(snapshot.column_mapping)
         if snapshot.metadata:
@@ -763,6 +925,11 @@ class RateModel:
                         if config.type == "interaction" and config.parents
                         else {}
                     ),
+                    **(
+                        {"x_base": config.x_base}
+                        if config.type == "linear" and config.x_base is not None
+                        else {}
+                    ),
                     "table": [_row_to_dict(row) for row in config.table],
                 }
                 for name, config in self.variables.items()
@@ -826,6 +993,7 @@ class RateModel:
                 type=vdata["type"],
                 table=table,
                 parents=tuple(parents) if parents else None,
+                x_base=vdata.get("x_base"),
             )
 
         cls._precompute_variables(variables)
@@ -942,6 +1110,31 @@ class RateModel:
                 )
                 config.relativities = np.array(
                     [r.relativity for r in bins], dtype=float
+                )
+                config.null_relativity = null_rows[0].relativity if null_rows else None
+            elif config.type == "linear" and config.breakpoints is None:
+                null_rows = [
+                    r for r in config.table if r.from_ is None and r.to_ is None
+                ]
+                bands = sorted(
+                    (
+                        r
+                        for r in config.table
+                        if not (r.from_ is None and r.to_ is None)
+                    ),
+                    key=lambda r: (r.from_ is not None, r.from_ or 0.0),
+                )
+                config.breakpoints = np.array(
+                    [float(r.from_) for r in bands if r.from_ is not None], dtype=float
+                )
+                config.relativities = np.array(
+                    [r.relativity for r in bands], dtype=float
+                )
+                config.slopes = np.array([float(r.slope) for r in bands], dtype=float)
+                lo = float(config.breakpoints[0]) if len(config.breakpoints) else 0.0
+                config.starts = np.array(
+                    [lo if r.from_ is None else float(r.from_) for r in bands],
+                    dtype=float,
                 )
                 config.null_relativity = null_rows[0].relativity if null_rows else None
             elif config.type == "categorical" and config.cat_map is None:

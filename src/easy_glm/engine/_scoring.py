@@ -7,7 +7,9 @@ core. The two must stay identical — numeric: ``searchsorted(edges, x,
 side="right")`` with nulls in the last (null) row; categorical: level position
 with unseen/null in the last (Other) row — and are held together by
 ``tests/test_interactions.py::TestRowIndex::test_encoder_and_engine_agree`` and
-the exactness invariants. Change one, change both.
+the exactness invariants. Change one, change both. Linear tables follow the
+numeric rule with edges ``[lo, k1, ..., km, hi]`` (rows: below-lo, the sloped
+bands, above-hi, null) — see ``easy_glm.core.design.LinearEncoder.row_index``.
 """
 
 from __future__ import annotations
@@ -34,6 +36,28 @@ def score_numeric(values: np.ndarray, config: VariableConfig) -> np.ndarray:
     result = config.relativities[indices]
     if nan_mask.any():
         result = result.copy()
+        result[nan_mask] = config.null_relativity
+    return result
+
+
+def score_linear(values: np.ndarray, config: VariableConfig) -> np.ndarray:
+    """Piecewise-linear table: ``relativity * exp(slope * (x - start))`` of the
+    band ``x`` falls in; flat outside ``[lo, hi]``; nulls use the null row."""
+    if config.breakpoints is None or config.slopes is None or config.starts is None:
+        return _score_linear_fallback(values, config)
+    values = np.asarray(values, dtype=float)
+    nan_mask = np.isnan(values)
+    if nan_mask.any() and config.null_relativity is None:
+        raise ValueError(
+            "Some numeric values did not match any band. "
+            "Check for NaN values in the input data."
+        )
+    idx = np.searchsorted(config.breakpoints, values, side="right")
+    with np.errstate(invalid="ignore"):
+        result = config.relativities[idx] * np.exp(
+            config.slopes[idx] * (values - config.starts[idx])
+        )
+    if nan_mask.any():
         result[nan_mask] = config.null_relativity
     return result
 
@@ -68,9 +92,9 @@ def row_index(series: pl.Series, config: VariableConfig) -> np.ndarray:
     Raises for nulls in a numeric table that has no null row, exactly like
     :func:`score_numeric`.
     """
-    if config.type == "numeric":
+    if config.type in ("numeric", "linear"):
         if config.breakpoints is None:
-            raise ValueError("numeric config not precomputed")
+            raise ValueError(f"{config.type} config not precomputed")
         values = np.asarray(series.cast(pl.Float64).to_numpy(), dtype=float)
         idx = np.searchsorted(config.breakpoints, values, side="right").astype(np.int64)
         nan_mask = np.isnan(values)
@@ -126,6 +150,28 @@ def _score_numeric_fallback(values: np.ndarray, config: VariableConfig) -> np.nd
     if np.any(np.isnan(result)):
         raise ValueError(
             "Some numeric values did not match any bin. "
+            "Check for NaN values in the input data."
+        )
+    return result
+
+
+def _score_linear_fallback(values: np.ndarray, config: VariableConfig) -> np.ndarray:
+    values = np.asarray(values, dtype=float)
+    result = np.full(len(values), np.nan, dtype=float)
+    for row in config.table:
+        if row.from_ is None and row.to_ is None:
+            result[np.isnan(values)] = row.relativity
+            continue
+        low = -np.inf if row.from_ is None else float(row.from_)
+        high = np.inf if row.to_ is None else float(row.to_)
+        mask = (values >= low) & (values < high)
+        if row.from_ is None or row.to_ is None or row.slope == 0.0:
+            result[mask] = row.relativity
+        else:
+            result[mask] = row.relativity * np.exp(row.slope * (values[mask] - low))
+    if np.any(np.isnan(result)):
+        raise ValueError(
+            "Some numeric values did not match any band. "
             "Check for NaN values in the input data."
         )
     return result

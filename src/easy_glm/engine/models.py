@@ -40,6 +40,36 @@ class FromToRow:
 
 
 @dataclass
+class BandRow:
+    """One row of a piecewise-linear (``"linear"``) table.
+
+    ``relativity`` is the value at the band **start** (``from_``); inside the
+    band the relativity is ``relativity * exp(slope * (x - from_))``. The two
+    flat end rows ``(None, lo)`` / ``(hi, None)`` and the null row ``(None, None)``
+    have ``slope == 0`` and a constant relativity. Curves are continuous at the
+    interior edges: a band's end value equals the next band's ``relativity``.
+    """
+
+    from_: float | None
+    to_: float | None
+    relativity: float
+    slope: float = 0.0
+
+    def relativity_at(self, x: float) -> float:
+        """Relativity at ``x`` inside this band (``x`` on the raw scale)."""
+        if self.from_ is None or self.to_ is None or self.slope == 0.0:
+            return self.relativity
+        return float(self.relativity * np.exp(self.slope * (x - self.from_)))
+
+    @property
+    def relativity_to(self) -> float:
+        """Relativity at the band end (equals the next band's start value)."""
+        if self.from_ is None or self.to_ is None:
+            return self.relativity
+        return self.relativity_at(self.to_)
+
+
+@dataclass
 class CellRow:
     """One cell of a two-way interaction table: the rate-table row of parent A
     (``from_a``/``to_a``), the row of parent B (``from_b``/``to_b``), the
@@ -57,7 +87,7 @@ class CellRow:
         return (self.from_a, self.to_a, self.from_b, self.to_b)
 
 
-TableType = Literal["numeric", "categorical", "interaction"]
+TableType = Literal["numeric", "categorical", "linear", "interaction"]
 
 
 @dataclass
@@ -77,6 +107,13 @@ class VariableConfig:
     cell_matrix: np.ndarray | None = None
     #: categorical only (precomputed): level -> row index, in table order
     level_index: dict[str, int] | None = None
+    #: linear only (precomputed): per non-null row, the slope of log relativity
+    #: and the x the row's relativity refers to
+    slopes: np.ndarray | None = None
+    starts: np.ndarray | None = None
+    #: linear only: the x at which relativity is 1.00 (the base risk); None when
+    #: the base row was the null row
+    x_base: float | None = None
 
 
 @dataclass
@@ -123,8 +160,9 @@ def _edge_label(lo: Any, hi: Any) -> str:
     return f"[{lo}, {hi})"
 
 
-def level_label(row: FromToRow | CellRow) -> str:
-    """Human-readable label for a ``FromToRow`` bin or a ``CellRow`` cell.
+def level_label(row: FromToRow | BandRow | CellRow) -> str:
+    """Human-readable label for a ``FromToRow`` bin, a ``BandRow`` band or a
+    ``CellRow`` cell.
 
     ``None``-delimited ends mean open interval::
 
@@ -142,6 +180,6 @@ def level_label(row: FromToRow | CellRow) -> str:
     return _edge_label(row.from_, row.to_)
 
 
-def level_labels(rows: list[FromToRow | CellRow]) -> list[str]:
+def level_labels(rows: list[FromToRow | BandRow | CellRow]) -> list[str]:
     """Convenience: ``[level_label(r) for r in rows]``."""
     return [level_label(r) for r in rows]

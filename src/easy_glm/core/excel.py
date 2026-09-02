@@ -58,13 +58,15 @@ def suffixed_sheet_name(key: str, suffix: str, used: set[str]) -> str:
 def rate_model_tables(rm: RateModel) -> dict[str, pl.DataFrame]:
     """Per-variable ``from`` / ``to`` / ``label`` / [``fitted``] / ``relativity``
     frames of a :class:`RateModel`. ``relativity`` is the *current* value (manual
-    adjustments included); ``fitted`` is the first snapshot's value when present."""
+    adjustments included); ``fitted`` is the first snapshot's value when present.
+    Piecewise-linear variables add ``slope`` and ``relativity_to`` (value at the
+    band end); their ``relativity`` is the value at the band start."""
     out: dict[str, pl.DataFrame] = {}
     for var, cfg in rm.variables.items():
         if cfg.type == "interaction":
             out[var] = _interaction_frame(rm, var, cfg)
             continue
-        numeric = cfg.type == "numeric"
+        numeric = cfg.type in ("numeric", "linear")
         dtype = pl.Float64 if numeric else pl.Utf8
         cast = float if numeric else str
         froms = [None if r.from_ is None else cast(r.from_) for r in cfg.table]
@@ -84,6 +86,13 @@ def rate_model_tables(rm: RateModel) -> dict[str, pl.DataFrame]:
         columns["relativity"] = pl.Series(
             [float(r.relativity) for r in cfg.table], dtype=pl.Float64
         )
+        if cfg.type == "linear":
+            columns["slope"] = pl.Series(
+                [float(r.slope) for r in cfg.table], dtype=pl.Float64
+            )
+            columns["relativity_to"] = pl.Series(
+                [float(r.relativity_to) for r in cfg.table], dtype=pl.Float64
+            )
         out[var] = pl.DataFrame(columns)
     return out
 
@@ -92,8 +101,8 @@ def _interaction_frame(rm: RateModel, var: str, cfg) -> pl.DataFrame:
     """Long table of an interaction: parent edges, labels, exposure,
     [fitted], relativity — one row per cell."""
     a, b = cfg.parents
-    dt_a = pl.Float64 if rm.variables[a].type == "numeric" else pl.Utf8
-    dt_b = pl.Float64 if rm.variables[b].type == "numeric" else pl.Utf8
+    dt_a = pl.Float64 if rm.variables[a].type in ("numeric", "linear") else pl.Utf8
+    dt_b = pl.Float64 if rm.variables[b].type in ("numeric", "linear") else pl.Utf8
     rows: list[CellRow] = cfg.table
     columns: dict[str, Any] = {
         "from_a": pl.Series([r.from_a for r in rows], dtype=dt_a),
