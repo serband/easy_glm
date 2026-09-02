@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import warnings
 
 import numpy as np
 import polars as pl
@@ -60,7 +61,9 @@ def _book(seed: int = 21, n: int = 12_000) -> pl.DataFrame:
             "Exposure": expo,
             "Mileage": mileage,
             "DrivAge": age,
-            "Region": region,
+            "Region": pl.Series(
+                [None if r is None else str(r) for r in region], dtype=pl.Utf8
+            ),
             "logprem": np.log(rng.uniform(200, 900, n)),
         }
     ).with_columns(pl.col("Mileage").fill_nan(None))
@@ -330,28 +333,67 @@ class TestEngine:
         assert rows[0].relativity == 0.8 and rows[1].relativity == 0.8
         assert rows[0].slope == 0.0
 
-    def test_flat_and_null_rows_edit_as_steps(self, fitted):
+    def test_every_row_edits_as_a_node_and_the_curve_stays_continuous(self, fitted):
+        """Rows: 0 = (None, lo), 1 = first band, 2 = interior, n-3 = last band,
+        n-2 = (hi, None), n-1 = null. Editing a row moves its node; only the
+        slopes of the bands touching that node change (none for the null row,
+        one at either end, two in the interior) and the curve has no jump at
+        ``lo`` or ``hi`` afterwards."""
         _, rm0 = fitted
-        rm = rm0.clone()
-        rows = rm.variables["Mileage"].table
-        before = [(r.relativity, r.slope) for r in rows]
-        rm.update_relativity("Mileage", rows[-2].from_, None, 2.0)  # (hi, None)
-        rm.update_relativity("Mileage", None, None, 3.0)  # null row
-        after = [(r.relativity, r.slope) for r in rm.variables["Mileage"].table]
-        diff = [i for i, (b, a) in enumerate(zip(before, after, strict=True)) if b != a]
-        assert diff == [len(rows) - 2, len(rows) - 1]
-        x = pl.DataFrame(
+        table = rm0.variables["Mileage"].table
+        n = len(table)
+        lo, hi = table[1].from_, table[-2].from_
+        just_below = [np.nextafter(lo, -np.inf), np.nextafter(hi, -np.inf)]
+        probe = pl.DataFrame(
             {
-                "Mileage": [None, 1e9],
-                "DrivAge": [40.0, 40.0],
-                "Region": ["R1", "R1"],
-                "Exposure": [1.0, 1.0],
+                "Mileage": [just_below[0], lo, just_below[1], hi, None],
+                "DrivAge": [40.0] * 5,
+                "Region": ["R1"] * 5,
+                "Exposure": [1.0] * 5,
             }
         )
-        p0 = rm0.predict(x, exposure_col=None)
-        p1 = rm.predict(x, exposure_col=None)
-        assert p1[0] / p0[0] == pytest.approx(3.0 / before[-1][0], rel=1e-12)
-        assert p1[1] / p0[1] == pytest.approx(2.0 / before[-2][0], rel=1e-12)
+        p0 = rm0.predict(probe, exposure_col=None)
+        expected = {  # row edited -> (rows whose value changes, slopes that change)
+            0: ({0, 1}, {1}),
+            1: ({0, 1}, {1}),
+            2: ({2}, {1, 2}),
+            n - 3: ({n - 3}, {n - 4, n - 3}),
+            n - 2: ({n - 2}, {n - 3}),
+            n - 1: ({n - 1}, set()),
+        }
+        moved_at = {0: 1, 1: 1, 2: None, n - 3: None, n - 2: 3, n - 1: 4}
+        for idx, (rows_changed, slopes_changed) in expected.items():
+            rm = rm0.clone()
+            r = table[idx]
+            rm.update_relativity("Mileage", r.from_, r.to_, r.relativity * 1.25)
+            new = rm.variables["Mileage"].table
+            assert {
+                i for i in range(n) if new[i].relativity != table[i].relativity
+            } == rows_changed, idx
+            assert {
+                i for i in range(n) if new[i].slope != table[i].slope
+            } == slopes_changed, idx
+            for i in rows_changed:
+                assert new[i].relativity == pytest.approx(table[idx].relativity * 1.25)
+            p1 = rm.predict(probe, exposure_col=None)
+            assert p1[0] == pytest.approx(p1[1], rel=1e-12), ("jump at lo", idx)
+            assert p1[2] == pytest.approx(p1[3], rel=1e-12), ("jump at hi", idx)
+            if moved_at[idx] is not None:  # the node's own value moved by 1.25
+                j = moved_at[idx]
+                assert p1[j] / p0[j] == pytest.approx(1.25, rel=1e-12), idx
+            # and the table still reads back as a valid continuous curve
+            RateModel.from_rate_tables(rate_model_tables(rm), rm.base_rate)
+
+    def test_null_row_edit_does_not_touch_the_curve(self, fitted):
+        _, rm0 = fitted
+        rm = rm0.clone()
+        rm.update_relativity("Mileage", None, None, 3.0)
+        x = _probe(rm.variables["Mileage"] and fitted[0].spec["Mileage"])
+        p0, p1 = rm0.predict(x, exposure_col=None), rm.predict(x, exposure_col=None)
+        np.testing.assert_allclose(p1[:-1], p0[:-1], rtol=1e-15)
+        assert p1[-1] / p0[-1] == pytest.approx(
+            3.0 / rm0.variables["Mileage"].table[-1].relativity, rel=1e-12
+        )
 
     def test_snapshot_json_switch_and_diff(self, fitted, tmp_path):
         _, rm0 = fitted
@@ -419,8 +461,14 @@ class TestEngine:
             .otherwise(pl.col("relativity"))
             .alias("relativity")
         )
-        with pytest.raises(ValueError, match="not continuous"):
-            RateModel.from_rate_tables({"Mileage": broken}, 1.0)
+        # an interior start value that no longer matches the slope column: the
+        # values win, the slope column is reported
+        with pytest.warns(UserWarning, match="slope column"):
+            rb = RateModel.from_rate_tables({"Mileage": broken}, 1.0)
+        rows = rb.variables["Mileage"].table
+        assert rows[3].relativity == pytest.approx(t["relativity"][3] * 1.5)
+        assert rows[2].relativity_to == pytest.approx(rows[3].relativity, rel=1e-12)
+        assert rows[3].relativity_to == pytest.approx(rows[4].relativity, rel=1e-12)
         with pytest.raises(ValueError, match="slope 0"):
             RateModel.from_rate_tables(
                 {
@@ -437,6 +485,197 @@ class TestEngine:
             RateModel.from_rate_tables(
                 {"Mileage": t.with_columns(pl.lit(-1.0).alias("relativity"))}, 1.0
             )
+
+    def test_from_rate_tables_shapes_rounding_and_x_base(self, fitted, tmp_path):
+        fit, rm0 = fitted
+        t = rate_model_tables(rm0)["Mileage"]
+        hold = _book(seed=7, n=1500)
+        n = t.height
+        # a table rounded the way a rate manual prints it loads and is continuous
+        rounded = t.with_columns(
+            pl.col("relativity").round(4),
+            pl.col("relativity_to").round(4),
+            pl.col("slope").round(6),
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            rb = RateModel.from_rate_tables(
+                {**rate_model_tables(rm0), "Mileage": rounded}, rm0.base_rate
+            )
+        rows = rb.variables["Mileage"].table
+        for a, b in zip(rows[1:-2], rows[2:-1], strict=True):
+            assert a.relativity_to == pytest.approx(b.relativity, rel=1e-12)
+        np.testing.assert_allclose(
+            rb.predict(hold, exposure_col=None),
+            rm0.predict(hold, exposure_col=None),
+            rtol=3e-4,
+        )
+        assert rb.variables["Mileage"].x_base == rm0.variables["Mileage"].x_base
+        # x_base: from the is_base column, else from the unique 1.0 row
+        assert rm0.variables["Mileage"].x_base is not None
+        assert (
+            RateModel.from_rate_tables(rate_tables(fit), 1.0)
+            .variables["Mileage"]
+            .x_base
+            == to_rate_model(fit).variables["Mileage"].x_base
+        )
+        no_flag = RateModel.from_rate_tables({"Mileage": t.drop("is_base")}, 1.0)
+        assert no_flag.variables["Mileage"].x_base == rm0.variables["Mileage"].x_base
+        path = rm0.to_excel(tmp_path / "xb.xlsx")
+        sheets = pl.read_excel(path, sheet_id=0)
+        via_excel = RateModel.from_rate_tables(
+            {v: sheets[v] for v in rm0.variables}, 1.0
+        )
+        assert via_excel.variables["Mileage"].x_base == rm0.variables["Mileage"].x_base
+        assert "x_base (Mileage)" in sheets["Summary"].to_series(0).to_list()
+        # editing the base band keeps x_base (it names the point, not the value)
+        rm = rm0.clone()
+        xb = rm.variables["Mileage"].x_base
+        base_row = next(r for r in rm.variables["Mileage"].table if r.from_ == xb)
+        rm.update_relativity("Mileage", base_row.from_, base_row.to_, 1.3)
+        assert rm.variables["Mileage"].x_base == xb
+        rm.to_json(tmp_path / "xb.easyglm")
+        assert (
+            RateModel.from_json(tmp_path / "xb.easyglm").variables["Mileage"].x_base
+            == xb
+        )
+        # without slope: refused when relativity_to shows it was linear, a
+        # step table on purpose when both are gone
+        with pytest.raises(ValueError, match="needs its slopes"):
+            RateModel.from_rate_tables({"Mileage": t.drop("slope")}, 1.0)
+        as_steps = RateModel.from_rate_tables(
+            {"Mileage": t.drop("slope", "relativity_to", "is_base")}, 1.0
+        )
+        assert as_steps.variables["Mileage"].type == "numeric"
+        # zero-width band
+        k = float(t["to"][1])
+        zero = pl.concat(
+            [
+                t.head(2),
+                t.head(2).tail(1).with_columns(pl.lit(k).alias("from")),
+                t.tail(n - 2),
+            ]
+        )
+        with pytest.raises(ValueError, match="zero width"):
+            RateModel.from_rate_tables({"Mileage": zero}, 1.0)
+        # a cliff at lo: the '< lo' row and the first band must agree
+        at_lo = t.with_columns(
+            pl.when(pl.arange(0, n) == 0)
+            .then(pl.col("relativity") * 1.5)
+            .otherwise(pl.col("relativity"))
+            .alias("relativity")
+        )
+        with pytest.raises(ValueError, match="not continuous at"):
+            RateModel.from_rate_tables({"Mileage": at_lo}, 1.0)
+        # a changed (hi, None) value: the last slope is re-derived towards it
+        # (the stale slope column is reported), so there is no cliff at hi
+        at_hi = t.with_columns(
+            pl.when(pl.arange(0, n) == n - 2)
+            .then(pl.col("relativity") * 1.5)
+            .otherwise(pl.col("relativity"))
+            .alias("relativity")
+        )
+        with pytest.warns(UserWarning, match="slope column"):
+            rh = RateModel.from_rate_tables({"Mileage": at_hi}, 1.0)
+        hi = rh.variables["Mileage"].table[-2].from_
+        x = pl.DataFrame({"Mileage": [np.nextafter(hi, -np.inf), hi]})
+        p = rh.predict(x, exposure_col=None)
+        assert p[0] == pytest.approx(p[1], rel=1e-12)
+        # missing null row: warned, nulls raise at scoring
+        with pytest.warns(UserWarning, match="no null row"):
+            nn = RateModel.from_rate_tables({"Mileage": t.head(n - 1)}, 1.0)
+        with pytest.raises(ValueError, match="NaN"):
+            nn.predict(pl.DataFrame({"Mileage": [None, 1.0]}), exposure_col=None)
+
+    def test_inf_and_integer_input_score_like_the_glm(self, fitted):
+        fit, rm = fitted
+        x = pl.DataFrame(
+            {
+                "Mileage": [np.inf, -np.inf, 1e308, -1e308, 12_000.0],
+                "DrivAge": [40.0] * 5,
+                "Region": ["R1"] * 5,
+                "Exposure": [1.0] * 5,
+            }
+        )
+        p = rm.predict(x, exposure_col=None)
+        assert np.isfinite(p).all()
+        np.testing.assert_allclose(p, fit.predict(x), rtol=1e-10)
+        assert p[0] == p[2] and p[1] == p[3]
+        ints = _book(seed=3, n=500).with_columns(
+            pl.col("Mileage").round(0).cast(pl.Int64)
+        )
+        np.testing.assert_allclose(
+            rm.predict(ints, exposure_col=None), fit.predict(ints), rtol=1e-10
+        )
+
+    def test_json_orders_and_validates_linear_rows(self, fitted):
+        _, rm0 = fitted
+        raw = rm0._to_dict()
+        tab = raw["variables"]["Mileage"]["table"]
+        raw["variables"]["Mileage"]["table"] = tab[-1:] + tab[:-1][::-1]
+        back = RateModel._from_dict(raw)
+        assert [(r.from_, r.to_) for r in back.variables["Mileage"].table] == [
+            (r.from_, r.to_) for r in rm0.variables["Mileage"].table
+        ]
+        hold = _book(seed=11, n=300)
+        np.testing.assert_allclose(
+            back.predict(hold, exposure_col=None), rm0.predict(hold, exposure_col=None)
+        )
+        first = back.variables["Mileage"].table[1]
+        back.update_relativity(
+            "Mileage", first.from_, first.to_, 0.9
+        )  # neighbours right
+        assert back.variables["Mileage"].table[0].relativity == 0.9
+        for row in raw["variables"]["Mileage"]["table"]:
+            row.pop("slope")
+        with pytest.raises(ValueError, match="needs a 'slope'"):
+            RateModel._from_dict(raw)
+
+    def test_null_row_is_never_the_base_of_a_linear_term(self, book):
+        mostly_null = book.head(6000).with_columns(
+            pl.when(pl.arange(0, 6000) % 10 < 7)
+            .then(None)
+            .otherwise(pl.col("Mileage"))
+            .alias("Mileage")
+        )
+        spec = DesignSpec.from_data(
+            mostly_null, ["Mileage", "DrivAge"], linear=["Mileage"], n_bins=6
+        )
+        fit = fit_glm(mostly_null, spec, "ClaimNb", alpha=0.001, **FIT)
+        tab = rate_tables(fit)["Mileage"]
+        base = tab.filter(pl.col("is_base"))
+        assert base.height == 1 and base["from"][0] is not None
+        rm = to_rate_model(fit)
+        assert rm.variables["Mileage"].x_base == base["from"][0]
+        np.testing.assert_allclose(
+            rm.predict(mostly_null, exposure_col=None),
+            fit.predict(mostly_null),
+            rtol=1e-10,
+        )
+
+    def test_round_outward_clamp_extends_the_end_bands_at_their_slope(self, book):
+        shifted = book.head(6000).with_columns(
+            pl.when(pl.arange(0, 6000) == 0)
+            .then(29_857.0)
+            .when(pl.arange(0, 6000) == 1)
+            .then(17.65)
+            .otherwise((pl.col("Mileage") * 0.99 + 17.65).clip(17.65, 29_857.0))
+            .alias("Mileage")
+        )
+        spec = DesignSpec.from_data(
+            shifted, ["Mileage"], linear=["Mileage"], knots={"Mileage": [8000, 20000]}
+        )
+        enc = spec["Mileage"]
+        assert enc.clamp == (0.0, 29_900.0)  # < 1% of the range at either end
+        fit = fit_glm(shifted, spec, "ClaimNb", alpha=0.0005, **FIT)
+        rm = to_rate_model(fit)
+        last = rm.variables["Mileage"].table[-3]
+        assert (last.from_, last.to_) == (20_000.0, 29_900.0)
+        x = pl.DataFrame({"Mileage": [29_857.0, 29_900.0, 0.0, 17.65]})
+        p = rm.predict(x, exposure_col=None)
+        assert p[1] / p[0] == pytest.approx(np.exp(last.slope * 43.0), rel=1e-12)
+        first = rm.variables["Mileage"].table[1]
+        assert p[3] / p[2] == pytest.approx(np.exp(first.slope * 17.65), rel=1e-12)
 
     def test_labels_and_actual_expected(self, fitted, book):
         fit, rm = fitted
@@ -600,6 +839,29 @@ class TestWorkflow:
         )
         # the no-run script derives the linear design from the data
         assert "linear=['Mileage']" in to_script(project, "freq")
+        project.design.variables["Mileage"].clamp = [100.0, 25_000.0]
+        no_run = to_script(project, "freq")
+        assert "clamp={'Mileage': (100.0, 25000.0)}" in no_run
+        assert "knots={'Mileage': [8000.0, 20000.0]}" in no_run
+
+    def test_apply_adjustments_names_the_refused_entry(self, project, book):
+        from easy_glm.workflow import Adjustment, AdjustmentError
+        from easy_glm.workflow.run import apply_adjustments, build_design
+
+        spec = build_design(
+            project,
+            book.head(3000),
+            ["Mileage", "DrivAge", "Region"],
+            weight_col="Exposure",
+        )
+        fit = fit_glm(book.head(3000), spec, "ClaimNb", alpha=0.001, **FIT)
+        rm = to_rate_model(fit)
+        cfg = project.models["freq"]
+        bad = Adjustment("Mileage", 8_000.0, 20_000.0, 0.0)
+        cfg.adjustments = [Adjustment("DrivAge", None, None, 1.1), bad]
+        with pytest.raises(AdjustmentError, match="must be > 0") as info:
+            apply_adjustments(rm, cfg)
+        assert info.value.adjustment is bad
 
     def test_app_pages_render_with_a_linear_term(self, project, tmp_path):
         pytest.importorskip("streamlit")
@@ -628,3 +890,65 @@ importlib.import_module("easy_glm.app." + {page!r}).render()
             at = AppTest.from_string(script, default_timeout=180)
             at.run()
             assert not at.exception, (page, [e.value for e in at.exception])
+
+    @staticmethod
+    def _page_script(ppath, page: str, tail: str = "") -> str:
+        return f"""
+import importlib, streamlit as st
+from easy_glm.app import state as S
+from easy_glm.workflow import Project
+S.init_state()
+if not st.session_state.get("_loaded"):
+    S.set_project(Project.from_json({str(ppath)!r}), None); st.session_state._loaded = True
+if S.get_run("freq") is None:
+    S.fit_model("freq")
+importlib.import_module("easy_glm.app." + {page!r}).render()
+{tail}
+"""
+
+    def test_design_page_keeps_a_user_clamp_across_renders(self, project, tmp_path):
+        pytest.importorskip("streamlit")
+        from streamlit.testing.v1 import AppTest
+
+        project.design.variables["Mileage"].clamp = [100.0, 25_000.0]
+        ppath = tmp_path / "clamp.easyglm-project.json"
+        project.to_json(ppath)
+        tail = (
+            'st.session_state.vd_after = S.project().design.variables["Mileage"]'
+            ".__dict__.copy()"
+        )
+        at = AppTest.from_string(
+            self._page_script(ppath, "pages_design", tail), default_timeout=180
+        )
+        at.run()
+        at.run()
+        assert not at.exception, [e.value for e in at.exception]
+        after = at.session_state["vd_after"]
+        assert after["clamp"] == [100.0, 25_000.0]
+        assert after["knots"] == [8_000.0, 20_000.0] and after["kind"] == "linear"
+
+    def test_tables_page_survives_a_zero_adjustment_on_a_linear_band(
+        self, project, tmp_path
+    ):
+        pytest.importorskip("streamlit")
+        from streamlit.testing.v1 import AppTest
+
+        from easy_glm.workflow import Adjustment
+
+        project.models["freq"].adjustments = [
+            Adjustment("Mileage", 8_000.0, 20_000.0, 0.0),
+            Adjustment("DrivAge", None, None, 1.1),
+        ]
+        ppath = tmp_path / "zero.easyglm-project.json"
+        project.to_json(ppath)
+        tail = 'st.session_state.adj_after = S.project().models["freq"].adjustments'
+        at = AppTest.from_string(
+            self._page_script(ppath, "pages_tables", tail), default_timeout=180
+        )
+        at.run()
+        assert not at.exception, [e.value for e in at.exception]
+        assert any("must be > 0" in e.value for e in at.error)
+        left = at.session_state["adj_after"]
+        assert [(a.variable, a.relativity) for a in left] == [("DrivAge", 1.1)]
+        at.run()  # and the page keeps rendering afterwards
+        assert not at.exception

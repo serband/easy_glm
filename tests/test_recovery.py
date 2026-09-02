@@ -221,11 +221,15 @@ class TestPlantedLinear:
     def test_slopes_recovered_and_bends_are_sparse(self, planted_linear):
         """At a moderate penalty the *average* slope of each true segment is
         recovered within 10% (the local slope of a single 2,000-mile band is a
-        noisy statistic and is not asserted), and the slope changes concentrate
-        at the two true bends: within two knot spacings of each bend (the lasso
-        may put a bend one knot away from the truth on noisy data) the fitted
-        change has the right sign and 60–140% of the true size, and the changes
-        everywhere else sum to less than those at the bends."""
+        noisy statistic and is not asserted), the whole fitted curve is within
+        0.06 of the true log relativity everywhere on [0, 30000] (the property
+        an actuary cares about, and robust to where the lasso puts the bends),
+        and the slope changes concentrate at the two true bends: within two knot
+        spacings of each bend the fitted change has the right sign and 60–140%
+        of the true size, and the changes everywhere else sum to less than those
+        at the bends. The two-spacing window is an observed property of the
+        lasso on this data (it smears a bend over its neighbours), not a
+        tolerance the feature promises."""
         spec = DesignSpec.from_data(
             planted_linear,
             ["Mileage"],
@@ -242,6 +246,23 @@ class TestPlantedLinear:
         for j, true in enumerate(TRUE_SLOPES):
             avg = (log_rel[j + 1] - log_rel[j]) / (edges[j + 1] - edges[j])
             assert abs(avg - true) <= 0.1 * abs(true), (edges[j], avg, true)
+        # the curve itself: max |log rel_fitted - log rel_true| on a 100-point grid
+        m = np.linspace(0.0, 30_000.0, 100)
+        grid = pl.DataFrame({"Mileage": m, "Exposure": np.ones(100)})
+        fitted_log = np.log(fit.predict(grid))
+        fitted_log -= fitted_log[0]
+        s1, s2, s3 = TRUE_SLOPES
+        b1, b2 = TRUE_BENDS
+        true_log = (
+            s1 * np.minimum(m, b1)
+            + s2 * np.clip(m - b1, 0, b2 - b1)
+            + s3 * np.maximum(m - b2, 0)
+        )
+        # Measured 0.0525 with this seed; a near-unpenalised fit (alpha 1e-6)
+        # gives 0.058, so the gap is sampling noise of the planted book (the
+        # first segment's slope comes out 5% low at every penalty), not
+        # shrinkage. Tolerance set from that evidence, not from the method.
+        assert np.abs(fitted_log - true_log).max() <= 0.06
         enc = spec["Mileage"]
         beta = fit.coef[fit.spec.slices()["Mileage"]][: len(enc.hinges)][1:]  # skip lo
         knots = np.asarray(enc.knots)
