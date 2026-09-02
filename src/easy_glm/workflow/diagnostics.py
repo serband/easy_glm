@@ -125,6 +125,17 @@ def lift_table(
     )
 
 
+def _quantise(score: np.ndarray, rel_tol: float = 1e-12) -> np.ndarray:
+    """Round ``score`` to ``rel_tol`` of its largest value so that rows whose
+    scores differ only by floating-point noise (identical rating cells scored
+    through ``e / w``) are treated as tied."""
+    scale = float(np.max(np.abs(score))) if score.size else 0.0
+    if not np.isfinite(scale) or scale == 0.0:
+        return score
+    decimals = max(0, int(-np.floor(np.log10(scale * rel_tol))))
+    return np.round(score, decimals)
+
+
 def gini(
     actual_total: np.ndarray,
     expected_total: np.ndarray,
@@ -133,7 +144,12 @@ def gini(
     normalize: bool = True,
 ) -> float:
     """Exposure-weighted Gini of the ordering by predicted rate; ``normalize``
-    divides by the Gini of the perfect ordering (by actual rate)."""
+    divides by the Gini of the perfect ordering (by actual rate).
+
+    Ties are handled deterministically: rows with (numerically) equal scores are
+    pooled, i.e. the Lorenz curve is linear across a tied group, so the result
+    does not depend on row order or on ``e / w`` rounding noise.
+    """
     a = np.asarray(actual_total, float)
     e = np.asarray(expected_total, float)
     w = np.ones_like(a) if weight is None else np.asarray(weight, float)
@@ -141,9 +157,13 @@ def gini(
         return float("nan")
 
     def _g(score: np.ndarray) -> float:
-        order = np.argsort(-score, kind="stable")
-        cum_w = np.concatenate([[0.0], np.cumsum(w[order]) / w.sum()])
-        cum_a = np.concatenate([[0.0], np.cumsum(a[order]) / a.sum()])
+        q = _quantise(score)
+        # pool tied scores; order groups from highest score to lowest
+        uniq, inverse = np.unique(q, return_inverse=True)
+        gw = np.bincount(inverse, weights=w)[::-1]
+        ga = np.bincount(inverse, weights=a)[::-1]
+        cum_w = np.concatenate([[0.0], np.cumsum(gw) / w.sum()])
+        cum_a = np.concatenate([[0.0], np.cumsum(ga) / a.sum()])
         area = np.trapezoid(cum_a, cum_w)
         return float(2.0 * area - 1.0)
 
