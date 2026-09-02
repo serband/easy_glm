@@ -10,14 +10,20 @@ def score_numeric(values: np.ndarray, config: VariableConfig) -> np.ndarray:
     if config.breakpoints is None or config.relativities is None:
         return _score_numeric_fallback(values, config)
 
-    if np.any(np.isnan(values)):
+    values = np.asarray(values, dtype=float)
+    nan_mask = np.isnan(values)
+    if nan_mask.any() and config.null_relativity is None:
         raise ValueError(
             "Some numeric values did not match any bin. "
             "Check for NaN values in the input data."
         )
 
     indices = np.searchsorted(config.breakpoints, values, side="right")
-    return config.relativities[indices]
+    result = config.relativities[indices]
+    if nan_mask.any():
+        result = result.copy()
+        result[nan_mask] = config.null_relativity
+    return result
 
 
 def score_categorical(series: pl.Series, config: VariableConfig) -> np.ndarray:
@@ -38,8 +44,12 @@ def score_categorical(series: pl.Series, config: VariableConfig) -> np.ndarray:
 
 
 def _score_numeric_fallback(values: np.ndarray, config: VariableConfig) -> np.ndarray:
+    values = np.asarray(values, dtype=float)
     result = np.full(len(values), np.nan, dtype=float)
     for row in config.table:
+        if row.from_ is None and row.to_ is None:
+            result[np.isnan(values)] = row.relativity
+            continue
         low = -np.inf if row.from_ is None else float(row.from_)
         high = np.inf if row.to_ is None else float(row.to_)
         mask = (values >= low) & (values < high)

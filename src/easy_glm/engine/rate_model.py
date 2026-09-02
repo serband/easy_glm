@@ -281,6 +281,7 @@ class RateModel:
                 config.relativities = None
                 config.cat_map = None
                 config.fallback = 1.0
+                config.null_relativity = None
                 self._precompute_variables({var: config})
                 return
 
@@ -299,7 +300,7 @@ class RateModel:
         result: dict[str, VariableConfig] = {}
         for name, config in self.variables.items():
             rels = [r.relativity for r in config.table]
-            if len(set(round(r, 5) for r in rels)) > 1:
+            if len({round(r, 5) for r in rels}) > 1:
                 result[name] = config
         return result
 
@@ -379,6 +380,7 @@ class RateModel:
             self.variables[name].relativities = None
             self.variables[name].cat_map = None
             self.variables[name].fallback = 1.0
+            self.variables[name].null_relativity = None
         RateModel._precompute_variables(self.variables)
         self.column_mapping = dict(snapshot.column_mapping)
         if snapshot.metadata:
@@ -566,13 +568,21 @@ class RateModel:
     def _precompute_variables(variables: dict[str, VariableConfig]) -> None:
         for config in variables.values():
             if config.type == "numeric" and config.breakpoints is None:
+                # An optional (None, None) row carries the relativity for nulls.
+                null_rows = [
+                    r for r in config.table if r.from_ is None and r.to_ is None
+                ]
+                bins = [
+                    r for r in config.table if not (r.from_ is None and r.to_ is None)
+                ]
                 config.breakpoints = np.array(
-                    [float(r.from_) for r in config.table if r.from_ is not None],
+                    [float(r.from_) for r in bins if r.from_ is not None],
                     dtype=float,
                 )
                 config.relativities = np.array(
-                    [r.relativity for r in config.table], dtype=float
+                    [r.relativity for r in bins], dtype=float
                 )
+                config.null_relativity = null_rows[0].relativity if null_rows else None
             elif config.type == "categorical" and config.cat_map is None:
                 config.cat_map = {}
                 for row in config.table:

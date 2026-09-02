@@ -31,6 +31,9 @@ class VariableConfig:
     relativities: np.ndarray | None = None
     cat_map: dict[str, float] | None = None
     fallback: float = 1.0
+    #: numeric only: relativity applied to null values, taken from an optional
+    #: ``FromToRow(None, None, ...)`` row. ``None`` means nulls are an error.
+    null_relativity: float | None = None
 
 
 @dataclass

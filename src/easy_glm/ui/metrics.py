@@ -43,7 +43,7 @@ def compute_actual_expected(
     for subset_name, subset in subsets.items():
         results[subset_name] = []
         for i, row in enumerate(rows):
-            mask = _mask_for_row(subset, variable, row)
+            mask = _mask_for_row(subset, variable, row, config)
             matched = subset.filter(mask)
             if matched.is_empty():
                 results[subset_name].append(
@@ -75,16 +75,20 @@ def compute_actual_expected(
     return {"subsets": results, "variable": variable}
 
 
-def _mask_for_row(data: pl.DataFrame, variable: str, row) -> pl.Series:
+def _mask_for_row(data: pl.DataFrame, variable: str, row, config=None) -> pl.Series:
     col = data[variable]
     if row.from_ is None and row.to_ is None:
-        return pl.lit(True)
+        # Numeric: the null bin. Categorical: Other = unseen levels or null.
+        if config is not None and config.type == "categorical":
+            known = [str(r.from_) for r in config.table if r.from_ is not None]
+            return (~col.cast(pl.Utf8).is_in(known)).fill_null(True) | col.is_null()
+        return col.is_null() | col.cast(pl.Float64).is_nan().fill_null(False)
     if row.from_ is None:
         return col < float(row.to_)
     if row.to_ is None:
         return col >= float(row.from_)
     if row.from_ == row.to_:
-        return col == row.from_
+        return col.cast(pl.Utf8) == str(row.from_)
     return (col >= float(row.from_)) & (col < float(row.to_))
 
 
