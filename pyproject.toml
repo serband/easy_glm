@@ -37,6 +37,9 @@ dependencies = [
 ]
 
 
+[project.scripts]
+easy-glm-workbench = "easy_glm.app.__main__:main"
+
 [project.urls]
 Homepage = "https://github.com/serband/easy_glm"
 Repository = "https://github.com/serband/easy_glm"
@@ -55,7 +58,7 @@ dev = [
     "twine>=4.0.0",
 ]
 ui = [
-    "streamlit>=1.28.0",
+    "streamlit>=1.45.0",   # workbench uses st.navigation, badges, width="stretch"
     "plotly>=5.15.0",
 ]
 viz = [

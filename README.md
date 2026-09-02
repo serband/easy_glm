@@ -175,6 +175,33 @@ Install UI dependencies if needed: `pip install "easy_glm[ui]"` (Streamlit + Plo
 
 ---
 
+## 4. The Workbench — the whole workflow in the browser
+
+```bash
+pip install "easy_glm[ui]"
+easy-glm-workbench                      # or: python -m easy_glm.app my.easyglm-project.json
+```
+
+An Emblem-style GUI over the same engine. Nine pages, one project file:
+
+| Page | What you do |
+|------|-------------|
+| Project & data | open/save a project, point at parquet / csv / sas7bdat / xlsx, optional sample |
+| Variables | roles (target, weight, exposure, offset, split, id, predictor, ignore), renames, type overrides, **level recodes**, derived columns (polars expressions), row filters |
+| Explore | exposure & observed rate by band; **leakage report** (single-factor deviance explained, target proxies, identifier-like columns, post-outcome names) with one-click ignore / acknowledge |
+| Split | indicator column or seeded random split; train/holdout balance |
+| Design | per-predictor knots (quantile / integer / custom), null column, level share, monotone direction; exposure + rate preview per bin |
+| Model | family, target/weight/offset, penalty (fixed alpha or CV), predictors; fit; coefficients kept; regularisation path |
+| Diagnostics | A/E by any variable (in or out of the model, champion vs challenger), lift & Gini, double lift vs a challenger or a premium column, residual factor search |
+| Rate tables | relativities with A/E, inline edits saved as adjustments (no refit), Excel / `.easyglm` download |
+| Export | the whole workflow as a **runnable Python script** (explicit knots, levels, resolved alpha, adjustments), project JSON, artefacts |
+
+Everything the GUI does edits a `Project` spec (`easy_glm.workflow`) that is autosaved
+as JSON; the exported script reproduces the GUI model exactly (this is tested).
+Design notes: [`docs/WORKBENCH_PLAN.md`](docs/WORKBENCH_PLAN.md).
+
+---
+
 ## Install (development)
 
 ```bash
@@ -200,6 +227,8 @@ Raw data → DesignSpec → fit_glm (glum) → rate_tables / to_rate_model → R
 | `fit_glm` / `GLMFit` | Penalised glum fit, coefficient table, predictions |
 | `rate_tables` / `to_rate_model` | Exact relativities and base rate from coefficients |
 | `to_excel` / `write_rate_tables_xlsx` | Rate tables as an `.xlsx` workbook (one sheet per variable) |
+| `easy_glm.workflow` | `Project` spec, prep steps, leakage report, diagnostics, `run_model`, `to_script` |
+| `easy_glm.app` | Streamlit workbench over the workflow engine |
 | `EasyGLM` | One-call fit, save/load full pipeline |
 | `RateModel` | Production scoring, A/E, JSON roundtrip, editor |
 

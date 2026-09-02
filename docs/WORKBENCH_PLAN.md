@@ -1,7 +1,9 @@
 # easy_glm Workbench — design plan
 
-*Status: approved for build, 2026-09-02. This document is the reference for the
-GUI programme; update it as decisions change.*
+*Status (2026-09-02): Phase 1 (workflow engine) and Phase 2 (Workbench v1, all
+nine pages, AppTest smoke tests, Playwright-verified on the French motor data)
+are built on branch `core-rewrite`. Phase 3 items are open. This document is the
+reference for the GUI programme; update it as decisions change.*
 
 ## 1. Goal
 

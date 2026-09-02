@@ -7,7 +7,8 @@ Purpose: Provide build/test commands, architecture guidance, and code style guid
 ## Build, Lint, and Tests
 
 - Single test: `pytest tests/test_engine.py -k test_clone --maxfail=1 -q`
-- Full suite: `pytest -q`
+- Full suite: `pytest -q` (includes Streamlit `AppTest` smoke tests for every workbench page)
+- Workbench: `python -m easy_glm.app [project.json]` (or `easy-glm-workbench`); headless: `--headless`
 - Lint: `ruff check .`
 - Format: `black .`
 - Run all quality steps: `black . && ruff check . && pytest -q`
@@ -100,6 +101,21 @@ src/easy_glm/
 │   ├── ratetable.py        # LEGACY ratetable (random-row prediction)
 │   ├── all_ratetables.py   # LEGACY generate_all_ratetables
 │   └── transforms.py       # LEGACY SQL generators (o_matrix, one_hot_fun, ...)
+├── workflow/               # GUI-agnostic workflow engine (docs/WORKBENCH_PLAN.md)
+│   ├── project.py          # Project spec (data/roles/recodes/derived/filters/split,
+│   │                       #   design overrides, model configs, adjustments); JSON; validate
+│   ├── prep.py             # load_source, apply_variables, add_split_column, prepare
+│   ├── explore.py          # univariate, leakage_report (single-factor GLM strength etc.)
+│   ├── diagnostics.py      # deviance, lift, gini, double lift, ae_by_variable,
+│   │                       #   residual_factor_search, alpha_path, model_metrics
+│   ├── run.py              # build_design, run_model -> ModelRun, rebuild_rate_model
+│   └── export.py           # to_script (self-contained Python; tested by execution)
+├── app/                    # Streamlit workbench (thin views over workflow + state)
+│   ├── main.py             # st.navigation entry; --project=path
+│   ├── state.py            # session Project, hash-keyed caches (raw/prepared/runs/leakage), autosave
+│   ├── charts.py, ui.py    # plotly charts, shared widgets
+│   └── pages_*.py          # one module per page: project, variables, explore, split,
+│                           #   design, model, diagnostics, tables, export
 ├── engine/
 │   ├── rate_model.py       # RateModel — the core model representation
 │   │                       #   Key methods:
@@ -203,6 +219,17 @@ User edits relativity in table
   row; `_precompute_variables` stores it as `null_relativity` and `score_numeric`
   applies it to NaN. Without that row NaN still raises (legacy behaviour).
 
+### Workbench Conventions
+
+- Pages never compute; they call `easy_glm.workflow` and read/write the `Project`
+  through `app.state` (`S.project()`, then `S.touch()` after any mutation = autosave).
+- Caches are keyed on spec hashes (`state.model_hash` excludes adjustments / base-rate
+  override, which are applied post-fit via `rebuild_rate_model`).
+- A browser reload starts a new Streamlit session: the project (spec) survives via the
+  autosaved JSON, fitted runs do not — refit is ~seconds.
+- Navigation between pages must be client-side (sidebar links) to keep session state;
+  Playwright drivers should click sidebar links rather than `goto` page URLs.
+
 ### Legacy `prepare_data` Conventions
 
 - Deprecated; DuckDB imported lazily (`legacy` extra). Tracks connection ownership
@@ -216,6 +243,8 @@ User edits relativity in table
 |---|---|
 | `test_engine.py` | RateModel: from_rate_tables, predict (numeric/categorical/multi), update_relativity, snapshots, switch_to, clone, JSON roundtrip, exposure, column mapping, metadata |
 | `test_scoring.py` | Isolated scoring: score_numeric (searchsorted), score_categorical (dict lookup), edge cases, fallbacks |
+| `test_workflow.py` | Project JSON/validation, prep steps, univariate, leakage report on planted leaks, build_design overrides, run_model (metrics, exactness, adjustments, CV), diagnostics, exported script executed in a subprocess and compared |
+| `test_app.py` | AppTest: every workbench page renders (with and without a fit), main entry point, leakage scan action |
 | `test_design_fit_tables.py` | 0.3 core: DesignSpec/encoders, fit_glm (alpha/cv/monotone/validation), exact RateModel reproduction incl. nulls + unseen levels, numeric null row scoring, EasyGLM save/load, A/E masks |
 | `test_model_and_ratetable.py` | legacy fit_lasso_glm/ratetable, EasyGLM pipeline vs building blocks, serialization |
 | `test_blueprint.py` | generate_blueprint basic smoke test |

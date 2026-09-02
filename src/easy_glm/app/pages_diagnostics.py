@@ -213,7 +213,9 @@ def render() -> None:
             and c not in cfg.predictors
             and p.data.roles.get(c) not in ("id",)
         ]
-        if (
+        if not candidates:
+            st.info("Every available variable is already in the model (or is an id).")
+        elif (
             st.button("Run residual search", key="rfs_go")
             or "rfs_result" in st.session_state
         ):
