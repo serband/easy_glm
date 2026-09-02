@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from easy_glm.core.design import CategoricalEncoder, DesignSpec, StepEncoder
+from easy_glm.core.design import (
+    CategoricalEncoder,
+    DesignSpec,
+    InteractionEncoder,
+    StepEncoder,
+)
 
 from .project import ModelConfig, Project
 from .run import ModelRun
@@ -35,6 +40,7 @@ def _list(values: list[Any], indent: int = 8, width: int = 88) -> str:
 
 def _spec_code(spec: DesignSpec) -> str:
     parts = []
+    inter: list[InteractionEncoder] = []
     for var, enc in spec.encoders.items():
         if isinstance(enc, StepEncoder):
             parts.append(
@@ -44,9 +50,26 @@ def _spec_code(spec: DesignSpec) -> str:
             parts.append(
                 f"    {var!r}: CategoricalEncoder({var!r}, {_list(enc.levels)}),"
             )
+        elif isinstance(enc, InteractionEncoder):
+            inter.append(enc)
         else:
             raise NotImplementedError(f"No script rule for {type(enc).__name__}")
-    return "spec = DesignSpec({\n" + "\n".join(parts) + "\n})"
+    code = "spec = DesignSpec({\n" + "\n".join(parts) + "\n})"
+    for enc in inter:
+        cells = ", ".join(f"({i}, {j})" for i, j in enc.cells)
+        exposure = ",\n        ".join(_list(row, indent=8) for row in enc.exposure)
+        code += (
+            f"\n# {enc.variable}: {len(enc.cells)} kept cells of "
+            f"{enc.a.n_rows}×{enc.b.n_rows}; the kept cells and training exposure are "
+            "written out so the design does not depend on the data\n"
+            f"spec.add_interaction(InteractionEncoder(\n"
+            f"    spec[{enc.a.variable!r}], spec[{enc.b.variable!r}],\n"
+            f"    cells=[{cells}],\n"
+            f"    exposure=[\n        {exposure},\n    ],\n"
+            f"    min_cell_exposure={enc.min_cell_exposure!r}, "
+            f"penalty_weight={enc.penalty_weight!r},\n))"
+        )
+    return code
 
 
 def _load_code(project: Project) -> list[str]:
@@ -137,6 +160,7 @@ def to_script(
         "from easy_glm import (",
         "    CategoricalEncoder,",
         "    DesignSpec,",
+        "    InteractionEncoder,",
         "    StepEncoder,",
         "    fit_glm,",
         "    to_rate_model,",
@@ -206,6 +230,11 @@ def to_script(
             f"    train, {cfg.predictors!r},",
             f"    n_bins={dd.n_bins}, min_level_share={dd.min_level_share}, null_indicator={dd.null_indicator},",
             f"    weight_col={cfg.weight!r},",
+            *(
+                [f"    interactions={[(it.a, it.b) for it in cfg.interactions]!r},"]
+                if cfg.interactions
+                else []
+            ),
             ")",
         ]
         alpha = cfg.penalty.alpha if cfg.penalty.alpha is not None else None
@@ -246,9 +275,15 @@ def to_script(
     if cfg.adjustments:
         lines.append("# manual adjustments made in the relativity editor")
         for adj in cfg.adjustments:
-            lines.append(
-                f"rm.update_relativity({adj.variable!r}, {adj.from_!r}, {adj.to_!r}, {float(adj.relativity)!r})"
-            )
+            if adj.cell:
+                lines.append(
+                    f"rm.update_relativity({adj.variable!r}, {adj.from_!r}, {adj.to_!r}, "
+                    f"{float(adj.relativity)!r}, from_b={adj.from_b!r}, to_b={adj.to_b!r})"
+                )
+            else:
+                lines.append(
+                    f"rm.update_relativity({adj.variable!r}, {adj.from_!r}, {adj.to_!r}, {float(adj.relativity)!r})"
+                )
         lines.append(
             f'rm.create_snapshot("{len(cfg.adjustments)} manual adjustment(s)")'
         )

@@ -45,7 +45,15 @@ def render() -> None:
             ]
         )
 
-    variables = list(run.rate_model.variables)
+    variables = [
+        v for v, c in run.rate_model.variables.items() if c.type != "interaction"
+    ]
+    n_inter = len(run.rate_model.variables) - len(variables)
+    if n_inter:
+        st.caption(
+            f"{n_inter} interaction table(s) are included in the Excel download; "
+            "the interaction editor arrives with the workbench update."
+        )
     var = st.selectbox("Variable", variables, key="tables_var")
     fitted = run.tables[var]
     working = _working_table(run, var)

@@ -136,12 +136,32 @@ class Penalty:
 
 @dataclass
 class Adjustment:
-    """A manual relativity override applied after the fit (from the editor)."""
+    """A manual relativity override applied after the fit (from the editor).
+
+    For an interaction cell ``variable`` is ``"A×B"``, ``from_``/``to_`` is
+    parent A's row and ``from_b``/``to_b`` parent B's row (``cell=True``)."""
 
     variable: str
     from_: Any
     to_: Any
     relativity: float
+    from_b: Any = None
+    to_b: Any = None
+    cell: bool = False
+
+
+@dataclass
+class Interaction:
+    """A two-way interaction ``a × b`` on top of the mains ``a`` and ``b``."""
+
+    a: str
+    b: str
+    min_cell_exposure: float = 0.005
+    penalty_weight: float = 1.0
+
+    @property
+    def name(self) -> str:
+        return f"{self.a}×{self.b}"
 
 
 @dataclass
@@ -155,6 +175,7 @@ class ModelConfig:
     predictors: list[str] = field(default_factory=list)
     penalty: Penalty = field(default_factory=Penalty)
     monotone: dict[str, str] = field(default_factory=dict)
+    interactions: list[Interaction] = field(default_factory=list)
     base: str = "modal"
     base_rate_override: float | None = None
     adjustments: list[Adjustment] = field(default_factory=list)
@@ -282,6 +303,26 @@ class Project:
             for v, d in cfg.monotone.items():
                 if d not in ("increasing", "decreasing"):
                     problems.append(f"{name}: monotone[{v!r}] invalid")
+            seen_pairs: set[frozenset[str]] = set()
+            for it in cfg.interactions:
+                if it.a == it.b:
+                    problems.append(f"{name}: interaction {it.a!r} × itself")
+                for parent in (it.a, it.b):
+                    if parent not in cfg.predictors:
+                        problems.append(
+                            f"{name}: interaction parent {parent!r} is not one of the "
+                            "model's predictors"
+                        )
+                pair = frozenset((it.a, it.b))
+                if pair in seen_pairs:
+                    problems.append(f"{name}: interaction {it.name} listed twice")
+                seen_pairs.add(pair)
+                if not 0 <= it.min_cell_exposure < 1:
+                    problems.append(
+                        f"{name}: {it.name} min_cell_exposure not in [0, 1)"
+                    )
+                if it.penalty_weight <= 0:
+                    problems.append(f"{name}: {it.name} penalty_weight must be > 0")
         if self.champion is not None and self.champion not in self.models:
             problems.append(f"champion {self.champion!r} is not a model")
         return problems
@@ -296,6 +337,11 @@ class Project:
                     "from": a["from_"],
                     "to": a["to_"],
                     "relativity": a["relativity"],
+                    **(
+                        {"from_b": a["from_b"], "to_b": a["to_b"], "cell": True}
+                        if a["cell"]
+                        else {}
+                    ),
                 }
                 for a in m["adjustments"]
             ]
@@ -347,7 +393,17 @@ class Project:
             for a in m.pop("adjustments", []):
                 _warn_unknown(
                     a,
-                    {"variable", "from", "to", "from_", "to_", "relativity"},
+                    {
+                        "variable",
+                        "from",
+                        "to",
+                        "from_",
+                        "to_",
+                        "relativity",
+                        "from_b",
+                        "to_b",
+                        "cell",
+                    },
                     f"models[{name!r}].adjustments",
                 )
                 adjustments.append(
@@ -356,11 +412,23 @@ class Project:
                         a.get("from", a.get("from_")),
                         a.get("to", a.get("to_")),
                         a["relativity"],
+                        from_b=a.get("from_b"),
+                        to_b=a.get("to_b"),
+                        cell=bool(a.get("cell", False)),
                     )
                 )
+            interactions = [
+                _build(Interaction, it, f"models[{name!r}].interactions")
+                for it in m.pop("interactions", [])
+            ]
             models[name] = _build(
                 ModelConfig,
-                {**m, "penalty": penalty, "adjustments": adjustments},
+                {
+                    **m,
+                    "penalty": penalty,
+                    "adjustments": adjustments,
+                    "interactions": interactions,
+                },
                 f"models[{name!r}]",
             )
         exploration = raw.get("exploration") or {

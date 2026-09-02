@@ -318,6 +318,112 @@ def ae_by_variable(
     )
 
 
+def ae_by_pair(
+    df: pl.DataFrame,
+    a: str,
+    b: str,
+    actual_total: np.ndarray,
+    expected_total: np.ndarray,
+    weight: np.ndarray | None = None,
+    *,
+    n_bins: int = 10,
+    knots_a: list[float] | None = None,
+    knots_b: list[float] | None = None,
+    max_levels: int = 30,
+) -> pl.DataFrame:
+    """Actual, expected and A/E by **cell** of two variables — the standard way
+    to look for an interaction the model is missing (large |log A/E| in a
+    cell with real exposure). Numerics are banded by ``knots_*`` (default:
+    quantile knots), categoricals by level (top ``max_levels``, rest lumped).
+
+    Columns: ``label_a``, ``label_b``, ``exposure``, ``actual``, ``expected``,
+    ``ae``, ``actual_rate``, ``expected_rate``, ``order_a``, ``order_b``.
+    """
+    w = np.ones(df.height) if weight is None else np.asarray(weight, float)
+    frame = df.select(a, b).with_columns(
+        pl.Series("__a__", np.asarray(actual_total, float)),
+        pl.Series("__e__", np.asarray(expected_total, float)),
+        pl.Series("__w__", w),
+    )
+
+    def _band(var: str, knots: list[float] | None, suffix: str) -> pl.DataFrame:
+        nonlocal frame
+        s = df[var]
+        if s.dtype in NUMERIC_DTYPES:
+            ks = knots or quantile_knots(s, n_bins)
+            if ks:
+                frame = frame.with_columns(band_expr(var, ks).alias(f"label_{suffix}"))
+            else:
+                frame = frame.with_columns(
+                    pl.col(var).cast(pl.Utf8).fill_null("null").alias(f"label_{suffix}")
+                )
+            order = (
+                frame.group_by(f"label_{suffix}")
+                .agg(pl.col(var).cast(pl.Float64).min().alias("o"))
+                .with_columns(
+                    pl.when(pl.col(f"label_{suffix}") == "null")
+                    .then(float("inf"))
+                    .otherwise(pl.col("o"))
+                    .alias("o")
+                )
+            )
+        else:
+            top = (
+                frame.group_by(pl.col(var).cast(pl.Utf8).alias("lvl"))
+                .agg(pl.col("__w__").sum().alias("w"))
+                .sort("w", descending=True)
+                .drop_nulls("lvl")
+                .head(max_levels)["lvl"]
+                .to_list()
+            )
+            frame = frame.with_columns(
+                pl.when(pl.col(var).is_null())
+                .then(pl.lit("null"))
+                .when(pl.col(var).cast(pl.Utf8).is_in(top))
+                .then(pl.col(var).cast(pl.Utf8))
+                .otherwise(pl.lit("(other)"))
+                .alias(f"label_{suffix}")
+            )
+            order = pl.DataFrame(
+                {
+                    f"label_{suffix}": [*top, "(other)", "null"],
+                    "o": [float(i) for i in range(len(top) + 2)],
+                }
+            )
+        return order.rename({"o": f"order_{suffix}"})
+
+    order_a = _band(a, knots_a, "a")
+    order_b = _band(b, knots_b, "b")
+    out = (
+        frame.group_by("label_a", "label_b")
+        .agg(
+            pl.col("__w__").sum().alias("exposure"),
+            pl.col("__a__").sum().alias("actual"),
+            pl.col("__e__").sum().alias("expected"),
+        )
+        .join(order_a, on="label_a", how="left")
+        .join(order_b, on="label_b", how="left")
+        .with_columns(
+            (pl.col("actual") / pl.col("expected")).alias("ae"),
+            (pl.col("actual") / pl.col("exposure")).alias("actual_rate"),
+            (pl.col("expected") / pl.col("exposure")).alias("expected_rate"),
+        )
+        .sort(["order_a", "order_b"])
+    )
+    return out.select(
+        "label_a",
+        "label_b",
+        "exposure",
+        "actual",
+        "expected",
+        "ae",
+        "actual_rate",
+        "expected_rate",
+        "order_a",
+        "order_b",
+    )
+
+
 def residual_factor_search(
     df: pl.DataFrame,
     variables: list[str],

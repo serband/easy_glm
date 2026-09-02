@@ -16,6 +16,7 @@ from easy_glm.core.design import (
     CategoricalEncoder,
     DesignSpec,
     Encoder,
+    InteractionEncoder,
     StepEncoder,
     frequent_levels,
     quantile_knots,
@@ -26,7 +27,7 @@ from easy_glm.engine.rate_model import RateModel
 
 from .diagnostics import model_metrics
 from .prep import train_holdout
-from .project import ModelConfig, Project, VariableDesign
+from .project import Interaction, ModelConfig, Project, VariableDesign
 
 
 # --------------------------------------------------------------------------
@@ -92,8 +93,10 @@ def build_design(
     predictors: list[str],
     *,
     weight_col: str | None = None,
+    interactions: list[Interaction] | None = None,
 ) -> DesignSpec:
-    """A :class:`DesignSpec` for ``predictors`` from the project's design config."""
+    """A :class:`DesignSpec` for ``predictors`` (and ``interactions`` on top of
+    them) from the project's design config; kept cells are decided on ``train``."""
     weights = train[weight_col] if weight_col and weight_col in train.columns else None
     encoders: dict[str, Encoder] = {}
     for var in predictors:
@@ -101,7 +104,19 @@ def build_design(
             raise KeyError(f"Predictor {var!r} not in the prepared data")
         vd = project.design.variables.get(var, VariableDesign())
         encoders[var] = encoder_for(var, train[var], vd, project, weights=weights)
-    return DesignSpec(encoders)
+    spec = DesignSpec(encoders)
+    for it in interactions or []:
+        spec.add_interaction(
+            InteractionEncoder.from_data(
+                spec[it.a],
+                spec[it.b],
+                train,
+                weights=weights,
+                min_cell_exposure=it.min_cell_exposure,
+                penalty_weight=it.penalty_weight,
+            )
+        )
+    return spec
 
 
 def monotone_for(project: Project, cfg: ModelConfig) -> dict[str, str]:
@@ -164,7 +179,20 @@ class ModelRun:
 
 def apply_adjustments(rm: RateModel, cfg: ModelConfig) -> None:
     for adj in cfg.adjustments:
-        rm.update_relativity(adj.variable, adj.from_, adj.to_, float(adj.relativity))
+        config = rm.variables.get(adj.variable)
+        if config is not None and config.type == "interaction":
+            rm.update_relativity(
+                adj.variable,
+                adj.from_,
+                adj.to_,
+                float(adj.relativity),
+                from_b=adj.from_b,
+                to_b=adj.to_b,
+            )
+        else:
+            rm.update_relativity(
+                adj.variable, adj.from_, adj.to_, float(adj.relativity)
+            )
     if cfg.adjustments:
         rm.create_snapshot(f"{len(cfg.adjustments)} manual adjustment(s)")
 
@@ -180,7 +208,13 @@ def run_model(project: Project, df: pl.DataFrame, model_name: str) -> ModelRun:
     if train.is_empty():
         raise ValueError("No training rows after the split")
 
-    spec = build_design(project, train, cfg.predictors, weight_col=cfg.weight)
+    spec = build_design(
+        project,
+        train,
+        cfg.predictors,
+        weight_col=cfg.weight,
+        interactions=cfg.interactions,
+    )
     pen = cfg.penalty
     kwargs: dict[str, Any] = {}
     if cfg.link:

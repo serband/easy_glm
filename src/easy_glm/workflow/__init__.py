@@ -5,6 +5,7 @@ function here is usable from plain Python as well.
 """
 
 from .diagnostics import (
+    ae_by_pair,
     ae_by_variable,
     alpha_path,
     deviance_stats,
@@ -35,6 +36,7 @@ from .project import (
     Derived,
     DesignConfig,
     DesignDefaults,
+    Interaction,
     ModelConfig,
     Penalty,
     Project,
@@ -65,6 +67,7 @@ __all__ = [
     "ModelConfig",
     "Penalty",
     "Adjustment",
+    "Interaction",
     "load_source",
     "infer_source_type",
     "eval_expr",
@@ -90,6 +93,7 @@ __all__ = [
     "gini",
     "double_lift",
     "ae_by_variable",
+    "ae_by_pair",
     "residual_factor_search",
     "alpha_path",
     "model_metrics",

@@ -227,7 +227,9 @@ if baseline is None:
 
 meta = baseline.metadata
 non_const = baseline.non_constant_variables
-var_names = sorted(non_const.keys())
+# The stand-alone editor edits one-dimensional tables; interaction cells are
+# edited in the workbench (Rate tables page).
+var_names = sorted(name for name, cfg in non_const.items() if cfg.type != "interaction")
 
 if st.session_state.selected_var is None and var_names:
     st.session_state.selected_var = var_names[0]

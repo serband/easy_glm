@@ -4,7 +4,7 @@ import numpy as np
 import polars as pl
 
 from easy_glm.engine import RateModel
-from easy_glm.engine.models import level_labels
+from easy_glm.engine.models import CellRow, FromToRow, level_labels
 
 FORMULAS: dict[str, str] = {
     "sum_weighted": "sum(target × weight) / sum(weight)",
@@ -71,7 +71,15 @@ def compute_actual_expected(
     for subset_name, subset in subsets.items():
         results[subset_name] = []
         for i, row in enumerate(rows):
-            mask = _mask_for_row(subset, variable, row, config)
+            if config.type == "interaction":
+                a, b = config.parents
+                mask = _mask_for_row(
+                    subset, a, FromToRow(row.from_a, row.to_a, 1.0), rm.variables[a]
+                ) & _mask_for_row(
+                    subset, b, FromToRow(row.from_b, row.to_b, 1.0), rm.variables[b]
+                )
+            else:
+                mask = _mask_for_row(subset, variable, row, config)
             matched = subset.filter(mask)
             if matched.is_empty():
                 results[subset_name].append(
@@ -104,6 +112,8 @@ def compute_actual_expected(
 
 
 def _mask_for_row(data: pl.DataFrame, variable: str, row, config=None) -> pl.Series:
+    if isinstance(row, CellRow):
+        raise TypeError("pass the parent rows of a cell separately")
     col = data[variable]
     if row.from_ is None and row.to_ is None:
         # Numeric: the null bin. Categorical: Other = unseen levels or null.
