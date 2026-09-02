@@ -15,7 +15,7 @@ from glum import (
     TweedieDistribution,
 )
 
-from .design import DesignSpec, InteractionEncoder, StepEncoder
+from .design import DesignSpec, InteractionEncoder, LinearEncoder, StepEncoder
 
 _FAMILY_ALIASES: dict[str, str] = {
     "poisson": "poisson",
@@ -72,6 +72,13 @@ def monotone_bounds(
     for var, direction in monotone.items():
         if var not in spec:
             raise KeyError(f"monotone: {var!r} is not a predictor in the spec")
+        if isinstance(spec[var], LinearEncoder):
+            raise ValueError(
+                f"monotone: {var!r} is a piecewise-linear term; monotone constraints "
+                "are not available for linear terms in this release (a sign bound on "
+                "the hinge coefficients would force the curve to be convex, not just "
+                "monotone). Use a step design for this variable or drop the constraint."
+            )
         if not isinstance(spec[var], StepEncoder):
             raise ValueError(
                 f"monotone: {var!r} is categorical or an interaction; only step "

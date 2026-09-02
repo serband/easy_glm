@@ -1,5 +1,11 @@
 from .data import load_external_dataframe
-from .design import CategoricalEncoder, DesignSpec, InteractionEncoder, StepEncoder
+from .design import (
+    CategoricalEncoder,
+    DesignSpec,
+    InteractionEncoder,
+    LinearEncoder,
+    StepEncoder,
+)
 from .easyglm import EasyGLM
 from .excel import write_rate_tables_xlsx
 from .fit import GLMFit, fit_glm
@@ -13,6 +19,7 @@ __all__ = [
     "StepEncoder",
     "CategoricalEncoder",
     "InteractionEncoder",
+    "LinearEncoder",
     "GLMFit",
     "fit_glm",
     "rate_tables",

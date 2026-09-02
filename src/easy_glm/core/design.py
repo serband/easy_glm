@@ -7,7 +7,7 @@ polars column into design-matrix columns *and* what every column means
 tables can be read straight off the fitted coefficients (see
 :mod:`easy_glm.core.tables`) and the spec round-trips through JSON.
 
-Three encoders exist:
+Four encoders exist:
 
 * :class:`StepEncoder` -- AGLM-style "O-dummies": one column ``1{x >= k}`` per
   knot. With an L1 penalty each coefficient is the *increment* of the effect
@@ -18,6 +18,10 @@ Three encoders exist:
 * :class:`CategoricalEncoder` -- one column per kept level except the
   reference (the most frequent level), plus an ``Other`` column for lumped,
   unseen and null values.
+* :class:`LinearEncoder` -- AGLM-style "L-dummies": hinge columns
+  ``max(x - k, 0)`` at the lower clamp and every knot, so the fitted effect is a
+  continuous piecewise-linear curve (on the log scale) with data-driven bends,
+  exactly flat outside the training range.
 * :class:`InteractionEncoder` -- a two-way interaction ``A × B`` on top of the
   two mains: one 0/1 column per *kept cell* of the parents' rate-table rows,
   so each coefficient is one cell's multiplicative adjustment.
@@ -53,7 +57,7 @@ NUMERIC_DTYPES = (
     pl.Float64,
 )
 
-FeatureKind = Literal["step", "null", "level", "other", "cell"]
+FeatureKind = Literal["step", "hinge", "null", "level", "other", "cell"]
 
 
 @dataclass(frozen=True)
@@ -178,6 +182,12 @@ class StepEncoder(Encoder):
     def rows(self) -> list[tuple[Any, Any]]:
         return [*self.bins(), (None, None)]
 
+    def band_edges(self) -> list[float]:
+        """Edges that band a raw value into this encoder's rate-table rows (for
+        step encoders: the knots) — pass to ``ae_by_variable(knots=...)`` to get
+        labels identical to the table's."""
+        return list(self.knots)
+
     def row_index(self, series: pl.Series) -> np.ndarray:
         x = series.cast(pl.Float64).to_numpy()
         idx = np.searchsorted(np.asarray(self.knots), x, side="right")
@@ -281,6 +291,135 @@ class CategoricalEncoder(Encoder):
             "variable": self.variable,
             "levels": list(self.levels),
             "other_label": self.other_label,
+        }
+
+
+def _hinge_name(variable: str, knot: float) -> str:
+    k = format_knot(knot)
+    return (
+        f"max({variable}+{k[1:]},0)" if k.startswith("-") else f"max({variable}-{k},0)"
+    )
+
+
+@dataclass
+class LinearEncoder(Encoder):
+    """Piecewise-linear (L-dummy) encoding of a numeric variable.
+
+    ``x`` is first clipped to ``clamp = (lo, hi)`` and then expanded into hinge
+    columns ``max(x_clipped - k, 0)`` at ``lo`` **and** at every interior knot.
+    The fitted effect is therefore a continuous piecewise-linear curve on the
+    linear-predictor scale whose slope can change at each knot, is fitted in the
+    first band too (the hinge at ``lo``), and is exactly flat outside
+    ``[lo, hi]`` — beyond the training range the relativity stays at its value at
+    the nearer clamp. With an L1 penalty each coefficient is a *change of slope*,
+    so the lasso keeps few bends. Nulls get all-zero hinge columns (the value at
+    ``lo``) plus, by default, an ``is null`` column so they can carry their own
+    effect.
+
+    Rate-table rows (:meth:`rows`): ``(None, lo)`` flat, one band per pair of
+    consecutive edges ``[lo, k1, ..., km, hi]`` (log-linear inside), ``(hi, None)``
+    flat, then the null row.
+
+    Parameters
+    ----------
+    variable : str
+        Column name.
+    knots : list[float]
+        Interior knots, strictly inside ``(lo, hi)``; the slope may change there.
+    clamp : (lo, hi)
+        Range the raw value is clipped to before the hinges; the curve is flat
+        outside it. ``DesignSpec.from_data`` uses the training minimum/maximum.
+    null_indicator : bool
+        Add a ``1{x is null}`` column.
+    """
+
+    kind: ClassVar[str] = "linear"
+
+    variable: str
+    knots: list[float]
+    clamp: tuple[float, float]
+    null_indicator: bool = True
+
+    def __post_init__(self) -> None:
+        if len(self.clamp) != 2:
+            raise ValueError(f"LinearEncoder({self.variable!r}) clamp must be (lo, hi)")
+        lo, hi = (float(v) for v in self.clamp)
+        if not (np.isfinite(lo) and np.isfinite(hi)):
+            raise ValueError(f"LinearEncoder({self.variable!r}) clamp must be finite")
+        if not lo < hi:
+            raise ValueError(
+                f"LinearEncoder({self.variable!r}) clamp needs lo < hi, got ({lo}, {hi})"
+            )
+        knots = sorted({float(k) for k in self.knots})
+        if any(not np.isfinite(k) for k in knots):
+            raise ValueError(f"LinearEncoder({self.variable!r}) knots must be finite")
+        bad = [k for k in knots if not lo < k < hi]
+        if bad:
+            raise ValueError(
+                f"LinearEncoder({self.variable!r}) knots {bad} must lie strictly "
+                f"inside the clamp range ({lo}, {hi})"
+            )
+        self.knots = knots
+        self.clamp = (lo, hi)
+
+    @property
+    def lo(self) -> float:
+        return self.clamp[0]
+
+    @property
+    def hi(self) -> float:
+        return self.clamp[1]
+
+    @property
+    def hinges(self) -> list[float]:
+        """Knots of the hinge columns: ``lo`` then the interior knots."""
+        return [self.lo, *self.knots]
+
+    def band_edges(self) -> list[float]:
+        """``[lo, k1, ..., km, hi]`` — the edges of the sloped bands. Passing them
+        to ``ae_by_variable(knots=...)`` gives labels identical to the table's."""
+        return [self.lo, *self.knots, self.hi]
+
+    def features(self) -> list[Feature]:
+        out = [
+            Feature(_hinge_name(self.variable, k), self.variable, "hinge", knot=k)
+            for k in self.hinges
+        ]
+        if self.null_indicator:
+            out.append(Feature(f"{self.variable} is null", self.variable, "null"))
+        return out
+
+    def bins(self) -> list[tuple[float | None, float | None]]:
+        """``(None, lo)``, the sloped bands between consecutive edges, ``(hi, None)``."""
+        edges: list[float | None] = [None, *self.band_edges(), None]
+        return [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
+
+    def rows(self) -> list[tuple[Any, Any]]:
+        return [*self.bins(), (None, None)]
+
+    def row_index(self, series: pl.Series) -> np.ndarray:
+        x = series.cast(pl.Float64).to_numpy()
+        idx = np.searchsorted(np.asarray(self.band_edges()), x, side="right")
+        return np.where(np.isnan(x), len(self.band_edges()) + 1, idx).astype(np.int64)
+
+    def transform(self, series: pl.Series) -> np.ndarray:
+        x = series.cast(pl.Float64).to_numpy()
+        nan = np.isnan(x)
+        xc = np.clip(np.where(nan, self.lo, x), self.lo, self.hi)
+        hinges = np.asarray(self.hinges)
+        cols = np.maximum(xc[:, None] - hinges[None, :], 0.0)
+        cols[nan, :] = 0.0  # nulls: the value at lo (all hinges zero)
+        if self.null_indicator:
+            cols = np.hstack([cols, nan[:, None].astype(np.float64)])
+        return cols
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "variable": self.variable,
+            "knots": list(self.knots),
+            "clamp": [self.lo, self.hi],
+            "null_indicator": self.null_indicator,
         }
 
 
@@ -475,6 +614,7 @@ class InteractionEncoder(Encoder):
 _ENCODERS: dict[str, type[Encoder]] = {
     StepEncoder.kind: StepEncoder,
     CategoricalEncoder.kind: CategoricalEncoder,
+    LinearEncoder.kind: LinearEncoder,
 }
 
 
@@ -556,6 +696,52 @@ def frequent_levels(
     return kept["level"].to_list()
 
 
+def round_range_outward(lo: float, hi: float) -> tuple[float, float]:
+    """``(lo, hi)`` rounded outward to a multiple of ``10**(floor(log10(hi-lo))-2)``
+    — integers stay integers; ``(0.0038, 99.997)`` becomes ``(0.0, 100.0)``."""
+    if not hi > lo:
+        return lo, hi
+    step = 10.0 ** (int(np.floor(np.log10(hi - lo))) - 2)
+    lo_r = float(np.floor(lo / step + 1e-9) * step)
+    hi_r = float(np.ceil(hi / step - 1e-9) * step)
+    # keep integers exact and avoid float noise like 79.99999999
+    return float(round(lo_r, 10)), float(round(hi_r, 10))
+
+
+def linear_encoder_from_data(
+    variable: str,
+    series: pl.Series,
+    *,
+    knots: list[float] | None = None,
+    n_bins: int = 20,
+    clamp: tuple[float, float] | None = None,
+    null_indicator: bool = True,
+) -> LinearEncoder:
+    """A :class:`LinearEncoder` clamped to the training range (or ``clamp``),
+    with ``knots`` (default: quantile knots) restricted to the open range.
+
+    The default clamp is the training minimum / maximum rounded *outward* to a
+    round number (two decades below the range, e.g. 18–80 stays 18–80, 0.0038–99.997
+    becomes 0–100), so every training value stays inside it and the table edges
+    read well."""
+    x = series.drop_nulls().cast(pl.Float64)
+    x = x.filter(x.is_finite())
+    if x.is_empty():
+        raise ValueError(f"Cannot build a linear term for {variable!r}: all null")
+    if clamp is None:
+        lo, hi = round_range_outward(float(x.min()), float(x.max()))
+    else:
+        lo, hi = (float(clamp[0]), float(clamp[1]))
+    if not lo < hi:
+        raise ValueError(
+            f"Cannot build a linear term for {variable!r}: the clamp range "
+            f"({lo}, {hi}) is empty (constant on train?)"
+        )
+    ks = list(knots) if knots is not None else quantile_knots(series, n_bins)
+    ks = [float(k) for k in ks if lo < float(k) < hi]
+    return LinearEncoder(variable, ks, (lo, hi), null_indicator=null_indicator)
+
+
 @dataclass
 class DesignSpec:
     """Ordered collection of encoders; builds the design matrix.
@@ -583,19 +769,25 @@ class DesignSpec:
         interactions: list[tuple[str, str]] | None = None,
         min_cell_exposure: float = 0.005,
         interaction_penalty_weight: float = 1.0,
+        linear: list[str] | None = None,
+        clamp: dict[str, tuple[float, float]] | None = None,
     ) -> DesignSpec:
         """Infer an encoder per predictor from (training) data.
 
         Numeric columns become :class:`StepEncoder` with quantile knots
         (override per variable via ``knots``, or force a numeric column to be
-        treated as categorical via ``categorical``). Everything else becomes a
-        :class:`CategoricalEncoder` keeping levels with at least
-        ``min_level_share`` of the (optionally ``weight_col``-weighted) rows.
-        ``interactions`` adds ``A × B`` terms (both must be predictors) whose
-        kept cells are decided from the same data.
+        treated as categorical via ``categorical``). Numeric columns listed in
+        ``linear`` become :class:`LinearEncoder` instead, clamped to the training
+        minimum/maximum (override via ``clamp``); knots outside the clamp range
+        are dropped. Everything else becomes a :class:`CategoricalEncoder`
+        keeping levels with at least ``min_level_share`` of the (optionally
+        ``weight_col``-weighted) rows. ``interactions`` adds ``A × B`` terms
+        (both must be predictors) whose kept cells are decided from the same data.
         """
         knots = knots or {}
         categorical = set(categorical or [])
+        linear_vars = set(linear or [])
+        clamp = clamp or {}
         weights = data[weight_col] if weight_col else None
         encoders: dict[str, Encoder] = {}
         for var in predictors:
@@ -603,7 +795,18 @@ class DesignSpec:
                 raise KeyError(f"Predictor {var!r} not found in data")
             s = data[var]
             is_numeric = s.dtype in NUMERIC_DTYPES and var not in categorical
-            if is_numeric:
+            if var in linear_vars and not is_numeric:
+                raise ValueError(f"{var!r} is not numeric; it cannot be a linear term")
+            if is_numeric and var in linear_vars:
+                encoders[var] = linear_encoder_from_data(
+                    var,
+                    s,
+                    knots=knots.get(var),
+                    n_bins=n_bins,
+                    clamp=clamp.get(var),
+                    null_indicator=null_indicator,
+                )
+            elif is_numeric:
                 ks = list(knots[var]) if var in knots else quantile_knots(s, n_bins)
                 if not ks:
                     raise ValueError(
@@ -751,6 +954,10 @@ class DesignSpec:
                 parts.append(f"{var}: step({len(enc.knots)} knots)")
             elif isinstance(enc, CategoricalEncoder):
                 parts.append(f"{var}: categorical({len(enc.levels)} levels)")
+            elif isinstance(enc, LinearEncoder):
+                parts.append(
+                    f"{var}: linear({len(enc.knots)} knots, clamp {enc.lo:g}–{enc.hi:g})"
+                )
             elif isinstance(enc, InteractionEncoder):
                 parts.append(
                     f"{var}: interaction({len(enc.cells)} of "

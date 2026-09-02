@@ -17,6 +17,7 @@ import numpy as np
 import polars as pl
 
 from easy_glm.engine.models import (
+    BandRow,
     CellRow,
     FromToRow,
     ModelMetadata,
@@ -25,17 +26,45 @@ from easy_glm.engine.models import (
 )
 from easy_glm.engine.rate_model import RateModel
 
-from .design import CategoricalEncoder, InteractionEncoder, StepEncoder
+from .design import (
+    CategoricalEncoder,
+    InteractionEncoder,
+    LinearEncoder,
+    StepEncoder,
+)
 from .fit import GLMFit
 
 Base = Literal["modal", "reference"]
 
 
-def _bin_rows(fit: GLMFit, variable: str) -> tuple[list[FromToRow], np.ndarray]:
+def _bin_rows(fit: GLMFit, variable: str) -> tuple[list[Any], np.ndarray]:
     """Table rows for ``variable`` and each row's linear-predictor contribution
-    relative to the encoder's reference (lowest bin / reference level)."""
+    relative to the encoder's reference (lowest bin / reference level / the
+    value below the lower clamp for linear terms). Linear rows are
+    :class:`BandRow` with their slope filled in and the contribution taken at
+    the band start."""
     enc = fit.spec[variable]
     coef = fit.coef[fit.spec.slices()[variable]]
+    if isinstance(enc, LinearEncoder):
+        hinges = np.asarray(enc.hinges)
+        beta = coef[: len(hinges)]
+        null_contrib = float(coef[len(hinges)]) if enc.null_indicator else 0.0
+        edges = enc.band_edges()
+        slopes = np.cumsum(beta)  # slope in band j = sum of hinge coefs up to j
+
+        def value_at(x: float) -> float:
+            return float(np.dot(beta, np.maximum(x - hinges, 0.0)))
+
+        rows: list[Any] = [BandRow(None, edges[0], 1.0, 0.0)]
+        contrib = [0.0]  # below lo: all hinges are zero
+        for j in range(len(edges) - 1):
+            rows.append(BandRow(edges[j], edges[j + 1], 1.0, float(slopes[j])))
+            contrib.append(value_at(edges[j]))
+        rows.append(BandRow(edges[-1], None, 1.0, 0.0))
+        contrib.append(value_at(edges[-1]))
+        rows.append(BandRow(None, None, 1.0, 0.0))
+        contrib.append(null_contrib)
+        return rows, np.asarray(contrib)
     if isinstance(enc, StepEncoder):
         n_knots = len(enc.knots)
         step_coefs = coef[:n_knots]
@@ -88,10 +117,14 @@ def rate_tables(fit: GLMFit, *, base: Base = "modal") -> dict[str, pl.DataFrame]
     Columns: ``from``, ``to`` (Float64 for numeric, Utf8 for categorical;
     null = open end, both null = the null / Other row), ``label``, ``coef``
     (linear-predictor contribution relative to the base row), ``relativity``
-    (``exp(coef)``) and ``is_base``.
+    (``exp(coef)``) and ``is_base``. Piecewise-linear variables add ``slope``
+    (change of log relativity per unit of the variable inside the band) and
+    ``relativity_to`` (the value at the band end); their ``relativity`` is the
+    value at the band **start**.
 
     ``base="modal"`` puts relativity 1.0 on the most exposed bin of the
-    training data; ``"reference"`` uses the lowest bin / reference level.
+    training data (for a linear term: at the lower edge of that band);
+    ``"reference"`` uses the lowest bin / reference level / below the clamp.
     """
     _check_log_link(fit)
     out: dict[str, pl.DataFrame] = {}
@@ -103,22 +136,35 @@ def rate_tables(fit: GLMFit, *, base: Base = "modal") -> dict[str, pl.DataFrame]
         rows, contrib = _bin_rows(fit, var)
         b = fit.modal_bins.get(var, 0) if base == "modal" else 0
         rel_lp = contrib - contrib[b]
-        edge_dtype = pl.Float64 if isinstance(enc, StepEncoder) else pl.Utf8
-        out[var] = pl.DataFrame(
-            {
-                "from": pl.Series([r.from_ for r in rows], dtype=edge_dtype),
-                "to": pl.Series([r.to_ for r in rows], dtype=edge_dtype),
-                "label": [level_label(r) for r in rows],
-                "coef": rel_lp,
-                "relativity": np.exp(rel_lp),
-                "is_base": [i == b for i in range(len(rows))],
-            }
-        )
+        edge_dtype = _edge_dtype(enc)
+        columns: dict[str, Any] = {
+            "from": pl.Series([r.from_ for r in rows], dtype=edge_dtype),
+            "to": pl.Series([r.to_ for r in rows], dtype=edge_dtype),
+            "label": [level_label(r) for r in rows],
+            "coef": rel_lp,
+            "relativity": np.exp(rel_lp),
+            "is_base": [i == b for i in range(len(rows))],
+        }
+        if isinstance(enc, LinearEncoder):
+            slopes = np.array([r.slope for r in rows])
+            width = np.array(
+                [
+                    (
+                        (r.to_ - r.from_)
+                        if r.from_ is not None and r.to_ is not None
+                        else 0.0
+                    )
+                    for r in rows
+                ]
+            )
+            columns["slope"] = slopes
+            columns["relativity_to"] = np.exp(rel_lp + slopes * width)
+        out[var] = pl.DataFrame(columns)
     return out
 
 
 def _edge_dtype(enc) -> Any:
-    return pl.Float64 if isinstance(enc, StepEncoder) else pl.Utf8
+    return pl.Float64 if isinstance(enc, StepEncoder | LinearEncoder) else pl.Utf8
 
 
 def _interaction_table(fit: GLMFit, variable: str) -> pl.DataFrame:
@@ -179,7 +225,9 @@ def to_rate_model(
     offset column name and applies ``exp(offset)`` at scoring) and with
     interactions (mains × a cell adjustment matrix; the base rate is the
     prediction for the base risk *before* interaction adjustments, so an
-    interaction cell of 1.0 always means "no adjustment"). Pass
+    interaction cell of 1.0 always means "no adjustment") and with
+    piecewise-linear terms (``"linear"`` tables that are log-linear inside each
+    band, relativity 1.00 at ``x_base``, flat outside the clamp range). Pass
     ``base_rate_override`` to rescale (e.g. for a target loss ratio); the
     relativities are unaffected. ``model_type`` is a label stored in the
     metadata (defaults to the canonical family name).
@@ -201,6 +249,11 @@ def to_rate_model(
         rel = np.exp(contrib - contrib[b])
         for row, r in zip(rows, rel, strict=True):
             row.relativity = float(r)
+        if isinstance(enc, LinearEncoder):
+            base_row = rows[b]
+            x_base = base_row.from_ if base_row.from_ is not None else base_row.to_
+            variables[var] = VariableConfig(type="linear", table=rows, x_base=x_base)
+            continue
         kind = "numeric" if isinstance(enc, StepEncoder) else "categorical"
         variables[var] = VariableConfig(type=kind, table=rows)
     RateModel._precompute_variables(variables)
