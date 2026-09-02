@@ -80,12 +80,13 @@ include = ["easy_glm*"]
 [tool.black]
 line-length = 88
 target-version = ['py310']
+extend-exclude = 'docs/spikes'  # research prototypes, not shipped code
 
 [tool.ruff]
 line-length = 88
 target-version = "py310"
 # the dev-environment bootstrap script predates the lint rules
-extend-exclude = ["scripts/setup_dev.py"]
+extend-exclude = ["scripts/setup_dev.py", "docs/spikes"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "B", "C4", "UP"]
