@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 import polars as pl
 from plotly.subplots import make_subplots
 
-from easy_glm.engine.models import FromToRow, VariableConfig, level_labels
+from easy_glm.engine.models import VariableConfig, level_labels
 
 BLUE = "#1f77b4"
 ORANGE = "#ff7f0e"
@@ -189,7 +189,6 @@ def build_ae_comparison(
     """Overlay baseline and working copy Actual vs Expected."""
     subsets_b = metrics_base["subsets"]
     subsets_w = metrics_work.get("subsets", subsets_b)
-    has_split = "train" in subsets_b and "test" in subsets_b
 
     train_rows = subsets_b.get("train", subsets_b.get("all", []))
     labels = [r["level"] for r in train_rows] if train_rows else []

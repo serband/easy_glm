@@ -11,9 +11,7 @@ def quote_identifier(identifier: str) -> str:
     return f'"{escaped_identifier}"'
 
 
-def o_matrix(
-    col_name: str, brks, *, null_indicator: bool = False
-) -> list[str]:
+def o_matrix(col_name: str, brks, *, null_indicator: bool = False) -> list[str]:
     """Generate o-matrix SQL expressions for a numeric column.
 
     Each breakpoint produces one binary column (1 if value < breakpoint,
@@ -55,8 +53,7 @@ def o_matrix(
     if null_indicator:
         null_alias = quote_identifier(f"{col_name}_is_null")
         sql_statements.append(
-            f"CASE WHEN {quoted_col_name} IS NULL THEN 1 ELSE 0 END "
-            f"AS {null_alias}"
+            f"CASE WHEN {quoted_col_name} IS NULL THEN 1 ELSE 0 END " f"AS {null_alias}"
         )
     return sql_statements
 
@@ -124,7 +121,6 @@ def one_hot_fun(col_name: str, levels: list) -> list[str]:
     sql_statements: list[str] = []
 
     # Non-reference levels (drop first as reference)
-    ref_level = cleaned[0]
     all_levels_str = ", ".join(f"'{lvl}'" for lvl in cleaned)
 
     for level in cleaned[1:]:

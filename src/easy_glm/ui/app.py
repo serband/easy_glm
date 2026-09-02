@@ -14,13 +14,11 @@ import polars as pl
 import streamlit as st
 
 from easy_glm.engine import RateModel
-from easy_glm.engine.models import FromToRow, level_label
+from easy_glm.engine.models import level_label
 from easy_glm.ui import _parse_args
 from easy_glm.ui.charts import (
-    build_actual_vs_expected,
     build_ae_comparison,
     build_histogram,
-    build_relativity_chart,
     build_relativity_comparison,
 )
 from easy_glm.ui.metrics import FORMULAS, compute_actual_expected
@@ -447,7 +445,7 @@ st.title("Relativity Editor")
 st.caption(
     f"Model: {meta.model_type or 'unknown'} · "
     f"Base rate: {baseline.base_rate:.6f}"
-    + (f" · Unsaved changes" if st.session_state.dirty else "")
+    + (" · Unsaved changes" if st.session_state.dirty else "")
 )
 
 if not var_names:
