@@ -7,7 +7,7 @@ polars column into design-matrix columns *and* what every column means
 tables can be read straight off the fitted coefficients (see
 :mod:`easy_glm.core.tables`) and the spec round-trips through JSON.
 
-Two encoders exist:
+Three encoders exist:
 
 * :class:`StepEncoder` -- AGLM-style "O-dummies": one column ``1{x >= k}`` per
   knot. With an L1 penalty each coefficient is the *increment* of the effect
@@ -18,6 +18,13 @@ Two encoders exist:
 * :class:`CategoricalEncoder` -- one column per kept level except the
   reference (the most frequent level), plus an ``Other`` column for lumped,
   unseen and null values.
+* :class:`InteractionEncoder` -- a two-way interaction ``A × B`` on top of the
+  two mains: one 0/1 column per *kept cell* of the parents' rate-table rows,
+  so each coefficient is one cell's multiplicative adjustment.
+
+Every encoder also knows its **rate-table rows** (:meth:`Encoder.rows`) and can
+map a raw value to its row index (:meth:`Encoder.row_index`); that shared rule
+is what keeps the rate tables, the interaction cells and the scorer aligned.
 """
 
 from __future__ import annotations
@@ -44,7 +51,10 @@ NUMERIC_DTYPES = (
     pl.Float64,
 )
 
-FeatureKind = Literal["step", "null", "level", "other"]
+FeatureKind = Literal["step", "null", "level", "other", "cell"]
+
+#: separator used in interaction variable names, e.g. ``"DrivAge×VehPower"``
+INTERACTION_SEP = "×"
 
 
 @dataclass(frozen=True)
@@ -56,6 +66,8 @@ class Feature:
     kind: FeatureKind
     knot: float | None = None
     level: str | None = None
+    #: interaction columns only: ``(row_a, row_b)`` rate-table row indices
+    cell: tuple[int, int] | None = None
 
 
 def format_knot(value: float) -> str:
@@ -63,8 +75,22 @@ def format_knot(value: float) -> str:
     return str(int(value)) if value.is_integer() else f"{value:g}"
 
 
+def row_label(row: tuple[Any, Any]) -> str:
+    """Human-readable label of a rate-table row ``(from, to)``."""
+    lo, hi = row
+    if lo is None and hi is None:
+        return "Other / Unknown"
+    if lo is None:
+        return f"< {hi}"
+    if hi is None:
+        return f"≥ {lo}"
+    if lo == hi:
+        return str(lo)
+    return f"[{lo}, {hi})"
+
+
 class Encoder(ABC):
-    """Turns one raw column into design-matrix columns."""
+    """Turns one raw column (or two, for interactions) into design columns."""
 
     kind: ClassVar[str]
     variable: str
@@ -79,9 +105,31 @@ class Encoder(ABC):
     @abstractmethod
     def to_dict(self) -> dict[str, Any]: ...
 
+    # -- rate-table rows ----------------------------------------------------
+    @abstractmethod
+    def rows(self) -> list[tuple[Any, Any]]:
+        """``(from, to)`` per rate-table row, in table order; the last row is
+        the null (numeric) / Other (categorical) row."""
+
+    @abstractmethod
+    def row_index(self, series: pl.Series) -> np.ndarray:
+        """Rate-table row index (0-based, into :meth:`rows`) of every value."""
+
+    @property
+    def n_rows(self) -> int:
+        return len(self.rows())
+
     @property
     def n_features(self) -> int:
         return len(self.features())
+
+    @property
+    def required_columns(self) -> list[str]:
+        return [self.variable]
+
+    def transform_frame(self, data: pl.DataFrame) -> np.ndarray:
+        """Design columns from a frame (default: :meth:`transform` on the column)."""
+        return self.transform(data[self.variable])
 
 
 @dataclass
@@ -127,6 +175,14 @@ class StepEncoder(Encoder):
         """``(from, to)`` per bin, ``None`` = open end; ``len(knots) + 1`` bins."""
         edges: list[float | None] = [None, *self.knots, None]
         return [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
+
+    def rows(self) -> list[tuple[Any, Any]]:
+        return [*self.bins(), (None, None)]
+
+    def row_index(self, series: pl.Series) -> np.ndarray:
+        x = series.cast(pl.Float64).to_numpy()
+        idx = np.searchsorted(np.asarray(self.knots), x, side="right")
+        return np.where(np.isnan(x), len(self.knots) + 1, idx).astype(np.int64)
 
     def transform(self, series: pl.Series) -> np.ndarray:
         x = series.cast(pl.Float64).to_numpy()
@@ -202,6 +258,17 @@ class CategoricalEncoder(Encoder):
         )
         return out
 
+    def rows(self) -> list[tuple[Any, Any]]:
+        return [*((lvl, lvl) for lvl in self.levels), (None, None)]
+
+    def row_index(self, series: pl.Series) -> np.ndarray:
+        vals = series.cast(pl.Utf8)
+        other = len(self.levels)
+        idx = vals.replace_strict(
+            self.levels, list(range(other)), default=other, return_dtype=pl.Int64
+        )
+        return idx.fill_null(other).to_numpy().astype(np.int64)
+
     def transform(self, series: pl.Series) -> np.ndarray:
         vals = series.cast(pl.Utf8)
         cols = [(vals == lvl).fill_null(False).to_numpy() for lvl in self.levels[1:]]
@@ -218,15 +285,202 @@ class CategoricalEncoder(Encoder):
         }
 
 
+def interaction_name(a: str, b: str) -> str:
+    return f"{a}{INTERACTION_SEP}{b}"
+
+
+@dataclass
+class InteractionEncoder(Encoder):
+    """Two-way interaction ``A × B`` on top of the two main effects.
+
+    A *cell* is a pair of rate-table rows of the parents (see
+    :meth:`Encoder.rows`: bins + null row for numerics, levels + Other row for
+    categoricals). One 0/1 column is created per **kept** cell; kept cells are
+    decided once from training data (``from_data``) and stored explicitly, so
+    the design is reproducible without data. Cells that were not kept (too
+    little exposure) get no column and therefore relativity 1.00.
+
+    Parameters
+    ----------
+    a, b : Encoder
+        The parent encoders (must be in the same :class:`DesignSpec`).
+    cells : list[tuple[int, int]]
+        Kept cells as ``(row_a, row_b)`` indices, in column order.
+    exposure : list[list[float]]
+        Training exposure per cell, shape ``(a.n_rows, b.n_rows)``.
+    min_cell_exposure : float
+        Share of the interaction's total training exposure a cell needed to
+        be kept (recorded for the record and for scripts).
+    penalty_weight : float
+        Multiplier on the L1 penalty of the cell columns (1.0 = same as the
+        mains, on the unstandardised scale).
+    """
+
+    kind: ClassVar[str] = "interaction"
+
+    a: Encoder
+    b: Encoder
+    cells: list[tuple[int, int]]
+    exposure: list[list[float]]
+    min_cell_exposure: float = 0.005
+    penalty_weight: float = 1.0
+
+    def __post_init__(self) -> None:
+        if isinstance(self.a, InteractionEncoder) or isinstance(
+            self.b, InteractionEncoder
+        ):
+            raise ValueError("Interactions of interactions are not supported")
+        if self.a.variable == self.b.variable:
+            raise ValueError("An interaction needs two different variables")
+        na, nb = self.a.n_rows, self.b.n_rows
+        cells = [(int(i), int(j)) for i, j in self.cells]
+        if len(set(cells)) != len(cells):
+            raise ValueError(f"InteractionEncoder({self.variable!r}) cells not unique")
+        for i, j in cells:
+            if not (0 <= i < na and 0 <= j < nb):
+                raise ValueError(
+                    f"InteractionEncoder({self.variable!r}) cell {(i, j)} outside "
+                    f"the parents' {na}×{nb} rows"
+                )
+        self.cells = cells
+        exp = np.asarray(self.exposure, dtype=float)
+        if exp.shape != (na, nb):
+            raise ValueError(
+                f"InteractionEncoder({self.variable!r}) exposure must be "
+                f"{na}×{nb}, got {exp.shape}"
+            )
+        self.exposure = exp.tolist()
+        if not 0.0 <= float(self.min_cell_exposure) < 1.0:
+            raise ValueError("min_cell_exposure must be in [0, 1)")
+        if float(self.penalty_weight) <= 0:
+            raise ValueError("penalty_weight must be positive")
+
+    # -- construction --------------------------------------------------------
+    @classmethod
+    def from_data(
+        cls,
+        a: Encoder,
+        b: Encoder,
+        data: pl.DataFrame,
+        *,
+        weights: np.ndarray | pl.Series | None = None,
+        min_cell_exposure: float = 0.005,
+        penalty_weight: float = 1.0,
+    ) -> InteractionEncoder:
+        """Decide the kept cells from training ``data``: a cell is kept when
+        its share of the interaction's total exposure is at least
+        ``min_cell_exposure`` (and it has any exposure at all)."""
+        ia = a.row_index(data[a.variable])
+        ib = b.row_index(data[b.variable])
+        w = (
+            np.ones(data.height)
+            if weights is None
+            else np.asarray(
+                weights.to_numpy() if isinstance(weights, pl.Series) else weights,
+                dtype=float,
+            )
+        )
+        na, nb = a.n_rows, b.n_rows
+        exposure = np.zeros((na, nb))
+        np.add.at(exposure, (ia, ib), w)
+        total = exposure.sum()
+        share = exposure / total if total > 0 else exposure
+        keep = (share >= min_cell_exposure) & (exposure > 0)
+        cells = [(int(i), int(j)) for i, j in zip(*np.nonzero(keep), strict=True)]
+        return cls(
+            a,
+            b,
+            cells,
+            exposure.tolist(),
+            min_cell_exposure=min_cell_exposure,
+            penalty_weight=penalty_weight,
+        )
+
+    # -- Encoder interface ---------------------------------------------------
+    @property
+    def variable(self) -> str:  # type: ignore[override]
+        return interaction_name(self.a.variable, self.b.variable)
+
+    @property
+    def parents(self) -> tuple[str, str]:
+        return self.a.variable, self.b.variable
+
+    @property
+    def required_columns(self) -> list[str]:
+        return [self.a.variable, self.b.variable]
+
+    def features(self) -> list[Feature]:
+        rows_a, rows_b = self.a.rows(), self.b.rows()
+        return [
+            Feature(
+                f"{self.variable}[{row_label(rows_a[i])} | {row_label(rows_b[j])}]",
+                self.variable,
+                "cell",
+                level=f"{row_label(rows_a[i])} | {row_label(rows_b[j])}",
+                cell=(i, j),
+            )
+            for i, j in self.cells
+        ]
+
+    def rows(self) -> list[tuple[Any, Any]]:
+        """All cells (kept or not) as ``((from_a, to_a), (from_b, to_b))``,
+        row-major over the parents' rows."""
+        rows_a, rows_b = self.a.rows(), self.b.rows()
+        return [(ra, rb) for ra in rows_a for rb in rows_b]
+
+    def cell_index(self, data: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+        return self.a.row_index(data[self.a.variable]), self.b.row_index(
+            data[self.b.variable]
+        )
+
+    def row_index(self, series: pl.Series) -> np.ndarray:  # pragma: no cover
+        raise TypeError("InteractionEncoder needs two columns; use cell_index(frame)")
+
+    def transform(self, series: pl.Series) -> np.ndarray:  # pragma: no cover
+        raise TypeError("InteractionEncoder needs two columns; use transform_frame")
+
+    def transform_frame(self, data: pl.DataFrame) -> np.ndarray:
+        ia, ib = self.cell_index(data)
+        nb = self.b.n_rows
+        flat = ia * nb + ib
+        out = np.zeros((data.height, len(self.cells)), dtype=np.float64)
+        for col, (i, j) in enumerate(self.cells):
+            out[:, col] = flat == (i * nb + j)
+        return out
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "a": self.a.variable,
+            "b": self.b.variable,
+            "cells": [list(c) for c in self.cells],
+            "exposure": self.exposure,
+            "min_cell_exposure": self.min_cell_exposure,
+            "penalty_weight": self.penalty_weight,
+        }
+
+
 _ENCODERS: dict[str, type[Encoder]] = {
     StepEncoder.kind: StepEncoder,
     CategoricalEncoder.kind: CategoricalEncoder,
 }
 
 
-def encoder_from_dict(raw: dict[str, Any]) -> Encoder:
+def encoder_from_dict(
+    raw: dict[str, Any], parents: dict[str, Encoder] | None = None
+) -> Encoder:
     raw = dict(raw)
     kind = raw.pop("kind")
+    if kind == InteractionEncoder.kind:
+        parents = parents or {}
+        try:
+            a, b = parents[raw.pop("a")], parents[raw.pop("b")]
+        except KeyError as exc:
+            raise ValueError(
+                f"Interaction refers to an unknown parent encoder {exc}"
+            ) from exc
+        raw["cells"] = [tuple(c) for c in raw.get("cells", [])]
+        return InteractionEncoder(a, b, **raw)
     try:
         cls = _ENCODERS[kind]
     except KeyError as exc:
@@ -292,7 +546,11 @@ def frequent_levels(
 
 @dataclass
 class DesignSpec:
-    """Ordered collection of encoders; builds the design matrix."""
+    """Ordered collection of encoders; builds the design matrix.
+
+    Main effects come first, interactions after them (``add_interaction``
+    enforces this), so the column layout is mains then cells.
+    """
 
     encoders: dict[str, Encoder] = field(default_factory=dict)
 
@@ -310,6 +568,9 @@ class DesignSpec:
         knots: dict[str, list[float]] | None = None,
         categorical: list[str] | None = None,
         weight_col: str | None = None,
+        interactions: list[tuple[str, str]] | None = None,
+        min_cell_exposure: float = 0.005,
+        interaction_penalty_weight: float = 1.0,
     ) -> DesignSpec:
         """Infer an encoder per predictor from (training) data.
 
@@ -318,6 +579,8 @@ class DesignSpec:
         treated as categorical via ``categorical``). Everything else becomes a
         :class:`CategoricalEncoder` keeping levels with at least
         ``min_level_share`` of the (optionally ``weight_col``-weighted) rows.
+        ``interactions`` adds ``A × B`` terms (both must be predictors) whose
+        kept cells are decided from the same data.
         """
         knots = knots or {}
         categorical = set(categorical or [])
@@ -343,12 +606,47 @@ class DesignSpec:
                 if not levels:
                     raise ValueError(f"Cannot derive levels for {var!r}: all null.")
                 encoders[var] = CategoricalEncoder(var, levels)
-        return cls(encoders)
+        spec = cls(encoders)
+        for a, b in interactions or []:
+            spec.add_interaction(
+                InteractionEncoder.from_data(
+                    spec[a],
+                    spec[b],
+                    data,
+                    weights=weights,
+                    min_cell_exposure=min_cell_exposure,
+                    penalty_weight=interaction_penalty_weight,
+                )
+            )
+        return spec
+
+    def add_interaction(self, enc: InteractionEncoder) -> InteractionEncoder:
+        """Append an interaction whose parents are already in the spec."""
+        for parent in (enc.a, enc.b):
+            if self.encoders.get(parent.variable) is not parent:
+                raise ValueError(
+                    f"Interaction parent {parent.variable!r} is not (the same object "
+                    "as) a main effect of this spec"
+                )
+        if enc.variable in self.encoders:
+            raise ValueError(f"Interaction {enc.variable!r} already in the spec")
+        self.encoders[enc.variable] = enc
+        return enc
 
     # -- introspection ----------------------------------------------------
     @property
     def variables(self) -> list[str]:
         return list(self.encoders)
+
+    @property
+    def main_effects(self) -> list[str]:
+        return [
+            v for v, e in self.encoders.items() if not isinstance(e, InteractionEncoder)
+        ]
+
+    @property
+    def interactions(self) -> list[InteractionEncoder]:
+        return [e for e in self.encoders.values() if isinstance(e, InteractionEncoder)]
 
     @property
     def features(self) -> list[Feature]:
@@ -361,6 +659,14 @@ class DesignSpec:
     @property
     def n_features(self) -> int:
         return sum(enc.n_features for enc in self.encoders.values())
+
+    @property
+    def required_columns(self) -> list[str]:
+        seen: dict[str, None] = {}
+        for enc in self.encoders.values():
+            for c in enc.required_columns:
+                seen.setdefault(c, None)
+        return list(seen)
 
     def slices(self) -> dict[str, slice]:
         """Column range of each variable in the design matrix."""
@@ -384,13 +690,13 @@ class DesignSpec:
     # -- matrix -----------------------------------------------------------
     def build(self, data: pl.DataFrame) -> np.ndarray:
         """Dense ``(n_rows, n_features)`` float64 design matrix for ``data``."""
-        missing = [v for v in self.encoders if v not in data.columns]
+        missing = [c for c in self.required_columns if c not in data.columns]
         if missing:
             raise KeyError(f"Data is missing predictor columns: {missing}")
         n = data.height
         out = np.empty((n, self.n_features), dtype=np.float64)
         for var, sl in self.slices().items():
-            out[:, sl] = self.encoders[var].transform(data[var])
+            out[:, sl] = self.encoders[var].transform_frame(data)
         return out
 
     # -- serialisation ----------------------------------------------------
@@ -399,8 +705,18 @@ class DesignSpec:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> DesignSpec:
-        encs = [encoder_from_dict(e) for e in raw["encoders"]]
-        return cls({e.variable: e for e in encs})
+        mains: dict[str, Encoder] = {}
+        pending: list[dict[str, Any]] = []
+        for e in raw["encoders"]:
+            if e.get("kind") == InteractionEncoder.kind:
+                pending.append(e)
+            else:
+                enc = encoder_from_dict(e)
+                mains[enc.variable] = enc
+        spec = cls(mains)
+        for e in pending:
+            spec.add_interaction(encoder_from_dict(e, parents=mains))  # type: ignore[arg-type]
+        return spec
 
     def to_json(self, path: str | Path) -> None:
         Path(path).write_text(json.dumps(self.to_dict(), indent=2))
@@ -414,6 +730,13 @@ class DesignSpec:
         for var, enc in self.encoders.items():
             if isinstance(enc, StepEncoder):
                 parts.append(f"{var}: step({len(enc.knots)} knots)")
-            else:
+            elif isinstance(enc, CategoricalEncoder):
                 parts.append(f"{var}: categorical({len(enc.levels)} levels)")
+            elif isinstance(enc, InteractionEncoder):
+                parts.append(
+                    f"{var}: interaction({len(enc.cells)} of "
+                    f"{enc.a.n_rows * enc.b.n_rows} cells)"
+                )
+            else:  # pragma: no cover
+                parts.append(f"{var}: {enc.kind}")
         return f"DesignSpec({', '.join(parts)})"

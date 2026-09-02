@@ -15,7 +15,7 @@ from glum import (
     TweedieDistribution,
 )
 
-from .design import CategoricalEncoder, DesignSpec, StepEncoder
+from .design import DesignSpec, InteractionEncoder, StepEncoder
 
 _FAMILY_ALIASES: dict[str, str] = {
     "poisson": "poisson",
@@ -74,8 +74,8 @@ def monotone_bounds(
             raise KeyError(f"monotone: {var!r} is not a predictor in the spec")
         if not isinstance(spec[var], StepEncoder):
             raise ValueError(
-                f"monotone: {var!r} is categorical; only numeric (step) "
-                "variables can be constrained"
+                f"monotone: {var!r} is categorical or an interaction; only step "
+                "(numeric) variables can be constrained"
             )
         if direction not in ("increasing", "decreasing"):
             raise ValueError(
@@ -203,29 +203,54 @@ class GLMFit:
 def _modal_bins(
     spec: DesignSpec, data: pl.DataFrame, weights: np.ndarray | None
 ) -> dict[str, int]:
-    """Index of the most exposed table row per variable (see ``rate_tables``)."""
+    """Index of the most exposed table row per main effect (see ``rate_tables``).
+    Uses the encoders' shared ``row_index`` rule; interactions have no base row."""
     w = np.ones(data.height) if weights is None else np.asarray(weights, dtype=float)
     out: dict[str, int] = {}
     for var, enc in spec.encoders.items():
-        if isinstance(enc, StepEncoder):
-            x = data[var].cast(pl.Float64).to_numpy()
-            idx = np.searchsorted(np.asarray(enc.knots), x, side="right")
-            n_rows = len(enc.knots) + 2  # bins + null row
-            idx = np.where(np.isnan(x), n_rows - 1, idx)
-        elif isinstance(enc, CategoricalEncoder):
-            vals = data[var].cast(pl.Utf8)
-            lookup = {lvl: i for i, lvl in enumerate(enc.levels)}
-            n_rows = len(enc.levels) + 1  # levels + other row
-            idx = np.array(
-                [
-                    lookup.get(v, n_rows - 1) if v is not None else n_rows - 1
-                    for v in vals.to_list()
-                ]
-            )
-        else:
-            raise NotImplementedError(f"No modal-bin rule for {type(enc).__name__}")
-        out[var] = int(np.argmax(np.bincount(idx, weights=w, minlength=n_rows)))
+        if isinstance(enc, InteractionEncoder):
+            continue
+        idx = enc.row_index(data[var])
+        out[var] = int(np.argmax(np.bincount(idx, weights=w, minlength=enc.n_rows)))
     return out
+
+
+def interaction_penalty_weights(
+    spec: DesignSpec,
+    design: np.ndarray,
+    weights: np.ndarray | None,
+    *,
+    scale_predictors: bool,
+) -> np.ndarray | None:
+    """Per-column L1 weights (glum ``P1``) for interaction cells.
+
+    With ``scale_predictors=True`` glum penalises the standardised coefficient
+    ``beta * sd(column)``, so a thin cell (small sd) buys a large raw effect for
+    little penalty — the opposite of what a pricing model wants. Cell columns
+    therefore get ``P1 = penalty_weight * 0.5 / sd``: the penalty an
+    *unstandardised* column would carry, scaled so that a 50/50 cell is
+    penalised exactly like a 50/50 main effect (sd 0.5). Thin cells are shrunk
+    harder, fat cells like the mains. Main-effect columns keep ``P1 = 1``.
+    Returns ``None`` when the spec has no interactions (glum's default applies).
+    """
+    if not spec.interactions:
+        return None
+    p1 = np.ones(spec.n_features)
+    w = np.ones(design.shape[0]) if weights is None else np.asarray(weights, float)
+    w = w / w.sum()
+    slices = spec.slices()
+    for enc in spec.interactions:
+        sl = slices[enc.variable]
+        cols = design[:, sl]
+        if scale_predictors:
+            mean = w @ cols
+            var = w @ (cols**2) - mean**2
+            sd = np.sqrt(np.clip(var, 0.0, None))
+            sd = np.where(sd > 0, sd, 0.5)
+            p1[sl] = enc.penalty_weight * 0.5 / sd
+        else:
+            p1[sl] = enc.penalty_weight
+    return p1
 
 
 def fit_glm(
@@ -313,6 +338,13 @@ def fit_glm(
             raise KeyError(f"Offset column {offset_col!r} not found in data")
         offset = data[offset_col].cast(pl.Float64).to_numpy()
     _validate_target(y, family_name)
+
+    if "P1" not in glum_kwargs:
+        p1 = interaction_penalty_weights(
+            spec, design, sw, scale_predictors=scale_predictors
+        )
+        if p1 is not None:
+            glum_kwargs["P1"] = p1
 
     lower = glum_kwargs.pop("lower_bounds", None)
     upper = glum_kwargs.pop("upper_bounds", None)

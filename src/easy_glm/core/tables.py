@@ -11,15 +11,21 @@ random reference row.
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import polars as pl
 
-from easy_glm.engine.models import FromToRow, ModelMetadata, VariableConfig, level_label
+from easy_glm.engine.models import (
+    CellRow,
+    FromToRow,
+    ModelMetadata,
+    VariableConfig,
+    level_label,
+)
 from easy_glm.engine.rate_model import RateModel
 
-from .design import CategoricalEncoder, StepEncoder
+from .design import CategoricalEncoder, InteractionEncoder, StepEncoder
 from .fit import GLMFit
 
 Base = Literal["modal", "reference"]
@@ -47,6 +53,27 @@ def _bin_rows(fit: GLMFit, variable: str) -> tuple[list[FromToRow], np.ndarray]:
     return rows, contrib
 
 
+def _cell_rows(fit: GLMFit, variable: str) -> tuple[list[CellRow], np.ndarray]:
+    """All cells of an interaction (row-major over the parents' rows) and each
+    cell's coefficient (0 for cells that were not kept)."""
+    enc = fit.spec[variable]
+    if not isinstance(enc, InteractionEncoder):
+        raise TypeError(f"{variable!r} is not an interaction")
+    coef = fit.coef[fit.spec.slices()[variable]]
+    na, nb = enc.a.n_rows, enc.b.n_rows
+    contrib = np.zeros((na, nb))
+    for c, (i, j) in zip(coef, enc.cells, strict=True):
+        contrib[i, j] = c
+    exposure = np.asarray(enc.exposure, dtype=float)
+    rows_a, rows_b = enc.a.rows(), enc.b.rows()
+    rows = [
+        CellRow(ra[0], ra[1], rb[0], rb[1], 1.0, float(exposure[i, j]))
+        for i, ra in enumerate(rows_a)
+        for j, rb in enumerate(rows_b)
+    ]
+    return rows, contrib
+
+
 def _check_log_link(fit: GLMFit) -> None:
     if fit.link != "log":
         raise NotImplementedError(
@@ -69,10 +96,14 @@ def rate_tables(fit: GLMFit, *, base: Base = "modal") -> dict[str, pl.DataFrame]
     _check_log_link(fit)
     out: dict[str, pl.DataFrame] = {}
     for var in fit.spec.variables:
+        enc = fit.spec[var]
+        if isinstance(enc, InteractionEncoder):
+            out[var] = _interaction_table(fit, var)
+            continue
         rows, contrib = _bin_rows(fit, var)
         b = fit.modal_bins.get(var, 0) if base == "modal" else 0
         rel_lp = contrib - contrib[b]
-        edge_dtype = pl.Float64 if isinstance(fit.spec[var], StepEncoder) else pl.Utf8
+        edge_dtype = pl.Float64 if isinstance(enc, StepEncoder) else pl.Utf8
         out[var] = pl.DataFrame(
             {
                 "from": pl.Series([r.from_ for r in rows], dtype=edge_dtype),
@@ -86,11 +117,45 @@ def rate_tables(fit: GLMFit, *, base: Base = "modal") -> dict[str, pl.DataFrame]
     return out
 
 
+def _edge_dtype(enc) -> Any:
+    return pl.Float64 if isinstance(enc, StepEncoder) else pl.Utf8
+
+
+def _interaction_table(fit: GLMFit, variable: str) -> pl.DataFrame:
+    """Long table of an interaction: one row per cell (kept or not), with
+    parent edges, labels, training exposure, ``kept``, ``coef`` and the
+    multiplicative adjustment ``relativity`` (1.0 for cells not kept). Cells
+    are *not* re-based: 1.0 always means "no adjustment"."""
+    enc = fit.spec[variable]
+    assert isinstance(enc, InteractionEncoder)
+    rows, contrib = _cell_rows(fit, variable)
+    kept = np.zeros(contrib.shape, dtype=bool)
+    for i, j in enc.cells:
+        kept[i, j] = True
+    flat = contrib.ravel()
+    return pl.DataFrame(
+        {
+            "from_a": pl.Series([r.from_a for r in rows], dtype=_edge_dtype(enc.a)),
+            "to_a": pl.Series([r.to_a for r in rows], dtype=_edge_dtype(enc.a)),
+            "from_b": pl.Series([r.from_b for r in rows], dtype=_edge_dtype(enc.b)),
+            "to_b": pl.Series([r.to_b for r in rows], dtype=_edge_dtype(enc.b)),
+            "label": [level_label(r) for r in rows],
+            "label_a": [level_label(r).split(" | ")[0] for r in rows],
+            "label_b": [level_label(r).split(" | ")[1] for r in rows],
+            "exposure": [r.exposure for r in rows],
+            "kept": kept.ravel().tolist(),
+            "coef": flat,
+            "relativity": np.exp(flat),
+            "is_base": [False] * len(rows),
+        }
+    )
+
+
 def base_rate(fit: GLMFit, *, base: Base = "modal") -> float:
     """Prediction (per unit weight) for the base risk implied by ``base``."""
     _check_log_link(fit)
     lp = fit.intercept
-    for var in fit.spec.variables:
+    for var in fit.spec.main_effects:
         _, contrib = _bin_rows(fit, var)
         b = fit.modal_bins.get(var, 0) if base == "modal" else 0
         lp += float(contrib[b])
@@ -110,7 +175,10 @@ def to_rate_model(
 
     ``rm.predict(data, exposure_col=None)`` equals ``fit.predict(data)`` for
     any data, including fits with an offset column (the RateModel stores the
-    offset column name and applies ``exp(offset)`` at scoring). Pass
+    offset column name and applies ``exp(offset)`` at scoring) and with
+    interactions (mains × a cell adjustment matrix; the base rate is the
+    prediction for the base risk *before* interaction adjustments, so an
+    interaction cell of 1.0 always means "no adjustment"). Pass
     ``base_rate_override`` to rescale (e.g. for a target loss ratio); the
     relativities are unaffected. ``model_type`` is a label stored in the
     metadata (defaults to the canonical family name).
@@ -118,12 +186,21 @@ def to_rate_model(
     _check_log_link(fit)
     variables: dict[str, VariableConfig] = {}
     for var in fit.spec.variables:
+        enc = fit.spec[var]
+        if isinstance(enc, InteractionEncoder):
+            cells, contrib = _cell_rows(fit, var)
+            for row, c in zip(cells, contrib.ravel(), strict=True):
+                row.relativity = float(math.exp(c))
+            variables[var] = VariableConfig(
+                type="interaction", table=cells, parents=enc.parents
+            )
+            continue
         rows, contrib = _bin_rows(fit, var)
         b = fit.modal_bins.get(var, 0) if base == "modal" else 0
         rel = np.exp(contrib - contrib[b])
         for row, r in zip(rows, rel, strict=True):
             row.relativity = float(r)
-        kind = "numeric" if isinstance(fit.spec[var], StepEncoder) else "categorical"
+        kind = "numeric" if isinstance(enc, StepEncoder) else "categorical"
         variables[var] = VariableConfig(type=kind, table=rows)
     RateModel._precompute_variables(variables)
 
