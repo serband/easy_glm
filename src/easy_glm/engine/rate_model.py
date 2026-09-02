@@ -43,8 +43,14 @@ _SCORERS: dict[str, Any] = {
 }
 #: table types whose rows are numeric bands (``from``/``to`` are floats)
 _NUMERIC_TYPES = frozenset({"numeric", "linear"})
-#: relative tolerance for the continuity of a linear table at its interior edges
-_CONTINUITY_RTOL = 1e-6
+#: relative tolerance for the two rows of a linear table that share the node at
+#: ``lo`` (the ``(None, lo)`` row and the first sloped band): they are one number
+_NODE_RTOL = 1e-6
+#: relative tolerance (on the band-end value) beyond which a ``slope`` column
+#: that disagrees with the node values is reported; slopes are derived from the
+#: nodes, so a rounded table still loads (a slope shown to 6 dp on a 5,000-wide
+#: band is off by up to 0.25 % at the band end)
+_SLOPE_CHECK_RTOL = 1e-2
 #: table types this release can read and score ("interaction" needs two columns
 #: and is dispatched separately in :meth:`RateModel.predict`)
 KNOWN_TYPES = frozenset(_SCORERS) | {"interaction"}
@@ -113,6 +119,60 @@ def _split_interaction_name(name: str, variables: dict[str, Any]) -> tuple[str, 
 
 def _row_key(row: Any) -> tuple:
     return row.key if isinstance(row, CellRow) else (row.from_, row.to_)
+
+
+def _is_null_row(row: Any) -> bool:
+    return row.from_ is None and row.to_ is None
+
+
+def _validate_linear_rows(name: str, rows: list[Any]) -> list[int]:
+    """Check the shape of a linear table's rows and return their indices in
+    curve order: the ``(None, lo)`` row, the sloped bands by ``from``, the
+    ``(hi, None)`` row, then the null row. Raises for anything that is not a
+    tiling of the line with two open flat ends and at most one null row."""
+    for r in rows:
+        if not isinstance(r, BandRow):
+            raise ValueError(
+                f"Linear table for {name!r}: every row needs a 'slope' (row "
+                f"{(r.from_, r.to_)!r} has none); is this a step table saved as linear?"
+            )
+    null_idx = [i for i, r in enumerate(rows) if _is_null_row(r)]
+    band_idx = [i for i, r in enumerate(rows) if not _is_null_row(r)]
+    if len(null_idx) > 1:
+        raise ValueError(
+            f"Linear table for {name!r} has {len(null_idx)} rows with both "
+            "'from' and 'to' empty; only one null row is allowed"
+        )
+    if len(band_idx) < 3:
+        raise ValueError(
+            f"Linear table for {name!r} needs an open lower band, at least one "
+            "sloped band and an open upper band"
+        )
+    band_idx.sort(key=lambda i: (rows[i].from_ is not None, rows[i].from_ or 0.0))
+    bands = [rows[i] for i in band_idx]
+    if bands[0].from_ is not None or bands[-1].to_ is not None:
+        raise ValueError(
+            f"Linear table for {name!r} must start with an open lower band and "
+            "end with an open upper band (the flat parts outside the clamp range)"
+        )
+    for a, b in zip(bands[:-1], bands[1:], strict=True):
+        if a.to_ is None or b.from_ is None or a.to_ != b.from_:
+            raise ValueError(
+                f"Linear table for {name!r}: band ending at {a.to_!r} is followed "
+                f"by a band starting at {b.from_!r}; bands must tile the line"
+            )
+    for b in bands[1:-1]:
+        if not b.to_ > b.from_:
+            raise ValueError(
+                f"Linear table for {name!r}: band {b.from_!r}–{b.to_!r} has zero "
+                "width; every sloped band needs from < to"
+            )
+    if bands[0].slope != 0.0 or bands[-1].slope != 0.0:
+        raise ValueError(
+            f"Linear table for {name!r}: the open end bands must have slope 0 "
+            "(the curve is flat outside the clamp range)"
+        )
+    return band_idx + null_idx
 
 
 def _coerce_edge(value: Any, parent: VariableConfig) -> Any:
@@ -224,12 +284,19 @@ class RateModel:
         ``exposure``; every row must name a cell of the parents' rows, and cells
         that are not listed adjust by 1.0.
 
-        A **piecewise-linear** table has an extra ``slope`` column: ``relativity``
+        A **piecewise-linear** table is recognised by its ``slope`` column (a
+        table without one is a step table; one that still has ``relativity_to``
+        but lost ``slope`` is refused rather than read as steps). ``relativity``
         is the value at the band start and the relativity inside the band is
-        ``relativity * exp(slope * (x - from))``. Its first and last bands are
-        open and flat (``slope`` 0), interior bands must be continuous (a band's
-        end value equals the next band's start value) and the optional
-        ``x_base`` is not needed for scoring.
+        ``relativity * exp(slope * (x - from))``. The first and last bands are
+        open and flat, and the ``(None, lo)`` row shows the same value as the
+        first sloped band (they are one node). The slopes are **derived from
+        the consecutive start values** (the last one towards the ``(hi, None)``
+        value), so a table rounded to a few decimals reads back as a continuous
+        curve; a supplied ``slope`` that disagrees with those values by more
+        than 1 % (on the band-end value) is reported with a warning. Zero-width
+        bands are refused. ``x_base`` is recovered from an ``is_base`` column or,
+        failing that, from the unique row with relativity 1.0.
         """
         pred_vars = predictor_variables or list(tables)
         for var in pred_vars:
@@ -240,8 +307,15 @@ class RateModel:
         for var in pred_vars:  # mains first: interactions need their parents
             if is_cell[var]:
                 continue
-            if "slope" in tables[var].columns:
+            cols = set(tables[var].columns)
+            if "slope" in cols:
                 variables[var] = cls._config_from_linear_table(var, tables[var])
+            elif "relativity_to" in cols:
+                raise ValueError(
+                    f"Table for {var!r} has a 'relativity_to' column but no 'slope' "
+                    "column: a piecewise-linear table needs its slopes (or drop "
+                    "'relativity_to' to read it as a step table on purpose)"
+                )
             else:
                 variables[var] = cls._config_from_table(var, tables[var])
         for var in pred_vars:
@@ -375,11 +449,13 @@ class RateModel:
             raise ValueError(
                 f"Linear table for {name!r} lacks columns {sorted(missing)}"
             )
+        has_base = "is_base" in table.columns
+        cols = ["from", "to", "relativity", "slope"] + (["is_base"] if has_base else [])
         rows: list[BandRow] = []
-        null_rows: list[BandRow] = []
-        for lo, hi, rel, slope in table.select(
-            "from", "to", "relativity", "slope"
-        ).iter_rows():
+        given_slopes: list[float | None] = []
+        base_flags: list[bool] = []
+        for rec in table.select(cols).iter_rows():
+            lo, hi, rel, slope = rec[:4]
             if rel is None:
                 raise ValueError(f"Linear table for {name!r} has a null relativity")
             if float(rel) <= 0:
@@ -387,53 +463,72 @@ class RateModel:
                     f"Linear table for {name!r} has a non-positive relativity "
                     f"({rel}); a log-linear band needs relativities > 0"
                 )
-            row = BandRow(
-                None if lo is None else float(lo),
-                None if hi is None else float(hi),
-                float(rel),
-                float(slope or 0.0),
-            )
-            (null_rows if lo is None and hi is None else rows).append(row)
-        if len(null_rows) > 1:
-            raise ValueError(
-                f"Linear table for {name!r} has {len(null_rows)} rows with both "
-                "'from' and 'to' empty; only one null row is allowed"
-            )
-        if len(rows) < 3:
-            raise ValueError(
-                f"Linear table for {name!r} needs an open lower band, at least one "
-                "sloped band and an open upper band"
-            )
-        rows.sort(key=lambda r: (r.from_ is not None, r.from_ or 0.0))
-        if rows[0].from_ is not None or rows[-1].to_ is not None:
-            raise ValueError(
-                f"Linear table for {name!r} must start with an open lower band and "
-                "end with an open upper band (the flat parts outside the clamp range)"
-            )
-        for a, b in zip(rows[:-1], rows[1:], strict=True):
-            if a.to_ is None or b.from_ is None or a.to_ != b.from_:
-                raise ValueError(
-                    f"Linear table for {name!r}: band ending at {a.to_!r} is followed "
-                    f"by a band starting at {b.from_!r}; bands must tile the line"
+            rows.append(
+                BandRow(
+                    None if lo is None else float(lo),
+                    None if hi is None else float(hi),
+                    float(rel),
+                    0.0,
                 )
-        if rows[0].slope != 0.0 or rows[-1].slope != 0.0:
-            raise ValueError(
-                f"Linear table for {name!r}: the open end bands must have slope 0 "
-                "(the curve is flat outside the clamp range)"
             )
-        sloped = rows[1:-1]
-        for a, b in zip(sloped[:-1], sloped[1:], strict=True):
-            end = a.relativity_to
-            if abs(end - b.relativity) > _CONTINUITY_RTOL * max(
-                abs(b.relativity), 1e-300
-            ):
-                raise ValueError(
-                    f"Linear table for {name!r} is not continuous at {b.from_!r}: the "
-                    f"band before ends at {end:.6g} but the next band starts at "
-                    f"{b.relativity:.6g}. Edit band values with "
-                    "RateModel.update_relativity, which keeps the curve continuous"
+            given_slopes.append(None if slope is None else float(slope))
+            base_flags.append(bool(rec[4]) if has_base else False)
+        order = _validate_linear_rows(name, rows)
+        bands = [rows[i] for i in order if not _is_null_row(rows[i])]
+        null_rows = [rows[i] for i in order if _is_null_row(rows[i])]
+        if not null_rows:
+            warnings.warn(
+                f"Linear table for {name!r} has no null row (both 'from' and 'to' "
+                "empty); missing values will raise at scoring time",
+                stacklevel=3,
+            )
+        # the (None, lo) row and the first sloped band are one node
+        v_lo, v_first = bands[0].relativity, bands[1].relativity
+        if abs(v_lo - v_first) > _NODE_RTOL * abs(v_first):
+            raise ValueError(
+                f"Linear table for {name!r} is not continuous at {bands[1].from_!r}: "
+                f"the '< {bands[1].from_:g}' row shows {v_lo:.6g} but the first band "
+                f"starts at {v_first:.6g}; they are the same point of the curve"
+            )
+        bands[0].relativity = v_first
+        # slopes come from the nodes: continuity is then by construction
+        for i in range(1, len(bands) - 1):
+            b, nxt = bands[i], bands[i + 1]
+            b.slope = (np.log(nxt.relativity) - np.log(b.relativity)) / (
+                b.to_ - b.from_
+            )
+        for i, b in zip(order, (rows[i] for i in order), strict=True):
+            given = given_slopes[i]
+            if given is None or _is_null_row(b) or b.from_ is None or b.to_ is None:
+                if given and not _is_null_row(b):
+                    raise ValueError(
+                        f"Linear table for {name!r}: the open end bands must have "
+                        "slope 0 (the curve is flat outside the clamp range)"
+                    )
+                continue
+            end_given = b.relativity * np.exp(given * (b.to_ - b.from_))
+            end_used = b.relativity_to
+            if abs(end_given - end_used) > _SLOPE_CHECK_RTOL * abs(end_used):
+                warnings.warn(
+                    f"Linear table for {name!r}, band {b.from_:g}–{b.to_:g}: the "
+                    f"slope column ({given:.6g}) would end the band at "
+                    f"{end_given:.6g} but the next row starts at {end_used:.6g}; "
+                    "the slope derived from the row values is used",
+                    stacklevel=3,
                 )
-        return VariableConfig(type="linear", table=rows + null_rows)
+        x_base = None
+        flagged = [rows[i] for i in order if base_flags[i]]
+        if len(flagged) == 1 and not _is_null_row(flagged[0]):
+            b = flagged[0]
+            x_base = b.from_ if b.from_ is not None else b.to_
+        elif not flagged:
+            ones = [b for b in bands if abs(b.relativity - 1.0) <= 1e-12]
+            if len(ones) == 1:
+                b = ones[0]
+                x_base = b.from_ if b.from_ is not None else b.to_
+            elif len(ones) == 2 and ones[0] is bands[0] and ones[1] is bands[1]:
+                x_base = bands[1].from_
+        return VariableConfig(type="linear", table=bands + null_rows, x_base=x_base)
 
     @staticmethod
     def _config_from_cell_table(
@@ -646,15 +741,15 @@ class RateModel:
     def _update_linear(
         self, var: str, config: VariableConfig, from_: Any, to_: Any, new_value: float
     ) -> None:
-        """Band-edit rule for piecewise-linear tables.
+        """Node-edit rule for piecewise-linear tables.
 
-        A band's ``relativity`` is the value of the curve at its start node.
-        Editing a **sloped band** moves that node: the band's own slope is
-        re-derived towards the next node (the next band's start value, or the
-        upper flat row's value for the last band) and the previous band's slope
-        towards the moved node, so the curve stays continuous; when the moved
-        node is the lower clamp, the ``(None, lo)`` flat row follows it. Editing a
-        **flat end row** or the **null row** changes only that row (a step).
+        Every row's ``relativity`` is a *node* of the curve: the ``(None, lo)``
+        row and the first sloped band share the node at ``lo`` (editing either
+        sets both), each other sloped band owns the node at its start, and the
+        ``(hi, None)`` row is the node at ``hi``. An edit moves that node and
+        re-derives the slopes of the bands on either side of it, so the curve
+        stays continuous everywhere: one slope changes at the two ends, two in
+        the interior. The null row is not on the curve and edits as a step.
         """
         if not new_value > 0:
             raise ValueError(
@@ -671,18 +766,24 @@ class RateModel:
         row = rows[idx]
         old_value = row.relativity
         row.relativity = new_value
-        if row.from_ is not None and row.to_ is not None:  # a sloped band
-            nxt = rows[idx + 1]
-            row.slope = (np.log(nxt.relativity) - np.log(new_value)) / (
-                row.to_ - row.from_
-            )
-            prev = rows[idx - 1]
-            if prev.from_ is not None and prev.to_ is not None:
-                prev.slope = (np.log(new_value) - np.log(prev.relativity)) / (
-                    prev.to_ - prev.from_
+        if not _is_null_row(row):
+            order = _validate_linear_rows(var, rows)
+            bands = [rows[i] for i in order if not _is_null_row(rows[i])]
+            pos = bands.index(row)
+            if pos <= 1:  # the node at lo is shared by the first two rows
+                bands[0].relativity = bands[1].relativity = new_value
+                pos = 1
+
+            def _rederive(i: int) -> None:  # slope of sloped band i from its nodes
+                b, nxt = bands[i], bands[i + 1]
+                b.slope = (np.log(nxt.relativity) - np.log(b.relativity)) / (
+                    b.to_ - b.from_
                 )
-            else:  # the (None, lo) flat row mirrors the value at lo
-                prev.relativity = new_value
+
+            if pos < len(bands) - 1:  # a sloped band: its own slope
+                _rederive(pos)
+            if pos >= 2:  # the band ending at this node
+                _rederive(pos - 1)
         self._pending_changes.append(
             Change(
                 variable=var,
@@ -893,6 +994,11 @@ class RateModel:
             "offset_col": self.metadata.offset_col,
             "train_test_col": self.metadata.train_test_col,
             "predictors": list(self.variables),
+            **{
+                f"x_base ({name})": cfg.x_base
+                for name, cfg in self.variables.items()
+                if cfg.type == "linear" and cfg.x_base is not None
+            },
             "version": self.current_version,
             "snapshots": len(self.snapshots),
         }
@@ -988,6 +1094,8 @@ class RateModel:
                     "The model file probably comes from a newer easy_glm."
                 )
             table = _rows_from_list(vdata["table"])
+            if vdata["type"] == "linear":
+                table = [table[i] for i in _validate_linear_rows(name, table)]
             parents = vdata.get("parents")
             variables[name] = VariableConfig(
                 type=vdata["type"],

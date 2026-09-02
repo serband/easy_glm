@@ -52,11 +52,13 @@ def score_linear(values: np.ndarray, config: VariableConfig) -> np.ndarray:
             "Some numeric values did not match any band. "
             "Check for NaN values in the input data."
         )
+    # clip first, exactly like the encoder: +-inf then scores as the clamp value
+    if len(config.breakpoints):
+        values = np.clip(values, config.breakpoints[0], config.breakpoints[-1])
     idx = np.searchsorted(config.breakpoints, values, side="right")
-    with np.errstate(invalid="ignore"):
-        result = config.relativities[idx] * np.exp(
-            config.slopes[idx] * (values - config.starts[idx])
-        )
+    result = config.relativities[idx] * np.exp(
+        config.slopes[idx] * (values - config.starts[idx])
+    )
     if nan_mask.any():
         result[nan_mask] = config.null_relativity
     return result
@@ -157,6 +159,9 @@ def _score_numeric_fallback(values: np.ndarray, config: VariableConfig) -> np.nd
 
 def _score_linear_fallback(values: np.ndarray, config: VariableConfig) -> np.ndarray:
     values = np.asarray(values, dtype=float)
+    edges = [float(r.from_) for r in config.table if r.from_ is not None]
+    if edges:
+        values = np.clip(values, min(edges), max(edges))
     result = np.full(len(values), np.nan, dtype=float)
     for row in config.table:
         if row.from_ is None and row.to_ is None:

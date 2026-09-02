@@ -218,7 +218,12 @@ def _modal_bins(
         if isinstance(enc, InteractionEncoder):
             continue
         idx = enc.row_index(data[var])
-        out[var] = int(np.argmax(np.bincount(idx, weights=w, minlength=enc.n_rows)))
+        counts = np.bincount(idx, weights=w, minlength=enc.n_rows)
+        if isinstance(enc, LinearEncoder) and len(counts) > 1:
+            # the base of a linear term is a point on the curve (x_base), so the
+            # null row is never the base even when it carries the most exposure
+            counts[-1] = -1.0
+        out[var] = int(np.argmax(counts))
     return out
 
 

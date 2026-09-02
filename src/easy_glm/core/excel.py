@@ -59,8 +59,9 @@ def rate_model_tables(rm: RateModel) -> dict[str, pl.DataFrame]:
     """Per-variable ``from`` / ``to`` / ``label`` / [``fitted``] / ``relativity``
     frames of a :class:`RateModel`. ``relativity`` is the *current* value (manual
     adjustments included); ``fitted`` is the first snapshot's value when present.
-    Piecewise-linear variables add ``slope`` and ``relativity_to`` (value at the
-    band end); their ``relativity`` is the value at the band start."""
+    Piecewise-linear variables add ``slope``, ``relativity_to`` (value at the
+    band end) and ``is_base`` (the band starting at ``x_base``); their
+    ``relativity`` is the value at the band start."""
     out: dict[str, pl.DataFrame] = {}
     for var, cfg in rm.variables.items():
         if cfg.type == "interaction":
@@ -93,6 +94,15 @@ def rate_model_tables(rm: RateModel) -> dict[str, pl.DataFrame]:
             columns["relativity_to"] = pl.Series(
                 [float(r.relativity_to) for r in cfg.table], dtype=pl.Float64
             )
+            # the band whose lower edge is x_base (the first sloped band when
+            # x_base is the lower clamp); from_rate_tables recovers x_base from it
+            columns["is_base"] = [
+                cfg.x_base is not None
+                and r.from_ is not None
+                and r.to_ is not None
+                and float(r.from_) == float(cfg.x_base)
+                for r in cfg.table
+            ]
         out[var] = pl.DataFrame(columns)
     return out
 
