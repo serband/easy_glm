@@ -7,6 +7,8 @@ the pages use.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import polars as pl
 import pytest
@@ -128,7 +130,10 @@ def test_main_entry_point_renders(project_file):
     argv = sys.argv
     sys.argv = ["main.py", f"--project={project_file}"]
     try:
-        at = AppTest.from_file("src/easy_glm/app/main.py", default_timeout=120)
+        import easy_glm.app as app_pkg
+
+        main_py = str(Path(app_pkg.__file__).with_name("main.py"))
+        at = AppTest.from_file(main_py, default_timeout=120)
         at.run()
     finally:
         sys.argv = argv

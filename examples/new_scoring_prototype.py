@@ -12,7 +12,6 @@ import pickle
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
 
 import numpy as np
 import polars as pl
@@ -22,6 +21,7 @@ from easy_glm.core.model import fit_lasso_glm
 from easy_glm.core.transforms import o_matrix, quote_identifier
 
 # ── New one-hot: all n levels, no reference dropped, no Other column ──────
+
 
 def new_one_hot_fun(col_name: str, levels: list) -> list[str]:
     """Generate one-hot SQL expressions for a categorical column.
@@ -67,6 +67,7 @@ def new_one_hot_fun(col_name: str, levels: list) -> list[str]:
 
 import duckdb
 
+
 def new_prepare_data(
     modelling_variables: list[str],
     additional_columns: list[str] | None = None,
@@ -88,9 +89,7 @@ def new_prepare_data(
                 f"CREATE TABLE {quote_identifier(table_name)} AS SELECT * FROM df"
             )
         else:
-            raise ValueError(
-                "Either 'df' or 'con' must be provided to prepare_data."
-            )
+            raise ValueError("Either 'df' or 'con' must be provided to prepare_data.")
     else:
         if not isinstance(con, duckdb.DuckDBPyConnection):
             raise TypeError(
@@ -166,12 +165,14 @@ _LINK_INV = {
 def _inverse_link(eta: np.ndarray, family: str) -> np.ndarray:
     fn = _LINK_INV.get(family.lower())
     if fn is None:
-        raise ValueError(f"Unknown family '{family}'. "
-                         f"Choose: {list(_LINK_INV.keys())}")
+        raise ValueError(
+            f"Unknown family '{family}'. " f"Choose: {list(_LINK_INV.keys())}"
+        )
     return fn(eta)
 
 
 # ── ModelBundle ──────────────────────────────────────────────────────────
+
 
 class ModelBundle:
     """A fitted GLM reduced to its scoring essentials.
@@ -351,7 +352,7 @@ class ModelBundle:
         result = {}
         for name, coef in zip(self.feature_names, self.coefficients):
             if name.startswith(prefix):
-                level = name[len(prefix):]
+                level = name[len(prefix) :]
                 result[level] = float(coef)
         return result
 
@@ -386,7 +387,9 @@ class ModelBundle:
 
         args: list[str] = [
             sys.executable,
-            "-m", "streamlit", "run",
+            "-m",
+            "streamlit",
+            "run",
             __file__,
             "--",
             "--mode=editor",
@@ -482,10 +485,14 @@ def compute_ae_for_bundle(
         for label, mask in bins:
             matched = subset_df.filter(mask)
             if matched.is_empty():
-                results[subset_name].append({
-                    "level": label, "actual": 0.0, "expected": 0.0,
-                    "exposure": 0.0,
-                })
+                results[subset_name].append(
+                    {
+                        "level": label,
+                        "actual": 0.0,
+                        "expected": 0.0,
+                        "exposure": 0.0,
+                    }
+                )
                 continue
 
             actual = _aggregate(matched, target, weight_col)
@@ -495,10 +502,14 @@ def compute_ae_for_bundle(
                 if weight_col and weight_col in matched.columns
                 else float(len(matched))
             )
-            results[subset_name].append({
-                "level": label, "actual": actual, "expected": expected,
-                "exposure": exposure,
-            })
+            results[subset_name].append(
+                {
+                    "level": label,
+                    "actual": actual,
+                    "expected": expected,
+                    "exposure": exposure,
+                }
+            )
 
     return {
         "subsets": results,
@@ -541,9 +552,7 @@ def _aggregate(df: pl.DataFrame, value_col: str, weight_col: str | None) -> floa
 # ── Coefficient shape helpers ────────────────────────────────────────────
 
 
-def _variable_feature_info(
-    bundle: ModelBundle, variable: str
-) -> dict:
+def _variable_feature_info(bundle: ModelBundle, variable: str) -> dict:
     """Return info about how a variable maps to feature columns.
 
     Returns
@@ -553,8 +562,13 @@ def _variable_feature_info(
     """
     bp = bundle.blueprint.get(variable, [])
     if not bp:
-        return {"type": "unknown", "labels": [], "coefs": [], "col_names": [],
-                "is_categorical": False}
+        return {
+            "type": "unknown",
+            "labels": [],
+            "coefs": [],
+            "col_names": [],
+            "is_categorical": False,
+        }
 
     is_cat = not all(isinstance(x, (int, float)) for x in bp)
 
@@ -563,8 +577,11 @@ def _variable_feature_info(
         col_names = [f"{variable}_{lvl}" for lvl in labels]
         coefs = [float(bundle.coefficient(cn)) for cn in col_names]
         return {
-            "type": "categorical", "labels": labels, "coefs": coefs,
-            "col_names": col_names, "is_categorical": True,
+            "type": "categorical",
+            "labels": labels,
+            "coefs": coefs,
+            "col_names": col_names,
+            "is_categorical": True,
         }
     else:
         labels = []
@@ -585,8 +602,11 @@ def _variable_feature_info(
         cum_coefs.append(0.0)  # top bin (≥ last breakpoint)
 
         return {
-            "type": "numeric", "labels": labels, "coefs": cum_coefs,
-            "col_names": col_names, "raw_coefs": raw_coefs,
+            "type": "numeric",
+            "labels": labels,
+            "coefs": cum_coefs,
+            "col_names": col_names,
+            "raw_coefs": raw_coefs,
             "is_categorical": False,
         }
 
@@ -597,8 +617,6 @@ def _variable_feature_info(
 def _run_editor():
     """Entry point when ``--mode=editor`` is passed."""
     import streamlit as st
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
 
     st.set_page_config(
         page_title="easy_glm — Coefficient Editor",
@@ -675,8 +693,9 @@ def _run_editor():
 
         st.divider()
 
-        space = st.radio("Prediction space", ["response", "link"],
-                          index=0, horizontal=True)
+        space = st.radio(
+            "Prediction space", ["response", "link"], index=0, horizontal=True
+        )
 
         if st.button("🔄 Reset to original", width="stretch"):
             st.session_state.bundle = original.clone()
@@ -684,8 +703,9 @@ def _run_editor():
             st.rerun()
 
         st.divider()
-        st.caption("Modify coefficients with sliders below. "
-                    "A/E recomputes automatically.")
+        st.caption(
+            "Modify coefficients with sliders below. " "A/E recomputes automatically."
+        )
 
     # ── Main ──────────────────────────────────────────────────────────
     st.title("Coefficient Editor")
@@ -716,7 +736,8 @@ def _run_editor():
             with cols[i % 4]:
                 new_val = st.slider(
                     f"{label}",
-                    min_value=-3.0, max_value=3.0,
+                    min_value=-3.0,
+                    max_value=3.0,
                     value=float(coef),
                     step=0.001,
                     format="%.3f",
@@ -732,12 +753,13 @@ def _run_editor():
         if raw_coefs and col_names:
             cols = st.columns(min(len(raw_coefs), 4))
             for i, (label, col_name, coef) in enumerate(
-                zip(info["labels"][:len(raw_coefs)], col_names, raw_coefs)
+                zip(info["labels"][: len(raw_coefs)], col_names, raw_coefs)
             ):
                 with cols[i % 4]:
                     new_val = st.slider(
                         f"Δ {label}",
-                        min_value=-3.0, max_value=3.0,
+                        min_value=-3.0,
+                        max_value=3.0,
                         value=float(coef),
                         step=0.001,
                         format="%.3f",
@@ -756,13 +778,19 @@ def _run_editor():
             with st.spinner("Recomputing A/E..."):
                 st.session_state.ae_cache[selected] = (
                     compute_ae_for_bundle(
-                        original, data, selected,
-                        target=target, weight_col=weight_col,
+                        original,
+                        data,
+                        selected,
+                        target=target,
+                        weight_col=weight_col,
                         train_test_col=train_test_col,
                     ),
                     compute_ae_for_bundle(
-                        bundle, data, selected,
-                        target=target, weight_col=weight_col,
+                        bundle,
+                        data,
+                        selected,
+                        target=target,
+                        weight_col=weight_col,
                         train_test_col=train_test_col,
                     ),
                 )
@@ -780,17 +808,26 @@ def _run_editor():
 
             if info["is_categorical"]:
                 for lbl, oc, rc in zip(labels, orig_coefs, rev_coefs):
-                    rows.append({
-                        "Level": lbl, "Orig. coef": oc, "Revised coef": rc,
-                        "Orig. rel": np.exp(oc), "Revised rel": np.exp(rc),
-                    })
+                    rows.append(
+                        {
+                            "Level": lbl,
+                            "Orig. coef": oc,
+                            "Revised coef": rc,
+                            "Orig. rel": np.exp(oc),
+                            "Revised rel": np.exp(rc),
+                        }
+                    )
             else:
                 for lbl, oc, rc in zip(labels, orig_coefs, rev_coefs):
-                    rows.append({
-                        "Bin": lbl, "Orig. cum. coef": oc,
-                        "Revised cum. coef": rc,
-                        "Orig. rel": np.exp(oc), "Revised rel": np.exp(rc),
-                    })
+                    rows.append(
+                        {
+                            "Bin": lbl,
+                            "Orig. cum. coef": oc,
+                            "Revised cum. coef": rc,
+                            "Orig. rel": np.exp(oc),
+                            "Revised rel": np.exp(rc),
+                        }
+                    )
 
             st.dataframe(
                 pl.DataFrame(rows),
@@ -814,40 +851,67 @@ def _build_coef_comparison_chart(
         rev_rel = [np.exp(c) if is_log_link else c for c in rev_info["coefs"]]
         y_title = "Relativity (exp(coef))" if is_log_link else "Coefficient"
 
-        fig.add_trace(go.Bar(
-            x=labels, y=orig_rel, name="Original",
-            marker_color="lightgray", hovertemplate="%{x}<br>Original: %{y:.4f}",
-        ))
-        colors = ["#ff7f0e" if r > 1 else "#2ca02c" if r < 1 else "gray"
-                  for r in rev_rel]
-        fig.add_trace(go.Bar(
-            x=labels, y=rev_rel, name="Revised",
-            marker_color=colors, hovertemplate="%{x}<br>Revised: %{y:.4f}",
-        ))
+        fig.add_trace(
+            go.Bar(
+                x=labels,
+                y=orig_rel,
+                name="Original",
+                marker_color="lightgray",
+                hovertemplate="%{x}<br>Original: %{y:.4f}",
+            )
+        )
+        colors = [
+            "#ff7f0e" if r > 1 else "#2ca02c" if r < 1 else "gray" for r in rev_rel
+        ]
+        fig.add_trace(
+            go.Bar(
+                x=labels,
+                y=rev_rel,
+                name="Revised",
+                marker_color=colors,
+                hovertemplate="%{x}<br>Revised: %{y:.4f}",
+            )
+        )
         if is_log_link:
-            fig.add_hline(y=1.0, line_dash="dot", line_color="gray",
-                          annotation_text="Baseline (1.0)")
+            fig.add_hline(
+                y=1.0,
+                line_dash="dot",
+                line_color="gray",
+                annotation_text="Baseline (1.0)",
+            )
     else:
         orig_rel = [np.exp(c) if is_log_link else c for c in orig_info["coefs"]]
         rev_rel = [np.exp(c) if is_log_link else c for c in rev_info["coefs"]]
         y_title = "Relativity (exp(cum. coef))" if is_log_link else "Cumulative coef"
 
-        fig.add_trace(go.Scatter(
-            x=labels, y=orig_rel, mode="lines+markers", name="Original",
-            line={"color": "gray", "width": 2, "dash": "dash"},
-            marker={"size": 6, "color": "gray"},
-        ))
-        fig.add_trace(go.Scatter(
-            x=labels, y=rev_rel, mode="lines+markers", name="Revised",
-            line={"color": "#1f77b4", "width": 2.5},
-            marker={"size": 8, "color": "#1f77b4"},
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=labels,
+                y=orig_rel,
+                mode="lines+markers",
+                name="Original",
+                line={"color": "gray", "width": 2, "dash": "dash"},
+                marker={"size": 6, "color": "gray"},
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=labels,
+                y=rev_rel,
+                mode="lines+markers",
+                name="Revised",
+                line={"color": "#1f77b4", "width": 2.5},
+                marker={"size": 8, "color": "#1f77b4"},
+            )
+        )
         if is_log_link:
             fig.add_hline(y=1.0, line_dash="dot", line_color="gray")
 
     fig.update_layout(
-        height=350, margin={"l": 20, "r": 20, "t": 30, "b": 20},
-        xaxis_title=variable, yaxis_title=y_title,
+        height=350,
+        margin={"l": 20, "r": 20, "t": 30, "b": 20},
+        xaxis_title=variable,
+        yaxis_title=y_title,
         legend={"orientation": "h", "yanchor": "bottom", "y": 1.02},
         hovermode="x unified",
     )
@@ -872,41 +936,74 @@ def _build_ae_comparison_chart(ae_orig: dict, ae_rev: dict, variable: str):
     # Original
     actual_o = [r["actual"] for r in train_rows]
     expected_o = [r["expected"] for r in train_rows]
-    fig.add_trace(go.Scatter(
-        x=labels, y=actual_o, mode="lines+markers",
-        name="Actual (orig)", line={"color": "#1f77b4", "dash": "dot", "width": 1.5},
-        marker={"size": 5}, opacity=0.5,
-    ), secondary_y=False)
-    fig.add_trace(go.Scatter(
-        x=labels, y=expected_o, mode="lines+markers",
-        name="Expected (orig)", line={"color": "#ff7f0e", "dash": "dot", "width": 1.5},
-        marker={"size": 5}, opacity=0.5,
-    ), secondary_y=False)
+    fig.add_trace(
+        go.Scatter(
+            x=labels,
+            y=actual_o,
+            mode="lines+markers",
+            name="Actual (orig)",
+            line={"color": "#1f77b4", "dash": "dot", "width": 1.5},
+            marker={"size": 5},
+            opacity=0.5,
+        ),
+        secondary_y=False,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=labels,
+            y=expected_o,
+            mode="lines+markers",
+            name="Expected (orig)",
+            line={"color": "#ff7f0e", "dash": "dot", "width": 1.5},
+            marker={"size": 5},
+            opacity=0.5,
+        ),
+        secondary_y=False,
+    )
 
     # Revised
     actual_r = [r["actual"] for r in subsets_r.get("train", train_rows)]
     expected_r = [r["expected"] for r in subsets_r.get("train", train_rows)]
-    fig.add_trace(go.Scatter(
-        x=labels, y=actual_r, mode="lines+markers",
-        name="Actual (revised)", line={"color": "#1f77b4", "width": 2.5},
-        marker={"size": 7},
-    ), secondary_y=False)
-    fig.add_trace(go.Scatter(
-        x=labels, y=expected_r, mode="lines+markers",
-        name="Expected (revised)", line={"color": "#ff7f0e", "width": 2.5},
-        marker={"size": 7},
-    ), secondary_y=False)
+    fig.add_trace(
+        go.Scatter(
+            x=labels,
+            y=actual_r,
+            mode="lines+markers",
+            name="Actual (revised)",
+            line={"color": "#1f77b4", "width": 2.5},
+            marker={"size": 7},
+        ),
+        secondary_y=False,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=labels,
+            y=expected_r,
+            mode="lines+markers",
+            name="Expected (revised)",
+            line={"color": "#ff7f0e", "width": 2.5},
+            marker={"size": 7},
+        ),
+        secondary_y=False,
+    )
 
     # Exposure bars
     exposures = [r.get("exposure", 0) for r in train_rows]
-    fig.add_trace(go.Bar(
-        x=labels, y=exposures, name="Exposure",
-        marker_color="rgba(180,180,180,0.3)", marker_line_width=0,
-        showlegend=False,
-    ), secondary_y=True)
+    fig.add_trace(
+        go.Bar(
+            x=labels,
+            y=exposures,
+            name="Exposure",
+            marker_color="rgba(180,180,180,0.3)",
+            marker_line_width=0,
+            showlegend=False,
+        ),
+        secondary_y=True,
+    )
 
     fig.update_layout(
-        height=350, margin={"l": 20, "r": 20, "t": 30, "b": 20},
+        height=350,
+        margin={"l": 20, "r": 20, "t": 30, "b": 20},
         hovermode="x unified",
         legend={"orientation": "h", "yanchor": "bottom", "y": 1.02},
     )
@@ -995,7 +1092,9 @@ def _build_bundle(
     if verbose:
         print(f"Bundle: {bundle}")
         print(f"  Intercept: {bundle.intercept:.6f}")
-        print(f"  Non-zero coefs: {(bundle.coefficients != 0).sum()}/{bundle.n_features}")
+        print(
+            f"  Non-zero coefs: {(bundle.coefficients != 0).sum()}/{bundle.n_features}"
+        )
 
     return bundle, prepped
 
@@ -1032,9 +1131,13 @@ def main():
     exclude = {"ClaimNb", "Exposure", "traintest"}
     fn = bundle.feature_names
     glum_rate = fit_lasso_glm(
-        dataframe=prepped, target="ClaimNb", model_type="poisson",
-        weight_col="Exposure", train_test_col="traintest",
-        divide_target_by_weight=True, use_cv=True,
+        dataframe=prepped,
+        target="ClaimNb",
+        model_type="poisson",
+        weight_col="Exposure",
+        train_test_col="traintest",
+        divide_target_by_weight=True,
+        use_cv=True,
     ).predict(prepped[fn].to_pandas())
 
     bundle_link = bundle.predict_link(df)
@@ -1049,8 +1152,10 @@ def main():
     print("\n── VehGas relativities ──")
     for level, rel in bundle.relativities_for("VehGas").items():
         print(f"  {level:12s}: {rel:.4f}")
-    print(f"  Intercept baseline: exp({bundle.intercept:.6f}) = "
-          f"{np.exp(bundle.intercept):.6f}")
+    print(
+        f"  Intercept baseline: exp({bundle.intercept:.6f}) = "
+        f"{np.exp(bundle.intercept):.6f}"
+    )
 
     print("\n" + "=" * 70)
     print("VALIDATION PASSED — Run with --demo for interactive editor")

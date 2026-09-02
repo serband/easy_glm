@@ -17,7 +17,7 @@ from easy_glm.engine import RateModel
 # Config — edit these to taste
 # ---------------------------------------------------------------------------
 
-SAMPLE_SIZE = 10_000          # rows to use (0 = full dataset)
+SAMPLE_SIZE = 10_000  # rows to use (0 = full dataset)
 BASE_RATE = 0.05
 USE_CV = True
 LAUNCH_EDITOR = True
@@ -43,9 +43,7 @@ if SAMPLE_SIZE and SAMPLE_SIZE < len(df):
     df = df.sample(n=SAMPLE_SIZE, seed=42)
 
 rng = np.random.default_rng(42)
-df = df.with_columns(
-    pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64)
-)
+df = df.with_columns(pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64))
 print(f"  {len(df):,} rows × {len(df.columns)} cols")
 
 # ---------------------------------------------------------------------------
@@ -68,7 +66,9 @@ eglm = easy_glm.EasyGLM.fit(
 print(eglm.summary())
 # → {'model_type': 'Poisson', 'target': 'ClaimNb', 'weight_col': 'Exposure', ...}
 print(f"  Intercept: {eglm.model.intercept_:.4f}")
-print(f"  Non-constant variables: {list(eglm.rate_model.non_constant_variables.keys())}")
+print(
+    f"  Non-constant variables: {list(eglm.rate_model.non_constant_variables.keys())}"
+)
 
 # ---------------------------------------------------------------------------
 # 3. Sample predictions
@@ -118,9 +118,11 @@ print("\nSaved → demo_model/  and  demo_model.easyglm")
 # ---------------------------------------------------------------------------
 
 loaded = RateModel.from_json("demo_model.easyglm")
-print(f"Reloaded — {len(loaded.variables)} variables, "
-      f"base_rate={loaded.base_rate}, "
-      f"{len(loaded.snapshots)} snapshot(s)")
+print(
+    f"Reloaded — {len(loaded.variables)} variables, "
+    f"base_rate={loaded.base_rate}, "
+    f"{len(loaded.snapshots)} snapshot(s)"
+)
 
 new_business = df.select(PREDICTORS).head(3)
 print(f"Reloaded predictions: {loaded.predict(new_business).round(6)}")

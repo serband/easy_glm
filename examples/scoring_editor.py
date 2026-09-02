@@ -20,9 +20,7 @@ from easy_glm.engine import RateModel
 
 df = easy_glm.load_external_dataframe()
 rng = np.random.default_rng(42)
-df = df.with_columns(
-    pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64)
-)
+df = df.with_columns(pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64))
 
 PREDICTORS = ["VehAge", "Region", "VehGas", "DrivAge", "BonusMalus", "Density"]
 

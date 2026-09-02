@@ -28,9 +28,7 @@ import easy_glm
 # --- Option B: fit inline (standalone run) ---
 df = easy_glm.load_external_dataframe()
 rng = np.random.default_rng(42)
-df = df.with_columns(
-    pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64)
-)
+df = df.with_columns(pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64))
 
 PREDICTORS = ["VehAge", "Region", "VehGas", "DrivAge", "BonusMalus", "Density"]
 
@@ -117,7 +115,9 @@ print(f"Before tweak — overall A/E: {original_ae:.4f}")
 var = "DrivAge"
 config = rm.variables[var]
 row = config.table[len(config.table) // 2]  # middle bin
-print(f"Tweaking {var} bin [{row.from_}, {row.to_}): {row.relativity:.4f} → {row.relativity * 1.2:.4f}")
+print(
+    f"Tweaking {var} bin [{row.from_}, {row.to_}): {row.relativity:.4f} → {row.relativity * 1.2:.4f}"
+)
 rm.update_relativity(var, row.from_, row.to_, row.relativity * 1.2)
 
 # Re-score
@@ -139,5 +139,7 @@ for split_name, buckets in tweaked_ae_result["subsets"].items():
 
 rm.create_snapshot("tweaked")
 rm.switch_to(1)  # back to version 1 (original fit)
-print(f"\nReset to version 1 — A/E: "
-      f"{holdout['ClaimNb'].sum() / rm.predict(holdout).sum():.4f}")
+print(
+    f"\nReset to version 1 — A/E: "
+    f"{holdout['ClaimNb'].sum() / rm.predict(holdout).sum():.4f}"
+)
