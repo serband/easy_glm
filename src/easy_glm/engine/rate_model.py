@@ -11,8 +11,15 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from ._scoring import score_categorical, score_numeric
-from .models import Change, FromToRow, ModelMetadata, Snapshot, VariableConfig
+from ._scoring import score_categorical, score_interaction, score_numeric
+from .models import (
+    CellRow,
+    Change,
+    FromToRow,
+    ModelMetadata,
+    Snapshot,
+    VariableConfig,
+)
 
 _UNSET = object()
 
@@ -26,6 +33,60 @@ _SCORERS: dict[str, Any] = {
     "numeric": lambda col, cfg: score_numeric(col.to_numpy(), cfg),
     "categorical": score_categorical,
 }
+#: table types this release can read and score ("interaction" needs two columns
+#: and is dispatched separately in :meth:`RateModel.predict`)
+KNOWN_TYPES = frozenset(_SCORERS) | {"interaction"}
+
+#: separator in interaction variable names ("A×B"); kept in sync with
+#: ``easy_glm.core.design.INTERACTION_SEP``
+INTERACTION_SEP = "×"
+
+
+def _row_to_dict(row: Any) -> dict[str, Any]:
+    if isinstance(row, CellRow):
+        return {
+            "from_a": row.from_a,
+            "to_a": row.to_a,
+            "from_b": row.from_b,
+            "to_b": row.to_b,
+            "relativity": row.relativity,
+            "exposure": row.exposure,
+        }
+    return {"from": row.from_, "to": row.to_, "relativity": row.relativity}
+
+
+def _row_from_dict(r: dict[str, Any]) -> Any:
+    if "from_a" in r:
+        return CellRow(
+            r["from_a"],
+            r["to_a"],
+            r["from_b"],
+            r["to_b"],
+            r["relativity"],
+            float(r.get("exposure", 0.0) or 0.0),
+        )
+    return FromToRow(from_=r["from"], to_=r["to"], relativity=r["relativity"])
+
+
+def _rows_from_list(rows: list[dict[str, Any]]) -> list[Any]:
+    return [_row_from_dict(r) for r in rows]
+
+
+def _row_key(row: Any) -> tuple:
+    return row.key if isinstance(row, CellRow) else (row.from_, row.to_)
+
+
+def _coerce_edge(value: Any, parent: VariableConfig) -> Any:
+    """Bring an interaction table edge to the parent's key type (float for
+    numeric bands, string for levels; None stays None)."""
+    if value is None:
+        return None
+    if parent.type == "numeric":
+        return float(value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
 
 _METADATA_FIELDS = {f.name for f in fields(ModelMetadata)}
 
@@ -117,13 +178,27 @@ class RateModel:
         is absent, categoricals get an Other row at 1.0 (with a warning) and
         numerics get no null row, so nulls raise at scoring time. Numeric bands may
         be listed in any order; they must tile the whole line.
+
+        An **interaction** table is keyed ``"A×B"`` (the parents' names joined by
+        ``×``; both parents must have their own tables) and has columns
+        ``from_a``, ``to_a``, ``from_b``, ``to_b``, ``relativity`` and optionally
+        ``exposure``; every row must name a cell of the parents' rows, and cells
+        that are not listed adjust by 1.0.
         """
         pred_vars = predictor_variables or list(tables)
-        variables: dict[str, VariableConfig] = {}
         for var in pred_vars:
             if var not in tables:
                 raise KeyError(f"No table for variable {var!r}")
-            variables[var] = cls._config_from_table(var, tables[var])
+        is_cell = {v: "from_a" in tables[v].columns for v in pred_vars}
+        variables: dict[str, VariableConfig] = {}
+        for var in pred_vars:  # mains first: interactions need their parents
+            if not is_cell[var]:
+                variables[var] = cls._config_from_table(var, tables[var])
+        for var in pred_vars:
+            if is_cell[var]:
+                variables[var] = cls._config_from_cell_table(
+                    var, tables[var], variables
+                )
         cls._precompute_variables(variables)
         metadata = ModelMetadata(
             model_type=model_type,
@@ -243,6 +318,49 @@ class RateModel:
             rows.append(FromToRow(None, None, 1.0))
         return VariableConfig(type="categorical", table=rows)
 
+    @staticmethod
+    def _config_from_cell_table(
+        name: str, table: pl.DataFrame, variables: dict[str, VariableConfig]
+    ) -> VariableConfig:
+        needed = {"from_a", "to_a", "from_b", "to_b", "relativity"}
+        missing = needed - set(table.columns)
+        if missing:
+            raise ValueError(
+                f"Interaction table for {name!r} lacks columns {sorted(missing)}"
+            )
+        parts = name.split(INTERACTION_SEP)
+        if len(parts) != 2 or not all(p in variables for p in parts):
+            raise ValueError(
+                f"Interaction table {name!r} must be named 'A{INTERACTION_SEP}B' "
+                "where A and B are main effects with their own tables"
+            )
+        a, b = parts
+        has_exposure = "exposure" in table.columns
+        rows: list[CellRow] = []
+        seen: set[tuple] = set()
+        for r in table.iter_rows(named=True):
+            if r["relativity"] is None:
+                raise ValueError(
+                    f"Interaction table for {name!r} has a null relativity"
+                )
+            cell = CellRow(
+                _coerce_edge(r["from_a"], variables[a]),
+                _coerce_edge(r["to_a"], variables[a]),
+                _coerce_edge(r["from_b"], variables[b]),
+                _coerce_edge(r["to_b"], variables[b]),
+                float(r["relativity"]),
+                float(r["exposure"] or 0.0) if has_exposure else 0.0,
+            )
+            if cell.key in seen:
+                raise ValueError(
+                    f"Interaction table for {name!r} lists cell {cell.key} twice"
+                )
+            seen.add(cell.key)
+            rows.append(cell)
+        cfg = VariableConfig(type="interaction", table=rows, parents=(a, b))
+        RateModel._precompute_interaction(name, cfg, variables)  # validates cells
+        return cfg
+
     def predict(
         self,
         data: pl.DataFrame,
@@ -272,6 +390,12 @@ class RateModel:
         result = np.full(len(data), self.base_rate, dtype=float)
 
         for name, config in self.variables.items():
+            if config.type == "interaction":
+                for parent in config.parents or ():
+                    if parent not in data.columns:
+                        raise ValueError(f"Column '{parent}' not found in data")
+                result *= score_interaction(data, config, self.variables)
+                continue
             if name not in data.columns:
                 raise ValueError(f"Column '{name}' not found in data")
 
@@ -280,7 +404,7 @@ class RateModel:
             if scorer is None:
                 raise ValueError(
                     f"Variable {name!r} has table type {config.type!r}, which this "
-                    f"version of easy_glm cannot score (known: {sorted(_SCORERS)}). "
+                    f"version of easy_glm cannot score (known: {sorted(KNOWN_TYPES)}). "
                     "The model file probably comes from a newer easy_glm."
                 )
             rel = scorer(col, config)
@@ -333,12 +457,49 @@ class RateModel:
         return result * data[exposure_name].to_numpy()
 
     def update_relativity(
-        self, var: str, from_: Any, to_: Any, new_value: float
+        self,
+        var: str,
+        from_: Any,
+        to_: Any,
+        new_value: float,
+        from_b: Any = _UNSET,
+        to_b: Any = _UNSET,
     ) -> None:
+        """Set one row's relativity. For an interaction pass the cell as
+        ``(from_, to_)`` = parent A's row and ``(from_b, to_b)`` = parent B's row.
+        The change is recorded for the next snapshot."""
         if var not in self.variables:
             raise KeyError(f"Variable '{var}' not found")
 
         config = self.variables[var]
+        if config.type == "interaction":
+            if from_b is _UNSET or to_b is _UNSET:
+                raise ValueError(
+                    f"'{var}' is an interaction: pass from_b= and to_b= for the "
+                    "second variable's row"
+                )
+            key = (from_, to_, from_b, to_b)
+            for row in config.table:
+                if row.key == key:
+                    old_value = row.relativity
+                    row.relativity = float(new_value)
+                    self._pending_changes.append(
+                        Change(
+                            variable=var,
+                            from_=from_,
+                            to_=to_,
+                            old_relativity=old_value,
+                            new_relativity=float(new_value),
+                            from_b=from_b,
+                            to_b=to_b,
+                            is_cell=True,
+                        )
+                    )
+                    config.cell_matrix = None
+                    self._precompute_interaction(var, config, self.variables)
+                    return
+            raise ValueError(f"No cell {key!r} in interaction '{var}'")
+
         for row in config.table:
             if row.from_ == from_ and row.to_ == to_:
                 old_value = row.relativity
@@ -357,7 +518,10 @@ class RateModel:
                 config.cat_map = None
                 config.fallback = 1.0
                 config.null_relativity = None
+                config.level_index = None
                 self._precompute_variables({var: config})
+                # interactions built on this variable index its rows by position,
+                # which an edit does not change; nothing to rebuild there.
                 return
 
         raise ValueError(
@@ -463,6 +627,8 @@ class RateModel:
             self.variables[name].cat_map = None
             self.variables[name].fallback = 1.0
             self.variables[name].null_relativity = None
+            self.variables[name].level_index = None
+            self.variables[name].cell_matrix = None
         RateModel._precompute_variables(self.variables)
         self.column_mapping = dict(snapshot.column_mapping)
         if snapshot.metadata:
@@ -508,17 +674,21 @@ class RateModel:
         after = self.snapshots[v2 - 1].relativities
         out: list[Change] = []
         for var, rows in after.items():
-            old_rows = {(r.from_, r.to_): r.relativity for r in before.get(var, [])}
+            old_rows = {_row_key(r): r.relativity for r in before.get(var, [])}
             for r in rows:
-                old = old_rows.get((r.from_, r.to_))
+                old = old_rows.get(_row_key(r))
                 if old is None or abs(old - r.relativity) > tol:
+                    is_cell = isinstance(r, CellRow)
                     out.append(
                         Change(
                             variable=var,
-                            from_=r.from_,
-                            to_=r.to_,
+                            from_=r.from_a if is_cell else r.from_,
+                            to_=r.to_a if is_cell else r.to_,
                             old_relativity=float("nan") if old is None else old,
                             new_relativity=r.relativity,
+                            from_b=r.from_b if is_cell else None,
+                            to_b=r.to_b if is_cell else None,
+                            is_cell=is_cell,
                         )
                     )
         return out
@@ -532,7 +702,11 @@ class RateModel:
         """Write the current relativities to an ``.xlsx`` workbook: a ``Summary``
         sheet (base rate, metadata, version) plus one sheet per variable with
         ``from`` / ``to`` / ``label`` / ``relativity``."""
-        from easy_glm.core.excel import rate_model_tables, write_rate_tables_xlsx
+        from easy_glm.core.excel import (
+            interaction_matrices,
+            rate_model_tables,
+            write_rate_tables_xlsx,
+        )
 
         summary: dict[str, Any] = {
             "tables": "current relativities (manual adjustments included)",
@@ -549,7 +723,14 @@ class RateModel:
             "version": self.current_version,
             "snapshots": len(self.snapshots),
         }
-        return write_rate_tables_xlsx(rate_model_tables(self), path, summary=summary)
+        matrices = {
+            name: (*cfg.parents, *interaction_matrices(self, name))
+            for name, cfg in self.variables.items()
+            if cfg.type == "interaction"
+        }
+        return write_rate_tables_xlsx(
+            rate_model_tables(self), path, summary=summary, matrices=matrices or None
+        )
 
     @classmethod
     def from_json(cls, path: str | Path) -> RateModel:
@@ -566,14 +747,12 @@ class RateModel:
             "variables": {
                 name: {
                     "type": config.type,
-                    "table": [
-                        {
-                            "from": row.from_,
-                            "to": row.to_,
-                            "relativity": row.relativity,
-                        }
-                        for row in config.table
-                    ],
+                    **(
+                        {"parents": list(config.parents)}
+                        if config.type == "interaction" and config.parents
+                        else {}
+                    ),
+                    "table": [_row_to_dict(row) for row in config.table],
                 }
                 for name, config in self.variables.items()
             },
@@ -588,14 +767,7 @@ class RateModel:
                     },
                     "metadata": s.metadata,
                     "relativities": {
-                        name: [
-                            {
-                                "from": row.from_,
-                                "to": row.to_,
-                                "relativity": row.relativity,
-                            }
-                            for row in table
-                        ]
+                        name: [_row_to_dict(row) for row in table]
                         for name, table in s.relativities.items()
                     },
                     "changes": [
@@ -605,6 +777,11 @@ class RateModel:
                             "to": c.to_,
                             "old_relativity": c.old_relativity,
                             "new_relativity": c.new_relativity,
+                            **(
+                                {"from_b": c.from_b, "to_b": c.to_b, "is_cell": True}
+                                if c.is_cell
+                                else {}
+                            ),
                         }
                         for c in s.changes
                     ],
@@ -626,21 +803,19 @@ class RateModel:
             raw = cls._migrate(raw, version)
         variables: dict[str, VariableConfig] = {}
         for name, vdata in raw["variables"].items():
-            table = [
-                FromToRow(
-                    from_=r["from"],
-                    to_=r["to"],
-                    relativity=r["relativity"],
-                )
-                for r in vdata["table"]
-            ]
-            if vdata["type"] not in _SCORERS:
+            if vdata["type"] not in KNOWN_TYPES:
                 raise ValueError(
                     f"Variable {name!r} has table type {vdata['type']!r}, which this "
-                    f"version of easy_glm cannot score (known: {sorted(_SCORERS)}). "
+                    f"version of easy_glm cannot score (known: {sorted(KNOWN_TYPES)}). "
                     "The model file probably comes from a newer easy_glm."
                 )
-            variables[name] = VariableConfig(type=vdata["type"], table=table)
+            table = _rows_from_list(vdata["table"])
+            parents = vdata.get("parents")
+            variables[name] = VariableConfig(
+                type=vdata["type"],
+                table=table,
+                parents=tuple(parents) if parents else None,
+            )
 
         cls._precompute_variables(variables)
 
@@ -651,14 +826,7 @@ class RateModel:
         snapshots: list[Snapshot] = []
         for sdata in raw.get("snapshots", []):
             relativities = {
-                name: [
-                    FromToRow(
-                        from_=r["from"],
-                        to_=r["to"],
-                        relativity=r["relativity"],
-                    )
-                    for r in rows
-                ]
+                name: _rows_from_list(rows)
                 for name, rows in sdata["relativities"].items()
             }
             changes = [
@@ -668,6 +836,9 @@ class RateModel:
                     to_=c["to"],
                     old_relativity=c["old_relativity"],
                     new_relativity=c["new_relativity"],
+                    from_b=c.get("from_b"),
+                    to_b=c.get("to_b"),
+                    is_cell=bool(c.get("is_cell", False)),
                 )
                 for c in sdata.get("changes", [])
             ]
@@ -710,7 +881,41 @@ class RateModel:
         return raw
 
     @staticmethod
+    def _precompute_interaction(
+        name: str, config: VariableConfig, variables: dict[str, VariableConfig]
+    ) -> None:
+        """Build the cell relativity matrix over the parents' table rows."""
+        if config.parents is None:
+            raise ValueError(f"Interaction {name!r} has no parents recorded")
+        a, b = config.parents
+        for parent in (a, b):
+            if parent not in variables:
+                raise ValueError(
+                    f"Interaction {name!r} needs its parent {parent!r} in the model"
+                )
+            if variables[parent].type == "interaction":
+                raise ValueError(
+                    f"Interaction {name!r}: parent {parent!r} is itself one"
+                )
+        ka = {(r.from_, r.to_): i for i, r in enumerate(variables[a].table)}
+        kb = {(r.from_, r.to_): i for i, r in enumerate(variables[b].table)}
+        matrix = np.ones((len(ka), len(kb)), dtype=float)
+        for row in config.table:
+            ia = ka.get((row.from_a, row.to_a))
+            ib = kb.get((row.from_b, row.to_b))
+            if ia is None or ib is None:
+                raise ValueError(
+                    f"Interaction {name!r}: cell {row.key} does not match a row of "
+                    f"{a!r} × {b!r}"
+                )
+            matrix[ia, ib] = float(row.relativity)
+        config.cell_matrix = matrix
+
+    @staticmethod
     def _precompute_variables(variables: dict[str, VariableConfig]) -> None:
+        for name, config in variables.items():
+            if config.type == "interaction" and config.cell_matrix is None:
+                RateModel._precompute_interaction(name, config, variables)
         for config in variables.values():
             if config.type == "numeric" and config.breakpoints is None:
                 # An optional (None, None) row carries the relativity for nulls.
@@ -730,9 +935,11 @@ class RateModel:
                 config.null_relativity = null_rows[0].relativity if null_rows else None
             elif config.type == "categorical" and config.cat_map is None:
                 config.cat_map = {}
-                for row in config.table:
+                config.level_index = {}
+                for i, row in enumerate(config.table):
                     if row.from_ is not None:
                         config.cat_map[str(row.from_)] = row.relativity
+                        config.level_index[str(row.from_)] = i
                     else:
                         config.fallback = row.relativity
 

@@ -33,9 +33,30 @@ class FromToRow:
 
 
 @dataclass
+class CellRow:
+    """One cell of a two-way interaction table: the rate-table row of parent A
+    (``from_a``/``to_a``), the row of parent B (``from_b``/``to_b``), the
+    multiplicative adjustment and the training exposure of the cell."""
+
+    from_a: float | str | None
+    to_a: float | str | None
+    from_b: float | str | None
+    to_b: float | str | None
+    relativity: float
+    exposure: float = 0.0
+
+    @property
+    def key(self) -> tuple[Any, Any, Any, Any]:
+        return (self.from_a, self.to_a, self.from_b, self.to_b)
+
+
+TableType = Literal["numeric", "categorical", "interaction"]
+
+
+@dataclass
 class VariableConfig:
-    type: Literal["numeric", "categorical"]
-    table: list[FromToRow]
+    type: TableType
+    table: list[Any]  # list[FromToRow] for mains, list[CellRow] for interactions
     breakpoints: np.ndarray | None = None
     relativities: np.ndarray | None = None
     cat_map: dict[str, float] | None = None
@@ -43,6 +64,12 @@ class VariableConfig:
     #: numeric only: relativity applied to null values, taken from an optional
     #: ``FromToRow(None, None, ...)`` row. ``None`` means nulls are an error.
     null_relativity: float | None = None
+    #: interaction only: the two parent variables (both must be in the model)
+    parents: tuple[str, str] | None = None
+    #: interaction only (precomputed): relativity matrix over the parents' rows
+    cell_matrix: np.ndarray | None = None
+    #: categorical only (precomputed): level -> row index, in table order
+    level_index: dict[str, int] | None = None
 
 
 @dataclass
@@ -52,6 +79,10 @@ class Change:
     to_: Any
     old_relativity: float
     new_relativity: float
+    #: interaction cells: the second parent's row (``from_``/``to_`` are the first's)
+    from_b: Any = None
+    to_b: Any = None
+    is_cell: bool = False
 
 
 @dataclass
@@ -60,7 +91,7 @@ class Snapshot:
     description: str
     timestamp: str
     parent_version: int | None
-    relativities: dict[str, list[FromToRow]]
+    relativities: dict[str, list[Any]]
     changes: list[Change] = field(default_factory=list)
     metrics: dict | None = None
     column_mapping: dict[str, str] = field(default_factory=dict)
@@ -73,8 +104,20 @@ class SessionState:
     actual_formula: str = "sum_weighted"
 
 
-def level_label(row: FromToRow) -> str:
-    """Human-readable label for a ``FromToRow`` bin.
+def _edge_label(lo: Any, hi: Any) -> str:
+    if lo is None and hi is None:
+        return "Other / Unknown"
+    if lo is None:
+        return f"< {hi}"
+    if hi is None:
+        return f"≥ {lo}"
+    if lo == hi:
+        return str(lo)
+    return f"[{lo}, {hi})"
+
+
+def level_label(row: FromToRow | CellRow) -> str:
+    """Human-readable label for a ``FromToRow`` bin or a ``CellRow`` cell.
 
     ``None``-delimited ends mean open interval::
 
@@ -83,18 +126,15 @@ def level_label(row: FromToRow) -> str:
         Other   (from_=None,  to_=None)
         North   (from_="North", to_="North")
         [18, 23) (from_=18, to_=23, unequal)
+        [18, 23) | North   (a CellRow)
     """
-    if row.from_ is None and row.to_ is None:
-        return "Other / Unknown"
-    if row.from_ is None:
-        return f"< {row.to_}"
-    if row.to_ is None:
-        return f"≥ {row.from_}"
-    if row.from_ == row.to_:
-        return str(row.from_)
-    return f"[{row.from_}, {row.to_})"
+    if isinstance(row, CellRow):
+        return (
+            f"{_edge_label(row.from_a, row.to_a)} | {_edge_label(row.from_b, row.to_b)}"
+        )
+    return _edge_label(row.from_, row.to_)
 
 
-def level_labels(rows: list[FromToRow]) -> list[str]:
+def level_labels(rows: list[FromToRow | CellRow]) -> list[str]:
     """Convenience: ``[level_label(r) for r in rows]``."""
     return [level_label(r) for r in rows]

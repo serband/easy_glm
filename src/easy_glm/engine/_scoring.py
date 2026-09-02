@@ -45,6 +45,61 @@ def score_categorical(series: pl.Series, config: VariableConfig) -> np.ndarray:
     return result
 
 
+# --------------------------------------------------------------------------
+# rate-table row indices (shared by interactions and diagnostics)
+# --------------------------------------------------------------------------
+def row_index(series: pl.Series, config: VariableConfig) -> np.ndarray:
+    """Rate-table row index (position in ``config.table``) of every value of a
+    main-effect variable: numeric → band by ``searchsorted`` (nulls → the null
+    row); categorical → level position (unseen / null → the Other row).
+
+    Raises for nulls in a numeric table that has no null row, exactly like
+    :func:`score_numeric`.
+    """
+    if config.type == "numeric":
+        if config.breakpoints is None:
+            raise ValueError("numeric config not precomputed")
+        values = np.asarray(series.cast(pl.Float64).to_numpy(), dtype=float)
+        idx = np.searchsorted(config.breakpoints, values, side="right").astype(np.int64)
+        nan_mask = np.isnan(values)
+        if nan_mask.any():
+            if config.null_relativity is None:
+                raise ValueError(
+                    "Some numeric values did not match any bin. "
+                    "Check for NaN values in the input data."
+                )
+            idx[nan_mask] = len(config.table) - 1  # the (None, None) row
+        return idx
+    if config.type == "categorical":
+        if config.level_index is None:
+            raise ValueError("categorical config not precomputed")
+        other = len(config.table) - 1
+        vals = series.cast(pl.Utf8)
+        keys = list(config.level_index)
+        idx = vals.replace_strict(
+            keys,
+            [config.level_index[k] for k in keys],
+            default=other,
+            return_dtype=pl.Int64,
+        )
+        return idx.fill_null(other).to_numpy().astype(np.int64)
+    raise ValueError(f"row_index is only defined for main effects, not {config.type!r}")
+
+
+def score_interaction(
+    data: pl.DataFrame,
+    config: VariableConfig,
+    variables: dict[str, VariableConfig],
+) -> np.ndarray:
+    """Relativity of every row's cell in a two-way interaction table."""
+    if config.parents is None or config.cell_matrix is None:
+        raise ValueError("interaction config not precomputed")
+    a, b = config.parents
+    ia = row_index(data[a], variables[a])
+    ib = row_index(data[b], variables[b])
+    return config.cell_matrix[ia, ib]
+
+
 def _score_numeric_fallback(values: np.ndarray, config: VariableConfig) -> np.ndarray:
     values = np.asarray(values, dtype=float)
     result = np.full(len(values), np.nan, dtype=float)
