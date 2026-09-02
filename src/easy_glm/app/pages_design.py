@@ -137,6 +137,7 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
             ),
             max_levels=vd.max_levels,
             levels=vd.levels,
+            clamp=vd.clamp,  # detail-panel fields the grid does not show
             monotone=None if r["monotone"] == "none" else r["monotone"],
         )
         if r["knots"] == "custom" and not isinstance(new.knots, list):
@@ -266,6 +267,14 @@ def _detail(train: pl.DataFrame, predictors: list[str]) -> None:
                 if clamp and (len(clamp) != 2 or not clamp[0] < clamp[1]):
                     st.error("Clamp must be two numbers, lo < hi")
                 else:
+                    lo_c, hi_c = clamp if clamp else (enc.lo, enc.hi)
+                    outside = [k for k in knots if not lo_c < k < hi_c]
+                    if outside:
+                        st.warning(
+                            f"Knots outside the clamp range are dropped: "
+                            f"{', '.join(f'{k:g}' for k in outside)} "
+                            f"(clamp {lo_c:g} – {hi_c:g})"
+                        )
                     vd.knots = knots
                     vd.clamp = clamp or None
                     p.design.variables[var] = vd

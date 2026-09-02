@@ -28,7 +28,7 @@ from easy_glm.engine.rate_model import RateModel
 
 from .diagnostics import model_metrics
 from .prep import train_holdout
-from .project import Interaction, ModelConfig, Project, VariableDesign
+from .project import Adjustment, Interaction, ModelConfig, Project, VariableDesign
 
 
 # --------------------------------------------------------------------------
@@ -188,7 +188,18 @@ class ModelRun:
         }
 
 
+class AdjustmentError(ValueError):
+    """A manual adjustment the RateModel refuses (e.g. a non-positive value on a
+    piecewise-linear band); ``adjustment`` is the offending entry."""
+
+    def __init__(self, adjustment: Adjustment, message: str) -> None:
+        super().__init__(message)
+        self.adjustment = adjustment
+
+
 def apply_adjustments(rm: RateModel, cfg: ModelConfig) -> None:
+    """Apply ``cfg.adjustments`` to ``rm`` in order. Raises
+    :class:`AdjustmentError` for an adjustment the model refuses."""
     for adj in cfg.adjustments:
         config = rm.variables.get(adj.variable)
         if config is None:
@@ -207,19 +218,22 @@ def apply_adjustments(rm: RateModel, cfg: ModelConfig) -> None:
                     else "it is a main effect, but the adjustment is marked cell=True"
                 )
             )
-        if is_cell:
-            rm.update_relativity(
-                adj.variable,
-                adj.from_,
-                adj.to_,
-                float(adj.relativity),
-                from_b=adj.from_b,
-                to_b=adj.to_b,
-            )
-        else:
-            rm.update_relativity(
-                adj.variable, adj.from_, adj.to_, float(adj.relativity)
-            )
+        try:
+            if is_cell:
+                rm.update_relativity(
+                    adj.variable,
+                    adj.from_,
+                    adj.to_,
+                    float(adj.relativity),
+                    from_b=adj.from_b,
+                    to_b=adj.to_b,
+                )
+            else:
+                rm.update_relativity(
+                    adj.variable, adj.from_, adj.to_, float(adj.relativity)
+                )
+        except ValueError as exc:
+            raise AdjustmentError(adj, str(exc)) from exc
     if cfg.adjustments:
         rm.create_snapshot(f"{len(cfg.adjustments)} manual adjustment(s)")
 

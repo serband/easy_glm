@@ -45,6 +45,7 @@ from .project import (
     VariableDesign,
 )
 from .run import (
+    AdjustmentError,
     ModelRun,
     build_design,
     encoder_for,
@@ -83,6 +84,7 @@ __all__ = [
     "encoder_for",
     "monotone_for",
     "run_model",
+    "AdjustmentError",
     "rebuild_rate_model",
     "exposure_for",
     "ModelRun",

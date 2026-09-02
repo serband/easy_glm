@@ -18,6 +18,7 @@ import polars as pl
 import streamlit as st
 
 from easy_glm.workflow import (
+    AdjustmentError,
     ModelRun,
     Project,
     leakage_report,
@@ -179,9 +180,23 @@ def fit_model(model: str) -> ModelRun:
     if df is None:
         raise ValueError("Load data first (Project page).")
     with st.spinner(f"Fitting {model} ..."):
-        run = run_model(p, df, model)
+        while True:
+            try:
+                run = run_model(p, df, model)
+                break
+            except AdjustmentError as exc:
+                _drop_refused_adjustment(p.models[model], exc)
     st.session_state.runs[model] = (model_hash(p, model), run)
     return run
+
+
+def _drop_refused_adjustment(cfg, exc: AdjustmentError) -> None:
+    """Remove the adjustment the RateModel refused and tell the user, so a bad
+    entry in the project can never lock a page."""
+    bad = exc.adjustment
+    cfg.adjustments = [a for a in cfg.adjustments if a is not bad]
+    touch()
+    st.error(f"Adjustment not applied and removed from the project: {exc}")
 
 
 def refresh_adjustments(model: str) -> ModelRun | None:
@@ -191,7 +206,13 @@ def refresh_adjustments(model: str) -> ModelRun | None:
     df = prepared_frame()
     if run is None or df is None:
         return None
-    return rebuild_rate_model(project(), run, df)
+    p = project()
+    cfg = p.models[model]
+    while True:
+        try:
+            return rebuild_rate_model(p, run, df)
+        except AdjustmentError as exc:
+            _drop_refused_adjustment(cfg, exc)
 
 
 def current_runs() -> dict[str, ModelRun]:

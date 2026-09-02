@@ -58,6 +58,7 @@ def render() -> None:
     fitted = run.tables[var]
     working = _working_table(run, var)
     rows = run.rate_model.variables[var].table
+    is_linear = run.rate_model.variables[var].type == "linear"
 
     left, right = st.columns([3, 2])
     with left:
@@ -107,7 +108,9 @@ def render() -> None:
             column_config={
                 "fitted": st.column_config.NumberColumn(format="%.4f"),
                 "working": st.column_config.NumberColumn(
-                    format="%.4f", min_value=0.0, step=0.01
+                    format="%.4f",
+                    min_value=1e-4 if is_linear else 0.0,
+                    step=0.01,
                 ),
             },
             key=f"rel_editor_{run.name}_{var}",
@@ -115,6 +118,12 @@ def render() -> None:
         changed = False
         for i, r in enumerate(rows):
             new = float(edited["working"].iloc[i])
+            if is_linear and not new > 0:
+                st.error(
+                    f"{var} is piecewise-linear: relativities must be above 0 "
+                    f"(row {level_label(r)!r} was {new:g}); the change was not saved"
+                )
+                continue
             if abs(new - r.relativity) > 1e-9:
                 cfg.adjustments = [
                     a

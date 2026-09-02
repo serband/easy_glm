@@ -254,6 +254,28 @@ def to_script(
                 )
                 else []
             ),
+            *(
+                [f"    knots={explicit_knots!r},"]
+                if (
+                    explicit_knots := {
+                        v: [float(k) for k in vd.knots]
+                        for v, vd in project.design.variables.items()
+                        if isinstance(vd.knots, list) and v in cfg.predictors
+                    }
+                )
+                else []
+            ),
+            *(
+                [f"    clamp={clamps!r},"]
+                if (
+                    clamps := {
+                        v: (float(vd.clamp[0]), float(vd.clamp[1]))
+                        for v, vd in project.design.variables.items()
+                        if vd.kind == "linear" and vd.clamp and v in cfg.predictors
+                    }
+                )
+                else []
+            ),
             ")",
         ]
         alpha = cfg.penalty.alpha if cfg.penalty.alpha is not None else None
