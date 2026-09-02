@@ -2,6 +2,28 @@
 
 ## 0.4.0 (unreleased)
 
+### Piecewise-linear terms (piece B)
+
+- Numeric factors can now be **piecewise-linear** instead of step functions
+  (`DesignSpec.from_data(..., linear=["Mileage"])`, `LinearEncoder`,
+  `VariableDesign(kind="linear")`): the relativity changes smoothly with the
+  value along straight-line segments (on the log scale) between knots, and the
+  lasso decides where the slope changes. The AGLM "L-dummies".
+- The curve is **clamped to the training range** (rounded outward to a round
+  number, or a `clamp` you choose) and flat beyond it; missing values get their
+  own row. Relativity 1.00 sits at the lower edge of the most exposed band.
+- Rate tables carry a `slope` per band and the value at both band ends; the
+  `RateModel` scores them exactly (`"linear"` tables), Excel and the exported
+  script round-trip them, and `from_rate_tables` reads them back (and refuses
+  discontinuous curves).
+- Editing a band's start value in the editor re-derives the two adjacent slopes
+  so the curve stays continuous; the flat end rows and the null row edit as
+  steps. Non-positive relativities are refused on linear tables.
+- Monotone constraints are **not available** on linear terms in this release
+  (`fit_glm` and `Project.validate` say so explicitly).
+- Linear variables can be parents of interactions; diagnostics band them by the
+  table's own edges (`Encoder.band_edges()`).
+
 ### Two-way interactions (piece A)
 
 - Models can now include `A × B` interactions on top of the main effects

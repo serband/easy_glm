@@ -86,8 +86,8 @@ Key invariant of the 0.3 core: `to_rate_model(fit).predict(data, exposure_col=No
 src/easy_glm/
 ├── __init__.py             # Public API exports
 ├── core/
-│   ├── design.py           # DesignSpec, StepEncoder (1{x>=k} + null col), InteractionEncoder (A×B cells),
-│   │                       #   CategoricalEncoder (one-hot + Other), Feature metadata,
+│   ├── design.py           # DesignSpec, StepEncoder (1{x>=k} + null col), LinearEncoder (hinges, InteractionEncoder (A×B cells),
+│   │                       #   clamp), CategoricalEncoder (one-hot + Other), Feature metadata,
 │   │                       #   quantile_knots, frequent_levels; JSON round-trip
 │   ├── fit.py              # fit_glm -> GLMFit (glum wrapper: families/links,
 │   │                       #   alpha or CV, monotone_bounds -> lower/upper_bounds)
@@ -240,7 +240,8 @@ User edits relativity in table
 |---|---|
 | `test_engine.py` | RateModel: from_rate_tables (0.3 table format, null/Other rows, validation), from_glm_model, predict (numeric/categorical/multi), update_relativity, snapshots (+ metrics), switch_to, clone, JSON roundtrip, exposure, column mapping, metadata |
 | `test_golden.py` | Golden French-motor numbers on the checked-in 50k subsample (runs in CI) |
-| `test_invariants.py` | RateModel == GLM, JSON and Excel round-trips over step / categorical (string and integer) / mixed / offset designs with nulls and unseen levels |
+| `test_invariants.py` | RateModel == GLM, JSON and Excel round-trips over step / categorical (string and integer) / mixed / offset / interaction / piecewise-linear designs with nulls and unseen levels |
+| `test_linear.py` | Piece B: `LinearEncoder` (clamp, hinges, nulls), slopes = cumulative hinge coefficients, continuity, exactness at/beyond the clamp, band-edit rule, snapshots/JSON/Excel/`from_rate_tables`, interaction with a linear parent, project validation, script round trip, workbench pages |
 | `test_c1_foundations.py` | 0.3 bug regressions, format versions and migrations, editor defaults |
 | `test_scoring.py` | Isolated scoring: score_numeric (searchsorted), score_categorical (dict lookup), edge cases, fallbacks |
 | `test_workflow.py` | Project JSON/validation, prep steps, univariate, leakage report on planted leaks, build_design overrides, run_model (metrics, exactness, adjustments, CV), diagnostics, exported script executed in a subprocess and compared |

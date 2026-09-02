@@ -15,3 +15,4 @@ is cheap.
 | Q7 | Binomial (e.g. lapse) models: export odds relativities with a label, or probabilities by band? | Odds relativities; the scorer returns probabilities. |
 | Q8 | For frequency models, actual = Σ claims / Σ exposure and expected = Σ fitted claims / Σ exposure — confirm. | Yes; the rate/count flag is stored in the model file so the editor stops guessing. |
 | Q9 | Which bike variables should be piecewise-linear rather than step? | Mileage only, as in the original script; everything else step. |
+| Q10 | For a piecewise-linear factor, should the default **upper clamp** be the training maximum (the curve follows the data through thin tails) or a high quantile such as the 99.5th percentile (thin tails pooled flat, as a step design would)? See `docs/checks/b-linear.md` (BonusMalus 120–230). | Training maximum, rounded outward; the clamp is editable per factor on the Design page. |
