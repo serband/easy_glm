@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pandas as pd
 import polars as pl
-import rdata
 
 _CACHE_DIR = Path.home() / ".cache" / "easy_glm"
 
@@ -44,6 +43,8 @@ def load_external_dataframe(
     cache_file = _cache_path(url)
     if cache and cache_file.exists():
         return pl.read_parquet(str(cache_file))
+
+    import rdata  # optional-ish: only needed to download the .rda dataset
 
     with urllib.request.urlopen(url, timeout=30) as response:
         data = response.read()

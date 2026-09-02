@@ -21,11 +21,6 @@ scorer (``.easyglm`` export, relativity editor) and reproduces the GLM exactly.
    :class:`GLMFit` with ``predict`` / ``coef_table``.
 3. :func:`rate_tables` / :func:`to_rate_model` — exact relativities and base
    rate read off the coefficients.
-
-**Legacy (deprecated, removed in 0.4)**
-
-``generate_blueprint``, ``prepare_data`` (needs the ``legacy`` extra for
-DuckDB), ``fit_lasso_glm``, ``ratetable``, ``generate_all_ratetables``.
 """
 
 from .core import (
@@ -36,16 +31,11 @@ from .core import (
     StepEncoder,
     base_rate,
     fit_glm,
-    fit_lasso_glm,
-    generate_all_ratetables,
-    generate_blueprint,
     load_external_dataframe,
     plot_all_ratetables,
-    predict_with_model,
-    prepare_data,
     rate_tables,
-    ratetable,
     to_rate_model,
+    validate_train_test_column,
     write_rate_tables_xlsx,
 )
 
@@ -64,11 +54,5 @@ __all__ = [
     "to_rate_model",
     "write_rate_tables_xlsx",
     "plot_all_ratetables",
-    # Legacy (deprecated)
-    "generate_blueprint",
-    "prepare_data",
-    "fit_lasso_glm",
-    "predict_with_model",
-    "ratetable",
-    "generate_all_ratetables",
+    "validate_train_test_column",
 ]

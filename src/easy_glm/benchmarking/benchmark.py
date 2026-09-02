@@ -8,7 +8,8 @@ import pandas as pd
 import polars as pl
 
 from easy_glm.benchmarking.metrics import compute_all_metrics
-from easy_glm.core.model import fit_lasso_glm, predict_with_model
+from easy_glm.core.design import DesignSpec
+from easy_glm.core.fit import fit_glm
 
 _FAMILIES: dict[str, str] = {
     "poisson": "Poisson",
@@ -61,32 +62,45 @@ def _fit_easy_glm(
     family: str,
     use_cv: bool,
 ) -> tuple[Any, float, float, np.ndarray, int]:
-    fam_label = _FAMILIES[family]
-    df = pl.DataFrame(x_train)
-    df = df.with_columns(
-        pl.Series("Response", y_train),
-        pl.Series("traintest", np.ones(len(y_train), dtype=np.int8)),
-    )
+    """Fit easy_glm as shipped on the benchmark features: numeric columns get
+    the standard quantile step design, the 0/1 dummy columns a single knot at 1
+    (so a dummy stays a dummy). "no CV" uses a fixed alpha, "CV" a 3-fold path."""
+    df = pl.DataFrame(x_train).with_columns(pl.Series("Response", y_train))
     if w_train is not None:
         df = df.with_columns(pl.Series("Exposure", w_train))
-
+    predictors = list(x_train.columns)
+    knots = {
+        c: [1.0] if set(np.unique(x_train[c])) <= {0.0, 1.0} else None
+        for c in predictors
+    }
+    spec = DesignSpec.from_data(
+        df,
+        predictors,
+        n_bins=20,
+        knots={c: k for c, k in knots.items() if k is not None},
+        null_indicator=False,
+    )
+    extra: dict[str, Any] = {}
+    if family == "gaussian":
+        extra["link"] = "identity"  # gaussian benchmark responses can be negative
     t0 = time.perf_counter()
-    model = fit_lasso_glm(
-        dataframe=df,
-        target="Response",
-        model_type=fam_label,
+    fit = fit_glm(
+        df,
+        spec,
+        "Response",
+        family=family,
         weight_col="Exposure" if w_train is not None else None,
-        train_test_col="traintest",
-        use_cv=use_cv,
+        alpha=None if use_cv else 0.001,
+        cv=3 if use_cv else None,
+        n_alphas=10,
+        **extra,
     )
     fit_time = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    y_pred = predict_with_model(model, x_train)
+    y_pred = fit.predict(pl.DataFrame(x_train))
     pred_time = time.perf_counter() - t0
-
-    n_params = len(model.coef_)
-    return model, fit_time, pred_time, y_pred, n_params
+    return fit, fit_time, pred_time, y_pred, len(fit.coef)
 
 
 def _fit_statsmodels(
@@ -226,7 +240,7 @@ def _run_dataset_benchmarks(
 
         t0 = time.perf_counter()
         if method_name.startswith("easy_glm"):
-            y_test_pred = predict_with_model(_model, pl.DataFrame(x_test))
+            y_test_pred = _model.predict(pl.DataFrame(x_test))
         elif method_name == "statsmodels":
             import statsmodels.api as sm
 

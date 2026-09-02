@@ -12,8 +12,14 @@ def plot_all_ratetables(
     ``relativity`` columns; numeric tables have Float64 ``from``/``to``) or the
     legacy ``{var: [levels...]}`` blueprint-based tables.
     """
-    import matplotlib.pyplot as plt
-    import seaborn as sns
+    try:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+    except ImportError as exc:  # pragma: no cover - depends on the environment
+        raise ImportError(
+            "plot_all_ratetables needs matplotlib and seaborn: "
+            'pip install "easy_glm[viz]"'
+        ) from exc
 
     blueprint = blueprint or {}
     for var_name, table in all_tables.items():

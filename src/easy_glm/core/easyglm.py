@@ -12,7 +12,7 @@ from easy_glm.engine.rate_model import RateModel
 
 from .design import DesignSpec, StepEncoder
 from .fit import GLMFit, fit_glm
-from .model import TRAIN_FLAG, validate_train_test_column
+from .split import TRAIN_FLAG, validate_train_test_column
 from .tables import rate_tables, to_rate_model
 
 

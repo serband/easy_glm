@@ -220,6 +220,7 @@ def run_model(project: Project, df: pl.DataFrame, model_name: str) -> ModelRun:
     metrics = model_metrics(
         fit, preds, {k: v for k, v in frames.items() if not v.is_empty()}, cfg
     )
+    rm.set_snapshot_metrics(metrics)
     return ModelRun(
         name=model_name,
         config=project.models[model_name],
@@ -263,5 +264,6 @@ def rebuild_rate_model(project: Project, run: ModelRun, df: pl.DataFrame) -> Mod
     run.rate_model = rm
     run.config = cfg
     run.metrics = model_metrics(run.fit, preds, frames, cfg)
+    rm.set_snapshot_metrics(run.metrics)
     run.tables = rate_tables(run.fit, base=cfg.base)  # type: ignore[arg-type]
     return run

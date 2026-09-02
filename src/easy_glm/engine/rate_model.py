@@ -10,7 +10,6 @@ from typing import Any
 
 import numpy as np
 import polars as pl
-from glum import GeneralizedLinearRegressor
 
 from ._scoring import score_categorical, score_numeric
 from .models import Change, FromToRow, ModelMetadata, Snapshot, VariableConfig
@@ -88,52 +87,7 @@ class RateModel:
     @classmethod
     def from_rate_tables(
         cls,
-        all_tables: dict[str, pl.DataFrame],
-        blueprint: dict[str, Any],
-        base_rate: float,
-        model_type: str | None = None,
-        target: str | None = None,
-        weight_col: str | None = None,
-        exposure_col: str | None = None,
-        train_test_col: str | None = None,
-        predictor_variables: list[str] | None = None,
-    ) -> RateModel:
-        variables: dict[str, VariableConfig] = {}
-        pred_vars = predictor_variables or list(all_tables.keys())
-
-        for var_name in pred_vars:
-            rate_table = all_tables.get(var_name)
-            bp_values = blueprint.get(var_name)
-            if rate_table is None or bp_values is None or not bp_values:
-                continue
-
-            if isinstance(bp_values[0], int | float):
-                variables[var_name] = cls._build_numeric_rows(
-                    rate_table, bp_values, var_name
-                )
-            else:
-                variables[var_name] = cls._build_categorical_rows(
-                    rate_table, bp_values, var_name
-                )
-
-        metadata = ModelMetadata(
-            model_type=model_type,
-            target=target,
-            weight_col=weight_col,
-            exposure_col=exposure_col,
-            train_test_col=train_test_col,
-            predictor_variables=list(variables.keys()),
-        )
-        rm = cls(base_rate=base_rate, variables=variables, metadata=metadata)
-        rm.create_snapshot("Base model")
-        return rm
-
-    @classmethod
-    def from_glm_model(
-        cls,
-        model: GeneralizedLinearRegressor,
-        dataset: pl.DataFrame,
-        blueprint: dict[str, Any],
+        tables: dict[str, pl.DataFrame],
         base_rate: float,
         *,
         model_type: str | None = None,
@@ -141,107 +95,98 @@ class RateModel:
         weight_col: str | None = None,
         exposure_col: str | None = None,
         train_test_col: str | None = None,
+        offset_col: str | None = None,
+        offset_is_log: bool = True,
+        link: str = "log",
+        divide_target_by_weight: bool | None = None,
         predictor_variables: list[str] | None = None,
-        random_seed: int = 42,
     ) -> RateModel:
-        from easy_glm.core.all_ratetables import generate_all_ratetables
+        """Build a RateModel from per-variable relativity tables.
 
-        if predictor_variables is None:
-            predictor_variables = [
-                v
-                for v in blueprint
-                if blueprint.get(v)
-                and isinstance(blueprint[v], list)
-                and len(blueprint[v]) > 0
-            ]
-
-        all_tables = generate_all_ratetables(
-            model=model,
-            dataset=dataset,
-            predictor_variables=predictor_variables,
-            blueprint=blueprint,
-            random_seed=random_seed,
-        )
-
-        return cls.from_rate_tables(
-            all_tables=all_tables,
-            blueprint=blueprint,
-            base_rate=base_rate,
+        ``tables`` maps a variable name to a frame with columns ``from``, ``to``
+        and ``relativity`` (``label`` and other columns are ignored) — the shape
+        produced by :func:`easy_glm.rate_tables`, :func:`easy_glm.core.excel.
+        rate_model_tables` and the Excel export. Numeric variables have numeric
+        ``from``/``to`` (null = open end); categorical variables have string
+        ``from == to`` per level. In both cases a row with ``from`` and ``to``
+        both null is the null / Other row.
+        """
+        pred_vars = predictor_variables or list(tables)
+        variables: dict[str, VariableConfig] = {}
+        for var in pred_vars:
+            if var not in tables:
+                raise KeyError(f"No table for variable {var!r}")
+            variables[var] = cls._config_from_table(var, tables[var])
+        cls._precompute_variables(variables)
+        metadata = ModelMetadata(
             model_type=model_type,
             target=target,
             weight_col=weight_col,
             exposure_col=exposure_col,
             train_test_col=train_test_col,
-            predictor_variables=predictor_variables,
+            predictor_variables=list(variables),
+            offset_col=offset_col,
+            offset_is_log=offset_is_log,
+            link=link,
+            divide_target_by_weight=divide_target_by_weight,
         )
+        rm = cls(base_rate=base_rate, variables=variables, metadata=metadata)
+        rm.create_snapshot("Base model")
+        return rm
+
+    @classmethod
+    def from_glm_model(cls, fit: Any, **kwargs: Any) -> RateModel:
+        """Compile a fitted :class:`easy_glm.GLMFit` into a RateModel that
+        reproduces it exactly (thin wrapper around :func:`easy_glm.to_rate_model`;
+        keyword arguments are forwarded)."""
+        from easy_glm.core.tables import to_rate_model
+
+        return to_rate_model(fit, **kwargs)
 
     @staticmethod
-    def _build_numeric_rows(
-        rate_table: pl.DataFrame, bp_values: list, col_name: str
-    ) -> VariableConfig:
-        rate_dict = dict(
-            zip(
-                rate_table[col_name].to_list(),
-                rate_table["relativity"].to_list(),
-                strict=False,
-            )
-        )
-
-        first_bp = bp_values[0]
-        first_rel = rate_dict.get(first_bp, 1.0)
-        rows = [FromToRow(from_=None, to_=first_bp, relativity=first_rel)]
-
-        for i in range(len(bp_values)):
-            from_val = bp_values[i]
-            to_val = bp_values[i + 1] if i + 1 < len(bp_values) else None
-            rel = rate_dict.get(from_val, 1.0)
-            rows.append(FromToRow(from_=from_val, to_=to_val, relativity=rel))
-
-        breakpoints = np.array(
-            [float(r.from_) for r in rows if r.from_ is not None], dtype=float
-        )
-        relativities = np.array([r.relativity for r in rows], dtype=float)
-
-        return VariableConfig(
-            type="numeric",
-            table=rows,
-            breakpoints=breakpoints,
-            relativities=relativities,
-        )
-
-    @staticmethod
-    def _build_categorical_rows(
-        rate_table: pl.DataFrame, bp_values: list, col_name: str
-    ) -> VariableConfig:
-        rate_dict = dict(
-            zip(
-                rate_table[col_name].cast(pl.Utf8).to_list(),
-                rate_table["relativity"].to_list(),
-                strict=False,
-            )
-        )
-
+    def _config_from_table(name: str, table: pl.DataFrame) -> VariableConfig:
+        missing = {"from", "to", "relativity"} - set(table.columns)
+        if missing:
+            raise ValueError(f"Table for {name!r} lacks columns {sorted(missing)}")
+        from_dtype = table["from"].dtype
+        numeric = from_dtype.is_numeric()
         rows: list[FromToRow] = []
-        for level in bp_values:
-            rel = rate_dict.get(str(level), 1.0)
-            rows.append(FromToRow(from_=level, to_=level, relativity=rel))
-
-        rows.append(FromToRow(from_=None, to_=None, relativity=1.0))
-
-        cat_map: dict[str, float] = {}
-        fallback = 1.0
-        for row in rows:
-            if row.from_ is not None:
-                cat_map[str(row.from_)] = row.relativity
+        for lo, hi, rel in table.select("from", "to", "relativity").iter_rows():
+            if rel is None:
+                raise ValueError(f"Table for {name!r} has a null relativity")
+            if lo is None and hi is None:
+                rows.append(FromToRow(None, None, float(rel)))
+            elif numeric:
+                rows.append(
+                    FromToRow(
+                        None if lo is None else float(lo),
+                        None if hi is None else float(hi),
+                        float(rel),
+                    )
+                )
             else:
-                fallback = row.relativity
-
-        return VariableConfig(
-            type="categorical",
-            table=rows,
-            cat_map=cat_map,
-            fallback=fallback,
-        )
+                rows.append(
+                    FromToRow(str(lo), str(hi if hi is not None else lo), float(rel))
+                )
+        if numeric:
+            # bands must tile the line: (None, k0), [k0, k1), ..., [k_last, None)
+            bands = [r for r in rows if not (r.from_ is None and r.to_ is None)]
+            if not bands:
+                raise ValueError(f"Numeric table for {name!r} has no bands")
+            if bands[0].from_ is not None or bands[-1].to_ is not None:
+                raise ValueError(
+                    f"Numeric table for {name!r} must start with an open lower band "
+                    "and end with an open upper band"
+                )
+            for a, b in zip(bands[:-1], bands[1:], strict=True):
+                if a.to_ != b.from_:
+                    raise ValueError(
+                        f"Numeric table for {name!r} has a gap or overlap at {a.to_!r}"
+                    )
+            return VariableConfig(type="numeric", table=rows)
+        if not any(r.from_ is None and r.to_ is None for r in rows):
+            rows.append(FromToRow(None, None, 1.0))  # Other / unseen levels
+        return VariableConfig(type="categorical", table=rows)
 
     def predict(
         self,
@@ -413,7 +358,11 @@ class RateModel:
 
         return compute_actual_expected(self, data, variable, formula=formula)
 
-    def create_snapshot(self, description: str) -> int:
+    def create_snapshot(
+        self, description: str, metrics: dict[str, Any] | None = None
+    ) -> int:
+        """Freeze the current relativities as a new version. ``metrics`` (e.g. the
+        train/holdout A/E, Gini and deviance of this version) is stored with it."""
         version = len(self.snapshots) + 1
         parent = self.current_version if self.snapshots else None
 
@@ -432,11 +381,21 @@ class RateModel:
             changes=list(self._pending_changes),
             column_mapping=dict(self.column_mapping),
             metadata=metadata_dict,
+            metrics=copy.deepcopy(metrics) if metrics is not None else None,
         )
         self.snapshots.append(snapshot)
         self.current_version = version
         self._pending_changes.clear()
         return version
+
+    def set_snapshot_metrics(
+        self, metrics: dict[str, Any], version: int | None = None
+    ) -> None:
+        """Attach ``metrics`` to a snapshot (default: the current version)."""
+        version = self.current_version if version is None else version
+        if version < 1 or version > len(self.snapshots):
+            raise ValueError(f"Invalid version: {version}")
+        self.snapshots[version - 1].metrics = copy.deepcopy(metrics)
 
     def switch_to(self, version: int) -> None:
         if version < 1 or version > len(self.snapshots):
@@ -729,63 +688,14 @@ class RateModel:
 
 
 def create_rate_model(
-    all_tables: dict[str, pl.DataFrame],
-    blueprint: dict[str, Any],
+    tables: dict[str, pl.DataFrame],
     base_rate: float,
     *,
-    model_type: str | None = None,
-    target: str | None = None,
-    weight_col: str | None = None,
-    exposure_col: str | None = None,
-    train_test_col: str | None = None,
     save_to: str | Path | None = None,
+    **metadata: Any,
 ) -> RateModel:
-    """Create a RateModel from pre-computed rate tables and optionally save to disk.
-
-    This is a convenience wrapper around :meth:`RateModel.from_rate_tables`
-    that handles the common workflow of converting the output of
-    :func:`~easy_glm.generate_all_ratetables` into a portable ``.easyglm``
-    JSON file that can be scored on new data.
-
-    Parameters
-    ----------
-    all_tables : dict[str, pl.DataFrame]
-        Rate tables produced by :func:`~easy_glm.generate_all_ratetables`.
-    blueprint : dict[str, Any]
-        Blueprint produced by :func:`~easy_glm.generate_blueprint`.
-    base_rate : float
-        The base rate to use as the multiplicative starting point when scoring.
-    model_type : str or None
-        The GLM family used (e.g. ``"poisson"``, ``"gamma"``, ``"normal"``).
-    target : str or None
-        The name of the target variable column.
-    weight_col : str or None
-        The name of the weight column used during fitting.
-    exposure_col : str or None
-        The name of the exposure column. When scoring, predictions are
-        multiplied by this column if present in the data. Pass ``None``
-        to ``RateModel.predict(exposure_col=None)`` to skip this step.
-    train_test_col : str or None
-        The name of the train/test split indicator column.
-    save_to : str or Path or None
-        If provided, the model is serialized as JSON to this path.
-
-    Returns
-    -------
-    RateModel
-        The constructed rate model (also saved to ``save_to`` if requested).
-    """
-    rm = RateModel.from_rate_tables(
-        all_tables=all_tables,
-        blueprint=blueprint,
-        base_rate=base_rate,
-        model_type=model_type,
-        target=target,
-        weight_col=weight_col,
-        exposure_col=exposure_col,
-        train_test_col=train_test_col,
-        predictor_variables=list(all_tables.keys()),
-    )
+    """:meth:`RateModel.from_rate_tables` plus an optional ``to_json(save_to)``."""
+    rm = RateModel.from_rate_tables(tables, base_rate, **metadata)
     if save_to is not None:
         rm.to_json(save_to)
     return rm
