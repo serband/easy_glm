@@ -1,4 +1,5 @@
 import functools
+import warnings
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -61,7 +62,17 @@ def ratetable(
 
     For models with interactions or non-linear terms, consider using a
     full-dataset marginal-effects approach instead.
+
+    .. deprecated:: 0.3
+        Use :func:`easy_glm.rate_tables`, which reads exact relativities off
+        the coefficients.
     """
+    warnings.warn(
+        "ratetable is deprecated since easy_glm 0.3 and will be removed in 0.4; "
+        "use rate_tables instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     random_row = dataset.sample(n=1, shuffle=True, seed=random_seed)
     duplicated = pl.concat([random_row] * len(levels), how="vertical").with_columns(
         pl.Series(col_name, list(levels))

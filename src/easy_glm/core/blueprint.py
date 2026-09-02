@@ -18,7 +18,16 @@ def generate_blueprint(
     Note:
         Null values are dropped from each column before generating the blueprint.
         If a column contains only null values, its blueprint will be an empty list.
+
+    .. deprecated:: 0.3
+        Use :meth:`easy_glm.DesignSpec.from_data`.
     """
+    warnings.warn(
+        "generate_blueprint is deprecated since easy_glm 0.3 and will be removed in 0.4; "
+        "use DesignSpec.from_data instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     blueprint: dict[str, Any] = {}
     for column in dataframe.columns:
         col_data = dataframe[column]

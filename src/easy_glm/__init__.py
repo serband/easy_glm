@@ -4,52 +4,69 @@ API layers
 ----------
 **Recommended — full pipeline**
 
-    eglm = EasyGLM.fit(data, ..., train_test_col="traintest")
+    eglm = EasyGLM.fit(data, target=..., model_type="Poisson", predictors=[...],
+                       weight_col="Exposure", divide_target_by_weight=True, cv=5)
 
-Runs blueprint → prepare → :func:`fit_lasso_glm` → rate tables →
-:class:`~easy_glm.engine.RateModel` in one call. Use :meth:`EasyGLM.predict`
-for GLM predictions on raw data, or ``eglm.rate_model`` for portable
-lookup-table scoring (``.easyglm`` export and the relativity editor).
+Runs :class:`DesignSpec` -> :func:`fit_glm` -> :func:`rate_tables` ->
+:class:`~easy_glm.engine.RateModel` in one call. ``eglm.predict`` gives GLM
+predictions on raw data; ``eglm.rate_model`` is the portable lookup-table
+scorer (``.easyglm`` export, relativity editor) and reproduces the GLM exactly.
 
-**Advanced — step-by-step building blocks**
+**Building blocks**
 
-Use when you need control between stages (custom blueprint, reuse prepared
-data for several fits, inspect intermediate tables):
+1. :class:`DesignSpec` — how each predictor becomes features (step knots for
+   numerics, one-hot with an ``Other`` bucket for categoricals). Build it from
+   training data with :meth:`DesignSpec.from_data` or by hand; JSON round-trip.
+2. :func:`fit_glm` — penalised glum fit on ``spec.build(train)``; returns a
+   :class:`GLMFit` with ``predict`` / ``coef_table``.
+3. :func:`rate_tables` / :func:`to_rate_model` — exact relativities and base
+   rate read off the coefficients.
 
-1. :func:`generate_blueprint`
-2. :func:`prepare_data`
-3. :func:`fit_lasso_glm` — fits glum on **prepared** data only (step 3)
-4. :func:`generate_all_ratetables` or :func:`ratetable`
-5. :class:`~easy_glm.engine.RateModel.from_glm_model` or ``from_rate_tables``
+**Legacy (deprecated, removed in 0.4)**
 
-:func:`fit_lasso_glm` is **not** an alternative to :meth:`EasyGLM.fit`; the
-latter calls the former internally after blueprint and preparation.
-
-**Scoring**
-
-* :class:`~easy_glm.engine.RateModel` — production scoring from relativities
-* :func:`predict_with_model` — predictions from a fitted glum model on
-  prepared feature matrices
+``generate_blueprint``, ``prepare_data`` (needs the ``legacy`` extra for
+DuckDB), ``fit_lasso_glm``, ``ratetable``, ``generate_all_ratetables``.
 """
 
-from .core.all_ratetables import generate_all_ratetables
-from .core.blueprint import generate_blueprint
-from .core.data import load_external_dataframe
-from .core.easyglm import EasyGLM
-from .core.model import fit_lasso_glm, predict_with_model
-from .core.plots import plot_all_ratetables
-from .core.prepare import prepare_data
-from .core.ratetable import ratetable
+from .core import (
+    CategoricalEncoder,
+    DesignSpec,
+    EasyGLM,
+    GLMFit,
+    StepEncoder,
+    base_rate,
+    fit_glm,
+    fit_lasso_glm,
+    generate_all_ratetables,
+    generate_blueprint,
+    load_external_dataframe,
+    plot_all_ratetables,
+    predict_with_model,
+    prepare_data,
+    rate_tables,
+    ratetable,
+    to_rate_model,
+)
+
 __all__ = [
     # High-level pipeline (start here)
     "EasyGLM",
     "load_external_dataframe",
-    # Step-by-step building blocks (advanced)
+    # Building blocks
+    "DesignSpec",
+    "StepEncoder",
+    "CategoricalEncoder",
+    "GLMFit",
+    "fit_glm",
+    "rate_tables",
+    "base_rate",
+    "to_rate_model",
+    "plot_all_ratetables",
+    # Legacy (deprecated)
     "generate_blueprint",
     "prepare_data",
     "fit_lasso_glm",
     "predict_with_model",
     "ratetable",
     "generate_all_ratetables",
-    "plot_all_ratetables",
 ]

@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pandas as pd
 import pandas.api.types as ptypes
@@ -74,7 +76,17 @@ def fit_lasso_glm(
             GeneralizedLinearRegressorCV. Applied on top of defaults:
             alphas=None, l1_ratio=[0, 0.5, 1.0], max_iter=150,
             fit_intercept=True, scale_predictors=True.
+
+    .. deprecated:: 0.3
+        Use :func:`easy_glm.fit_glm`. Note that ``use_cv=False`` here returns
+        the *least* regularised end of glum's alpha path.
     """
+    warnings.warn(
+        "fit_lasso_glm is deprecated since easy_glm 0.3 and will be removed in 0.4; "
+        "use fit_glm instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if dataframe.is_empty():
         raise ValueError("The input DataFrame is empty.")
     validate_train_test_column(dataframe, train_test_col)

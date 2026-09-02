@@ -1,49 +1,41 @@
 from __future__ import annotations
 
-import copy
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import joblib
 import polars as pl
-from glum import GeneralizedLinearRegressor, GeneralizedLinearRegressorCV
 
 from easy_glm.engine.rate_model import RateModel
 
-from .all_ratetables import generate_all_ratetables
-from .blueprint import generate_blueprint
-from .model import (
-    TRAIN_FLAG,
-    fit_lasso_glm,
-    predict_with_model,
-    validate_train_test_column,
-)
-from .prepare import prepare_data
+from .design import DesignSpec, StepEncoder
+from .fit import GLMFit, fit_glm
+from .model import TRAIN_FLAG, validate_train_test_column
+from .tables import rate_tables, to_rate_model
 
 
 class EasyGLM:
     """End-to-end insurance GLM pipeline (recommended entry point).
 
-    Use :meth:`fit` to run blueprint → prepare → LASSO GLM → rate tables →
-    :class:`~easy_glm.engine.RateModel`. For manual control over each stage,
-    use the step functions documented in :mod:`easy_glm`.
+    :meth:`fit` runs design spec -> penalised GLM -> exact rate tables ->
+    :class:`~easy_glm.engine.RateModel` in one call. The building blocks are
+    :class:`~easy_glm.DesignSpec`, :func:`~easy_glm.fit_glm`,
+    :func:`~easy_glm.rate_tables` and :func:`~easy_glm.to_rate_model`.
     """
 
     def __init__(
         self,
-        blueprint: dict[str, Any],
-        model: GeneralizedLinearRegressor | GeneralizedLinearRegressorCV,
+        glm: GLMFit,
         rate_model: RateModel,
-        predictors: list[str],
-        all_tables: dict[str, pl.DataFrame] | None = None,
+        tables: dict[str, pl.DataFrame] | None = None,
     ) -> None:
-        self.blueprint = blueprint
-        self.model = model
+        self.glm = glm
         self.rate_model = rate_model
-        self.predictors = predictors
-        self._all_tables = all_tables or {}
+        self._tables = tables if tables is not None else rate_tables(glm)
 
+    # ------------------------------------------------------------------ fit
     @classmethod
     def fit(
         cls,
@@ -55,156 +47,209 @@ class EasyGLM:
         weight_col: str | None = None,
         train_test_col: str = "traintest",
         divide_target_by_weight: bool = False,
-        use_cv: bool = True,
-        cv_params: dict | None = None,
-        base_rate: float = 1.0,
+        alpha: float | None = None,
+        cv: int | None = None,
+        l1_ratio: float | list[float] = 1.0,
+        monotone: Mapping[str, str] | None = None,
+        n_bins: int = 20,
+        min_level_share: float = 0.0025,
+        knots: dict[str, list[float]] | None = None,
+        categorical: list[str] | None = None,
+        null_indicator: bool = True,
+        base_rate: float | None = None,
+        base: str = "modal",
         exposure_col: str | None = None,
-        random_seed: int = 42,
+        use_cv: bool | None = None,
+        cv_params: dict | None = None,
+        **glum_kwargs: Any,
     ) -> EasyGLM:
         """Fit on training rows only (``train_test_col == 1``).
 
-        Args:
-            data: Full dataset (train + holdout). Must include a split column.
-            train_test_col: Name of the train/holdout column in ``data``
-                (default ``"traintest"``). **1 = train**, **0 = holdout**.
+        Parameters
+        ----------
+        data : pl.DataFrame
+            Full dataset (train + holdout) with a split column: **1 = train**,
+            **0 = holdout**.
+        target, model_type, predictors
+            Response column, family (``"Poisson"``, ``"Gamma"``, ``"Gaussian"``,
+            ``"Tweedie"``, ``"Binomial"``) and raw predictor columns.
+        weight_col, divide_target_by_weight
+            Exposure/premium weights; divide the target by them to model a
+            rate (e.g. frequency = counts / exposure).
+        alpha, cv, l1_ratio
+            Penalty strength, or the number of CV folds used to choose it
+            (default ``cv=5`` when neither is given). ``l1_ratio=1`` is lasso.
+        monotone
+            ``{"DrivAge": "decreasing", ...}`` sign constraints on numeric
+            predictors.
+        n_bins, min_level_share, knots, categorical, null_indicator
+            Design options, see :meth:`DesignSpec.from_data`.
+        base_rate
+            Override the base rate. By default it is calibrated exactly so that
+            ``rate_model.predict(...)`` reproduces the GLM.
+        base
+            ``"modal"`` (relativity 1.0 on the most exposed bin) or
+            ``"reference"`` (lowest bin / reference level).
+        exposure_col
+            Column the :class:`RateModel` multiplies predictions by when scoring
+            (defaults to ``weight_col`` if the target was divided by it).
+        use_cv, cv_params
+            Deprecated aliases: ``use_cv=False`` requires ``alpha``;
+            ``cv_params`` keys ``n_alphas``, ``l1_ratio``, ``min_alpha_ratio``
+            and ``cv`` are mapped, the rest go to glum.
+        glum_kwargs
+            Forwarded to the glum estimator (``max_iter``, ``P1`` ...).
         """
         validate_train_test_column(data, train_test_col)
+        train = data.filter(pl.col(train_test_col) == TRAIN_FLAG)
 
-        train_data = data.filter(pl.col(train_test_col) == TRAIN_FLAG)
+        # -- legacy knobs -------------------------------------------------
+        if cv_params:
+            cv_params = dict(cv_params)
+            l1_ratio = cv_params.pop("l1_ratio", l1_ratio)
+            for key in ("n_alphas", "min_alpha_ratio"):
+                if key in cv_params:
+                    glum_kwargs[key] = cv_params.pop(key)
+            cv = cv_params.pop("cv", cv)
+            glum_kwargs.update(cv_params)
+        if use_cv is False and alpha is None:
+            raise ValueError(
+                "use_cv=False requires alpha=... (the old behaviour silently "
+                "returned an almost unregularised model)."
+            )
+        if cv is None and alpha is None:
+            cv = 5
 
-        blueprint = generate_blueprint(train_data)
-
-        additional_cols = [target, train_test_col]
-        if weight_col:
-            additional_cols.append(weight_col)
-
-        prepped = prepare_data(
-            df=data,
-            modelling_variables=predictors,
-            additional_columns=additional_cols,
-            formats=blueprint,
-            traintest_column=None,
-            table_name="line_prepped",
+        spec = DesignSpec.from_data(
+            train,
+            predictors,
+            n_bins=n_bins,
+            min_level_share=min_level_share,
+            knots=knots,
+            categorical=categorical,
+            null_indicator=null_indicator,
+            weight_col=weight_col,
         )
-
-        model = fit_lasso_glm(
-            dataframe=prepped,
-            target=target,
-            train_test_col=train_test_col,
-            model_type=model_type,
+        glm = fit_glm(
+            train,
+            spec,
+            target,
+            family=model_type,
             weight_col=weight_col,
             divide_target_by_weight=divide_target_by_weight,
-            use_cv=use_cv,
-            cv_params=cv_params,
+            alpha=alpha,
+            cv=cv,
+            l1_ratio=l1_ratio,
+            monotone=monotone,
+            **glum_kwargs,
         )
-
-        effective_exposure = exposure_col if exposure_col is not None else weight_col
-
-        all_tables = generate_all_ratetables(
-            model=model,
-            dataset=data,
-            predictor_variables=predictors,
-            blueprint=blueprint,
-            random_seed=random_seed,
-        )
-
-        rate_model = RateModel.from_rate_tables(
-            all_tables=all_tables,
-            blueprint=blueprint,
-            base_rate=base_rate,
-            model_type=model_type,
-            target=target,
-            weight_col=weight_col,
-            exposure_col=effective_exposure,
+        if exposure_col is None and divide_target_by_weight:
+            exposure_col = weight_col
+        rm = to_rate_model(
+            glm,
+            base=base,  # type: ignore[arg-type]
+            base_rate_override=base_rate,
+            exposure_col=exposure_col,
             train_test_col=train_test_col,
-            predictor_variables=predictors,
+            model_type=model_type,
         )
+        return cls(glm, rm, rate_tables(glm, base=base))  # type: ignore[arg-type]
 
-        return cls(
-            blueprint=blueprint,
-            model=model,
-            rate_model=rate_model,
-            predictors=predictors,
-            all_tables=all_tables,
-        )
+    # ----------------------------------------------------------- accessors
+    @property
+    def spec(self) -> DesignSpec:
+        return self.glm.spec
 
-    def predict(self, raw_data: pl.DataFrame) -> pl.Series:
-        """GLM predictions on raw data (prepares features using stored blueprint)."""
-        prepped = prepare_data(
-            df=raw_data,
-            modelling_variables=self.predictors,
-            formats=self.blueprint,
-            table_name="line_prepped",
-        )
-        return predict_with_model(self.model, prepped, return_polars=True)
+    @property
+    def model(self):
+        """The underlying glum estimator."""
+        return self.glm.model
+
+    @property
+    def predictors(self) -> list[str]:
+        return self.spec.variables
 
     @property
     def relativities(self) -> dict[str, pl.DataFrame]:
-        return dict(self._all_tables)
+        return dict(self._tables)
 
     @property
     def base_rate(self) -> float:
         return self.rate_model.base_rate
 
+    @property
+    def blueprint(self) -> dict[str, list]:
+        """Legacy view of the spec: knots for numeric, levels for categorical."""
+        return {
+            var: list(enc.knots) if isinstance(enc, StepEncoder) else list(enc.levels)
+            for var, enc in self.spec.encoders.items()
+        }
+
+    def coef_table(self, *, drop_zero: bool = False) -> pl.DataFrame:
+        return self.glm.coef_table(drop_zero=drop_zero)
+
+    def predict(self, raw_data: pl.DataFrame) -> pl.Series:
+        """GLM predictions on raw data (per unit weight if the target was
+        divided by the weight)."""
+        return pl.Series("prediction", self.glm.predict(raw_data))
+
+    # ---------------------------------------------------------- persistence
     def save(self, path: str | Path) -> None:
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
-
-        joblib.dump(self.model, str(path / "glm_model.joblib"))
-
-        blueprint_copy = copy.deepcopy(self.blueprint)
-        for k, v in blueprint_copy.items():
-            if not isinstance(v, list):
-                continue
-            sanitised = []
-            for item in v:
-                if isinstance(item, float | int | str | bool | type(None)):
-                    sanitised.append(item)
-                elif isinstance(item, bytes):
-                    sanitised.append(item.decode("utf-8", errors="replace"))
-                else:
-                    sanitised.append(str(item))
-            blueprint_copy[k] = sanitised
-
-        (path / "blueprint.json").write_text(
-            json.dumps(blueprint_copy, indent=2, default=str)
-        )
-
+        self.spec.to_json(path / "spec.json")
+        joblib.dump(self.glm.model, str(path / "glm_model.joblib"))
         self.rate_model.to_json(str(path / "rate_model.json"))
-
         tables_dir = path / "rate_tables"
         tables_dir.mkdir(exist_ok=True)
-        for name, tbl in self._all_tables.items():
+        for name, tbl in self._tables.items():
             tbl.write_parquet(str(tables_dir / f"{name}.parquet"))
-
-        (path / "config.json").write_text(
-            json.dumps({"predictors": self.predictors}, indent=2)
-        )
+        config = {
+            "version": 2,
+            "family": self.glm.family,
+            "link": self.glm.link,
+            "target": self.glm.target,
+            "weight_col": self.glm.weight_col,
+            "offset_col": self.glm.offset_col,
+            "divide_target_by_weight": self.glm.divide_target_by_weight,
+            "monotone": self.glm.monotone,
+            "modal_bins": self.glm.modal_bins,
+            "n_train_rows": self.glm.n_train_rows,
+            "predictors": self.predictors,
+        }
+        (path / "config.json").write_text(json.dumps(config, indent=2))
 
     @classmethod
     def load(cls, path: str | Path) -> EasyGLM:
         path = Path(path)
-        model = joblib.load(str(path / "glm_model.joblib"))
-        blueprint = json.loads((path / "blueprint.json").read_text())
+        if not (path / "spec.json").exists():
+            raise FileNotFoundError(
+                f"{path} has no spec.json. Models saved by easy_glm < 0.3 "
+                "(blueprint.json) cannot be loaded; refit with EasyGLM.fit."
+            )
         config = json.loads((path / "config.json").read_text())
-
-        rate_model = RateModel.from_json(str(path / "rate_model.json"))
-
-        all_tables: dict[str, pl.DataFrame] = {}
+        glm = GLMFit(
+            spec=DesignSpec.from_json(path / "spec.json"),
+            model=joblib.load(str(path / "glm_model.joblib")),
+            family=config["family"],
+            link=config["link"],
+            target=config["target"],
+            weight_col=config.get("weight_col"),
+            offset_col=config.get("offset_col"),
+            divide_target_by_weight=config.get("divide_target_by_weight", False),
+            monotone=config.get("monotone", {}),
+            modal_bins=config.get("modal_bins", {}),
+            n_train_rows=config.get("n_train_rows", 0),
+        )
+        rm = RateModel.from_json(str(path / "rate_model.json"))
+        tables: dict[str, pl.DataFrame] = {}
         tables_dir = path / "rate_tables"
         if tables_dir.exists():
-            for parquet_file in tables_dir.glob("*.parquet"):
-                name = parquet_file.stem
-                all_tables[name] = pl.read_parquet(str(parquet_file))
+            for f in sorted(tables_dir.glob("*.parquet")):
+                tables[f.stem] = pl.read_parquet(str(f))
+        return cls(glm, rm, tables or None)
 
-        return cls(
-            blueprint=blueprint,
-            model=model,
-            rate_model=rate_model,
-            predictors=config["predictors"],
-            all_tables=all_tables,
-        )
-
+    # ------------------------------------------------------------- reporting
     def summary(self) -> dict[str, Any]:
         return {
             "model_type": self.rate_model.metadata.model_type,
@@ -213,6 +258,9 @@ class EasyGLM:
             "train_test_col": self.rate_model.metadata.train_test_col,
             "predictors": self.predictors,
             "base_rate": self.rate_model.base_rate,
+            "alpha": self.glm.alpha,
+            "num_features": len(self.glm.coef),
+            "num_nonzero": int((self.glm.coef != 0).sum()),
             "num_variables": len(self.rate_model.variables),
             "snapshots": len(self.rate_model.snapshots),
         }
@@ -226,5 +274,6 @@ class EasyGLM:
         s = self.summary()
         return (
             f"EasyGLM(model_type={s['model_type']!r}, target={s['target']!r}, "
-            f"predictors={s['predictors']}, base_rate={s['base_rate']})"
+            f"predictors={s['predictors']}, alpha={s['alpha']:.4g}, "
+            f"base_rate={s['base_rate']:.6g})"
         )

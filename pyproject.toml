@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easy_glm"
-version = "0.2.2"
+version = "0.3.0"
 description = "Automate insurance pricing with LASSO-regularised GLMs – blueprint generation, preprocessing, model fitting, rate table extraction & plotting. Built on glum."
 readme = "README.md"
 authors = [
@@ -23,7 +23,6 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "duckdb>=1.3.0",
     "polars>=1.17.0",
     "numpy>=1.24.0",
     "pyarrow>=14.0.0",
@@ -32,8 +31,6 @@ dependencies = [
     "seaborn>=0.12.0",
     "scikit-learn>=1.3.0",
     "pandas>=2.0.0",
-    "numba>=0.61.0",       # ensures Py3.13-compatible llvmlite
-    "llvmlite>=0.44.0",    # ensures Py3.13-compatible
     "rdata>=0.9.0",        # for R data file parsing
     "joblib>=1.0.0",
 ]
@@ -46,6 +43,7 @@ Issues = "https://github.com/serband/easy_glm/issues"
 
 [project.optional-dependencies]
 dev = [
+    "duckdb>=1.3.0",       # legacy prepare_data tests
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "black>=23.0.0",
@@ -61,6 +59,9 @@ ui = [
 ]
 viz = [
     "plotnine>=0.14.0",
+]
+legacy = [
+    "duckdb>=1.3.0",       # deprecated prepare_data() path
 ]
 benchmark = [
     "statsmodels>=0.14.0",
