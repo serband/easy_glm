@@ -1,0 +1,465 @@
+{
+  "metadata": {
+    "model_type": "poisson",
+    "target": "ClaimNb",
+    "weight_col": "Exposure",
+    "exposure_col": "Exposure",
+    "train_test_col": null,
+    "predictor_variables": [
+      "DrivAge",
+      "Region"
+    ]
+  },
+  "base_rate": 0.20243980257338912,
+  "current_version": 2,
+  "column_mapping": {},
+  "variables": {
+    "DrivAge": {
+      "type": "numeric",
+      "table": [
+        {
+          "from": null,
+          "to": 21.0,
+          "relativity": 0.6051921088510555
+        },
+        {
+          "from": 21.0,
+          "to": 24.0,
+          "relativity": 0.45739375201295823
+        },
+        {
+          "from": 24.0,
+          "to": 27.0,
+          "relativity": 0.45739375201295823
+        },
+        {
+          "from": 27.0,
+          "to": 30.0,
+          "relativity": 0.6334191913021475
+        },
+        {
+          "from": 30.0,
+          "to": 33.0,
+          "relativity": 0.6334191913021475
+        },
+        {
+          "from": 33.0,
+          "to": 36.0,
+          "relativity": 0.6334191913021475
+        },
+        {
+          "from": 36.0,
+          "to": 40.0,
+          "relativity": 0.6334191913021475
+        },
+        {
+          "from": 40.0,
+          "to": 43.0,
+          "relativity": 0.6334191913021475
+        },
+        {
+          "from": 43.0,
+          "to": 47.0,
+          "relativity": 0.9487819812408423
+        },
+        {
+          "from": 47.0,
+          "to": 49.0,
+          "relativity": 1.0059633721337105
+        },
+        {
+          "from": 49.0,
+          "to": 52.0,
+          "relativity": 1.0059633721337105
+        },
+        {
+          "from": 52.0,
+          "to": 56.0,
+          "relativity": 0.6168808788326675
+        },
+        {
+          "from": 56.0,
+          "to": 59.0,
+          "relativity": 0.6168808788326675
+        },
+        {
+          "from": 59.0,
+          "to": 61.0,
+          "relativity": 0.48465145715690766
+        },
+        {
+          "from": 61.0,
+          "to": 65.0,
+          "relativity": 0.48465145715690766
+        },
+        {
+          "from": 65.0,
+          "to": 68.0,
+          "relativity": 0.9484004448738298
+        },
+        {
+          "from": 68.0,
+          "to": 71.0,
+          "relativity": 0.9484004448738298
+        },
+        {
+          "from": 71.0,
+          "to": 74.0,
+          "relativity": 0.9484004448738298
+        },
+        {
+          "from": 74.0,
+          "to": 76.0,
+          "relativity": 1.0
+        },
+        {
+          "from": 76.0,
+          "to": null,
+          "relativity": 1.0
+        },
+        {
+          "from": null,
+          "to": null,
+          "relativity": 0.6051921088510555
+        }
+      ]
+    },
+    "Region": {
+      "type": "categorical",
+      "table": [
+        {
+          "from": "S",
+          "to": "S",
+          "relativity": 1.25
+        },
+        {
+          "from": "N",
+          "to": "N",
+          "relativity": 0.9843782322914193
+        },
+        {
+          "from": "U",
+          "to": "U",
+          "relativity": 1.2032390092936371
+        },
+        {
+          "from": null,
+          "to": null,
+          "relativity": 0.9527355470696813
+        }
+      ]
+    }
+  },
+  "snapshots": [
+    {
+      "version": 1,
+      "description": "Base model",
+      "timestamp": "2026-09-02T20:48:12.051239+00:00",
+      "parent_version": null,
+      "column_mapping": {},
+      "metadata": {
+        "model_type": "poisson",
+        "target": "ClaimNb",
+        "weight_col": "Exposure",
+        "exposure_col": "Exposure",
+        "train_test_col": null,
+        "predictor_variables": [
+          "DrivAge",
+          "Region"
+        ]
+      },
+      "relativities": {
+        "DrivAge": [
+          {
+            "from": null,
+            "to": 21.0,
+            "relativity": 0.6051921088510555
+          },
+          {
+            "from": 21.0,
+            "to": 24.0,
+            "relativity": 0.45739375201295823
+          },
+          {
+            "from": 24.0,
+            "to": 27.0,
+            "relativity": 0.45739375201295823
+          },
+          {
+            "from": 27.0,
+            "to": 30.0,
+            "relativity": 0.6334191913021475
+          },
+          {
+            "from": 30.0,
+            "to": 33.0,
+            "relativity": 0.6334191913021475
+          },
+          {
+            "from": 33.0,
+            "to": 36.0,
+            "relativity": 0.6334191913021475
+          },
+          {
+            "from": 36.0,
+            "to": 40.0,
+            "relativity": 0.6334191913021475
+          },
+          {
+            "from": 40.0,
+            "to": 43.0,
+            "relativity": 0.6334191913021475
+          },
+          {
+            "from": 43.0,
+            "to": 47.0,
+            "relativity": 0.9487819812408423
+          },
+          {
+            "from": 47.0,
+            "to": 49.0,
+            "relativity": 1.0059633721337105
+          },
+          {
+            "from": 49.0,
+            "to": 52.0,
+            "relativity": 1.0059633721337105
+          },
+          {
+            "from": 52.0,
+            "to": 56.0,
+            "relativity": 0.6168808788326675
+          },
+          {
+            "from": 56.0,
+            "to": 59.0,
+            "relativity": 0.6168808788326675
+          },
+          {
+            "from": 59.0,
+            "to": 61.0,
+            "relativity": 0.48465145715690766
+          },
+          {
+            "from": 61.0,
+            "to": 65.0,
+            "relativity": 0.48465145715690766
+          },
+          {
+            "from": 65.0,
+            "to": 68.0,
+            "relativity": 0.9484004448738298
+          },
+          {
+            "from": 68.0,
+            "to": 71.0,
+            "relativity": 0.9484004448738298
+          },
+          {
+            "from": 71.0,
+            "to": 74.0,
+            "relativity": 0.9484004448738298
+          },
+          {
+            "from": 74.0,
+            "to": 76.0,
+            "relativity": 1.0
+          },
+          {
+            "from": 76.0,
+            "to": null,
+            "relativity": 1.0
+          },
+          {
+            "from": null,
+            "to": null,
+            "relativity": 0.6051921088510555
+          }
+        ],
+        "Region": [
+          {
+            "from": "S",
+            "to": "S",
+            "relativity": 1.0
+          },
+          {
+            "from": "N",
+            "to": "N",
+            "relativity": 0.9843782322914193
+          },
+          {
+            "from": "U",
+            "to": "U",
+            "relativity": 1.2032390092936371
+          },
+          {
+            "from": null,
+            "to": null,
+            "relativity": 0.9527355470696813
+          }
+        ]
+      },
+      "changes": [],
+      "metrics": null
+    },
+    {
+      "version": 2,
+      "description": "manual adjustment",
+      "timestamp": "2026-09-02T20:48:12.051326+00:00",
+      "parent_version": 1,
+      "column_mapping": {},
+      "metadata": {
+        "model_type": "poisson",
+        "target": "ClaimNb",
+        "weight_col": "Exposure",
+        "exposure_col": "Exposure",
+        "train_test_col": null,
+        "predictor_variables": [
+          "DrivAge",
+          "Region"
+        ]
+      },
+      "relativities": {
+        "DrivAge": [
+          {
+            "from": null,
+            "to": 21.0,
+            "relativity": 0.6051921088510555
+          },
+          {
+            "from": 21.0,
+            "to": 24.0,
+            "relativity": 0.45739375201295823
+          },
+          {
+            "from": 24.0,
+            "to": 27.0,
+            "relativity": 0.45739375201295823
+          },
+          {
+            "from": 27.0,
+            "to": 30.0,
+            "relativity": 0.6334191913021475
+          },
+          {
+            "from": 30.0,
+            "to": 33.0,
+            "relativity": 0.6334191913021475
+          },
+          {
+            "from": 33.0,
+            "to": 36.0,
+            "relativity": 0.6334191913021475
+          },
+          {
+            "from": 36.0,
+            "to": 40.0,
+            "relativity": 0.6334191913021475
+          },
+          {
+            "from": 40.0,
+            "to": 43.0,
+            "relativity": 0.6334191913021475
+          },
+          {
+            "from": 43.0,
+            "to": 47.0,
+            "relativity": 0.9487819812408423
+          },
+          {
+            "from": 47.0,
+            "to": 49.0,
+            "relativity": 1.0059633721337105
+          },
+          {
+            "from": 49.0,
+            "to": 52.0,
+            "relativity": 1.0059633721337105
+          },
+          {
+            "from": 52.0,
+            "to": 56.0,
+            "relativity": 0.6168808788326675
+          },
+          {
+            "from": 56.0,
+            "to": 59.0,
+            "relativity": 0.6168808788326675
+          },
+          {
+            "from": 59.0,
+            "to": 61.0,
+            "relativity": 0.48465145715690766
+          },
+          {
+            "from": 61.0,
+            "to": 65.0,
+            "relativity": 0.48465145715690766
+          },
+          {
+            "from": 65.0,
+            "to": 68.0,
+            "relativity": 0.9484004448738298
+          },
+          {
+            "from": 68.0,
+            "to": 71.0,
+            "relativity": 0.9484004448738298
+          },
+          {
+            "from": 71.0,
+            "to": 74.0,
+            "relativity": 0.9484004448738298
+          },
+          {
+            "from": 74.0,
+            "to": 76.0,
+            "relativity": 1.0
+          },
+          {
+            "from": 76.0,
+            "to": null,
+            "relativity": 1.0
+          },
+          {
+            "from": null,
+            "to": null,
+            "relativity": 0.6051921088510555
+          }
+        ],
+        "Region": [
+          {
+            "from": "S",
+            "to": "S",
+            "relativity": 1.25
+          },
+          {
+            "from": "N",
+            "to": "N",
+            "relativity": 0.9843782322914193
+          },
+          {
+            "from": "U",
+            "to": "U",
+            "relativity": 1.2032390092936371
+          },
+          {
+            "from": null,
+            "to": null,
+            "relativity": 0.9527355470696813
+          }
+        ]
+      },
+      "changes": [
+        {
+          "variable": "Region",
+          "from": "S",
+          "to": "S",
+          "old_relativity": 1.0,
+          "new_relativity": 1.25
+        }
+      ],
+      "metrics": null
+    }
+  ]
+}

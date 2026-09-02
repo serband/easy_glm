@@ -62,3 +62,6 @@ scripts/job-logs.txt
 french_motor_spec.json
 french_motor.easyglm
 /*.easyglm
+
+# test fixtures are always tracked
+!tests/fixtures/*.easyglm
