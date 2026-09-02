@@ -26,15 +26,17 @@ independent reviews: `docs/reviews/`; plain-language checks: `docs/checks/`.
 
 ### Removed (C2 — legacy removal) — breaking
 - `generate_blueprint`, `prepare_data`, `fit_lasso_glm`, `predict_with_model`,
-  `ratetable`, `generate_all_ratetables` and the SQL transform helpers are gone,
-  together with the DuckDB dependency and the `legacy` extra.
+  `ratetable` and `generate_all_ratetables` are gone, together with the DuckDB
+  database engine they relied on and the `legacy` extra.
 - `RateModel.from_rate_tables(tables, base_rate, ...)` takes the 0.3 table format
   (`from`, `to`, `relativity`; both-null row = null / Other) and no blueprint;
   `RateModel.from_glm_model(fit, ...)` takes a `GLMFit`; `create_rate_model`
   follows the same signature.
-- `matplotlib` and `seaborn` moved to the `viz` extra; `scikit-learn` dropped;
-  `rdata` is imported lazily. The base install is lighter.
-- Exploratory scripts under `scripts/` and the scoring prototype example deleted.
+- `matplotlib` and `seaborn` moved to the `viz` extra; `scikit-learn` is no longer
+  a direct requirement (glum still installs it); `rdata` is imported lazily. The
+  base install declares 8 packages instead of 11.
+- Exploratory scripts under `scripts/`, the broken `setup_dev` bootstrap scripts
+  and the scoring prototype example deleted.
 
 ### Fixed (C2)
 - `gini` pooled tied predictions inconsistently, so the reported Gini could move at
@@ -42,6 +44,9 @@ independent reviews: `docs/reviews/`; plain-language checks: `docs/checks/`.
 
 ### Changed (C2)
 - The benchmark runner fits easy_glm through `DesignSpec` + `fit_glm`.
+- `RateModel.from_rate_tables` rejects duplicate levels, duplicate null/Other rows
+  and gaps or overlaps between bands with messages that say what is wrong; bands
+  may be listed in any order; integer-coded categorical tables are recognised.
 - Snapshots can carry the metrics of their version (`create_snapshot(...,
   metrics=)`, `set_snapshot_metrics`); the workbench records train/holdout
   metrics on every fit.

@@ -127,8 +127,7 @@ def render(numbers: dict, before: list[str] | None, after: list[str]) -> str:
         "## In one sentence",
         "",
         "Nothing that worked in 0.3 changes its numbers; the old blueprint / DuckDB route "
-        "that produced the mis-rated bottom bands in 0.2 is gone for good, and the package "
-        "installs with fewer dependencies.",
+        "is gone for good, and the package declares fewer dependencies.",
         "",
         "## What was removed",
         "",
@@ -162,8 +161,8 @@ def render(numbers: dict, before: list[str] | None, after: list[str]) -> str:
         row("Design columns", "n_features", "d"),
         row("Base rate", "base_rate", ".6f"),
         "",
-        f"Rate tables vs GLM on the holdout: max relative difference below 1e-12 "
-        f"(measured {numbers['max_rel_diff_tables_vs_glm']:.1e}).",
+        "Rate tables vs GLM on the holdout: max relative difference below 1e-12: "
+        + ("yes" if numbers["max_rel_diff_tables_vs_glm"] < 1e-12 else "NO"),
         "",
         "## Install footprint (base `pip install easy_glm`)",
         "",
@@ -171,6 +170,10 @@ def render(numbers: dict, before: list[str] | None, after: list[str]) -> str:
     if before is not None:
         lines.append(f"- v0.3.0: {len(before)} required packages ({', '.join(before)})")
     lines.append(f"- now: {len(after)} required packages ({', '.join(after)})")
+    lines.append(
+        "- (`scikit-learn` is no longer a direct requirement but is still installed "
+        "by glum, so you will see it in `pip list`.)"
+    )
     lines += [
         "",
         "## Questions for you",

@@ -92,6 +92,73 @@ def test_from_rate_tables_categorical():
     )
 
 
+def test_from_rate_tables_rejects_duplicates():
+    dup_level = _categorical_table(["A", "A", "B"], [0.9, 1.5, 1.1])
+    with pytest.raises(ValueError, match=r"level\(s\) \['A'\] more than once"):
+        RateModel.from_rate_tables({"R": dup_level}, base_rate=1.0)
+    two_other = pl.DataFrame(
+        {
+            "from": pl.Series(["A", None, None], dtype=pl.Utf8),
+            "to": pl.Series(["A", None, None], dtype=pl.Utf8),
+            "relativity": [1.0, 1.1, 1.2],
+        }
+    )
+    with pytest.raises(ValueError, match="only one null / Other row"):
+        RateModel.from_rate_tables({"R": two_other}, base_rate=1.0)
+    two_null_numeric = pl.DataFrame(
+        {
+            "from": pl.Series([None, 0.0, None, None], dtype=pl.Float64),
+            "to": pl.Series([0.0, None, None, None], dtype=pl.Float64),
+            "relativity": [1.0, 1.1, 1.2, 1.3],
+        }
+    )
+    with pytest.raises(ValueError, match="only one null / Other row"):
+        RateModel.from_rate_tables({"X": two_null_numeric}, base_rate=1.0)
+
+
+@pytest.mark.parametrize("dtype", [pl.Int64, pl.Float64])
+def test_from_rate_tables_integer_coded_categorical(dtype):
+    table = pl.DataFrame(
+        {
+            "from": pl.Series([4, 5, 6, None], dtype=dtype),
+            "to": pl.Series([4, 5, 6, None], dtype=dtype),
+            "relativity": [0.9, 1.0, 1.2, 1.05],
+        }
+    )
+    rm = RateModel.from_rate_tables({"VehPower": table}, base_rate=1.0)
+    cfg = rm.variables["VehPower"]
+    assert cfg.type == "categorical"
+    assert [r.from_ for r in cfg.table] == ["4", "5", "6", None]
+    np.testing.assert_array_equal(
+        rm.predict(pl.DataFrame({"VehPower": [4, 6, 9, None]})), [0.9, 1.2, 1.05, 1.05]
+    )
+
+
+def test_from_rate_tables_accepts_bands_in_any_order():
+    ordered = _numeric_table([0, 5, 10], [0.8, 0.9, 1.0, 1.1], null_rel=1.3)
+    shuffled = ordered[[3, 1, 4, 0, 2]]
+    descending = ordered.sort("from", descending=True, nulls_last=True)
+    data = pl.DataFrame({"X": [-1.0, 0.0, 7.0, 12.0, None]})
+    expected = RateModel.from_rate_tables({"X": ordered}, base_rate=1.0).predict(data)
+    for variant in (shuffled, descending):
+        rm = RateModel.from_rate_tables({"X": variant}, base_rate=1.0)
+        np.testing.assert_array_equal(rm.predict(data), expected)
+        assert [r.from_ for r in rm.variables["X"].table] == [
+            None,
+            0.0,
+            5.0,
+            10.0,
+            None,
+        ]
+
+
+def test_from_rate_tables_categorical_without_other_row_warns():
+    table = _categorical_table(["A", "B"], [0.9, 1.1])
+    with pytest.warns(UserWarning, match="no Other row"):
+        rm = RateModel.from_rate_tables({"R": table}, base_rate=1.0)
+    assert rm.variables["R"].table[-1].relativity == 1.0
+
+
 def test_from_rate_tables_rejects_bad_tables():
     with pytest.raises(KeyError):
         RateModel.from_rate_tables({}, base_rate=0.1, predictor_variables=["X"])
@@ -106,8 +173,17 @@ def test_from_rate_tables_rejects_bad_tables():
             "relativity": [1.0, 1.0, 1.0],
         }
     )
-    with pytest.raises(ValueError, match="gap or overlap"):
+    with pytest.raises(ValueError, match="no gaps or overlaps"):
         RateModel.from_rate_tables({"X": gap}, base_rate=0.1)
+    closed_low = pl.DataFrame(
+        {
+            "from": pl.Series([0.0, 5.0], dtype=pl.Float64),
+            "to": pl.Series([5.0, None], dtype=pl.Float64),
+            "relativity": [1.0, 1.0],
+        }
+    )
+    with pytest.raises(ValueError, match="open lower band"):
+        RateModel.from_rate_tables({"X": closed_low}, base_rate=0.1)
 
 
 def test_from_rate_tables_creates_initial_snapshot():
@@ -411,6 +487,17 @@ class TestIntegrationWithPipeline:
             rm_tables.predict(scoring, exposure_col=None),
             fit.predict(scoring),
             rtol=1e-10,
+        )
+        # and the tables written by rate_model_tables (Excel layout) load back too
+        from easy_glm.core.excel import rate_model_tables
+
+        rm_round = RateModel.from_rate_tables(
+            rate_model_tables(rm_exact), rm_exact.base_rate
+        )
+        np.testing.assert_allclose(
+            rm_round.predict(scoring, exposure_col=None),
+            rm_exact.predict(scoring, exposure_col=None),
+            rtol=1e-12,
         )
 
     def test_roundtrip_after_full_pipeline(self, synthetic_insurance_data, tmp_path):

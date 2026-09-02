@@ -90,13 +90,14 @@ mismatched_data = pl.DataFrame(
     }
 )
 
+# keys are the *dataset* column names, values the model variables they map to
 rm.column_mapping = {
-    "VehAge": "vehicle_age",
-    "Region": "region_code",
-    "VehGas": "fuel",
-    "DrivAge": "driver_age",
-    "BonusMalus": "bonus_malus",
-    "Density": "pop_density",
+    "vehicle_age": "VehAge",
+    "region_code": "Region",
+    "fuel": "VehGas",
+    "driver_age": "DrivAge",
+    "bonus_malus": "BonusMalus",
+    "pop_density": "Density",
 }
 
 mapped_preds = rm.predict(mismatched_data)

@@ -4,7 +4,7 @@
 
 ## In one sentence
 
-Nothing that worked in 0.3 changes its numbers; the old blueprint / DuckDB route that produced the mis-rated bottom bands in 0.2 is gone for good, and the package installs with fewer dependencies.
+Nothing that worked in 0.3 changes its numbers; the old blueprint / DuckDB route is gone for good, and the package declares fewer dependencies.
 
 ## What was removed
 
@@ -29,12 +29,13 @@ Nothing that worked in 0.3 changes its numbers; the old blueprint / DuckDB route
 | Design columns | 112 | 112 | yes |
 | Base rate | 0.045973 | 0.045973 | yes |
 
-Rate tables vs GLM on the holdout: max relative difference below 1e-12 (measured 1.1e-15).
+Rate tables vs GLM on the holdout: max relative difference below 1e-12: yes
 
 ## Install footprint (base `pip install easy_glm`)
 
 - v0.3.0: 11 required packages (polars, numpy, pyarrow, glum, matplotlib, seaborn, scikit-learn, pandas, rdata, joblib, xlsxwriter)
 - now: 8 required packages (polars, numpy, pyarrow, glum, pandas, rdata, joblib, xlsxwriter)
+- (`scikit-learn` is no longer a direct requirement but is still installed by glum, so you will see it in `pip list`.)
 
 ## Questions for you
 

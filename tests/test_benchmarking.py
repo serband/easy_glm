@@ -265,6 +265,16 @@ class TestBenchmarkRunner:
         methods = result["Method"].unique().to_list()
         assert "statsmodels" in methods
         assert "catboost" in methods
+        # C2 acceptance: easy_glm rows are produced for all four families
+        ours = result.filter(pl.col("Method").str.starts_with("easy_glm"))
+        assert set(ours["Dataset"].to_list()) == {
+            "poisson",
+            "gamma",
+            "gaussian",
+            "binomial",
+        }
+        assert ours["Deviance"].null_count() == 0, ours
+        assert ours.height == 8
 
     def test_benchmark_metrics_are_positive(self):
         from easy_glm.benchmarking.benchmark import run_benchmarks

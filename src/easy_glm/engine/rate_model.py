@@ -76,6 +76,9 @@ class RateModel:
         current_version: int = 0,
         column_mapping: dict[str, str] | None = None,
     ):
+        """``column_mapping`` maps *dataset* column names to the model's variable
+        names, e.g. ``{"driver_age": "DrivAge"}``; ``predict`` renames before scoring.
+        """
         self.base_rate = base_rate
         self.variables = variables
         self.metadata = metadata or ModelMetadata()
@@ -108,8 +111,12 @@ class RateModel:
         produced by :func:`easy_glm.rate_tables`, :func:`easy_glm.core.excel.
         rate_model_tables` and the Excel export. Numeric variables have numeric
         ``from``/``to`` (null = open end); categorical variables have string
-        ``from == to`` per level. In both cases a row with ``from`` and ``to``
-        both null is the null / Other row.
+        ``from == to`` per level (a numeric-typed table whose rows all have
+        ``from == to`` is treated as an integer-coded categorical). In both cases
+        a row with ``from`` and ``to`` both null is the null / Other row. When it
+        is absent, categoricals get an Other row at 1.0 (with a warning) and
+        numerics get no null row, so nulls raise at scoring time. Numeric bands may
+        be listed in any order; they must tile the whole line.
         """
         pred_vars = predictor_variables or list(tables)
         variables: dict[str, VariableConfig] = {}
@@ -148,44 +155,92 @@ class RateModel:
         missing = {"from", "to", "relativity"} - set(table.columns)
         if missing:
             raise ValueError(f"Table for {name!r} lacks columns {sorted(missing)}")
-        from_dtype = table["from"].dtype
-        numeric = from_dtype.is_numeric()
-        rows: list[FromToRow] = []
-        for lo, hi, rel in table.select("from", "to", "relativity").iter_rows():
-            if rel is None:
-                raise ValueError(f"Table for {name!r} has a null relativity")
-            if lo is None and hi is None:
-                rows.append(FromToRow(None, None, float(rel)))
-            elif numeric:
-                rows.append(
-                    FromToRow(
-                        None if lo is None else float(lo),
-                        None if hi is None else float(hi),
-                        float(rel),
-                    )
-                )
-            else:
-                rows.append(
-                    FromToRow(str(lo), str(hi if hi is not None else lo), float(rel))
-                )
+        triples = list(table.select("from", "to", "relativity").iter_rows())
+        if any(rel is None for _, _, rel in triples):
+            raise ValueError(f"Table for {name!r} has a null relativity")
+        null_rows = [t for t in triples if t[0] is None and t[1] is None]
+        if len(null_rows) > 1:
+            raise ValueError(
+                f"Table for {name!r} has {len(null_rows)} rows with both 'from' and "
+                "'to' empty; only one null / Other row is allowed"
+            )
+        body = [t for t in triples if not (t[0] is None and t[1] is None)]
+        numeric_dtype = table["from"].dtype.is_numeric()
+        # Integer-coded categoricals (VehPower 4..12 typed as numbers) have
+        # from == to on every row; numeric bands never do.
+        coded_categorical = (
+            numeric_dtype
+            and bool(body)
+            and all(
+                lo is not None and hi is not None and lo == hi for lo, hi, _ in body
+            )
+        )
+        numeric = numeric_dtype and not coded_categorical
+
+        def _level(v: Any) -> str:
+            if isinstance(v, float) and v.is_integer():
+                return str(int(v))
+            return str(v)
+
         if numeric:
-            # bands must tile the line: (None, k0), [k0, k1), ..., [k_last, None)
-            bands = [r for r in rows if not (r.from_ is None and r.to_ is None)]
+            bands = [
+                FromToRow(
+                    None if lo is None else float(lo),
+                    None if hi is None else float(hi),
+                    float(rel),
+                )
+                for lo, hi, rel in body
+            ]
             if not bands:
                 raise ValueError(f"Numeric table for {name!r} has no bands")
-            if bands[0].from_ is not None or bands[-1].to_ is not None:
+            # accept rows in any order: sort by the lower edge, open end first
+            bands.sort(key=lambda r: (r.from_ is not None, r.from_ or 0.0))
+            if bands[0].from_ is not None:
                 raise ValueError(
                     f"Numeric table for {name!r} must start with an open lower band "
-                    "and end with an open upper band"
+                    "(a row whose 'from' is empty covers everything below the first edge)"
+                )
+            if bands[-1].to_ is not None:
+                raise ValueError(
+                    f"Numeric table for {name!r} must end with an open upper band "
+                    "(a row whose 'to' is empty covers everything from the last edge up)"
                 )
             for a, b in zip(bands[:-1], bands[1:], strict=True):
-                if a.to_ != b.from_:
+                if a.to_ is None or b.from_ is None or a.to_ != b.from_:
                     raise ValueError(
-                        f"Numeric table for {name!r} has a gap or overlap at {a.to_!r}"
+                        f"Numeric table for {name!r}: band ending at {a.to_!r} is "
+                        f"followed by a band starting at {b.from_!r}; bands must "
+                        "tile the line with no gaps or overlaps"
                     )
+            rows = bands + [
+                FromToRow(None, None, float(rel)) for _, _, rel in null_rows
+            ]
             return VariableConfig(type="numeric", table=rows)
-        if not any(r.from_ is None and r.to_ is None for r in rows):
-            rows.append(FromToRow(None, None, 1.0))  # Other / unseen levels
+
+        rows = [
+            FromToRow(_level(lo), _level(hi if hi is not None else lo), float(rel))
+            for lo, hi, rel in body
+        ]
+        if any(r.from_ != r.to_ for r in rows):
+            raise ValueError(
+                f"Categorical table for {name!r} must have 'from' == 'to' on every "
+                "level row"
+            )
+        levels = [r.from_ for r in rows]
+        dupes = sorted({lv for lv in levels if levels.count(lv) > 1})
+        if dupes:
+            raise ValueError(
+                f"Table for {name!r} lists level(s) {dupes} more than once"
+            )
+        if null_rows:
+            rows.append(FromToRow(None, None, float(null_rows[0][2])))
+        else:
+            warnings.warn(
+                f"Table for {name!r} has no Other row (from and to both empty); "
+                "unseen levels and nulls will score at 1.0",
+                stacklevel=3,
+            )
+            rows.append(FromToRow(None, None, 1.0))
         return VariableConfig(type="categorical", table=rows)
 
     def predict(

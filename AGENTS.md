@@ -50,7 +50,7 @@ print('OK')
 
 ## Installation
 
-- `uv venv && uv pip install -e ".[dev,ui]"` (or `python scripts/setup_dev.py`)
+- `uv venv && uv pip install -e ".[dev]"` (dev includes streamlit + plotly)
 - `PYTHONPATH=src` also works as a quick workaround for imports
 - **IMPORTANT**: Tests use `PYTHONPATH=src` and hit the live source. Streamlit
   uses the *installed* package (site-packages). After editing source, sync with:

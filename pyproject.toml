@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "easy_glm"
 version = "0.3.0"
-description = "Automate insurance pricing with LASSO-regularised GLMs – blueprint generation, preprocessing, model fitting, rate table extraction & plotting. Built on glum."
+description = "LASSO-regularised GLMs for insurance pricing: exact rate tables, a browser workbench and a portable scoring model. Built on glum."
 readme = "README.md"
 authors = [
     {name = "Serban Dragne", email = "sadragne@gmail.com"}
@@ -85,8 +85,7 @@ extend-exclude = 'docs/spikes'  # research prototypes, not shipped code
 [tool.ruff]
 line-length = 88
 target-version = "py310"
-# the dev-environment bootstrap script predates the lint rules
-extend-exclude = ["scripts/setup_dev.py", "docs/spikes"]
+extend-exclude = ["docs/spikes"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "B", "C4", "UP"]

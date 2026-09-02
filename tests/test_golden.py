@@ -1,9 +1,11 @@
 """Golden French-motor test.
 
 Fits a fixed model on a checked-in, deterministic 50,000-row subsample of the
-French motor set (``tests/fixtures/french_motor_50k.parquet``: rows sampled with
-seed 20260902 from the CASdatasets ``freMTPL2freq`` table) and compares against
-recorded numbers. It runs in CI on every push.
+French motor set (``tests/fixtures/french_motor_50k.parquet``) and compares
+against recorded numbers. It runs in CI on every push. The fixture is exactly
+``load_external_dataframe().select(COLUMNS).sort("IDpol").sample(n=50_000,
+seed=20260902).sort("IDpol")`` with the id and categorical columns cast to text —
+see ``tests/fixtures/make_french_motor_50k.py``, which regenerates or checks it.
 
 **Any change to a number in ``GOLDEN`` is a blocking review item** and needs a
 written reason in the pull request (see docs/RELEASE_0.4_PLAN.md, §R7).
@@ -14,6 +16,8 @@ identical runs). The fit is deterministic (glum's coordinate descent from a fixe
 start; a refit on the same machine reproduces coefficients to 1e-15), so the
 only expected variation is BLAS/platform rounding, which is far below 1e-6
 relative on aggregate metrics and relativities. Integer counts are exact.
+Note the fit is *not* bitwise reproducible (BLAS threading moves the last digit,
+about 5e-16 relative), so ``RTOL`` must not be tightened towards machine epsilon.
 """
 
 from __future__ import annotations
@@ -24,7 +28,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-from easy_glm import DesignSpec, fit_glm, to_rate_model
+from easy_glm import DesignSpec, base_rate, fit_glm, rate_tables, to_rate_model
+from easy_glm.engine import RateModel
 from easy_glm.workflow import ModelConfig, deviance_stats, gini, totals, unit_values
 
 FIXTURE = Path(__file__).parent / "fixtures" / "french_motor_50k.parquet"
@@ -136,3 +141,35 @@ def test_golden_rate_model_matches_glm(golden_fit):
     np.testing.assert_allclose(
         rm.predict(holdout, exposure_col=None), fit.predict(holdout), rtol=1e-10
     )
+
+
+def test_golden_hand_built_tables_match_exact_tables(golden_fit):
+    """The C2 promise on the golden data: tables loaded through
+    ``from_rate_tables`` score identically to the exact tables from the fit."""
+    fit, rm, _train, holdout = golden_fit
+    rebuilt = RateModel.from_rate_tables(rate_tables(fit), base_rate(fit))
+    np.testing.assert_allclose(
+        rebuilt.predict(holdout, exposure_col=None),
+        rm.predict(holdout, exposure_col=None),
+        rtol=1e-12,
+    )
+
+
+def test_fixture_matches_its_recipe():
+    """Re-derive the fixture from the cached full dataset when it is available."""
+    import importlib.util
+
+    from easy_glm.core.data import _cache_path
+
+    spec = importlib.util.spec_from_file_location(
+        "make_fixture", Path(__file__).parent / "fixtures" / "make_french_motor_50k.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    url = "https://github.com/dutangc/CASdatasets/raw/master/data/freMTPL2freq.rda"
+    cache = _cache_path(url)
+    if not cache.exists():
+        pytest.skip("full French motor dataset not cached on this machine")
+    regenerated = module.regenerate(pl.read_parquet(cache))
+    assert regenerated.equals(pl.read_parquet(FIXTURE))

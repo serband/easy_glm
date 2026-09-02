@@ -468,3 +468,51 @@ class TestExport:
             rtol=1e-10,
         )
         assert (tmp_path / "freq_v1_rate_tables.xlsx").exists()
+
+
+class TestGiniTies:
+    @staticmethod
+    def _tied_example():
+        # two tie groups; scores identical within a group
+        a = np.array([0.0, 1.0, 2.0, 0.0, 3.0, 1.0, 5.0])
+        e = np.array([1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 4.0])
+        w = np.ones(7)
+        return a, e, w
+
+    @staticmethod
+    def _unpooled(a, e, w):
+        def curve(score):
+            idx = np.argsort(-score, kind="stable")
+            cw = np.concatenate([[0.0], np.cumsum(w[idx]) / w.sum()])
+            ca = np.concatenate([[0.0], np.cumsum(a[idx]) / a.sum()])
+            return 2 * np.trapezoid(ca, cw) - 1
+
+        return curve(e / w) / curve(a / w)
+
+    def test_pooled_value_is_the_order_free_expectation(self):
+        import itertools
+
+        a, e, w = self._tied_example()
+        pooled = gini(a, e, w)
+        values = [
+            self._unpooled(a[list(p)], e[list(p)], w[list(p)])
+            for p in itertools.permutations(range(7))
+        ]
+        assert pooled == pytest.approx(np.mean(values), abs=1e-12)
+        assert min(values) < pooled < max(values)
+
+    def test_row_order_does_not_matter(self):
+        a, e, w = self._tied_example()
+        rng = np.random.default_rng(0)
+        seen = {gini(a[p], e[p], w[p]) for p in (rng.permutation(7) for _ in range(50))}
+        assert len(seen) == 1
+
+    def test_perfect_scaled_and_constant(self):
+        rng = np.random.default_rng(1)
+        w = rng.uniform(0.5, 1.5, 500)
+        a = rng.poisson(0.2 * w).astype(float)
+        assert gini(a, a, w) == pytest.approx(1.0)
+        assert gini(a, 3 * a, w) == pytest.approx(1.0)
+        constant = np.full(500, 0.2) * w
+        assert gini(a, constant, w) == pytest.approx(0.0, abs=1e-12)
+        assert gini(a, constant, w, normalize=False) == pytest.approx(0.0, abs=1e-12)

@@ -31,7 +31,7 @@ import numpy as np
 
 df = easy_glm.load_external_dataframe()
 df = df.with_columns(
-    pl.Series("traintest", np.random.rand(len(df)) < 0.7, dtype=pl.Int64)
+    pl.Series("traintest", np.random.default_rng(42).random(len(df)) < 0.7, dtype=pl.Int64)
 )
 
 predictors = ["VehAge", "Region", "VehGas", "DrivAge", "BonusMalus", "Density"]
@@ -65,7 +65,7 @@ lasso kept.
 print(eglm.relativities["DrivAge"])
 print(eglm.coef_table(drop_zero=True))
 
-# Optional: matplotlib charts
+# Optional: matplotlib charts (pip install "easy_glm[viz]")
 easy_glm.plot_all_ratetables(eglm.relativities)
 ```
 
@@ -207,7 +207,6 @@ Design notes: [`docs/WORKBENCH_PLAN.md`](docs/WORKBENCH_PLAN.md).
 
 ```bash
 uv venv && uv pip install -e ".[dev]"        # dev already includes streamlit + plotly
-# or: python scripts/setup_dev.py
 ```
 
 Extras: `ui` (workbench + editor), `viz` (matplotlib/seaborn/plotnine charts),
