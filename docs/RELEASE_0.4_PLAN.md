@@ -451,3 +451,9 @@ prototype `StepMatrix`). Decisions:
   `SplitMatrix` (cross-sandwich dispatch); glum's `check_array_tabmat_compliant`
   needs a one-line shim (upstream PR later); the prototype sandwich is ~3× slower
   than tabmat's C kernel at 5M (acceptable; two optimisations listed in the report).
+* **Handed over from piece A (review S5):** the interaction encoder builds a dense
+  `n_rows × n_cells` float64 block with a per-cell loop (0.54 GB at 1M rows × 66
+  cells; ~8 GB at full French-motor scale with many cells). In G, represent kept
+  cells as a single cell-index block (a `CategoricalMatrix` over the kept-cell
+  code, with "no cell" as an all-zero row) so memory is 4 bytes per row per
+  interaction.
