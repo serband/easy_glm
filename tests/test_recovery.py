@@ -3,6 +3,11 @@
 Interactions (piece A): a strong ``Age × Region`` cell is planted; the fitted
 model must reproduce it, thin non-signal cells must stay at 1.0, and the
 A/E-by-pair diagnostic on a model *without* the interaction must expose it.
+
+Piecewise-linear terms (piece B): a log-linear mileage effect with two slope
+changes is planted; the fitted slopes must be recovered, only knots near the
+true bends may carry a slope change, and the curve must be flat beyond the
+training range.
 """
 
 from __future__ import annotations
@@ -11,7 +16,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from easy_glm import DesignSpec, fit_glm, rate_tables
+from easy_glm import DesignSpec, fit_glm, rate_tables, to_rate_model
 from easy_glm.workflow import ModelConfig, ae_by_pair, totals
 
 PLANTED_LOG_EFFECT = 0.9  # young drivers in region R2 claim e^0.9 ≈ 2.46× more
@@ -177,3 +182,104 @@ class TestPlantedInteraction:
         assert pair["exposure"].sum() == pytest.approx(w.sum())
         with_claims = pair.filter(pl.col("expected") > 0)
         np.testing.assert_allclose(with_claims["ae"].to_numpy(), 1 / 1.1)
+
+
+# --------------------------------------------------------------------------
+# piece B: planted piecewise-linear effect
+# --------------------------------------------------------------------------
+TRUE_SLOPES = (0.00010, 0.00003, -0.00004)  # per mile, on the log scale
+TRUE_BENDS = (8_000.0, 20_000.0)
+
+
+@pytest.fixture(scope="module")
+def planted_linear() -> pl.DataFrame:
+    rng = np.random.default_rng(23)
+    n = 120_000
+    mileage = rng.uniform(0, 30_000, n)
+    expo = rng.uniform(0.3, 1.0, n)
+    s1, s2, s3 = TRUE_SLOPES
+    b1, b2 = TRUE_BENDS
+    lp = (
+        -2.2
+        + s1 * np.minimum(mileage, b1)
+        + s2 * np.clip(mileage - b1, 0, b2 - b1)
+        + s3 * np.maximum(mileage - b2, 0)
+    )
+    return pl.DataFrame(
+        {
+            "ClaimNb": rng.poisson(np.exp(lp) * expo).astype(float),
+            "Exposure": expo,
+            "Mileage": mileage,
+        }
+    )
+
+
+class TestPlantedLinear:
+    KNOTS = [2_000.0 * k for k in range(1, 15)]  # every 2,000 miles
+    ALPHA = 3e-5
+
+    def test_slopes_recovered_and_bends_are_sparse(self, planted_linear):
+        """At a moderate penalty the *average* slope of each true segment is
+        recovered within 10% (the local slope of a single 2,000-mile band is a
+        noisy statistic and is not asserted), and the slope changes concentrate
+        at the two true bends: within two knot spacings of each bend (the lasso
+        may put a bend one knot away from the truth on noisy data) the fitted
+        change has the right sign and 60–140% of the true size, and the changes
+        everywhere else sum to less than those at the bends."""
+        spec = DesignSpec.from_data(
+            planted_linear,
+            ["Mileage"],
+            linear=["Mileage"],
+            knots={"Mileage": self.KNOTS},
+            clamp={"Mileage": (0.0, 30_000.0)},
+        )
+        fit = fit_glm(planted_linear, spec, "ClaimNb", alpha=self.ALPHA, **FIT)
+        probe = pl.DataFrame(
+            {"Mileage": [0.0, *TRUE_BENDS, 30_000.0], "Exposure": [1.0] * 4}
+        )
+        log_rel = np.log(fit.predict(probe))
+        edges = [0.0, *TRUE_BENDS, 30_000.0]
+        for j, true in enumerate(TRUE_SLOPES):
+            avg = (log_rel[j + 1] - log_rel[j]) / (edges[j + 1] - edges[j])
+            assert abs(avg - true) <= 0.1 * abs(true), (edges[j], avg, true)
+        enc = spec["Mileage"]
+        beta = fit.coef[fit.spec.slices()["Mileage"]][: len(enc.hinges)][1:]  # skip lo
+        knots = np.asarray(enc.knots)
+        near = np.zeros(len(knots), dtype=bool)
+        for bend, before, after in zip(
+            TRUE_BENDS, TRUE_SLOPES[:-1], TRUE_SLOPES[1:], strict=True
+        ):
+            window = np.abs(knots - bend) <= 4_000.0
+            near |= window
+            change, true_change = beta[window].sum(), after - before
+            assert np.sign(change) == np.sign(true_change), (bend, change)
+            assert 0.6 <= change / true_change <= 1.4, (bend, change, true_change)
+        assert np.abs(beta[~near]).sum() <= np.abs(beta[near]).sum()
+        # and the table agrees with the coefficients: slopes are cumulative sums
+        tab = rate_tables(fit)["Mileage"]
+        bands = tab.filter(pl.col("from").is_not_null() & pl.col("to").is_not_null())
+        full = fit.coef[fit.spec.slices()["Mileage"]][: len(enc.hinges)]
+        np.testing.assert_allclose(
+            bands["slope"].to_numpy(), np.cumsum(full), atol=1e-15
+        )
+
+    def test_curve_is_flat_beyond_the_training_range(self, planted_linear):
+        spec = DesignSpec.from_data(
+            planted_linear,
+            ["Mileage"],
+            linear=["Mileage"],
+            knots={"Mileage": self.KNOTS},
+        )
+        fit = fit_glm(planted_linear, spec, "ClaimNb", alpha=self.ALPHA, **FIT)
+        rm = to_rate_model(fit)
+        lo, hi = spec["Mileage"].clamp
+        beyond = pl.DataFrame(
+            {
+                "Mileage": [lo - 5_000.0, lo, hi, hi + 5_000.0, hi + 1e6],
+                "Exposure": [1.0] * 5,
+            }
+        )
+        p = rm.predict(beyond, exposure_col=None)
+        assert p[0] == pytest.approx(p[1], rel=1e-12)
+        assert p[2] == pytest.approx(p[3], rel=1e-12) == pytest.approx(p[4], rel=1e-12)
+        np.testing.assert_allclose(p, fit.predict(beyond), rtol=1e-10)

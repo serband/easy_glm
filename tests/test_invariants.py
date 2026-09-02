@@ -68,13 +68,21 @@ def _data(seed: int = 3, n: int = 4000) -> pl.DataFrame:
 
 
 def _scoring_frame(df: pl.DataFrame) -> pl.DataFrame:
-    """Holdout-like frame with an unseen categorical level injected."""
+    """Holdout-like frame with an unseen categorical level injected and Density
+    values pushed beyond the training range (below and above the clamp)."""
     out = df.tail(800)
+    i = pl.arange(0, out.height)
     return out.with_columns(
-        pl.when(pl.arange(0, out.height) % 50 == 0)
+        pl.when(i % 50 == 0)
         .then(pl.lit("UNSEEN"))
         .otherwise(pl.col("Region"))
-        .alias("Region")
+        .alias("Region"),
+        pl.when(i % 37 == 0)
+        .then(pl.col("Density") + 10_000.0)
+        .when(i % 37 == 1)
+        .then(pl.col("Density") - 10_000.0)
+        .otherwise(pl.col("Density"))
+        .alias("Density"),
     )
 
 
@@ -129,6 +137,23 @@ CASES = {
         "offset": "logprem",
         "interactions": [("DrivAge", "Region"), ("VehPower", "Region")],
     },
+    # piecewise-linear terms: log-linear inside each band, flat outside the
+    # clamp, nulls on their own row — scored on data beyond the training range
+    "linear_only": {
+        "predictors": ["Density"],
+        "categorical": None,
+        "offset": None,
+        "linear": ["Density"],
+        "knots": {"Density": [300, 1000, 2000]},
+    },
+    "linear_mixed_all": {
+        "predictors": ["DrivAge", "Density", "VehPower", "Region"],
+        "categorical": ["VehPower"],
+        "offset": "logprem",
+        "linear": ["Density"],
+        "knots": {"DrivAge": [25, 40, 60], "Density": [500, 1500]},
+        "interactions": [("Density", "Region"), ("DrivAge", "VehPower")],
+    },
 }
 
 
@@ -145,6 +170,7 @@ def fitted(request):
         knots=case.get("knots"),
         interactions=case.get("interactions"),
         min_cell_exposure=0.005,
+        linear=case.get("linear"),
     )
     fit = fit_glm(
         train,
@@ -164,7 +190,11 @@ def test_rate_model_reproduces_glm(fitted):
     name, fit, rm, score_df = fitted
     assert score_df["DrivAge"].null_count() > 0 and score_df["Region"].null_count() > 0
     assert (score_df["Region"] == "UNSEEN").sum() > 0
-    if name.startswith("interaction"):
+    if name.startswith("linear"):
+        assert any(c.type == "linear" for c in rm.variables.values())
+        assert (score_df["Density"] > 5_000).sum() > 0  # beyond the clamp
+        assert (score_df["Density"] < 0).sum() > 0
+    if "interaction" in name or name == "linear_mixed_all":
         # the fit must actually use cells, otherwise the case proves nothing
         assert any(c.type == "interaction" for c in rm.variables.values())
         cells = [
