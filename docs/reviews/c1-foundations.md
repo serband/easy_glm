@@ -187,3 +187,52 @@ C2 and are correctly absent here.
   editor still falls back to the old default, say so; (3) drop the backticked file names and column
   names (`fitted`, `relativity`, the script path) from the prose — the actuary does not need them,
   and the plan asks for no code in this document.
+
+## 7. Re-check (commit `09694ad`, 2026-09-02)
+
+Scope: `git diff 05207c1..09694ad` only. Nothing else in the tree changed.
+
+**Final verdict: approve.** S1–S5 are fixed as asked, every nit I raised is addressed, all nine
+missing tests are present and non-trivial, and no golden number or tolerance was altered.
+
+What I re-ran and saw:
+- Full suite **240 passed** (was 226); `ruff check .` clean; `black --check .` 83 files unchanged.
+- **S1 verified on the failure scenario.** Poisson count model, `divide_target_by_weight=True`,
+  `rm = to_rate_model(fit, train_test_col=...)` with **no** `exposure_col`, driven through
+  `src/easy_glm/ui/app.py` with `streamlit.testing.v1.AppTest` plus a data parquet: 0 exceptions,
+  editor default formula `sum_over_weight`, overall train A/E **1.000002** (was 0.599). Same model
+  with `exposure_col="Exposure"`: 1.000002. The fix is `_predictions_on_total_scale` in
+  `src/easy_glm/ui/metrics.py` (multiplies by the weight only when `divide_target_by_weight` is
+  true and the RateModel has no exposure column), with `default_formula` factored out and used by
+  `app.py`. Gamma severity model with `sum_weighted` still gives 1.0022, as before.
+- **S2 verified.** `scripts/checks/c1_foundations.py` run **without** `--write`: all asserts pass,
+  prints the report and "(not written; pass --write …)"; `git status --short` is empty afterwards.
+  Printed numbers match the committed document exactly: both exactness rows "below 1e-12 (measured
+  < 1e-14)", VehPower Other-row share **0.0 %**, Excel **3.0000**, A/E **1.0190**, Gini **0.3056**,
+  deviance explained **4.57 %**, alpha **0.00100**, driver-age bands 0.8805 / 0.6217 / 0.6217 /
+  0.6217 / 0.6594. The raw residuals go to stdout only (`[raw] max relative residual …`).
+- **S3** — `_warn_unknown` now covers the project top level, `data`, `design` and adjustment
+  entries; `TestProjectUnknownKeysEverywhere` parametrises all four.
+- **S4** — `_warn_if_levels_unmatched` in `rate_model.py` warns when more than 50 % of rows of a
+  categorical with more than one trained level fall to Other, naming sample values and trained
+  levels; `test_categorical_dtype_mismatch_warns` covers the int-vs-float case.
+- **S5** — `GLMFit.predict` warns on a missing offset column (and now casts the offset to Float64,
+  matching the RateModel); tested.
+- Nits: unknown `variables[*].type` rejected at load; unknown metadata keys warn; `format_version:
+  null` treated as 1; the two remaining `assert isinstance` dispatches replaced; `/*.easyglm`
+  ignored at the repo root; README points to `rate_model.to_excel` for adjusted tables; the
+  invariants docstring no longer claims invariant 3 guards the §7.1 bug; integer categorical in
+  `test_invariants._data` now carries nulls (Int64 with ~3 % None).
+- Fixture `tests/fixtures/v0_3_0_model.easyglm` has no `format_version` key (0.3 shape), loads
+  under `warnings.simplefilter("error")` and scores bitwise-identically to the saved predictions
+  for the current snapshot, `version=1` and the with-exposure call — the same three comparisons I
+  ran against the `v0.3.0` tag in §6.
+- Actuary document: the three wording fixes are in (Other-row share replaces "6 of 13", the 0.3
+  caveat on the A/E default, backticked names removed from the prose).
+- My adversarial script from §6 re-run unchanged: all residuals ≤ 1.9e-15; NaN propagation on
+  offset nulls still 8/8.
+
+One remaining nit, not worth a round: `_warn_if_levels_unmatched` counts nulls as unmatched, so a
+column that is more than half null on a scoring frame triggers the "matched none of its trained
+levels … check the column's type" message even though nulls are scored correctly. Excluding nulls
+from the share (`col.drop_nulls()`) would make the message accurate.
