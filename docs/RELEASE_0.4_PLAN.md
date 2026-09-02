@@ -1,8 +1,10 @@
 # easy_glm 0.4 — release plan
 
-*Status: agreed 2026-09-02 (decisions in §Decisions). Supersedes the "Phase 3"
-list in `docs/WORKBENCH_PLAN.md`. Work happens on a `release-0.4` branch with one
-PR per workstream; each PR ships behind green CI.*
+*Status: agreed 2026-09-02, amended the same day after the independent plan
+review (`docs/reviews/00-plan-review.md`; all five blocking items accepted — see
+§Revisions). Supersedes the "Phase 3" list in `docs/WORKBENCH_PLAN.md`. Work
+happens on a `release-0.4` branch with one PR per piece; each PR ships behind
+green CI.*
 
 ## Theme
 
@@ -283,15 +285,26 @@ Rules
 
 ## Sequencing (each step ships behind green CI)
 
-1. **C** legacy removal first — shrinks the surface everything else touches.
-2. **G** scale — SplitMatrix/float32 design + chunked scoring, before the encoders
-   multiply (interactions widen the matrix).
-3. **A** interactions: core + engine + tests → workbench → export.
-4. **B** piecewise-linear: engine table type → core encoder → workbench.
-5. **D1–D3** run persistence, sample vs full, champion/challenger + Compare page.
-6. **D4–D5** HTML report, relativity tooling (smooth / cap / round / undo, snapshot
-   diff); **drag-to-edit spike** time-boxed to two days — promoted if it works.
-7. **E** modelling extras, **F** CLI, **D6** theme and onboarding.
+1. **C1 — foundations**: `tests/test_invariants.py` written first so it fails on
+   today's bugs; fix them (Excel ignores adjustments, integer categoricals score
+   as Other, offsets ignored by the RateModel, `diff(v1)`, editor port, A/E
+   formula from metadata); `.easyglm` format version 2 with strict type dispatch
+   and the metadata the later pieces need (`offset_col`, `offset_is_log`, `link`,
+   `target_is_rate`); project format version 2 with a migration hook.
+2. **C2 — legacy removal**: delete the blueprint/DuckDB path, scripts, rebuild the
+   benchmark and `from_glm_model`, golden French-motor test on a checked-in
+   deterministic subsample.
+3. **A** interactions, core + engine (encoder contract in §Revisions).
+4. **B** piecewise-linear, core + engine (encoder contract in §Revisions).
+5. **D2** sample vs full (before D1 so persisted keys are stable), then **D1**
+   run persistence.
+6. **G** scale — starts with the two-day spike (bin-index `StepMatrix` block /
+   aggregated rows); targets are set from the spike.
+7. **A/B workbench + export**, then **D3** compare, **D7** editor fixes.
+8. **E1–E2** offset from current premium, penalty weights.
+9. **D4–D6** report, relativity tooling, theme; drag-to-edit spike; **E3–E4**,
+   **F** CLI, docs. After step 7 a coherent 0.4.0 can be cut; the rest may slip
+   to 0.4.x.
 
 ## Acceptance for 0.4.0
 
@@ -317,3 +330,97 @@ Rules
    design, chunked scoring, lazy loading, progress, scale benchmark).
 4. **Workbench scope**: champion vs challenger + Compare page, HTML report,
    relativity tooling, and a time-boxed drag-to-edit spike — all in 0.4.
+
+## Revisions after the plan review (2026-09-02)
+
+The independent review (`docs/reviews/00-plan-review.md`) is accepted in full for
+its blocking items; where this section conflicts with text above, this section
+wins.
+
+### R1. Format versions and strict dispatch (was B1) — piece C1
+* `.easyglm` gains `format_version: 2`. Readers reject newer versions with a clear
+  message and load version-less files as version 1. The same bump adds
+  `ModelMetadata.offset_col`, `offset_is_log`, `link`, `target_is_rate`.
+* `RateModel.predict` dispatches through an explicit `{type: scorer}` map and
+  raises `ValueError` on unknown types.
+* `PROJECT_VERSION = 2` with a migration hook in `Project.from_dict` that branches
+  on the incoming version before overwriting it; unknown keys are ignored with a
+  warning rather than crashing.
+
+### R2. Piecewise-linear contract (was B2) — piece B
+`LinearEncoder(var, knots, clamp=(lo, hi), null_indicator=True)`:
+* `x` is clipped to `[lo, hi]` (defaults: training min/max) **before** the hinges,
+  so the curve is exactly flat outside the range; hinge columns at every knot
+  including `lo`, so the first real band has a fitted slope.
+* Nulls: all hinge columns zero plus the `is null` column (relativity at `lo`
+  times the null factor).
+* Table rows `(from, to, log_rel_at_from, slope)` per band, plus the two flat end
+  rows and the null row; scoring = clip, `searchsorted`, one `exp`.
+* Base: relativity 1.00 at a stated `x_base` (default: the lower knot of the
+  most-exposed band), recorded in the table.
+* Monotone on linear terms is **refused with a clear error** in 0.4 (the sign
+  bound would force convexity); revisit with a cumulative constraint later.
+
+### R3. Interaction cells tied to rate-table rows (was B3) — piece A
+* The cell index of a row is the **rate-table row index** of each parent (bins +
+  null row for numerics; levels + Other row for categoricals), computed by one
+  shared helper (factored out of `_modal_bins`) used by the encoder, the table
+  builder and the scorer.
+* Cells below the exposure threshold get no column → relativity 1.00; Excel and
+  the editor show training exposure per cell so 1.00 reads as "no data" vs "no
+  adjustment".
+* Invariant reworded: setting every cell to 1.00 in the RateModel equals the GLM
+  with the interaction slice of `coef` zeroed.
+* Spec: `ModelConfig.interactions: list[Interaction(a, b, min_cell_exposure,
+  penalty_weight)]`; `validate` and `model_hash` include them. Cell adjustments
+  use `(from_a, to_a, from_b, to_b)`; touches `Adjustment`, `Change`,
+  `update_relativity`, `_mask_for_row`, the editor.
+* Interaction blocks are fitted with `scale_predictors=False` semantics (per-column
+  `P1` weight instead) so thin cells are not under-shrunk; planted-truth test
+  includes thin non-signal cells (10–50 rows) that must stay within [0.98, 1.02].
+
+### R4. Scale re-baselined (was B4) — piece G
+* Coefficients and predictions stay **float64**; the exactness invariant is never
+  loosened. Float32 is an internal option for the design only.
+* Acceptance replaces "1e-6 coefficients" with: predictions on French motor agree
+  to 1e-4 relative, same non-zero set (or a listed difference), holdout
+  deviance/Gini agree to 1e-4.
+* The memory budget is stated as arithmetic the benchmark asserts (design bytes
+  = rows × (4 × dense columns + 4 × categorical variables) × multipliers for
+  fit and, separately, CV with `n_jobs=1`). One dtype for all blocks and vectors,
+  chosen in `DesignSpec.build`; `P1`, bounds and offset are cast to it.
+* A two-day spike decides the approach and the 5M number: a bin-index
+  `StepMatrix` tabmat block (cumulative-sum trick) versus fitting on rows
+  aggregated by identical design row (exact for Poisson/Gamma/Tweedie).
+
+### R5. Offsets in the RateModel (was B5) — piece C1
+`to_rate_model` copies `offset_col`/`offset_is_log` from the fit; `RateModel.predict`
+applies the offset like exposure (warns when the column is missing); the
+invariant suite includes an offset case. E1 becomes a thin layer on top.
+
+### R6. Should-fix items adopted
+S1 (state the offset identity conditions: Poisson, `scale_predictors=False`,
+rescaled alpha), S2 (persistence key includes data size/mtime and library
+versions; load failure = cache miss), S3 (D2 before D1; knots always from full
+training data), S4 (add `RateModel.from_excel` as a product feature), S5 (progress
+= one tick per alpha-path point / per CV fold, else spinner with elapsed time),
+S6 (golden test on a checked-in 50k-row deterministic subsample so it runs in CI),
+S7 (see R3), S8 (`link` in metadata; binomial scorer returns probabilities and
+refuses exposure), S9 (order above), S10 (protocol below). Nits: renumber later,
+replace `assert isinstance` dispatch with explicit `raise`, drop the unused
+`EASY_GLM_MAX_ROWS`, delete `scripts/` investigation files in C2, populate or
+drop `Snapshot.metrics`, drag-to-edit acceptance stated up front (edit a point →
+table updates → A/E recomputes, in Streamlit 1.57 without a custom component),
+smoothing preserves the exposure-weighted mean of **log** relativities.
+
+### R7. Protocol additions
+* Any change to an existing tolerance or golden number is itself a blocking
+  review item and needs a written reason in the PR.
+* The actuarial check is produced by a committed script
+  (`scripts/checks/<piece>.py`) that the reviewer re-runs.
+* Reviewer findings live in `docs/reviews/<piece>.md`; the actuary's plain-language
+  document lives in `docs/checks/<piece>.md`.
+
+### R8. Domain questions
+Nine domain questions with defaults are in `docs/checks/00-questions-for-the-actuary.md`.
+Building proceeds on the defaults; answers change parameters, not architecture.
