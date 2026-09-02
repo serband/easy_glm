@@ -5,6 +5,13 @@ from typing import Any, Literal
 
 import numpy as np
 
+#: separator in interaction variable names, e.g. ``"DrivAge×VehPower"`` — the one
+#: definition; core and workflow import it from here
+INTERACTION_SEP = "×"
+#: label of the null (numeric) / Other (categorical) rate-table row, used by the
+#: tables, the Excel export and every diagnostic so they are joinable by label
+NULL_LABEL = "Other / Unknown"
+
 
 @dataclass
 class ModelMetadata:
@@ -106,7 +113,7 @@ class SessionState:
 
 def _edge_label(lo: Any, hi: Any) -> str:
     if lo is None and hi is None:
-        return "Other / Unknown"
+        return NULL_LABEL
     if lo is None:
         return f"< {hi}"
     if hi is None:

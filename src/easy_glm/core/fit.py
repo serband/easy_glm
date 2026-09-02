@@ -304,7 +304,8 @@ def fit_glm(
         Standardise columns before penalising (glmnet/aglm default).
     glum_kwargs
         Anything else for the glum estimator (``max_iter``, ``P1``, ``link``,
-        ``lower_bounds`` ...).
+        ``lower_bounds`` ...). Passing your own ``P1`` replaces the per-cell
+        interaction penalty rule entirely (see ``interaction_penalty_weights``).
     """
     if cv is None and alpha is None:
         raise ValueError(

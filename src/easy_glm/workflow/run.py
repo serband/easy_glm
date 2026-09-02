@@ -180,7 +180,23 @@ class ModelRun:
 def apply_adjustments(rm: RateModel, cfg: ModelConfig) -> None:
     for adj in cfg.adjustments:
         config = rm.variables.get(adj.variable)
-        if config is not None and config.type == "interaction":
+        if config is None:
+            raise KeyError(
+                f"Adjustment refers to {adj.variable!r}, which is not a variable of "
+                f"the model (known: {list(rm.variables)})"
+            )
+        is_cell = config.type == "interaction"
+        if is_cell != bool(adj.cell):
+            raise ValueError(
+                f"Adjustment on {adj.variable!r}: "
+                + (
+                    "it is an interaction, so the adjustment needs cell=True with "
+                    "from_b / to_b"
+                    if is_cell
+                    else "it is a main effect, but the adjustment is marked cell=True"
+                )
+            )
+        if is_cell:
             rm.update_relativity(
                 adj.variable,
                 adj.from_,

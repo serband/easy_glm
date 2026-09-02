@@ -39,6 +39,22 @@ def sheet_name(key: str, used: set[str]) -> str:
     return candidate
 
 
+def suffixed_sheet_name(key: str, suffix: str, used: set[str]) -> str:
+    """Like :func:`sheet_name` but guarantees the sheet name *ends with*
+    ``suffix`` (e.g. ``" (matrix)"``) even when ``key`` has to be truncated and
+    de-duplicated: the stem is shortened and numbered, the suffix survives."""
+    base = _INVALID_SHEET_CHARS.sub("_", key).strip("'").strip() or "sheet"
+    i = 1
+    while True:
+        extra = "" if i == 1 else f" ({i})"
+        stem = base[: _MAX_SHEET_LEN - len(suffix) - len(extra)].rstrip()
+        candidate = f"{stem}{extra}{suffix}"
+        if candidate.lower() not in used:
+            used.add(candidate.lower())
+            return candidate
+        i += 1
+
+
 def rate_model_tables(rm: RateModel) -> dict[str, pl.DataFrame]:
     """Per-variable ``from`` / ``to`` / ``label`` / [``fitted``] / ``relativity``
     frames of a :class:`RateModel`. ``relativity`` is the *current* value (manual
@@ -202,7 +218,7 @@ def write_rate_tables_xlsx(
             index_rows.append((name, str(key), frame.height))
             if matrices and key in matrices:
                 a, b, rows_a, rows_b, rel, exp = matrices[key]
-                mname = sheet_name(f"{key} (matrix)", used)
+                mname = suffixed_sheet_name(str(key), " (matrix)", used)
                 _write_matrix_sheet(wb, mname, a, b, rows_a, rows_b, rel, exp, bold)
                 index_rows.append((mname, f"{key} (matrix)", len(rows_a)))
 

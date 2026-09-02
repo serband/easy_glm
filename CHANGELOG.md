@@ -23,6 +23,15 @@
   interactions a model is missing.
 - Every encoder exposes its rating rows and a shared `row_index` rule, used by
   the interaction cells, the tables and the scorer alike.
+- Diagnostics (`univariate`, `ae_by_variable`, `ae_by_pair`) now label bands and
+  the null / Other row exactly like the rate tables ("< 25.0", "[25.0, 30.0)",
+  "Other / Unknown"), so they join onto tables by label.
+
+#### Known limitations (to be addressed in the scale workstream)
+
+- Interaction cells are built as a dense 0/1 block (one column per kept cell);
+  at millions of rows with hundreds of cells this dominates memory. Workstream G
+  will store the cell index instead.
 
 
 Work in progress on the `release-0.4` branch. Plan: `docs/RELEASE_0.4_PLAN.md`;

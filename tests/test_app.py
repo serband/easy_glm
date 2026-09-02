@@ -124,6 +124,33 @@ def test_page_renders_with_a_fit(page, project_file):
         assert any("Fitted" in m.value for m in at.success)
 
 
+@pytest.mark.parametrize(
+    "page",
+    [
+        "pages_design",
+        "pages_model",
+        "pages_diagnostics",
+        "pages_tables",
+        "pages_export",
+    ],
+)
+def test_pages_render_with_an_interaction(page, project_file, tmp_path):
+    from easy_glm.workflow import Interaction
+
+    p = Project.from_json(project_file)
+    p.models["freq"].interactions = [
+        Interaction("DrivAge", "Region", min_cell_exposure=0.02)
+    ]
+    path = tmp_path / "with_interaction.json"
+    p.to_json(path)
+    at = AppTest.from_string(_script(page, str(path), fit=True), default_timeout=180)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    if page == "pages_export":
+        code = "\n".join(c.value for c in at.code)
+        assert "InteractionEncoder(" in code
+
+
 def test_main_entry_point_renders(project_file):
     import sys
 

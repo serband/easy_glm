@@ -1,3 +1,15 @@
+"""Scoring kernels for :class:`RateModel` tables.
+
+``row_index`` here deliberately re-implements the encoders' row rule
+(``easy_glm.core.design.Encoder.row_index``) on a :class:`VariableConfig`: a
+``.easyglm`` file carries tables, not encoders, so the engine cannot call the
+core. The two must stay identical — numeric: ``searchsorted(edges, x,
+side="right")`` with nulls in the last (null) row; categorical: level position
+with unseen/null in the last (Other) row — and are held together by
+``tests/test_interactions.py::TestRowIndex::test_encoder_and_engine_agree`` and
+the exactness invariants. Change one, change both.
+"""
+
 from __future__ import annotations
 
 import numpy as np

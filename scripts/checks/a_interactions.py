@@ -1,6 +1,6 @@
 """Actuarial check for piece A — two-way interactions.
 
-Fits the French-motor frequency model with and without ``DrivAge × VehPower``
+Fits the French-motor frequency model with and without ``DrivAge × BonusMalus``
 and prints (or, with ``--write``, regenerates ``docs/checks/a-interactions.md``)
 what an actuary needs to judge the feature: the two DrivAge main tables side by
 side, the adjustment matrix with its training exposure, holdout metrics with
@@ -146,7 +146,7 @@ def planted_check() -> dict[str, float]:
     cfg = ModelConfig(target="ClaimNb", weight="Exposure", divide_target_by_weight=True)
     a, e, w = totals(book, cfg, f0.predict(book))
     pair = ae_by_pair(book, "DrivAge", "Region", a, e, w, knots_a=knots)
-    cell = pair.filter((pl.col("label_a") == "< 25") & (pl.col("label_b") == "R2"))
+    cell = pair.filter((pl.col("label_a") == "< 25.0") & (pl.col("label_b") == "R2"))
     return {
         "truth": truth,
         "recovered": recovered,
@@ -206,13 +206,14 @@ def main(write: bool) -> None:
 
     # A/E by pair before and after (holdout)
     cfg = ModelConfig(target="ClaimNb", weight="Exposure", divide_target_by_weight=True)
-    knots = inter.spec["DrivAge"].knots
+    knots_a = inter.spec[PAIR[0]].knots
+    knots_b = inter.spec[PAIR[1]].knots  # same bands as the matrix rows/columns
     ae_rows = []
     for label, f in (("without", base), ("with", inter)):
         a, e, w = totals(holdout, cfg, f.predict(holdout))
-        pair = ae_by_pair(holdout, PAIR[0], PAIR[1], a, e, w, knots_a=knots).filter(
-            pl.col("exposure") > 300
-        )
+        pair = ae_by_pair(
+            holdout, PAIR[0], PAIR[1], a, e, w, knots_a=knots_a, knots_b=knots_b
+        ).filter(pl.col("exposure") > 300)
         worst = pair.with_columns(pl.col("ae").log().abs().alias("dev")).sort(
             "dev", descending=True
         )
@@ -237,7 +238,7 @@ def main(write: bool) -> None:
         "## What an interaction is here",
         "",
         f"`{name}` sits **on top of** the two main-effect tables: a policy's relativity is "
-        f"the DrivAge factor × the VehPower factor × one cell of the adjustment matrix "
+        f"the {PAIR[0]} factor × the {PAIR[1]} factor × one cell of the adjustment matrix "
         "below. A cell of 1.000 means *no adjustment* — either the data did not ask for "
         "one (the lasso kept it at 1) or the cell had too little exposure to be rated on "
         "its own (shown with its exposure so you can tell the two apart). This is the "
@@ -252,6 +253,15 @@ def main(write: bool) -> None:
         "- Thin cells are penalised harder than fat ones (an unstandardised penalty scaled so "
         "that a 50/50 cell is treated like a 50/50 main effect), so sparse corners of the "
         "matrix do not pick up noise.",
+        f"- **Alpha {ALPHA} was fixed by hand for this check** — at the plan's default "
+        "0.001 the penalty kept no cells at all, so there would have been nothing to look "
+        "at. The workbench chooses alpha by cross-validation; at a CV-chosen alpha the same "
+        "planted effect (controlled check below) comes back at roughly 65–85% of its true "
+        "size — ordinary lasso shrinkage — and the remainder shows up in the A/E-by-pair "
+        "table, which is why that table is part of this document.",
+        "- In the matrix, `1.000 (14,759)` and `1.000 (20)` mean different things: the first "
+        "cell had plenty of data and the lasso left it alone, the second was too thin to be "
+        "rated on its own. The exposure in brackets tells them apart.",
         "",
         "## Holdout metrics with and without the interaction",
         "",
@@ -277,15 +287,19 @@ def main(write: bool) -> None:
         f"Rate tables (mains × matrix) reproduce the GLM on the holdout: max relative "
         f"difference {'below 1e-12' if exact < 1e-12 else f'{exact:.1e}'}.",
         "",
-        "## DrivAge main table, without and with the interaction",
+        f"## {PAIR[0]} main table, without and with the interaction",
         "",
         md_table(main_rows, ["band", "without", "with", "change"]),
+        "",
+        "The `Other / Unknown` row (drivers with no recorded age) moves with the `< 25.0` "
+        "band because missing ages sit in the lowest band and the data has no such "
+        "drivers, so no separate effect was fitted for them.",
         "",
         f"## Adjustment matrix `{name}` — relativity (training exposure)",
         "",
         md_table(matrix_rows, [f"{PAIR[0]} \\ {PAIR[1]}"] + rows_b),
         "",
-        "## A/E by DrivAge × VehPower cell on the holdout (cells with exposure > 300)",
+        f"## A/E by {PAIR[0]} × {PAIR[1]} cell on the holdout (cells with exposure > 300)",
         "",
         md_table(
             ae_rows,

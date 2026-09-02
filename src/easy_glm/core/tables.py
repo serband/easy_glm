@@ -133,6 +133,7 @@ def _interaction_table(fit: GLMFit, variable: str) -> pl.DataFrame:
     for i, j in enc.cells:
         kept[i, j] = True
     flat = contrib.ravel()
+    labels = enc.cell_labels()
     return pl.DataFrame(
         {
             "from_a": pl.Series([r.from_a for r in rows], dtype=_edge_dtype(enc.a)),
@@ -140,8 +141,8 @@ def _interaction_table(fit: GLMFit, variable: str) -> pl.DataFrame:
             "from_b": pl.Series([r.from_b for r in rows], dtype=_edge_dtype(enc.b)),
             "to_b": pl.Series([r.to_b for r in rows], dtype=_edge_dtype(enc.b)),
             "label": [level_label(r) for r in rows],
-            "label_a": [level_label(r).split(" | ")[0] for r in rows],
-            "label_b": [level_label(r).split(" | ")[1] for r in rows],
+            "label_a": [la for la, _ in labels],
+            "label_b": [lb for _, lb in labels],
             "exposure": [r.exposure for r in rows],
             "kept": kept.ravel().tolist(),
             "coef": flat,

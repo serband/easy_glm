@@ -38,6 +38,8 @@ from typing import Any, ClassVar, Literal
 import numpy as np
 import polars as pl
 
+from easy_glm.engine.models import INTERACTION_SEP, NULL_LABEL
+
 NUMERIC_DTYPES = (
     pl.Int8,
     pl.Int16,
@@ -52,9 +54,6 @@ NUMERIC_DTYPES = (
 )
 
 FeatureKind = Literal["step", "null", "level", "other", "cell"]
-
-#: separator used in interaction variable names, e.g. ``"DrivAge×VehPower"``
-INTERACTION_SEP = "×"
 
 
 @dataclass(frozen=True)
@@ -79,7 +78,7 @@ def row_label(row: tuple[Any, Any]) -> str:
     """Human-readable label of a rate-table row ``(from, to)``."""
     lo, hi = row
     if lo is None and hi is None:
-        return "Other / Unknown"
+        return NULL_LABEL
     if lo is None:
         return f"< {hi}"
     if hi is None:
@@ -332,6 +331,13 @@ class InteractionEncoder(Encoder):
             raise ValueError("Interactions of interactions are not supported")
         if self.a.variable == self.b.variable:
             raise ValueError("An interaction needs two different variables")
+        for parent in (self.a, self.b):
+            if INTERACTION_SEP in parent.variable:
+                raise ValueError(
+                    f"Variable name {parent.variable!r} contains the interaction "
+                    f"separator {INTERACTION_SEP!r}; rename it before using it in an "
+                    "interaction"
+                )
         na, nb = self.a.n_rows, self.b.n_rows
         cells = [(int(i), int(j)) for i, j in self.cells]
         if len(set(cells)) != len(cells):
@@ -424,9 +430,15 @@ class InteractionEncoder(Encoder):
 
     def rows(self) -> list[tuple[Any, Any]]:
         """All cells (kept or not) as ``((from_a, to_a), (from_b, to_b))``,
-        row-major over the parents' rows."""
+        row-major over the parents' rows. Note the elements are *pairs of rows*,
+        not edges: use :meth:`cell_labels` for text, not :func:`row_label`."""
         rows_a, rows_b = self.a.rows(), self.b.rows()
         return [(ra, rb) for ra in rows_a for rb in rows_b]
+
+    def cell_labels(self) -> list[tuple[str, str]]:
+        """``(label_a, label_b)`` per cell, in :meth:`rows` order."""
+        rows_a, rows_b = self.a.rows(), self.b.rows()
+        return [(row_label(ra), row_label(rb)) for ra in rows_a for rb in rows_b]
 
     def cell_index(self, data: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         return self.a.row_index(data[self.a.variable]), self.b.row_index(
@@ -608,6 +620,13 @@ class DesignSpec:
                 encoders[var] = CategoricalEncoder(var, levels)
         spec = cls(encoders)
         for a, b in interactions or []:
+            for parent in (a, b):
+                if parent not in spec.encoders:
+                    raise ValueError(
+                        f"Interaction ({a!r}, {b!r}): {parent!r} is not one of the "
+                        f"predictors {list(spec.encoders)}; both parents must be "
+                        "main effects of the same design"
+                    )
             spec.add_interaction(
                 InteractionEncoder.from_data(
                     spec[a],

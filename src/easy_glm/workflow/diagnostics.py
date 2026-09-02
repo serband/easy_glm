@@ -22,6 +22,7 @@ import polars as pl
 
 from easy_glm.core.design import NUMERIC_DTYPES, quantile_knots
 from easy_glm.core.fit import GLMFit
+from easy_glm.engine.models import NULL_LABEL
 
 from .explore import band_expr
 from .project import ModelConfig
@@ -252,7 +253,7 @@ def ae_by_variable(
             frame = frame.with_columns(band_expr(variable, ks).alias("label"))
         else:
             frame = frame.with_columns(
-                pl.col(variable).cast(pl.Utf8).fill_null("null").alias("label")
+                pl.col(variable).cast(pl.Utf8).fill_null(NULL_LABEL).alias("label")
             )
         grouped = (
             frame.group_by("label")
@@ -263,7 +264,7 @@ def ae_by_variable(
                 pl.col(variable).cast(pl.Float64).min().alias("order"),
             )
             .with_columns(
-                pl.when(pl.col("label") == "null")
+                pl.when(pl.col("label") == NULL_LABEL)
                 .then(float("inf"))
                 .otherwise(pl.col("order"))
                 .alias("order")
@@ -271,7 +272,7 @@ def ae_by_variable(
         )
     else:
         frame = frame.with_columns(
-            pl.col(variable).cast(pl.Utf8).fill_null("null").alias("label")
+            pl.col(variable).cast(pl.Utf8).fill_null(NULL_LABEL).alias("label")
         )
         grouped = frame.group_by("label").agg(
             pl.col("__w__").sum().alias("exposure"),
@@ -329,12 +330,20 @@ def ae_by_pair(
     n_bins: int = 10,
     knots_a: list[float] | None = None,
     knots_b: list[float] | None = None,
+    levels_a: list[str] | None = None,
+    levels_b: list[str] | None = None,
     max_levels: int = 30,
 ) -> pl.DataFrame:
     """Actual, expected and A/E by **cell** of two variables — the standard way
     to look for an interaction the model is missing (large |log A/E| in a
-    cell with real exposure). Numerics are banded by ``knots_*`` (default:
-    quantile knots), categoricals by level (top ``max_levels``, rest lumped).
+    cell with real exposure).
+
+    Numerics are banded by ``knots_*`` (default: quantile knots) and
+    categoricals by ``levels_*`` (anything else, including null, goes to the
+    Other row; default: the top ``max_levels`` levels, the rest ``"(other)"``).
+    With the model's knots and levels the labels are **identical to the
+    rate-table row labels** of the parents (``rate_tables`` / the Excel matrix),
+    so the result joins onto an interaction table by ``(label_a, label_b)``.
 
     Columns: ``label_a``, ``label_b``, ``exposure``, ``actual``, ``expected``,
     ``ae``, ``actual_rate``, ``expected_rate``, ``order_a``, ``order_b``.
@@ -346,54 +355,60 @@ def ae_by_pair(
         pl.Series("__w__", w),
     )
 
-    def _band(var: str, knots: list[float] | None, suffix: str) -> pl.DataFrame:
+    def _band(
+        var: str, knots: list[float] | None, levels: list[str] | None, suffix: str
+    ) -> pl.DataFrame:
         nonlocal frame
         s = df[var]
-        if s.dtype in NUMERIC_DTYPES:
+        label = f"label_{suffix}"
+        if s.dtype in NUMERIC_DTYPES and levels is None:
             ks = knots or quantile_knots(s, n_bins)
             if ks:
-                frame = frame.with_columns(band_expr(var, ks).alias(f"label_{suffix}"))
+                frame = frame.with_columns(band_expr(var, ks).alias(label))
             else:
                 frame = frame.with_columns(
-                    pl.col(var).cast(pl.Utf8).fill_null("null").alias(f"label_{suffix}")
+                    pl.col(var).cast(pl.Utf8).fill_null(NULL_LABEL).alias(label)
                 )
             order = (
-                frame.group_by(f"label_{suffix}")
+                frame.group_by(label)
                 .agg(pl.col(var).cast(pl.Float64).min().alias("o"))
                 .with_columns(
-                    pl.when(pl.col(f"label_{suffix}") == "null")
+                    pl.when(pl.col(label) == NULL_LABEL)
                     .then(float("inf"))
                     .otherwise(pl.col("o"))
                     .alias("o")
                 )
             )
         else:
-            top = (
-                frame.group_by(pl.col(var).cast(pl.Utf8).alias("lvl"))
-                .agg(pl.col("__w__").sum().alias("w"))
-                .sort("w", descending=True)
-                .drop_nulls("lvl")
-                .head(max_levels)["lvl"]
-                .to_list()
-            )
+            if levels is not None:
+                top = [str(lv) for lv in levels]
+                other = NULL_LABEL  # unseen, lumped and null: the table's Other row
+            else:
+                top = (
+                    frame.group_by(pl.col(var).cast(pl.Utf8).alias("lvl"))
+                    .agg(pl.col("__w__").sum().alias("w"))
+                    .sort("w", descending=True)
+                    .drop_nulls("lvl")
+                    .head(max_levels)["lvl"]
+                    .to_list()
+                )
+                other = "(other)"
             frame = frame.with_columns(
                 pl.when(pl.col(var).is_null())
-                .then(pl.lit("null"))
+                .then(pl.lit(NULL_LABEL))
                 .when(pl.col(var).cast(pl.Utf8).is_in(top))
                 .then(pl.col(var).cast(pl.Utf8))
-                .otherwise(pl.lit("(other)"))
-                .alias(f"label_{suffix}")
+                .otherwise(pl.lit(other))
+                .alias(label)
             )
+            names = [*top, other] + ([NULL_LABEL] if other != NULL_LABEL else [])
             order = pl.DataFrame(
-                {
-                    f"label_{suffix}": [*top, "(other)", "null"],
-                    "o": [float(i) for i in range(len(top) + 2)],
-                }
+                {label: names, "o": [float(i) for i in range(len(names))]}
             )
         return order.rename({"o": f"order_{suffix}"})
 
-    order_a = _band(a, knots_a, "a")
-    order_b = _band(b, knots_b, "b")
+    order_a = _band(a, knots_a, levels_a, "a")
+    order_b = _band(b, knots_b, levels_b, "b")
     out = (
         frame.group_by("label_a", "label_b")
         .agg(

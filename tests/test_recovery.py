@@ -91,6 +91,36 @@ class TestPlantedInteraction:
         assert planted_cell["relativity"][0] > clean["relativity"].max()
         assert (clean["relativity"] <= 1.25).all()
 
+    def test_recovery_at_cv_chosen_alpha(self, planted):
+        """The product fits by cross-validation. At a CV-chosen alpha ordinary
+        lasso shrinkage recovers the planted interaction at roughly 65–85% of
+        its size (the independent reviewer measured 0.59–0.75 of 0.90 over three
+        seeds with cv=5 / 25 alphas); the thin cells must still be exactly flat
+        and the planted cell must still be the strongest adjustment. Bounds:
+        recovered in [0.45, 0.95] — wide enough for CV's fold randomness, tight
+        enough to fail if the P1 rule or the cell indexing regress."""
+        spec = DesignSpec.from_data(
+            planted,
+            ["DrivAge", "Region"],
+            knots={"DrivAge": KNOTS},
+            min_level_share=0.001,
+            interactions=[("DrivAge", "Region")],
+            min_cell_exposure=0.0,
+        )
+        fit = fit_glm(planted, spec, "ClaimNb", cv=5, n_alphas=20, **FIT)
+        assert 2e-4 < fit.alpha < 3e-3  # a CV alpha, not the hand-picked one
+        recovered = _double_difference(fit)
+        assert 0.45 <= recovered <= 0.95, recovered
+        tab = rate_tables(fit)["DrivAge×Region"]
+        thin = tab.filter((pl.col("from_b") == "R5") & (pl.col("exposure") > 0))
+        assert thin["relativity"].min() >= 0.98 and thin["relativity"].max() <= 1.02
+        planted_cell = tab.filter((pl.col("to_a") == 25.0) & (pl.col("from_b") == "R2"))
+        others = tab.filter(
+            pl.col("kept") & ~((pl.col("to_a") == 25.0) & (pl.col("from_b") == "R2"))
+        )
+        assert planted_cell["relativity"][0] > 1.2
+        assert planted_cell["relativity"][0] > others["relativity"].max()
+
     def test_ae_by_pair_exposes_the_missing_interaction(self, planted):
         spec = DesignSpec.from_data(
             planted,
@@ -115,12 +145,16 @@ class TestPlantedInteraction:
             "ae",
         }
         assert pair["exposure"].sum() == pytest.approx(planted["Exposure"].sum())
-        cell = pair.filter((pl.col("label_a") == "< 25") & (pl.col("label_b") == "R2"))
+        assert pair["actual"].sum() == pytest.approx(actual.sum())
+        assert pair["expected"].sum() == pytest.approx(expected.sum())
+        cell = pair.filter(
+            (pl.col("label_a") == "< 25.0") & (pl.col("label_b") == "R2")
+        )
         assert cell.height == 1
         assert abs(np.log(cell["ae"][0])) > 0.2
         # and everything else is roughly calibrated
         others = pair.filter(
-            ~((pl.col("label_a") == "< 25") & (pl.col("label_b") == "R2"))
+            ~((pl.col("label_a") == "< 25.0") & (pl.col("label_b") == "R2"))
             & (pl.col("exposure") > 200)
         )
         assert others["ae"].abs().max() < 1.5
@@ -139,7 +173,7 @@ class TestPlantedInteraction:
         w = df["Exposure"].to_numpy()
         actual = df["ClaimNb"].to_numpy()
         pair = ae_by_pair(df, "AgeBand", "Region", actual, actual * 1.1, w)
-        assert "null" in pair["label_b"].to_list()
+        assert "Other / Unknown" in pair["label_b"].to_list()
         assert pair["exposure"].sum() == pytest.approx(w.sum())
         with_claims = pair.filter(pl.col("expected") > 0)
         np.testing.assert_allclose(with_claims["ae"].to_numpy(), 1 / 1.1)

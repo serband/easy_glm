@@ -167,6 +167,48 @@ class TestProject:
         assert any("alpha or cv" in p for p in problems)
         assert any("No model named" in p for p in project.validate("nope"))
 
+    def test_adjustment_cell_flag_must_match_the_table_type(self, project):
+        from easy_glm.workflow import Adjustment
+        from easy_glm.workflow.run import apply_adjustments
+
+        df = prepare(project)
+        run = run_model(project, df, "freq")
+        cfg = project.models["freq"]
+        cfg.adjustments = [Adjustment("Region", "R2", "R2", 1.1, cell=True)]
+        with pytest.raises(ValueError, match="main effect"):
+            apply_adjustments(run.rate_model.clone(), cfg)
+        cfg.adjustments = [Adjustment("DrivAge×Region", None, 30.0, 1.1)]
+        with pytest.raises(ValueError, match="cell=True"):
+            apply_adjustments(run.rate_model.clone(), cfg)
+        cfg.adjustments = [Adjustment("Nope", 1, 2, 1.1)]
+        with pytest.raises(KeyError, match="not a variable"):
+            apply_adjustments(run.rate_model.clone(), cfg)
+        cfg.adjustments = []
+
+    def test_model_hash_reacts_to_interaction_settings_not_cell_edits(self, project):
+        from easy_glm.app.state import model_hash
+        from easy_glm.workflow import Adjustment
+
+        base = model_hash(project, "freq")
+        it = project.models["freq"].interactions[0]
+        it.min_cell_exposure = 0.03
+        assert model_hash(project, "freq") != base
+        it.min_cell_exposure = 0.02
+        it.penalty_weight = 2.0
+        assert model_hash(project, "freq") != base
+        it.penalty_weight = 1.0
+        assert model_hash(project, "freq") == base
+        project.models["freq"].adjustments.append(
+            Adjustment(
+                "DrivAge×Region", None, 30.0, 1.1, from_b="R2", to_b="R2", cell=True
+            )
+        )
+        assert model_hash(project, "freq") == base  # adjustments never force a refit
+        project.models["freq"].adjustments.clear()
+        removed = project.models["freq"].interactions.pop()
+        assert model_hash(project, "freq") != base
+        project.models["freq"].interactions.append(removed)
+
     def test_validate_interactions(self, project):
         cfg = project.models["freq"]
         cfg.interactions = [
@@ -279,7 +321,7 @@ class TestExplore:
         t = u["table"]
         assert u["kind"] == "numeric" and u["null_share"] > 0
         assert t["share"].sum() == pytest.approx(1.0)
-        assert t["label"][-1] == "null"
+        assert t["label"][-1] == "Other / Unknown"  # same label as the rate tables
         assert t["rate"].drop_nulls().min() >= 0
         c = univariate(
             df,
@@ -290,7 +332,7 @@ class TestExplore:
         )
         assert c["kind"] == "categorical"
         assert c["table"]["label"][0] == "R1"  # most exposed first
-        assert "null" in c["table"]["label"].to_list()
+        assert "Other / Unknown" in c["table"]["label"].to_list()
         many = univariate(
             df.with_columns(pl.col("IDpol").cast(pl.Utf8)), "IDpol", max_levels=5
         )
@@ -440,7 +482,7 @@ class TestDiagnostics:
         actual, expected, w = totals(holdout, run.config, run.predict(holdout))
         tbl = ae_by_variable(holdout, "DrivAge", actual, expected, w)
         assert tbl["actual"].sum() == pytest.approx(actual.sum())
-        assert tbl["label"][-1] == "null"
+        assert tbl["label"][-1] == "Other / Unknown"
         cat = ae_by_variable(holdout, "Region", actual, expected, w)
         assert cat["exposure"].sum() == pytest.approx(w.sum())
         # plant a missing factor: inflate actuals for Lic == 'Q'
@@ -496,9 +538,12 @@ class TestExport:
             )
         )
         run = run_model(project, df, "freq")
-        assert (
-            run.rate_model.variables["DrivAge×Region"].cell_matrix.max() >= 1.25 or True
+        applied = next(
+            r
+            for r in run.rate_model.variables["DrivAge×Region"].table
+            if r.key == kept.key
         )
+        assert applied.relativity == 1.25
         src = to_script(project, "freq", run=run, output_prefix="freq_v1")
         assert "StepEncoder('DrivAge'" in src and "CategoricalEncoder('Region'" in src
         assert "alpha=0.002" in src and "monotone={'DrivAge': 'decreasing'}" in src

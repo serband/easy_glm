@@ -13,6 +13,8 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
+from easy_glm.engine.models import INTERACTION_SEP
+
 PROJECT_VERSION = 2  # 1 = easy_glm 0.3 files (loaded and migrated)
 
 ROLES = ("target", "weight", "exposure", "offset", "split", "id", "predictor", "ignore")
@@ -161,7 +163,7 @@ class Interaction:
 
     @property
     def name(self) -> str:
-        return f"{self.a}×{self.b}"
+        return f"{self.a}{INTERACTION_SEP}{self.b}"
 
 
 @dataclass

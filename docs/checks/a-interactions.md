@@ -4,13 +4,15 @@
 
 ## What an interaction is here
 
-`DrivAge×BonusMalus` sits **on top of** the two main-effect tables: a policy's relativity is the DrivAge factor × the VehPower factor × one cell of the adjustment matrix below. A cell of 1.000 means *no adjustment* — either the data did not ask for one (the lasso kept it at 1) or the cell had too little exposure to be rated on its own (shown with its exposure so you can tell the two apart). This is the Emblem-style layout agreed in the plan (mains + adjustment matrix, joint fit).
+`DrivAge×BonusMalus` sits **on top of** the two main-effect tables: a policy's relativity is the DrivAge factor × the BonusMalus factor × one cell of the adjustment matrix below. A cell of 1.000 means *no adjustment* — either the data did not ask for one (the lasso kept it at 1) or the cell had too little exposure to be rated on its own (shown with its exposure so you can tell the two apart). This is the Emblem-style layout agreed in the plan (mains + adjustment matrix, joint fit).
 
 ## Defaults in force (from the questions for the actuary)
 
 - **Q4** minimum cell exposure: 0.5% of the interaction's training exposure (28 of 210 cells were rated on their own; the rest adjust by 1.000).
 - **Q5** joint fit: the main-effect tables move when the interaction is added; both versions of the DrivAge table are shown below so the movement is visible.
 - Thin cells are penalised harder than fat ones (an unstandardised penalty scaled so that a 50/50 cell is treated like a 50/50 main effect), so sparse corners of the matrix do not pick up noise.
+- **Alpha 0.0003 was fixed by hand for this check** — at the plan's default 0.001 the penalty kept no cells at all, so there would have been nothing to look at. The workbench chooses alpha by cross-validation; at a CV-chosen alpha the same planted effect (controlled check below) comes back at roughly 65–85% of its true size — ordinary lasso shrinkage — and the remainder shows up in the A/E-by-pair table, which is why that table is part of this document.
+- In the matrix, `1.000 (14,759)` and `1.000 (20)` mean different things: the first cell had plenty of data and the lasso left it alone, the second was too thin to be rated on its own. The exposure in brackets tells them apart.
 
 ## Holdout metrics with and without the interaction
 
@@ -50,6 +52,8 @@ Rate tables (mains × matrix) reproduce the GLM on the holdout: max relative dif
 | ≥ 72.0 | 0.907 | 1.062 | +17.0% |
 | Other / Unknown | 0.838 | 0.661 | -21.1% |
 
+The `Other / Unknown` row (drivers with no recorded age) moves with the `< 25.0` band because missing ages sit in the lowest band and the data has no such drivers, so no separate effect was fitted for them.
+
 ## Adjustment matrix `DrivAge×BonusMalus` — relativity (training exposure)
 
 | DrivAge \ BonusMalus | < 53.0 | [53.0, 57.0) | [57.0, 60.0) | [60.0, 64.0) | [64.0, 72.0) | [72.0, 76.0) | [76.0, 85.0) | [85.0, 95.0) | ≥ 95.0 | Other / Unknown |
@@ -76,12 +80,12 @@ Rate tables (mains × matrix) reproduce the GLM on the holdout: max relative dif
 | ≥ 72.0 | 0.805 (14,759) | 1.000 (371) | 1.000 (278) | 1.000 (352) | 1.000 (322) | 1.000 (97) | 1.000 (178) | 1.000 (130) | 1.000 (134) | — |
 | Other / Unknown | — | — | — | — | — | — | — | — | — | — |
 
-## A/E by DrivAge × VehPower cell on the holdout (cells with exposure > 300)
+## A/E by DrivAge × BonusMalus cell on the holdout (cells with exposure > 300)
 
 | model | worst |log A/E| | exposure-weighted RMS |log A/E| | worst cell |
 |---|---|---|---|
-| without | 0.611 | 0.136 | < 25 | [72, 85) |
-| with | 0.461 | 0.122 | [44, 46) | [53, 60) |
+| without | 0.740 | 0.139 | [28.0, 30.0) | [60.0, 64.0) |
+| with | 0.722 | 0.120 | [28.0, 30.0) | [60.0, 64.0) |
 
 ## Controlled check on synthetic data
 

@@ -22,6 +22,8 @@ from easy_glm.engine import RateModel
 from easy_glm.engine._scoring import row_index as engine_row_index
 from easy_glm.engine.models import CellRow
 from easy_glm.ui.metrics import compute_actual_expected
+from easy_glm.workflow import ae_by_pair
+from easy_glm.workflow.explore import band_labels
 
 
 def _book(seed: int = 5, n: int = 6000) -> pl.DataFrame:
@@ -130,6 +132,27 @@ class TestRowIndex:
             eng_idx = engine_row_index(score[var], rm.variables[var])
             np.testing.assert_array_equal(enc_idx, eng_idx)
             assert enc_idx.max() < spec[var].n_rows == len(rm.variables[var].table)
+
+    def test_encoder_and_engine_agree_on_an_adversarial_frame(self, spec, fitted):
+        """Nulls, NaN, values exactly on knots, unseen and integer-coded levels."""
+        _, rm = fitted
+        frame = pl.DataFrame(
+            {
+                "DrivAge": [None, float("nan"), 24.999, 25.0, 60.0, 1e9, -5.0],
+                "Region": ["R1", None, "R2", "NEVER", "R4", "R3", ""],
+                "VehPower": pl.Series([4, None, 99, 11, 4, 5, 7], dtype=pl.Int64),
+            }
+        )
+        for var in ("DrivAge", "Region", "VehPower"):
+            np.testing.assert_array_equal(
+                spec[var].row_index(frame[var]),
+                engine_row_index(frame[var], rm.variables[var]),
+            )
+        # and the rule is the documented one
+        assert spec["DrivAge"].row_index(frame["DrivAge"]).tolist()[:4] == [6, 6, 0, 1]
+        assert spec["Region"].row_index(frame["Region"]).tolist()[1] == len(
+            spec["Region"].levels
+        )
 
     def test_interaction_cell_index_uses_parents(self, book, spec):
         inter = spec["DrivAge×Region"]
@@ -250,6 +273,49 @@ class TestInteractionEncoder:
         np.testing.assert_allclose(
             np.asarray(m_ab), np.asarray(m_ba).T, rtol=1e-4, atol=1e-6
         )
+
+    def test_parent_must_be_a_predictor(self, book):
+        with pytest.raises(ValueError, match="not one of the predictors"):
+            DesignSpec.from_data(
+                book,
+                ["DrivAge"],
+                knots={"DrivAge": [30]},
+                interactions=[("DrivAge", "Region")],
+            )
+
+    def test_separator_in_a_variable_name_is_refused(self):
+        a = StepEncoder("age×band", [30.0])
+        b = CategoricalEncoder("r", ["A", "B"])
+        with pytest.raises(ValueError, match="separator"):
+            InteractionEncoder(a, b, [(0, 0)], np.zeros((a.n_rows, b.n_rows)).tolist())
+
+    def test_zero_kept_cells(self, book):
+        s = DesignSpec.from_data(
+            book,
+            ["DrivAge", "Region"],
+            knots={"DrivAge": [30, 45]},
+            min_level_share=0.02,
+            weight_col="Exposure",
+            interactions=[("DrivAge", "Region")],
+            min_cell_exposure=0.99,  # above every cell's share
+        )
+        enc = s["DrivAge×Region"]
+        assert enc.cells == [] and enc.n_features == 0
+        fit = fit_glm(
+            book,
+            s,
+            "ClaimNb",
+            family="poisson",
+            weight_col="Exposure",
+            divide_target_by_weight=True,
+            alpha=0.001,
+        )
+        rm = to_rate_model(fit)
+        score = _scoring(book)
+        np.testing.assert_allclose(
+            rm.predict(score, exposure_col=None), fit.predict(score), rtol=1e-10
+        )
+        assert (rate_tables(fit)["DrivAge×Region"]["relativity"] == 1.0).all()
 
     def test_monotone_on_interaction_raises(self, spec):
         with pytest.raises(ValueError, match="step"):
@@ -429,6 +495,105 @@ class TestRateModelInteractions:
         lumped = expected.filter(pl.col("relativity") == 1.0)
         assert lumped.height > 0
 
+    def test_labels_match_between_diagnostic_and_tables(self, book, fitted):
+        """ae_by_pair with the model's knots and levels is joinable onto the
+        interaction table by (label_a, label_b)."""
+        fit, rm = fitted
+        name = "DrivAge×Region"
+        frame = book.tail(2000)
+        actual = frame["ClaimNb"].to_numpy()
+        w = frame["Exposure"].to_numpy()
+        pair = ae_by_pair(
+            frame,
+            "DrivAge",
+            "Region",
+            actual,
+            fit.predict(frame) * w,
+            w,
+            knots_a=fit.spec["DrivAge"].knots,
+            levels_b=fit.spec["Region"].levels,
+        )
+        table = rate_tables(fit)[name]
+        rows_a, rows_b, _, _ = interaction_matrices(rm, name)
+        assert set(pair["label_a"]) <= set(rows_a)
+        assert set(pair["label_b"]) <= set(rows_b)
+        assert band_labels(fit.spec["DrivAge"].knots) == rows_a[:-1]
+        joined = pair.join(table, on=["label_a", "label_b"], how="left")
+        assert joined["relativity"].null_count() == 0
+        assert "Other / Unknown" in pair["label_a"].to_list()
+
+    def test_long_parent_names_keep_the_matrix_suffix(self, book, tmp_path):
+        names = {
+            "DrivAge": "DriverAgeAtInceptionInWholeYears",
+            "Region": "GeographicalRegionCodeOfRisk",
+            "Density": "PopulationDensityOfAreaOfRisk",
+        }
+        long = book.rename(names)
+        s = DesignSpec.from_data(
+            long,
+            list(names.values()),
+            knots={names["DrivAge"]: [30, 45], names["Density"]: [800, 1600]},
+            min_level_share=0.02,
+            weight_col="Exposure",
+            interactions=[
+                (names["DrivAge"], names["Region"]),
+                (names["DrivAge"], names["Density"]),
+            ],
+            min_cell_exposure=0.01,
+        )
+        fit = fit_glm(
+            long,
+            s,
+            "ClaimNb",
+            family="poisson",
+            weight_col="Exposure",
+            divide_target_by_weight=True,
+            alpha=0.001,
+        )
+        path = to_rate_model(fit).to_excel(tmp_path / "long.xlsx")
+        sheet_names = list(pl.read_excel(path, sheet_id=0))
+        matrix = [n for n in sheet_names if n.endswith(" (matrix)")]
+        assert len(matrix) == 2 and len(set(sheet_names)) == len(sheet_names)
+        assert all(len(n) <= 31 for n in sheet_names)
+
+    def test_excel_long_sheets_rebuild_an_adjusted_model(self, book, tmp_path):
+        s = DesignSpec.from_data(
+            book,
+            ["DrivAge", "Region", "VehPower"],
+            knots={"DrivAge": [30, 45]},
+            categorical=["VehPower"],
+            min_level_share=0.02,
+            weight_col="Exposure",
+            interactions=[("DrivAge", "Region"), ("VehPower", "Region")],
+            min_cell_exposure=0.01,
+        )
+        fit = fit_glm(
+            book,
+            s,
+            "ClaimNb",
+            family="poisson",
+            weight_col="Exposure",
+            divide_target_by_weight=True,
+            alpha=0.001,
+        )
+        rm = to_rate_model(fit, exposure_col="Exposure")
+        cell = next(r for r in rm.variables["VehPower×Region"].table if r.exposure > 0)
+        rm.update_relativity(
+            "VehPower×Region",
+            cell.from_a,
+            cell.to_a,
+            1.77,
+            from_b=cell.from_b,
+            to_b=cell.to_b,
+        )
+        rm.update_relativity("Region", "R2", "R2", 0.5)
+        path = rm.to_excel(tmp_path / "two.xlsx")
+        sheets = pl.read_excel(path, sheet_id=0)
+        tables = {v: sheets[v] for v in rm.variables}
+        back = RateModel.from_rate_tables(tables, rm.base_rate, exposure_col="Exposure")
+        score = _scoring(book)
+        np.testing.assert_allclose(back.predict(score), rm.predict(score), rtol=1e-9)
+
     def test_from_rate_tables_roundtrip_and_errors(self, book, fitted):
         fit, rm = fitted
         score = _scoring(book)
@@ -468,6 +633,16 @@ class TestRateModelInteractions:
         dup = pl.concat([tables["DrivAge×Region"], tables["DrivAge×Region"].head(1)])
         with pytest.raises(ValueError, match="twice"):
             RateModel.from_rate_tables({**tables, "DrivAge×Region": dup}, 1.0)
+
+    def test_interaction_name_split_is_robust(self):
+        from easy_glm.engine.rate_model import _split_interaction_name
+
+        assert _split_interaction_name("a×b×c", {"a×b": 1, "c": 1}) == ("a×b", "c")
+        assert _split_interaction_name("a×b×c", {"a": 1, "b×c": 1}) == ("a", "b×c")
+        with pytest.raises(ValueError, match="ambiguous"):
+            _split_interaction_name("a×b×c", {"a×b": 1, "c": 1, "a": 1, "b×c": 1})
+        with pytest.raises(ValueError, match="must be named"):
+            _split_interaction_name("a×zzz", {"a": 1, "b": 1})
 
     def test_unknown_type_still_rejected(self, fitted):
         _, rm = fitted

@@ -13,6 +13,7 @@ import polars as pl
 
 from ._scoring import score_categorical, score_interaction, score_numeric
 from .models import (
+    INTERACTION_SEP,
     CellRow,
     Change,
     FromToRow,
@@ -36,10 +37,6 @@ _SCORERS: dict[str, Any] = {
 #: table types this release can read and score ("interaction" needs two columns
 #: and is dispatched separately in :meth:`RateModel.predict`)
 KNOWN_TYPES = frozenset(_SCORERS) | {"interaction"}
-
-#: separator in interaction variable names ("A×B"); kept in sync with
-#: ``easy_glm.core.design.INTERACTION_SEP``
-INTERACTION_SEP = "×"
 
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
@@ -70,6 +67,26 @@ def _row_from_dict(r: dict[str, Any]) -> Any:
 
 def _rows_from_list(rows: list[dict[str, Any]]) -> list[Any]:
     return [_row_from_dict(r) for r in rows]
+
+
+def _split_interaction_name(name: str, variables: dict[str, Any]) -> tuple[str, str]:
+    """``"A×B"`` -> ``("A", "B")`` where both are known main effects. Tries every
+    split point so a main-effect name that itself contains the separator still
+    resolves when the pair is unambiguous."""
+    candidates = []
+    idx = name.find(INTERACTION_SEP)
+    while idx != -1:
+        a, b = name[:idx], name[idx + len(INTERACTION_SEP) :]
+        if a in variables and b in variables and a != b:
+            candidates.append((a, b))
+        idx = name.find(INTERACTION_SEP, idx + 1)
+    if len(candidates) != 1:
+        raise ValueError(
+            f"Interaction table {name!r} must be named 'A{INTERACTION_SEP}B' where A "
+            f"and B are main effects with their own tables (known: {sorted(variables)})"
+            + ("; the name is ambiguous" if len(candidates) > 1 else "")
+        )
+    return candidates[0]
 
 
 def _row_key(row: Any) -> tuple:
@@ -328,13 +345,7 @@ class RateModel:
             raise ValueError(
                 f"Interaction table for {name!r} lacks columns {sorted(missing)}"
             )
-        parts = name.split(INTERACTION_SEP)
-        if len(parts) != 2 or not all(p in variables for p in parts):
-            raise ValueError(
-                f"Interaction table {name!r} must be named 'A{INTERACTION_SEP}B' "
-                "where A and B are main effects with their own tables"
-            )
-        a, b = parts
+        a, b = _split_interaction_name(name, variables)
         has_exposure = "exposure" in table.columns
         rows: list[CellRow] = []
         seen: set[tuple] = set()
