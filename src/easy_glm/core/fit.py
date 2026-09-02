@@ -205,8 +205,7 @@ def _modal_bins(
             idx = np.searchsorted(np.asarray(enc.knots), x, side="right")
             n_rows = len(enc.knots) + 2  # bins + null row
             idx = np.where(np.isnan(x), n_rows - 1, idx)
-        else:
-            assert isinstance(enc, CategoricalEncoder)
+        elif isinstance(enc, CategoricalEncoder):
             vals = data[var].cast(pl.Utf8)
             lookup = {lvl: i for i, lvl in enumerate(enc.levels)}
             n_rows = len(enc.levels) + 1  # levels + other row
@@ -216,6 +215,8 @@ def _modal_bins(
                     for v in vals.to_list()
                 ]
             )
+        else:
+            raise NotImplementedError(f"No modal-bin rule for {type(enc).__name__}")
         out[var] = int(np.argmax(np.bincount(idx, weights=w, minlength=n_rows)))
     return out
 

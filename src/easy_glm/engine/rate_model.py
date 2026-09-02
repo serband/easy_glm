@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import warnings
+from dataclasses import asdict, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,28 @@ from ._scoring import score_categorical, score_numeric
 from .models import Change, FromToRow, ModelMetadata, Snapshot, VariableConfig
 
 _UNSET = object()
+
+#: ``.easyglm`` file format version written by this release. Readers accept
+#: older versions (migrating them) and refuse newer ones.
+FORMAT_VERSION = 2
+
+#: How each ``VariableConfig.type`` is scored. Unknown types are an error, never
+#: silently treated as another type.
+_SCORERS: dict[str, Any] = {
+    "numeric": lambda col, cfg: score_numeric(col.to_numpy(), cfg),
+    "categorical": score_categorical,
+}
+
+_METADATA_FIELDS = {f.name for f in fields(ModelMetadata)}
+
+
+def _metadata_from_dict(raw: dict[str, Any] | None) -> ModelMetadata:
+    """Build metadata tolerating missing (older files) and unknown (newer files) keys."""
+    raw = raw or {}
+    known = {k: v for k, v in raw.items() if k in _METADATA_FIELDS}
+    if "predictor_variables" in known and known["predictor_variables"] is None:
+        known["predictor_variables"] = []
+    return ModelMetadata(**known)
 
 
 class RateModel:
@@ -226,16 +249,34 @@ class RateModel:
                 raise ValueError(f"Column '{name}' not found in data")
 
             col = data[name]
-            if config.type == "numeric":
-                rel = score_numeric(col.to_numpy(), config)
-            else:
-                rel = score_categorical(col, config)
+            scorer = _SCORERS.get(config.type)
+            if scorer is None:
+                raise ValueError(
+                    f"Variable {name!r} has table type {config.type!r}, which this "
+                    f"version of easy_glm cannot score (known: {sorted(_SCORERS)}). "
+                    "The model file probably comes from a newer easy_glm."
+                )
+            result *= scorer(col, config)
 
-            result *= rel
-
+        result = self._apply_offset(result, data)
         result = self._apply_exposure(result, data, exposure_col)
 
         return result
+
+    def _apply_offset(self, result: np.ndarray, data: pl.DataFrame) -> np.ndarray:
+        """Multiply by ``exp(offset)`` (or the raw column) when the fit used an offset."""
+        name = self.metadata.offset_col
+        if not name:
+            return result
+        if name not in data.columns:
+            warnings.warn(
+                f"Offset column '{name}' not found in data — predictions exclude "
+                "the offset and will not match the fitted GLM",
+                stacklevel=2,
+            )
+            return result
+        offset = data[name].cast(pl.Float64).to_numpy()
+        return result * (np.exp(offset) if self.metadata.offset_is_log else offset)
 
     def _apply_exposure(
         self,
@@ -346,14 +387,7 @@ class RateModel:
             name: copy.deepcopy(config.table) for name, config in self.variables.items()
         }
 
-        metadata_dict = {
-            "model_type": self.metadata.model_type,
-            "target": self.metadata.target,
-            "weight_col": self.metadata.weight_col,
-            "exposure_col": self.metadata.exposure_col,
-            "train_test_col": self.metadata.train_test_col,
-            "predictor_variables": list(self.metadata.predictor_variables),
-        }
+        metadata_dict = asdict(self.metadata)
 
         snapshot = Snapshot(
             version=version,
@@ -384,7 +418,7 @@ class RateModel:
         RateModel._precompute_variables(self.variables)
         self.column_mapping = dict(snapshot.column_mapping)
         if snapshot.metadata:
-            self.metadata = ModelMetadata(**snapshot.metadata)
+            self.metadata = _metadata_from_dict(snapshot.metadata)
         self.current_version = version
 
     def clone(self) -> RateModel:
@@ -413,8 +447,33 @@ class RateModel:
             for s in self.snapshots
         ]
 
-    def diff(self, v1: int, v2: int) -> list[Change]:
-        return self.snapshots[v2 - 1].changes
+    def diff(self, v1: int, v2: int, *, tol: float = 1e-12) -> list[Change]:
+        """Relativities that differ between snapshot ``v1`` and snapshot ``v2``.
+
+        One :class:`Change` per (variable, row) whose relativity moved by more
+        than ``tol`` (``old_relativity`` is NaN for rows absent from ``v1``).
+        """
+        for v in (v1, v2):
+            if v < 1 or v > len(self.snapshots):
+                raise ValueError(f"Invalid version: {v}")
+        before = self.snapshots[v1 - 1].relativities
+        after = self.snapshots[v2 - 1].relativities
+        out: list[Change] = []
+        for var, rows in after.items():
+            old_rows = {(r.from_, r.to_): r.relativity for r in before.get(var, [])}
+            for r in rows:
+                old = old_rows.get((r.from_, r.to_))
+                if old is None or abs(old - r.relativity) > tol:
+                    out.append(
+                        Change(
+                            variable=var,
+                            from_=r.from_,
+                            to_=r.to_,
+                            old_relativity=float("nan") if old is None else old,
+                            new_relativity=r.relativity,
+                        )
+                    )
+        return out
 
     def to_json(self, path: str | Path) -> None:
         data = self._to_dict()
@@ -428,11 +487,15 @@ class RateModel:
         from easy_glm.core.excel import rate_model_tables, write_rate_tables_xlsx
 
         summary: dict[str, Any] = {
+            "tables": "current relativities (manual adjustments included)",
             "base_rate": self.base_rate,
             "model_type": self.metadata.model_type,
+            "link": self.metadata.link,
             "target": self.metadata.target,
+            "target divided by weight": self.metadata.divide_target_by_weight,
             "weight_col": self.metadata.weight_col,
             "exposure_col": self.metadata.exposure_col,
+            "offset_col": self.metadata.offset_col,
             "train_test_col": self.metadata.train_test_col,
             "predictors": list(self.variables),
             "version": self.current_version,
@@ -447,14 +510,8 @@ class RateModel:
 
     def _to_dict(self) -> dict[str, Any]:
         return {
-            "metadata": {
-                "model_type": self.metadata.model_type,
-                "target": self.metadata.target,
-                "weight_col": self.metadata.weight_col,
-                "exposure_col": self.metadata.exposure_col,
-                "train_test_col": self.metadata.train_test_col,
-                "predictor_variables": list(self.metadata.predictor_variables),
-            },
+            "format_version": FORMAT_VERSION,
+            "metadata": asdict(self.metadata),
             "base_rate": self.base_rate,
             "current_version": self.current_version,
             "column_mapping": {str(k): str(v) for k, v in self.column_mapping.items()},
@@ -511,6 +568,14 @@ class RateModel:
 
     @classmethod
     def _from_dict(cls, raw: dict[str, Any]) -> RateModel:
+        version = int(raw.get("format_version", 1))
+        if version > FORMAT_VERSION:
+            raise ValueError(
+                f"This .easyglm file is format version {version}; this easy_glm "
+                f"reads up to version {FORMAT_VERSION}. Upgrade easy_glm to open it."
+            )
+        if version < FORMAT_VERSION:
+            raw = cls._migrate(raw, version)
         variables: dict[str, VariableConfig] = {}
         for name, vdata in raw["variables"].items():
             table = [
@@ -525,15 +590,7 @@ class RateModel:
 
         cls._precompute_variables(variables)
 
-        meta_raw = raw.get("metadata", {})
-        metadata = ModelMetadata(
-            model_type=meta_raw.get("model_type"),
-            target=meta_raw.get("target"),
-            weight_col=meta_raw.get("weight_col"),
-            exposure_col=meta_raw.get("exposure_col"),
-            train_test_col=meta_raw.get("train_test_col"),
-            predictor_variables=meta_raw.get("predictor_variables", []),
-        )
+        metadata = _metadata_from_dict(raw.get("metadata"))
 
         column_mapping = raw.get("column_mapping", {})
 
@@ -582,6 +639,21 @@ class RateModel:
             current_version=raw.get("current_version", 0),
             column_mapping=column_mapping,
         )
+
+    @staticmethod
+    def _migrate(raw: dict[str, Any], version: int) -> dict[str, Any]:
+        """Upgrade an older file dict in memory to :data:`FORMAT_VERSION`."""
+        raw = dict(raw)
+        if version < 2:
+            # v1 (easy_glm <= 0.3): no offset/link/target flags were recorded.
+            meta = dict(raw.get("metadata") or {})
+            meta.setdefault("offset_col", None)
+            meta.setdefault("offset_is_log", True)
+            meta.setdefault("link", "log")
+            meta.setdefault("divide_target_by_weight", None)
+            raw["metadata"] = meta
+        raw["format_version"] = FORMAT_VERSION
+        return raw
 
     @staticmethod
     def _precompute_variables(variables: dict[str, VariableConfig]) -> None:

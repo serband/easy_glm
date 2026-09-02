@@ -8,16 +8,32 @@ executes it; :mod:`easy_glm.workflow.export` renders it as a Python script.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+import warnings
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-PROJECT_VERSION = 1
+PROJECT_VERSION = 2  # 1 = easy_glm 0.3 files (loaded and migrated)
 
 ROLES = ("target", "weight", "exposure", "offset", "split", "id", "predictor", "ignore")
 SINGLE_ROLES = ("target", "weight", "exposure", "offset", "split")
 SOURCE_TYPES = ("parquet", "csv", "sas7bdat", "xlsx", "ipc")
 FAMILIES = ("poisson", "gamma", "tweedie", "gaussian", "binomial", "inverse_gaussian")
+
+
+def _build(cls, raw: dict[str, Any] | None, where: str):
+    """Construct a dataclass from a dict, warning about (and dropping) unknown
+    keys instead of crashing, so files written by a newer minor version open."""
+    raw = dict(raw or {})
+    known = {f.name for f in fields(cls)}
+    unknown = sorted(k for k in raw if k not in known)
+    if unknown:
+        warnings.warn(
+            f"Ignoring unknown project keys {unknown} in {where} "
+            "(written by a newer easy_glm?)",
+            stacklevel=3,
+        )
+    return cls(**{k: v for k, v in raw.items() if k in known})
 
 
 # --------------------------------------------------------------------------
@@ -284,35 +300,42 @@ class Project:
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Project:
         raw = dict(raw)
-        version = raw.get("version", PROJECT_VERSION)
+        version = int(raw.get("version", 1))
         if version > PROJECT_VERSION:
             raise ValueError(
-                f"Project version {version} is newer than supported ({PROJECT_VERSION})"
+                f"Project version {version} is newer than supported "
+                f"({PROJECT_VERSION}); upgrade easy_glm to open this project"
             )
+        if version < PROJECT_VERSION:
+            raw = cls._migrate(raw, version)
         d = raw.get("data", {})
         data = DataConfig(
-            source=DataSource(**d.get("source", {})),
+            source=_build(DataSource, d.get("source", {}), "data.source"),
             sample_rows=d.get("sample_rows"),
             sample_seed=d.get("sample_seed", 42),
             renames=dict(d.get("renames", {})),
             roles=dict(d.get("roles", {})),
             types=dict(d.get("types", {})),
-            recodes={k: Recode(**v) for k, v in d.get("recodes", {}).items()},
-            derived=[Derived(**x) for x in d.get("derived", [])],
+            recodes={
+                k: _build(Recode, v, f"data.recodes[{k!r}]")
+                for k, v in d.get("recodes", {}).items()
+            },
+            derived=[_build(Derived, x, "data.derived") for x in d.get("derived", [])],
             filters=list(d.get("filters", [])),
-            split=Split(**d.get("split", {})),
+            split=_build(Split, d.get("split", {}), "data.split"),
         )
         g = raw.get("design", {})
         design = DesignConfig(
-            defaults=DesignDefaults(**g.get("defaults", {})),
+            defaults=_build(DesignDefaults, g.get("defaults", {}), "design.defaults"),
             variables={
-                k: VariableDesign(**v) for k, v in g.get("variables", {}).items()
+                k: _build(VariableDesign, v, f"design.variables[{k!r}]")
+                for k, v in g.get("variables", {}).items()
             },
         )
         models: dict[str, ModelConfig] = {}
         for name, m in raw.get("models", {}).items():
             m = dict(m)
-            penalty = Penalty(**m.pop("penalty", {}))
+            penalty = _build(Penalty, m.pop("penalty", {}), f"models[{name!r}].penalty")
             adjustments = [
                 Adjustment(
                     a["variable"],
@@ -322,7 +345,11 @@ class Project:
                 )
                 for a in m.pop("adjustments", [])
             ]
-            models[name] = ModelConfig(penalty=penalty, adjustments=adjustments, **m)
+            models[name] = _build(
+                ModelConfig,
+                {**m, "penalty": penalty, "adjustments": adjustments},
+                f"models[{name!r}]",
+            )
         exploration = raw.get("exploration") or {
             "leakage": {"ignored": [], "acknowledged": []}
         }
@@ -335,6 +362,17 @@ class Project:
             champion=raw.get("champion"),
             exploration=exploration,
         )
+
+    @staticmethod
+    def _migrate(raw: dict[str, Any], version: int) -> dict[str, Any]:
+        """Upgrade an older project dict in memory to :data:`PROJECT_VERSION`.
+
+        v1 (easy_glm 0.3) → v2: no structural change; v2 readers additionally
+        tolerate unknown keys (written by newer minor versions).
+        """
+        raw = dict(raw)
+        raw["version"] = PROJECT_VERSION
+        return raw
 
     def to_json(self, path: str | Path) -> Path:
         path = Path(path)

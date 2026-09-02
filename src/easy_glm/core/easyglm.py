@@ -250,15 +250,21 @@ class EasyGLM:
         return cls(glm, rm, tables or None)
 
     def to_excel(self, path: str | Path) -> Path:
-        """Write the rate tables to an ``.xlsx`` workbook: a ``Summary`` sheet,
-        an ``Index``, the ``Coefficients`` table and one sheet per variable
-        (``from`` / ``to`` / ``label`` / ``coef`` / ``relativity`` / ``is_base``)."""
+        """Write the **fitted** rate tables to an ``.xlsx`` workbook: a ``Summary``
+        sheet, an ``Index``, the ``Coefficients`` table and one sheet per variable
+        (``from`` / ``to`` / ``label`` / ``coef`` / ``relativity`` / ``is_base``).
+        Manual adjustments are *not* reflected here; use ``rate_model.to_excel``."""
         from .excel import write_rate_tables_xlsx
 
+        summary = {
+            "tables": "fitted (pre-adjustment) relativities — for the tables the "
+            "scorer uses, including manual adjustments, use RateModel.to_excel",
+            **self.summary(),
+        }
         return write_rate_tables_xlsx(
             self.relativities,
             path,
-            summary=self.summary(),
+            summary=summary,
             coef_table=self.coef_table(),
         )
 

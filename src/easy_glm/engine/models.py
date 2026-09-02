@@ -14,6 +14,15 @@ class ModelMetadata:
     exposure_col: str | None = None
     train_test_col: str | None = None
     predictor_variables: list[str] = field(default_factory=list)
+    #: offset column applied at scoring (linear-predictor scale when
+    #: ``offset_is_log``); ``None`` = no offset
+    offset_col: str | None = None
+    offset_is_log: bool = True
+    #: link function of the fitted GLM ("log" for multiplicative tables)
+    link: str = "log"
+    #: True when the GLM target was ``target / weight`` (e.g. claim counts with an
+    #: exposure weight); ``None`` for files written before this was recorded
+    divide_target_by_weight: bool | None = None
 
 
 @dataclass

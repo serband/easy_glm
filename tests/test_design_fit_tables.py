@@ -498,7 +498,8 @@ def test_to_excel_writes_summary_coefficients_and_one_sheet_per_variable(
 
     tables = rate_model_tables(rm)
     age = tables["DrivAge"]
-    assert age.columns == ["from", "to", "label", "relativity"]
+    assert age.columns == ["from", "to", "label", "fitted", "relativity"]
+    np.testing.assert_allclose(age["fitted"].to_numpy(), age["relativity"].to_numpy())
     assert age.height == len(fit.spec["DrivAge"].knots) + 2
     assert age["from"].dtype == pl.Float64
     np.testing.assert_allclose(

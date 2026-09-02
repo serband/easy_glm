@@ -32,7 +32,9 @@ def score_categorical(series: pl.Series, config: VariableConfig) -> np.ndarray:
         return _score_categorical_fallback(series, config)
 
     fallback = config.fallback
-    arr = series.to_numpy()
+    # Levels are stored as strings; compare as strings so integer-typed
+    # categorical columns match their levels.
+    arr = series.cast(pl.Utf8).to_numpy()
     result = np.full(len(arr), fallback, dtype=float)
 
     if cat_map:
@@ -69,11 +71,11 @@ def _score_categorical_fallback(
     fallback = config.fallback
     for row in config.table:
         if row.from_ is not None:
-            known[row.from_] = row.relativity
+            known[str(row.from_)] = row.relativity
         else:
             fallback = row.relativity
 
-    arr = series.to_numpy()
+    arr = series.cast(pl.Utf8).to_numpy()
     result = np.full(len(arr), fallback, dtype=float)
 
     for level, rel in known.items():

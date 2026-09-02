@@ -88,12 +88,22 @@ if "dirty" not in st.session_state:
     st.session_state.dirty = False
 
 if "actual_formula" not in st.session_state:
-    # --formula=sum_over_weight is the right choice for count targets with an
-    # exposure weight (actual = sum(claims) / sum(exposure)).
-    _formula = args.get("formula", "sum_weighted")
-    st.session_state.actual_formula = (
-        _formula if _formula in FORMULAS else "sum_weighted"
-    )
+    # Default from the model's metadata: a count target divided by an exposure
+    # weight needs actual = sum(claims) / sum(exposure); a rate target needs the
+    # exposure-weighted mean. --formula=... overrides.
+    _formula = args.get("formula")
+    if _formula not in FORMULAS:
+        _meta = (
+            st.session_state.baseline_rm.metadata
+            if st.session_state.baseline_rm is not None
+            else None
+        )
+        _formula = (
+            "sum_over_weight"
+            if _meta is not None and _meta.divide_target_by_weight and _meta.weight_col
+            else "sum_weighted"
+        )
+    st.session_state.actual_formula = _formula
 
 # ---------------------------------------------------------------------------
 # Convenience accessors

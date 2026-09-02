@@ -40,8 +40,9 @@ def sheet_name(key: str, used: set[str]) -> str:
 
 
 def rate_model_tables(rm: RateModel) -> dict[str, pl.DataFrame]:
-    """Per-variable ``from`` / ``to`` / ``label`` / ``relativity`` frames of a
-    :class:`RateModel` (its *current* version)."""
+    """Per-variable ``from`` / ``to`` / ``label`` / [``fitted``] / ``relativity``
+    frames of a :class:`RateModel`. ``relativity`` is the *current* value (manual
+    adjustments included); ``fitted`` is the first snapshot's value when present."""
     out: dict[str, pl.DataFrame] = {}
     for var, cfg in rm.variables.items():
         numeric = cfg.type == "numeric"
@@ -50,16 +51,21 @@ def rate_model_tables(rm: RateModel) -> dict[str, pl.DataFrame]:
         froms = [None if r.from_ is None else cast(r.from_) for r in cfg.table]
         tos = [None if r.to_ is None else cast(r.to_) for r in cfg.table]
 
-        out[var] = pl.DataFrame(
-            {
-                "from": pl.Series(froms, dtype=dtype),
-                "to": pl.Series(tos, dtype=dtype),
-                "label": [level_label(r) for r in cfg.table],
-                "relativity": pl.Series(
-                    [float(r.relativity) for r in cfg.table], dtype=pl.Float64
-                ),
-            }
+        columns: dict[str, Any] = {
+            "from": pl.Series(froms, dtype=dtype),
+            "to": pl.Series(tos, dtype=dtype),
+            "label": [level_label(r) for r in cfg.table],
+        }
+        # The first snapshot holds the fitted (pre-adjustment) relativities.
+        base = rm.snapshots[0].relativities.get(var) if rm.snapshots else None
+        if base is not None and len(base) == len(cfg.table):
+            columns["fitted"] = pl.Series(
+                [float(r.relativity) for r in base], dtype=pl.Float64
+            )
+        columns["relativity"] = pl.Series(
+            [float(r.relativity) for r in cfg.table], dtype=pl.Float64
         )
+        out[var] = pl.DataFrame(columns)
     return out
 
 

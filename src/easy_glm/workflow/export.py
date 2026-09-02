@@ -136,7 +136,6 @@ def to_script(
         "from easy_glm import (",
         "    CategoricalEncoder,",
         "    DesignSpec,",
-        "    EasyGLM,",
         "    StepEncoder,",
         "    fit_glm,",
         "    to_rate_model,",
@@ -255,7 +254,7 @@ def to_script(
     lines += [
         "",
         f"rm.to_json({prefix + '.easyglm'!r})",
-        f"EasyGLM(fit, rm).to_excel({prefix + '_rate_tables.xlsx'!r})",
+        f"rm.to_excel({prefix + '_rate_tables.xlsx'!r})  # adjusted tables, as scored",
         "",
         "holdout_pred = rm.predict(holdout)",
         f"print('holdout A/E:', holdout[{cfg.target!r}].sum() / holdout_pred.sum())",

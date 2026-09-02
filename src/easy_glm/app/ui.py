@@ -11,7 +11,6 @@ from typing import Any
 import polars as pl
 import streamlit as st
 
-from easy_glm.core.easyglm import EasyGLM
 from easy_glm.workflow import ModelRun
 
 from . import state as S
@@ -87,9 +86,10 @@ def frame_bytes(df: pl.DataFrame, kind: str = "csv") -> bytes:
 
 
 def excel_bytes(run: ModelRun) -> bytes:
+    """Workbook of the tables the scorer uses (manual adjustments included)."""
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / f"{run.name}.xlsx"
-        EasyGLM(run.fit, run.rate_model, run.tables).to_excel(path)
+        run.rate_model.to_excel(path)
         return path.read_bytes()
 
 

@@ -28,7 +28,9 @@ def _data(seed: int = 3, n: int = 4000) -> pl.DataFrame:
     rng = np.random.default_rng(seed)
     age = rng.integers(18, 80, n).astype(float)
     power = rng.integers(4, 12, n)  # integer-typed categorical candidate
-    region = rng.choice(["R1", "R2", "R3", "R4"], n, p=[0.5, 0.3, 0.15, 0.05]).astype(object)
+    region = rng.choice(["R1", "R2", "R3", "R4"], n, p=[0.5, 0.3, 0.15, 0.05]).astype(
+        object
+    )
     expo = rng.uniform(0.2, 1.0, n)
     current = rng.uniform(150.0, 900.0, n)  # e.g. current premium
     mu = np.exp(
@@ -66,13 +68,27 @@ def _scoring_frame(df: pl.DataFrame) -> pl.DataFrame:
 
 
 CASES = {
-    "step_only": dict(predictors=["DrivAge"], categorical=None, offset=None),
-    "categorical_string": dict(predictors=["Region"], categorical=None, offset=None),
-    "categorical_integer": dict(predictors=["VehPower"], categorical=["VehPower"], offset=None),
-    "mixed": dict(predictors=["DrivAge", "VehPower", "Region"], categorical=["VehPower"], offset=None),
-    "mixed_with_offset": dict(
-        predictors=["DrivAge", "VehPower", "Region"], categorical=["VehPower"], offset="logprem"
-    ),
+    "step_only": {"predictors": ["DrivAge"], "categorical": None, "offset": None},
+    "categorical_string": {
+        "predictors": ["Region"],
+        "categorical": None,
+        "offset": None,
+    },
+    "categorical_integer": {
+        "predictors": ["VehPower"],
+        "categorical": ["VehPower"],
+        "offset": None,
+    },
+    "mixed": {
+        "predictors": ["DrivAge", "VehPower", "Region"],
+        "categorical": ["VehPower"],
+        "offset": None,
+    },
+    "mixed_with_offset": {
+        "predictors": ["DrivAge", "VehPower", "Region"],
+        "categorical": ["VehPower"],
+        "offset": "logprem",
+    },
 }
 
 
@@ -103,7 +119,10 @@ def test_rate_model_reproduces_glm(fitted):
     assert score_df["DrivAge"].null_count() > 0 and score_df["Region"].null_count() > 0
     assert (score_df["Region"] == "UNSEEN").sum() > 0
     np.testing.assert_allclose(
-        rm.predict(score_df, exposure_col=None), fit.predict(score_df), rtol=RTOL, atol=0
+        rm.predict(score_df, exposure_col=None),
+        fit.predict(score_df),
+        rtol=RTOL,
+        atol=0,
     )
 
 
@@ -112,9 +131,13 @@ def test_json_roundtrip_scores_identically(fitted, tmp_path):
     rm.to_json(tmp_path / f"{name}.easyglm")
     back = RateModel.from_json(tmp_path / f"{name}.easyglm")
     np.testing.assert_allclose(
-        back.predict(score_df, exposure_col=None), rm.predict(score_df, exposure_col=None), rtol=1e-12
+        back.predict(score_df, exposure_col=None),
+        rm.predict(score_df, exposure_col=None),
+        rtol=1e-12,
     )
-    np.testing.assert_allclose(back.predict(score_df, exposure_col=None), fit.predict(score_df), rtol=RTOL)
+    np.testing.assert_allclose(
+        back.predict(score_df, exposure_col=None), fit.predict(score_df), rtol=RTOL
+    )
 
 
 def _excel_relativities(path) -> dict[str, list[float]]:

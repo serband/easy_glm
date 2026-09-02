@@ -38,11 +38,12 @@ def _bin_rows(fit: GLMFit, variable: str) -> tuple[list[FromToRow], np.ndarray]:
         rows = [FromToRow(lo, hi, 1.0) for lo, hi in enc.bins()]
         rows.append(FromToRow(None, None, 1.0))  # nulls
         contrib = np.append(contrib, null_contrib)
-    else:
-        assert isinstance(enc, CategoricalEncoder)
+    elif isinstance(enc, CategoricalEncoder):
         contrib = np.concatenate([[0.0], coef])  # reference, levels[1:], other
         rows = [FromToRow(lvl, lvl, 1.0) for lvl in enc.levels]
         rows.append(FromToRow(None, None, 1.0))  # other / unseen / null
+    else:
+        raise NotImplementedError(f"No rate-table rule for {type(enc).__name__}")
     return rows, contrib
 
 
@@ -108,9 +109,11 @@ def to_rate_model(
     """Compile the GLM into a :class:`RateModel` that reproduces it exactly.
 
     ``rm.predict(data, exposure_col=None)`` equals ``fit.predict(data)`` for
-    any data. Pass ``base_rate_override`` to rescale (e.g. for a target loss
-    ratio); the relativities are unaffected. ``model_type`` is a label stored
-    in the metadata (defaults to the canonical family name).
+    any data, including fits with an offset column (the RateModel stores the
+    offset column name and applies ``exp(offset)`` at scoring). Pass
+    ``base_rate_override`` to rescale (e.g. for a target loss ratio); the
+    relativities are unaffected. ``model_type`` is a label stored in the
+    metadata (defaults to the canonical family name).
     """
     _check_log_link(fit)
     variables: dict[str, VariableConfig] = {}
@@ -131,6 +134,10 @@ def to_rate_model(
         exposure_col=exposure_col,
         train_test_col=train_test_col,
         predictor_variables=list(variables),
+        offset_col=fit.offset_col,
+        offset_is_log=True,
+        link=fit.link,
+        divide_target_by_weight=fit.divide_target_by_weight,
     )
     rate = (
         base_rate(fit, base=base)
