@@ -69,9 +69,10 @@ print('OK')
    `rate_tables` / `to_rate_model`. `EasyGLM.fit` is exactly these three calls.
 3. **Scoring:** `RateModel` (lookup tables, reproduces the GLM exactly);
    `GLMFit.predict` (glum on `spec.build(data)`).
-4. **Legacy (deprecated, remove in 0.4):** `generate_blueprint` → `prepare_data`
-   (DuckDB, `legacy` extra) → `fit_lasso_glm` → `generate_all_ratetables` →
-   `RateModel.from_rate_tables`. Kept only so 0.2 code keeps running.
+4. **Hand-built tables:** `RateModel.from_rate_tables({var: DataFrame(from, to,
+   relativity)}, base_rate, ...)` — the table format written by `rate_tables`,
+   `rate_model_tables` and the Excel export. The 0.2/0.3 blueprint + DuckDB
+   pipeline was removed in 0.4.
 
 Key invariant of the 0.3 core: `to_rate_model(fit).predict(data, exposure_col=None)
 == fit.predict(data)` to ~1e-15, including nulls and unseen levels
@@ -94,13 +95,8 @@ src/easy_glm/
 │   ├── excel.py            # write_rate_tables_xlsx, rate_model_tables (EasyGLM/RateModel.to_excel)
 │   ├── easyglm.py          # EasyGLM pipeline (fit/predict/save/load) on the above
 │   ├── data.py             # load_external_dataframe (with Parquet caching)
-│   ├── plots.py            # plot_all_ratetables (matplotlib/seaborn)
-│   ├── model.py            # validate_train_test_column; LEGACY fit_lasso_glm
-│   ├── blueprint.py        # LEGACY generate_blueprint
-│   ├── prepare.py          # LEGACY prepare_data (DuckDB, lazy import)
-│   ├── ratetable.py        # LEGACY ratetable (random-row prediction)
-│   ├── all_ratetables.py   # LEGACY generate_all_ratetables
-│   └── transforms.py       # LEGACY SQL generators (o_matrix, one_hot_fun, ...)
+│   ├── plots.py            # plot_all_ratetables (matplotlib/seaborn via the viz extra)
+│   └── split.py            # TRAIN_FLAG / HOLDOUT_FLAG, validate_train_test_column
 ├── workflow/               # GUI-agnostic workflow engine (docs/WORKBENCH_PLAN.md)
 │   ├── project.py          # Project spec (data/roles/recodes/derived/filters/split,
 │   │                       #   design overrides, model configs, adjustments); JSON; validate
@@ -230,10 +226,11 @@ User edits relativity in table
 - Navigation between pages must be client-side (sidebar links) to keep session state;
   Playwright drivers should click sidebar links rather than `goto` page URLs.
 
-### Legacy `prepare_data` Conventions
+### Golden numbers
 
-- Deprecated; DuckDB imported lazily (`legacy` extra). Tracks connection ownership
-  via `_own_connection`; uses `quote_identifier()`; empty blueprints skip the column.
+- `tests/test_golden.py` fits a fixed model on `tests/fixtures/french_motor_50k.parquet`
+  and compares against recorded numbers. Changing a golden number is a blocking
+  review item and needs a written reason in the PR.
 
 ---
 
@@ -241,14 +238,15 @@ User edits relativity in table
 
 | File | What it tests |
 |---|---|
-| `test_engine.py` | RateModel: from_rate_tables, predict (numeric/categorical/multi), update_relativity, snapshots, switch_to, clone, JSON roundtrip, exposure, column mapping, metadata |
+| `test_engine.py` | RateModel: from_rate_tables (0.3 table format, null/Other rows, validation), from_glm_model, predict (numeric/categorical/multi), update_relativity, snapshots (+ metrics), switch_to, clone, JSON roundtrip, exposure, column mapping, metadata |
+| `test_golden.py` | Golden French-motor numbers on the checked-in 50k subsample (runs in CI) |
+| `test_invariants.py` | RateModel == GLM, JSON and Excel round-trips over step / categorical (string and integer) / mixed / offset designs with nulls and unseen levels |
+| `test_c1_foundations.py` | 0.3 bug regressions, format versions and migrations, editor defaults |
 | `test_scoring.py` | Isolated scoring: score_numeric (searchsorted), score_categorical (dict lookup), edge cases, fallbacks |
 | `test_workflow.py` | Project JSON/validation, prep steps, univariate, leakage report on planted leaks, build_design overrides, run_model (metrics, exactness, adjustments, CV), diagnostics, exported script executed in a subprocess and compared |
 | `test_app.py` | AppTest: every workbench page renders (with and without a fit), main entry point, leakage scan action |
 | `test_design_fit_tables.py` | 0.3 core: DesignSpec/encoders, fit_glm (alpha/cv/monotone/validation), exact RateModel reproduction incl. nulls + unseen levels, numeric null row scoring, EasyGLM save/load, A/E masks |
-| `test_model_and_ratetable.py` | legacy fit_lasso_glm/ratetable, EasyGLM pipeline vs building blocks, serialization |
-| `test_blueprint.py` | generate_blueprint basic smoke test |
-| `test_nulls.py` | Null handling in blueprint and prepare_data |
+| `test_easyglm.py` | EasyGLM front door: fit/predict, equivalence with the building blocks, serialization |
 | `test_ui.py` | Metrics: compute_actual_expected (train/test split, formulas, edge cases). Charts: histogram, relativity, A/E |
 | `test_imports.py` | import easy_glm does not eagerly import matplotlib |
-| `test_benchmarking.py` | Data generators, metrics, benchmark runner |
+| `test_benchmarking.py` | Data generators, metrics, fit_glm families, benchmark runner (easy_glm vs statsmodels vs catboost) |

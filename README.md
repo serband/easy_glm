@@ -132,11 +132,11 @@ rm.to_json("model.easyglm")
 
 Full script: [`examples/advanced_pipeline.py`](examples/advanced_pipeline.py).
 
-> **Upgrading from 0.2?** `generate_blueprint`, `prepare_data`, `fit_lasso_glm`,
-> `ratetable` and `generate_all_ratetables` still work but are deprecated and
-> will be removed in 0.4 (`prepare_data` needs `pip install "easy_glm[legacy]"`
-> for DuckDB). Models saved by 0.2 must be refitted. `use_cv=False` now requires
-> `alpha=`: the old fast path silently returned an almost unregularised model.
+> **Upgrading from 0.2 / 0.3?** The blueprint / DuckDB pipeline (`generate_blueprint`,
+> `prepare_data`, `fit_lasso_glm`, `ratetable`, `generate_all_ratetables`) was removed in
+> 0.4; use the building blocks above. `RateModel.from_rate_tables(tables, base_rate)` now
+> takes the table format produced by `rate_tables` / the Excel export (no blueprint).
+> Models saved by 0.2 must be refitted; 0.3 `.easyglm` files open unchanged.
 
 ---
 
@@ -206,9 +206,12 @@ Design notes: [`docs/WORKBENCH_PLAN.md`](docs/WORKBENCH_PLAN.md).
 ## Install (development)
 
 ```bash
-uv venv && uv pip install -e ".[dev,ui]"
+uv venv && uv pip install -e ".[dev]"        # dev already includes streamlit + plotly
 # or: python scripts/setup_dev.py
 ```
+
+Extras: `ui` (workbench + editor), `viz` (matplotlib/seaborn/plotnine charts),
+`benchmark` (statsmodels + catboost), `dev` (tests, lint, ui).
 
 Python **3.10–3.13**. Optional extras: `[ui]`, `[dev]`, `[viz]`.
 
