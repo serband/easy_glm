@@ -123,6 +123,91 @@ rows that is ~8 GB, so:
 * `mypy` in CI on `core`/`workflow`; docs site (mkdocs) with the Playwright
   screenshots; Python 3.14 in the matrix; version `0.4.0`.
 
+## How each workstream is tested
+
+Four layers, all automated except the last:
+
+| Layer | What it proves | Where |
+|---|---|---|
+| **Unit** | each function does what its docstring says on tiny hand-checkable frames | `tests/test_*.py` |
+| **Invariants** | the properties that make the product trustworthy, checked on every fit: `RateModel.predict == fit.predict` (1e-12); the exported script reproduces the model; JSON/Excel round-trips; predictions do not depend on row order or chunking | `tests/test_invariants.py` (new, parametrised over designs: step, categorical, linear, interaction, mixed) |
+| **Planted truth** | synthetic data with a known effect must be recovered: a planted interaction cell, a planted slope, a planted leak | `tests/test_recovery.py` (new) |
+| **Golden French motor** | metrics on the cached French motor set stay within tolerance of recorded values (holdout A/E, Gini, deviance explained, relativity shape by age) so refactors cannot silently change results | `tests/test_golden.py` (new; skipped when the cache is absent) |
+| **Scale** | time and peak memory on 1M / 5M synthetic rows | `scripts/bench_scale.py`; a `-m slow` test asserts the 5M budget, nightly not per-PR |
+| **App** | every workbench page renders with and without a fit; key actions work | `tests/test_app.py` (AppTest) + Playwright drive in CI, screenshots as artefacts |
+| **Actuarial check** | the human review: plain-language summary, the numbers and pictures, and the domain questions | `docs/reviews/<workstream>.md`, delivered with each PR |
+
+### Per workstream
+
+**C — legacy removal**
+- Tests: the full suite passes with the legacy modules deleted; `pip install easy_glm` in a clean venv has no DuckDB; the benchmark runner produces easy_glm rows on all four families; `RateModel.from_glm_model(fit)` equals `to_rate_model(fit)`.
+- Actuarial check: none needed beyond "nothing changed": golden French motor numbers identical before and after.
+
+**G — scale**
+- Tests: float32/SplitMatrix coefficients agree with the 0.3 dense float64 fit to 1e-6 (French motor); chunked `predict` equals unchunked; lazy loader yields the same frame and sample as the eager one; `-m slow` test: 5M × ~200 columns fits in < 3 GB peak RSS and < 5 min.
+- Actuarial check: a table of fit time and memory at 100k / 1M / 5M rows.
+
+**A — interactions**
+- Unit: `InteractionEncoder` column count = bins_A × bins_B (minus lumped cells); a cell below the exposure threshold gets no column; JSON round-trip.
+- Invariants: with all interaction coefficients forced to zero, predictions equal the mains-only model; exactness with interactions present; Excel matrix sheet reads back to the same relativities; exported script round-trip.
+- Planted truth: a synthetic book with a strong `Age × Cover` cell is recovered (cell relativity within 10% of truth, no spurious cells above 1.02 elsewhere); the A/E heatmap on a model *without* the interaction shows the cell (max |log A/E| in that cell > 0.2).
+- App: Design page can add/remove an interaction; Rate tables shows the heatmap and edits a cell; Diagnostics heatmap renders.
+- Actuarial check: French motor `DrivAge × VehPower` main tables + adjustment matrix, before/after A/E heatmaps, holdout Gini with and without the interaction. Question for you: is "mains + adjustment matrix" how you want to read it in Excel, and what cell exposure threshold is sensible?
+
+**B — piecewise-linear terms**
+- Unit: hinge columns; slope table construction; continuity at band edges (relativity at end of band j equals relativity at start of band j+1 within 1e-12 unless a step is also present).
+- Invariants: exactness of the slope-table scoring vs `fit.predict`; Excel and script round-trips.
+- Planted truth: a synthetic linear-in-log effect with two slope changes is recovered (slopes within 10%, knots kept only near the true changes).
+- App: kind = linear selectable; editor edits band-end relativities and re-derives slopes; chart shows a continuous curve.
+- Actuarial check: French motor `Density` as linear vs step — the two curves overlaid with A/E, and the deviance comparison.
+
+**D — workbench**
+- D1 run persistence: fit, reload the page (Playwright), fit is restored with identical predictions; changing the spec invalidates it.
+- D2 sample vs full: with a 50k sample set, Explore uses ≤ 50k rows while the fitted `train_rows` equals the full training count.
+- D3 compare: Compare page renders for two fitted models; the relativity diff lists exactly the bands that differ; overlays appear on Diagnostics and Rate tables.
+- D4 report: the HTML file is self-contained (no external requests), opens in a headless browser without console errors, and contains one section per predictor.
+- D5 tooling: smoothing preserves the exposure-weighted mean relativity; cap/floor and round are idempotent; undo restores the previous snapshot exactly.
+- D6 theme: Playwright screenshots of every page reviewed by the reviewer and by you.
+- Actuarial check: you use the workbench on the bike data for one session; the list of frictions becomes the polish backlog.
+
+**E — modelling extras**
+- Tests: with an offset of `log(current premium)`, the fitted relativities equal those of a model on `claims / current premium`-style targets within 1e-8 (algebraic identity); `P1` weights change the number of non-zero terms in the expected direction; target-loss-ratio solver reproduces the target on the training set to 1e-10.
+- Actuarial check: the bike rate-change setup (offset = current premium) fitted in the workbench, with the resulting relativities as a rate-change table.
+
+**F — CLI / packaging**
+- Tests: `easy-glm run project.json` in a subprocess produces the script, tables, `.easyglm` and report; `mypy` clean on `core`/`workflow`; the 3.14 CI leg passes.
+
+## Working protocol (builder / reviewer / actuary)
+
+Roles
+- **Orchestrator** (this session): owns the plan, cuts the work into PR-sized
+  pieces, runs the loop below, merges.
+- **Builder**: implements one piece on `release-0.4`, with tests, and writes the
+  actuarial check.
+- **Reviewer**: an independent agent that has *not* seen the builder's
+  reasoning. It gets the plan section, the acceptance criteria, the diff and
+  the test output, and returns findings ranked *blocking / should fix / nit*,
+  each with a concrete failure scenario. It also reviews the plan itself
+  before code is written.
+- **Actuary** (you): reads `docs/reviews/<piece>.md` — never code — and answers
+  the domain questions in it.
+
+Loop per piece
+1. Builder implements + tests → CI green locally.
+2. Reviewer reviews → `docs/reviews/<piece>.md` (findings + verdict).
+3. Builder addresses every *blocking* and *should fix* item (or argues back in
+   the review file); reviewer re-checks. Max three rounds; unresolved
+   disagreements are escalated to the orchestrator with both positions.
+4. Orchestrator runs the full suite + Playwright, opens the PR, merges on green.
+5. Actuarial check delivered to you with the numbers, pictures and questions.
+
+Rules
+- No merge without reviewer sign-off, green CI and a written actuarial check.
+- The reviewer may not edit code; the builder may not edit the review verdict.
+- Every finding names a failure scenario; "I'd do it differently" is a nit.
+- Questions to the actuary are domain questions only, batched, and each one
+  says what happens by default if unanswered.
+
 ## Sequencing (each step ships behind green CI)
 
 1. **C** legacy removal first — shrinks the surface everything else touches.
