@@ -249,6 +249,19 @@ class EasyGLM:
                 tables[f.stem] = pl.read_parquet(str(f))
         return cls(glm, rm, tables or None)
 
+    def to_excel(self, path: str | Path) -> Path:
+        """Write the rate tables to an ``.xlsx`` workbook: a ``Summary`` sheet,
+        an ``Index``, the ``Coefficients`` table and one sheet per variable
+        (``from`` / ``to`` / ``label`` / ``coef`` / ``relativity`` / ``is_base``)."""
+        from .excel import write_rate_tables_xlsx
+
+        return write_rate_tables_xlsx(
+            self.relativities,
+            path,
+            summary=self.summary(),
+            coef_table=self.coef_table(),
+        )
+
     # ------------------------------------------------------------- reporting
     def summary(self) -> dict[str, Any]:
         return {

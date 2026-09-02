@@ -88,7 +88,12 @@ if "dirty" not in st.session_state:
     st.session_state.dirty = False
 
 if "actual_formula" not in st.session_state:
-    st.session_state.actual_formula = "sum_weighted"
+    # --formula=sum_over_weight is the right choice for count targets with an
+    # exposure weight (actual = sum(claims) / sum(exposure)).
+    _formula = args.get("formula", "sum_weighted")
+    st.session_state.actual_formula = (
+        _formula if _formula in FORMULAS else "sum_weighted"
+    )
 
 # ---------------------------------------------------------------------------
 # Convenience accessors

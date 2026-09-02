@@ -421,6 +421,25 @@ class RateModel:
         path = Path(path)
         path.write_text(json.dumps(data, indent=2, default=str))
 
+    def to_excel(self, path: str | Path) -> Path:
+        """Write the current relativities to an ``.xlsx`` workbook: a ``Summary``
+        sheet (base rate, metadata, version) plus one sheet per variable with
+        ``from`` / ``to`` / ``label`` / ``relativity``."""
+        from easy_glm.core.excel import rate_model_tables, write_rate_tables_xlsx
+
+        summary: dict[str, Any] = {
+            "base_rate": self.base_rate,
+            "model_type": self.metadata.model_type,
+            "target": self.metadata.target,
+            "weight_col": self.metadata.weight_col,
+            "exposure_col": self.metadata.exposure_col,
+            "train_test_col": self.metadata.train_test_col,
+            "predictors": list(self.variables),
+            "version": self.current_version,
+            "snapshots": len(self.snapshots),
+        }
+        return write_rate_tables_xlsx(rate_model_tables(self), path, summary=summary)
+
     @classmethod
     def from_json(cls, path: str | Path) -> RateModel:
         raw = json.loads(Path(path).read_text())

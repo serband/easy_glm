@@ -450,3 +450,61 @@ def test_actual_expected_masks_other_and_null_rows(messy_data):
         data.filter(pl.col("DrivAge").is_null())["Exposure"].sum()
     )
     assert sum(r["exposure"] for r in age) == pytest.approx(data["Exposure"].sum())
+
+
+# --------------------------------------------------------------------------
+# Excel export
+# --------------------------------------------------------------------------
+def _sheet_names(path) -> list[str]:
+    import re
+    import zipfile
+
+    xml = zipfile.ZipFile(path).read("xl/workbook.xml").decode()
+    return re.findall(r'<sheet [^>]*?name="([^"]+)"', xml)
+
+
+def test_sheet_name_is_excel_safe_and_unique():
+    from easy_glm.core.excel import sheet_name
+
+    used: set[str] = set()
+    first = sheet_name("a/very[long]:sheet*name?with\\bad" + "x" * 30, used)
+    second = sheet_name("a/very[long]:sheet*name?with\\bad" + "x" * 30, used)
+    for name in (first, second):
+        assert len(name) <= 31
+        assert not any(c in name for c in "[]:*?/\\")
+    assert first != second and second.endswith("(2)")
+    assert sheet_name("Region", used) == "Region"
+    assert (
+        sheet_name("region", used) == "region (2)"
+    )  # Excel names are case-insensitive
+
+
+def test_to_excel_writes_summary_coefficients_and_one_sheet_per_variable(
+    messy_data, tmp_path
+):
+    from easy_glm.core.excel import rate_model_tables
+
+    fit = _fit(messy_data)
+    rm = to_rate_model(fit)
+    eglm = EasyGLM(fit, rm)
+
+    path = eglm.to_excel(tmp_path / "tables.xlsx")
+    names = _sheet_names(path)
+    assert names[:3] == ["Summary", "Index", "Coefficients"]
+    assert names[3:] == PREDICTORS
+
+    rm_path = rm.to_excel(tmp_path / "rm.xlsx")
+    assert _sheet_names(rm_path) == ["Summary", "Index", *PREDICTORS]
+
+    tables = rate_model_tables(rm)
+    age = tables["DrivAge"]
+    assert age.columns == ["from", "to", "label", "relativity"]
+    assert age.height == len(fit.spec["DrivAge"].knots) + 2
+    assert age["from"].dtype == pl.Float64
+    np.testing.assert_allclose(
+        age["relativity"].to_numpy(),
+        rate_tables(fit)["DrivAge"]["relativity"].to_numpy(),
+    )
+    region = tables["Region"]
+    assert region["from"].dtype == pl.Utf8
+    assert region["label"][-1] == "Other / Unknown"

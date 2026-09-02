@@ -83,7 +83,11 @@ print(f"Test A/E: {test['ClaimNb'].sum() / preds.sum():.4f}")
 
 eglm.save("my_model")                          # spec + glum model + tables
 eglm.rate_model.to_json("model.easyglm")       # scorer only
+eglm.to_excel("rate_tables.xlsx")              # Summary, Coefficients, one sheet per variable
 ```
+
+Any `RateModel` — including one edited in the browser and downloaded as
+`.easyglm` — exports the same way: `RateModel.from_json("revised.easyglm").to_excel("revised.xlsx")`.
 
 **Performance.** On the bundled French motor set (~680k rows, 6 predictors) a
 fixed-`alpha` fit takes about a second and `cv=5` over a 20-point alpha path
@@ -195,6 +199,7 @@ Raw data → DesignSpec → fit_glm (glum) → rate_tables / to_rate_model → R
 | `DesignSpec` | Feature definitions (step knots, levels); builds the design matrix; JSON |
 | `fit_glm` / `GLMFit` | Penalised glum fit, coefficient table, predictions |
 | `rate_tables` / `to_rate_model` | Exact relativities and base rate from coefficients |
+| `to_excel` / `write_rate_tables_xlsx` | Rate tables as an `.xlsx` workbook (one sheet per variable) |
 | `EasyGLM` | One-call fit, save/load full pipeline |
 | `RateModel` | Production scoring, A/E, JSON roundtrip, editor |
 

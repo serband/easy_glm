@@ -3,6 +3,7 @@ from .blueprint import generate_blueprint
 from .data import load_external_dataframe
 from .design import CategoricalEncoder, DesignSpec, StepEncoder
 from .easyglm import EasyGLM
+from .excel import write_rate_tables_xlsx
 from .fit import GLMFit, fit_glm
 from .model import fit_lasso_glm, predict_with_model
 from .plots import plot_all_ratetables
@@ -20,6 +21,7 @@ __all__ = [
     "rate_tables",
     "base_rate",
     "to_rate_model",
+    "write_rate_tables_xlsx",
     "load_external_dataframe",
     "plot_all_ratetables",
     # legacy (deprecated)

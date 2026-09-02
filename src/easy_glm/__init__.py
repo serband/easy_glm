@@ -46,6 +46,7 @@ from .core import (
     rate_tables,
     ratetable,
     to_rate_model,
+    write_rate_tables_xlsx,
 )
 
 __all__ = [
@@ -61,6 +62,7 @@ __all__ = [
     "rate_tables",
     "base_rate",
     "to_rate_model",
+    "write_rate_tables_xlsx",
     "plot_all_ratetables",
     # Legacy (deprecated)
     "generate_blueprint",

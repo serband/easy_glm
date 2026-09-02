@@ -90,6 +90,7 @@ src/easy_glm/
 │   ├── fit.py              # fit_glm -> GLMFit (glum wrapper: families/links,
 │   │                       #   alpha or CV, monotone_bounds -> lower/upper_bounds)
 │   ├── tables.py           # rate_tables, base_rate, to_rate_model (exact, from coefs)
+│   ├── excel.py            # write_rate_tables_xlsx, rate_model_tables (EasyGLM/RateModel.to_excel)
 │   ├── easyglm.py          # EasyGLM pipeline (fit/predict/save/load) on the above
 │   ├── data.py             # load_external_dataframe (with Parquet caching)
 │   ├── plots.py            # plot_all_ratetables (matplotlib/seaborn)
