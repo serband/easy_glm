@@ -9,16 +9,31 @@
   `VariableDesign(kind="linear")`): the relativity changes smoothly with the
   value along straight-line segments (on the log scale) between knots, and the
   lasso decides where the slope changes. The AGLM "L-dummies".
-- The curve is **clamped to the training range** (rounded outward to a round
-  number, or a `clamp` you choose) and flat beyond it; missing values get their
-  own row. Relativity 1.00 sits at the lower edge of the most exposed band.
+- The curve is **clamped to the training range** and flat beyond it (±infinity
+  scores as the clamp value, like the GLM); missing values get their own row.
+  The default clamp is the training minimum / maximum **rounded outward** to a
+  round number (each end moves by less than 1 % of the range; the end bands keep
+  their fitted slope up to it) — pass `clamp=` / set it on the Design page for
+  an exact edge. Relativity 1.00 sits at the lower edge of the most exposed
+  non-null band, recorded as `x_base` (JSON, Excel `is_base` column and Summary
+  sheet); an edit of that band does not move `x_base`.
 - Rate tables carry a `slope` per band and the value at both band ends; the
   `RateModel` scores them exactly (`"linear"` tables), Excel and the exported
-  script round-trip them, and `from_rate_tables` reads them back (and refuses
-  discontinuous curves).
-- Editing a band's start value in the editor re-derives the two adjacent slopes
-  so the curve stays continuous; the flat end rows and the null row edit as
-  steps. Non-positive relativities are refused on linear tables.
+  script round-trip them. `from_rate_tables` derives the slopes from the
+  consecutive row values (so a table rounded to a few decimals reads back as a
+  continuous curve), warns when a supplied `slope` column disagrees by more
+  than 1 %, refuses a cliff at the lower clamp, zero-width bands, non-positive
+  relativities and a table that lost its `slope` column but kept
+  `relativity_to`, and warns when the null row is missing. JSON files are
+  validated and ordered the same way.
+- Every row of a linear table is a **node** of the curve: the `(None, lo)` row
+  and the first band share the node at `lo` (editing either moves both, and
+  `diff` lists both rows), the `(hi, None)` row is the node at `hi`. An edit
+  re-derives the slope of the band(s) touching that node — one at either end,
+  two in the interior — so the curve never jumps; the null row edits as a step.
+  Non-positive relativities are refused; the workbench editor refuses them
+  before saving, and an adjustment the model refuses is dropped with a message
+  instead of locking the page.
 - Monotone constraints are **not available** on linear terms in this release
   (`fit_glm` and `Project.validate` say so explicitly).
 - Linear variables can be parents of interactions; diagnostics band them by the

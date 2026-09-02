@@ -13,7 +13,7 @@ most knots carry no change, so the curve has few bends.
 
 Three conventions, all from the plan review (questions Q1–Q3):
 
-1. **Flat outside the data.** The curve is clamped at the training range — for `BonusMalus` here `50` to `230` — and stays level beyond it, so a value far outside anything seen in training gets the relativity at the nearer edge, never an extrapolated one.
+1. **Flat outside the data.** The curve is clamped at the training range — for `BonusMalus` here `50` to `230` — and stays level beyond it, so a value far outside anything seen in training gets the relativity at the nearer edge, never an extrapolated one. The default clamp is the training minimum and maximum **rounded outward to a round number** (each end moves by less than 1 % of the range: 17.65–29,857 becomes 0–29,900; 18–80 stays 18–80) and the end bands keep their fitted slope up to that number, so the curve does not stop exactly where the data stops. Set the clamp yourself on the Design page when the exact edge matters.
 2. **Relativity 1.00 sits at the lower edge of the most exposed band**, so the base risk is a round, visible number (here `BonusMalus` = 50).
 3. **Few bends, not few slopes.** Each fitted number is a *change of slope*; the penalty removes changes, so long straight stretches are the norm. Monotone constraints are not offered on these terms in this release.
 
@@ -80,14 +80,20 @@ would charge, either set the clamp for this factor to where the data runs out
 
 ## Guarantees (tested on every change)
 
-- The rate tables reproduce the GLM at and beyond the clamp and on missing values: largest relative difference in this run below 1e-12 (measured 1.4e-15 → yes).
+- The rate tables reproduce the GLM at and beyond the clamp (including ±infinity) and on missing values: largest relative difference in this run below 1e-12 (yes).
 - Inside a band the table is exactly log-linear (`relativity × exp(slope × distance)`);
   the band's end value equals the next band's start value, so the curve is continuous.
-- Editing a band's start value in the editor moves that point and re-derives the two
-  adjacent slopes, keeping the curve continuous; the two flat end rows and the null row
-  edit as plain steps.
-- Excel and the exported script carry the slopes; a model rebuilt from either scores
-  identically.
+- Every row of the table is a point (node) of the curve. The '< lo' row and the first
+  band are **one number** (the value at the lower clamp) and move together; the
+  '≥ hi' row is the value at the upper clamp. Editing any row in the editor moves that
+  point and re-derives the slope of the band(s) touching it — one slope at either end,
+  two in the middle — so the curve never jumps, not even at the clamp points. The
+  missing-value row is not on the curve and edits on its own. Relativities must be
+  above 0 (the editor refuses 0 and says so).
+- Excel and the exported script carry the slopes and the base point; a model rebuilt
+  from either scores identically. A table typed or rounded by hand (four decimals) reads
+  back as a continuous curve, because the slopes are re-derived from the row values;
+  a slope column that disagrees with them by more than 1 % is reported.
 
 ## Questions for you
 

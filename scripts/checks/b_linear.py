@@ -149,8 +149,8 @@ def main(write: bool) -> None:
     probe = holdout.head(200).with_columns(
         pl.Series(
             LINEAR_VAR,
-            [lo - 1e6, lo, hi, hi + 1e6, None]
-            + holdout.head(200)[LINEAR_VAR].to_list()[5:],
+            [lo - 1e6, lo, hi, hi + 1e6, None, float("inf"), -float("inf")]
+            + holdout.head(200)[LINEAR_VAR].to_list()[7:],
             dtype=pl.Float64,
         )
     )
@@ -180,7 +180,11 @@ def main(write: bool) -> None:
         f"1. **Flat outside the data.** The curve is clamped at the training range — for "
         f"`{LINEAR_VAR}` here `{lo:g}` to `{hi:g}` — and stays level beyond it, so a value "
         "far outside anything seen in training gets the relativity at the nearer edge, never "
-        "an extrapolated one.",
+        "an extrapolated one. The default clamp is the training minimum and maximum "
+        "**rounded outward to a round number** (each end moves by less than 1 % of the "
+        "range: 17.65–29,857 becomes 0–29,900; 18–80 stays 18–80) and the end bands keep "
+        "their fitted slope up to that number, so the curve does not stop exactly where the "
+        "data stops. Set the clamp yourself on the Design page when the exact edge matters.",
         "2. **Relativity 1.00 sits at the lower edge of the most exposed band**, so the base "
         f"risk is a round, visible number (here `{LINEAR_VAR}` = {base_row['from'][0]:g}).",
         "3. **Few bends, not few slopes.** Each fitted number is a *change of slope*; the "
@@ -250,16 +254,22 @@ def main(write: bool) -> None:
         "",
         "## Guarantees (tested on every change)",
         "",
-        f"- The rate tables reproduce the GLM at and beyond the clamp and on missing values: "
-        f"largest relative difference in this run below 1e-12 (measured {exact:.1e} → "
-        f"{'yes' if exact < 1e-12 else 'NO'}).",
+        f"- The rate tables reproduce the GLM at and beyond the clamp (including ±infinity) "
+        "and on missing values: largest relative difference in this run below 1e-12 "
+        f"({'yes' if exact < 1e-12 else 'NO — ' + format(exact, '.1e')}).",
         "- Inside a band the table is exactly log-linear (`relativity × exp(slope × distance)`);",
         "  the band's end value equals the next band's start value, so the curve is continuous.",
-        "- Editing a band's start value in the editor moves that point and re-derives the two",
-        "  adjacent slopes, keeping the curve continuous; the two flat end rows and the null row",
-        "  edit as plain steps.",
-        "- Excel and the exported script carry the slopes; a model rebuilt from either scores",
-        "  identically.",
+        "- Every row of the table is a point (node) of the curve. The '< lo' row and the first",
+        "  band are **one number** (the value at the lower clamp) and move together; the",
+        "  '≥ hi' row is the value at the upper clamp. Editing any row in the editor moves that",
+        "  point and re-derives the slope of the band(s) touching it — one slope at either end,",
+        "  two in the middle — so the curve never jumps, not even at the clamp points. The",
+        "  missing-value row is not on the curve and edits on its own. Relativities must be",
+        "  above 0 (the editor refuses 0 and says so).",
+        "- Excel and the exported script carry the slopes and the base point; a model rebuilt",
+        "  from either scores identically. A table typed or rounded by hand (four decimals) reads",
+        "  back as a continuous curve, because the slopes are re-derived from the row values;",
+        "  a slope column that disagrees with them by more than 1 % is reported.",
         "",
         "## Questions for you",
         "",
