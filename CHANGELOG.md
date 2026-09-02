@@ -2,6 +2,29 @@
 
 ## 0.4.0 (unreleased)
 
+### Two-way interactions (piece A)
+
+- Models can now include `A × B` interactions on top of the main effects
+  (`DesignSpec.from_data(..., interactions=[("DrivAge", "VehPower")])`,
+  `InteractionEncoder`, `ModelConfig.interactions`). Each cell of the two
+  variables' rating rows gets its own multiplicative adjustment; cells with too
+  little exposure (default 0.5% of the interaction's exposure) adjust by 1.0.
+- Rate tables carry the adjustment as an extra table (`rate_tables`,
+  `RateModel` type `"interaction"`, Excel long sheet plus a matrix sheet with the
+  training exposure alongside). The scorer still reproduces the GLM exactly;
+  the base rate is the prediction for the base risk *before* interaction
+  adjustments, so a cell of 1.0 always means "no adjustment".
+- Cells can be edited (`RateModel.update_relativity(..., from_b=, to_b=)`), are
+  snapshot/diffed/JSON round-tripped, and recorded as `Adjustment(cell=True)` in
+  projects and exported scripts.
+- Interaction columns are penalised on the unstandardised scale (scaled so a
+  50/50 cell matches a 50/50 main effect), so thin cells do not pick up noise.
+- New diagnostic `workflow.ae_by_pair` (A/E by cell of two variables) to find
+  interactions a model is missing.
+- Every encoder exposes its rating rows and a shared `row_index` rule, used by
+  the interaction cells, the tables and the scorer alike.
+
+
 Work in progress on the `release-0.4` branch. Plan: `docs/RELEASE_0.4_PLAN.md`;
 independent reviews: `docs/reviews/`; plain-language checks: `docs/checks/`.
 

@@ -86,7 +86,7 @@ Key invariant of the 0.3 core: `to_rate_model(fit).predict(data, exposure_col=No
 src/easy_glm/
 ├── __init__.py             # Public API exports
 ├── core/
-│   ├── design.py           # DesignSpec, StepEncoder (1{x>=k} + null col),
+│   ├── design.py           # DesignSpec, StepEncoder (1{x>=k} + null col), InteractionEncoder (A×B cells),
 │   │                       #   CategoricalEncoder (one-hot + Other), Feature metadata,
 │   │                       #   quantile_knots, frequent_levels; JSON round-trip
 │   ├── fit.py              # fit_glm -> GLMFit (glum wrapper: families/links,
