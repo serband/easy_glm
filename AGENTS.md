@@ -7,7 +7,7 @@ Purpose: Provide build/test commands, architecture guidance, and code style guid
 ## Build, Lint, and Tests
 
 - Single test: `pytest tests/test_engine.py -k test_clone --maxfail=1 -q`
-- Full suite: `pytest -q` (121 tests)
+- Full suite: `pytest -q`
 - Lint: `ruff check .`
 - Format: `black .`
 - Run all quality steps: `black . && ruff check . && pytest -q`
@@ -49,7 +49,7 @@ print('OK')
 
 ## Installation
 
-- `python setup_dev.py` — handles editable install + symlink fallback
+- `uv venv && uv pip install -e ".[dev,ui]"` (or `python scripts/setup_dev.py`)
 - `PYTHONPATH=src` also works as a quick workaround for imports
 - **IMPORTANT**: Tests use `PYTHONPATH=src` and hit the live source. Streamlit
   uses the *installed* package (site-packages). After editing source, sync with:
@@ -63,12 +63,18 @@ print('OK')
 
 ## Public API (layers)
 
-1. **Recommended:** `EasyGLM.fit()` — full pipeline (calls `fit_lasso_glm` internally).
-2. **Advanced steps:** `generate_blueprint` → `prepare_data` → `fit_lasso_glm` →
-   `generate_all_ratetables` → `RateModel.from_rate_tables` / `from_glm_model`.
-3. **Scoring:** `RateModel` (lookup tables); `predict_with_model` (raw glum on prepared data).
+1. **Recommended:** `EasyGLM.fit()` — full pipeline.
+2. **Building blocks:** `DesignSpec.from_data` → `fit_glm` (returns `GLMFit`) →
+   `rate_tables` / `to_rate_model`. `EasyGLM.fit` is exactly these three calls.
+3. **Scoring:** `RateModel` (lookup tables, reproduces the GLM exactly);
+   `GLMFit.predict` (glum on `spec.build(data)`).
+4. **Legacy (deprecated, remove in 0.4):** `generate_blueprint` → `prepare_data`
+   (DuckDB, `legacy` extra) → `fit_lasso_glm` → `generate_all_ratetables` →
+   `RateModel.from_rate_tables`. Kept only so 0.2 code keeps running.
 
-`fit_lasso_glm` is **not** a duplicate of `EasyGLM.fit`; it only fits on prepared data.
+Key invariant of the 0.3 core: `to_rate_model(fit).predict(data, exposure_col=None)
+== fit.predict(data)` to ~1e-15, including nulls and unseen levels
+(`tests/test_design_fit_tables.py::TestRateTables`).
 
 ---
 
@@ -78,19 +84,21 @@ print('OK')
 src/easy_glm/
 ├── __init__.py             # Public API exports
 ├── core/
-│   ├── blueprint.py        # generate_blueprint (quantile breaks, level lumping)
-│   ├── prepare.py          # prepare_data (DuckDB SQL transforms)
-│   │                       #   NOTE: _own_connection flag — only close connections
-│   │                       #   we created. If user passes `con`, we never close it.
-│   ├── model.py            # fit_lasso_glm, predict_with_model
-│   │                       #   Uses pandas .astype("category") for text columns
-│   │                       #   (replaced dask-ml Categorizer in v0.2)
-│   ├── ratetable.py        # ratetable (per-variable relativity extraction)
-│   ├── all_ratetables.py   # generate_all_ratetables
-│   ├── transforms.py       # o_matrix, lump_fun, lump_rare_levels_pl (SQL generators)
+│   ├── design.py           # DesignSpec, StepEncoder (1{x>=k} + null col),
+│   │                       #   CategoricalEncoder (one-hot + Other), Feature metadata,
+│   │                       #   quantile_knots, frequent_levels; JSON round-trip
+│   ├── fit.py              # fit_glm -> GLMFit (glum wrapper: families/links,
+│   │                       #   alpha or CV, monotone_bounds -> lower/upper_bounds)
+│   ├── tables.py           # rate_tables, base_rate, to_rate_model (exact, from coefs)
+│   ├── easyglm.py          # EasyGLM pipeline (fit/predict/save/load) on the above
 │   ├── data.py             # load_external_dataframe (with Parquet caching)
 │   ├── plots.py            # plot_all_ratetables (matplotlib/seaborn)
-│   └── easyglm.py          # EasyGLM pipeline (fit/predict/save/load)
+│   ├── model.py            # validate_train_test_column; LEGACY fit_lasso_glm
+│   ├── blueprint.py        # LEGACY generate_blueprint
+│   ├── prepare.py          # LEGACY prepare_data (DuckDB, lazy import)
+│   ├── ratetable.py        # LEGACY ratetable (random-row prediction)
+│   ├── all_ratetables.py   # LEGACY generate_all_ratetables
+│   └── transforms.py       # LEGACY SQL generators (o_matrix, one_hot_fun, ...)
 ├── engine/
 │   ├── rate_model.py       # RateModel — the core model representation
 │   │                       #   Key methods:
@@ -177,11 +185,27 @@ User edits relativity in table
 - `predict()` handles exposure multiplication internally via `_apply_exposure()`.
   Pass `exposure_col=None` to skip.
 
-### `prepare_data` Conventions
+### Core (0.3) Conventions
 
-- Tracks connection ownership via `_own_connection`. Only close if we created the connection.
-- Uses `quote_identifier()` for all SQL identifiers to handle spaces and reserved words.
-- Empty blueprints (`[]`) cause the column to be skipped entirely.
+- `DesignSpec` is the single source of truth for what a design column means;
+  never derive meaning from feature-name strings. Column order = encoder order,
+  see `DesignSpec.slices()`.
+- Step columns are `1{x >= knot}`; nulls are all-zero step columns (lowest bin)
+  plus an `is null` column. Bin `j` relativity = `exp(cumsum(step coefs)[:j])`.
+- Categorical reference level = `levels[0]` (most frequent, no column); `Other`
+  column catches lumped, unseen and null values.
+- `fit_glm` requires `alpha=` or `cv=`; never let glum's `alpha_search` pick
+  (its `coef_` is the least-regularised end of the path).
+- Monotone constraints are coefficient sign bounds on step columns (work with L1;
+  glum's own `monotonic_constraints` does not).
+- Numeric `VariableConfig` tables may end with a `FromToRow(None, None, rel)` null
+  row; `_precompute_variables` stores it as `null_relativity` and `score_numeric`
+  applies it to NaN. Without that row NaN still raises (legacy behaviour).
+
+### Legacy `prepare_data` Conventions
+
+- Deprecated; DuckDB imported lazily (`legacy` extra). Tracks connection ownership
+  via `_own_connection`; uses `quote_identifier()`; empty blueprints skip the column.
 
 ---
 
@@ -191,7 +215,8 @@ User edits relativity in table
 |---|---|
 | `test_engine.py` | RateModel: from_rate_tables, predict (numeric/categorical/multi), update_relativity, snapshots, switch_to, clone, JSON roundtrip, exposure, column mapping, metadata |
 | `test_scoring.py` | Isolated scoring: score_numeric (searchsorted), score_categorical (dict lookup), edge cases, fallbacks |
-| `test_model_and_ratetable.py` | fit_lasso_glm, predict_with_model, ratetable, EasyGLM pipeline, serialization |
+| `test_design_fit_tables.py` | 0.3 core: DesignSpec/encoders, fit_glm (alpha/cv/monotone/validation), exact RateModel reproduction incl. nulls + unseen levels, numeric null row scoring, EasyGLM save/load, A/E masks |
+| `test_model_and_ratetable.py` | legacy fit_lasso_glm/ratetable, EasyGLM pipeline vs building blocks, serialization |
 | `test_blueprint.py` | generate_blueprint basic smoke test |
 | `test_nulls.py` | Null handling in blueprint and prepare_data |
 | `test_ui.py` | Metrics: compute_actual_expected (train/test split, formulas, edge cases). Charts: histogram, relativity, A/E |

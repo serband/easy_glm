@@ -34,7 +34,7 @@ eglm = easy_glm.EasyGLM.fit(
     weight_col="Exposure",
     train_test_col="traintest",
     divide_target_by_weight=True,
-    use_cv=True,
+    cv=5,
     base_rate=0.05,
 )
 

@@ -17,9 +17,7 @@ df = easy_glm.load_external_dataframe()
 
 # Add a train-test split column (1 = train, 0 = holdout)
 rng = np.random.default_rng(42)
-df = df.with_columns(
-    pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64)
-)
+df = df.with_columns(pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64))
 
 print(f"Loaded: {len(df):,} rows × {len(df.columns)} cols")
 # → Loaded: 678,013 rows × 12 cols
@@ -29,7 +27,6 @@ print(f"Loaded: {len(df):,} rows × {len(df.columns)} cols")
 # ---------------------------------------------------------------------------
 
 PREDICTORS = ["VehAge", "Region", "VehGas", "DrivAge", "BonusMalus", "Density"]
-BASE_RATE = 0.05
 
 eglm = easy_glm.EasyGLM.fit(
     data=df,
@@ -39,14 +36,13 @@ eglm = easy_glm.EasyGLM.fit(
     weight_col="Exposure",
     train_test_col="traintest",
     divide_target_by_weight=True,
-    use_cv=True,
-    base_rate=BASE_RATE,
+    cv=5,  # or alpha=0.001 for a quick fit
 )
 
 print(eglm)
 # → EasyGLM(model_type='Poisson', target='ClaimNb',
 #           predictors=['VehAge', 'Region', 'VehGas', 'DrivAge', 'BonusMalus', 'Density'],
-#           base_rate=0.05)
+#           alpha=0.001234, base_rate=0.0712)
 
 # ---------------------------------------------------------------------------
 # 3. Inspect relativities — one table per predictor
@@ -56,24 +52,22 @@ for name, table in eglm.relativities.items():
     print(f"\n--- {name} ---")
     print(table.head(5))
 # → --- VehAge ---
-#   shape: (5, 3)
-#   ┌────────┬────────────┬────────────┐
-#   │ VehAge ┆ relativity ┆ prediction │
-#   │ ---    ┆ ---        ┆ ---        │
-#   │ i64    ┆ f64        ┆ f64        │
-#   ╞════════╪════════════╪════════════╡
-#   │ 0      ┆ 0.78       ┆ 0.041      │
-#   │ 1      ┆ 0.85       ┆ 0.045      │
-#   │ 2      ┆ 0.92       ┆ 0.049      │
-#   │ 3      ┆ 0.98       ┆ 0.052      │
-#   │ 4      ┆ 1.05       ┆ 0.056      │
-#   └────────┴────────────┴────────────┘
+#   ┌──────┬──────┬────────────┬────────┬────────────┬─────────┐
+#   │ from ┆ to   ┆ label      ┆ coef   ┆ relativity ┆ is_base │
+#   ╞══════╪══════╪════════════╪════════╪════════════╪═════════╡
+#   │ null ┆ 1.0  ┆ < 1.0      ┆ 0.21   ┆ 1.23       ┆ false   │
+#   │ 1.0  ┆ 2.0  ┆ [1.0, 2.0) ┆ 0.0    ┆ 1.0        ┆ true    │
+#   ...
+#   The last row ("Other / Unknown") is the null bin.
+
+# Which knots / levels did the lasso keep?
+print(eglm.coef_table(drop_zero=True))
 
 # ---------------------------------------------------------------------------
 # 4. Optional: quick matplotlib charts
 # ---------------------------------------------------------------------------
 
-# easy_glm.plot_all_ratetables(eglm.relativities, eglm.blueprint)
+# easy_glm.plot_all_ratetables(eglm.relativities)
 
 # ---------------------------------------------------------------------------
 # 5. Score holdout & check overall A/E

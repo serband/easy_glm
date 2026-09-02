@@ -42,7 +42,7 @@ eglm = easy_glm.EasyGLM.fit(
     weight_col="Exposure",
     train_test_col="traintest",
     divide_target_by_weight=True,
-    use_cv=True,
+    cv=5,
     base_rate=0.05,
 )
 
@@ -70,7 +70,7 @@ for name in sorted(non_const):
 # 3. Matplotlib relativity charts (numeric → line, categorical → bar)
 # ---------------------------------------------------------------------------
 
-# easy_glm.plot_all_ratetables(eglm.relativities, eglm.blueprint)
+# easy_glm.plot_all_ratetables(eglm.relativities)
 
 # ---------------------------------------------------------------------------
 # 4. A/E on holdout — per variable, per bin
