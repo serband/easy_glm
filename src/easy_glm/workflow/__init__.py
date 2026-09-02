@@ -42,7 +42,15 @@ from .project import (
     Split,
     VariableDesign,
 )
-from .run import ModelRun, build_design, encoder_for, monotone_for, run_model
+from .run import (
+    ModelRun,
+    build_design,
+    encoder_for,
+    exposure_for,
+    monotone_for,
+    rebuild_rate_model,
+    run_model,
+)
 
 __all__ = [
     "Project",
@@ -72,6 +80,8 @@ __all__ = [
     "encoder_for",
     "monotone_for",
     "run_model",
+    "rebuild_rate_model",
+    "exposure_for",
     "ModelRun",
     "totals",
     "unit_values",

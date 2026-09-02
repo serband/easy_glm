@@ -201,7 +201,7 @@ def run_model(project: Project, df: pl.DataFrame, model_name: str) -> ModelRun:
         monotone=monotone_for(project, cfg),
         **kwargs,
     )
-    exposure = project.exposure or (cfg.weight if cfg.divide_target_by_weight else None)
+    exposure = exposure_for(project, cfg)
     rm = to_rate_model(
         fit,
         base=cfg.base,  # type: ignore[arg-type]
@@ -232,3 +232,36 @@ def run_model(project: Project, df: pl.DataFrame, model_name: str) -> ModelRun:
         train_rows=train.height,
         holdout_rows=holdout.height,
     )
+
+
+def exposure_for(project: Project, cfg: ModelConfig) -> str | None:
+    """Column the RateModel multiplies by when scoring."""
+    return project.exposure or (cfg.weight if cfg.divide_target_by_weight else None)
+
+
+def rebuild_rate_model(project: Project, run: ModelRun, df: pl.DataFrame) -> ModelRun:
+    """Recompile the run's RateModel from its fit (no refit) — used after the
+    manual adjustments or base-rate override of its model config change —
+    and refresh tables and metrics in place."""
+    cfg = project.models[run.name]
+    rm = to_rate_model(
+        run.fit,
+        base=cfg.base,  # type: ignore[arg-type]
+        base_rate_override=cfg.base_rate_override,
+        exposure_col=exposure_for(project, cfg),
+        train_test_col=project.data.split.column,
+        model_type=cfg.family,
+    )
+    apply_adjustments(rm, cfg)
+    train, holdout = train_holdout(df, project.data.split)
+    frames = {
+        k: v
+        for k, v in {"train": train, "holdout": holdout}.items()
+        if not v.is_empty()
+    }
+    preds = {k: rm.predict(v, exposure_col=None) for k, v in frames.items()}
+    run.rate_model = rm
+    run.config = cfg
+    run.metrics = model_metrics(run.fit, preds, frames, cfg)
+    run.tables = rate_tables(run.fit, base=cfg.base)  # type: ignore[arg-type]
+    return run
