@@ -33,6 +33,22 @@ Four encoders exist:
 Every encoder also knows its **rate-table rows** (:meth:`Encoder.rows`) and can
 map a raw value to its row index (:meth:`Encoder.row_index`); that shared rule
 is what keeps the rate tables, the interaction cells and the scorer aligned.
+
+Two ways to build the matrix
+----------------------------
+:meth:`DesignSpec.build` returns either a dense float64 numpy array (small
+books, and what every existing caller got) or a **tabmat**
+:class:`~tabmat.SplitMatrix` that stores one integer code per row per variable
+instead of the columns those codes stand for (big books). The two are the same
+matrix: ``build(df, sparse=True).toarray()`` equals ``build(df, sparse=False)``
+exactly, and a fit on either gives the same coefficients (piece G;
+``tests/test_scale.py``). Which one you get by default is decided by the row
+count — see :data:`SPARSE_ROW_THRESHOLD`.
+
+The codes are the same integers the rate tables index by
+(:meth:`Encoder.row_index`), which is why scoring never needs a matrix at all:
+:meth:`DesignSpec.linear_predictor` adds up one lookup per variable in row
+chunks (:meth:`Encoder.contribution`).
 """
 
 from __future__ import annotations
@@ -66,6 +82,18 @@ NUMERIC_DTYPES = (
 )
 
 FeatureKind = Literal["step", "band", "null", "level", "other", "cell"]
+
+#: Row count at or above which :meth:`DesignSpec.build` returns the compact
+#: tabmat ``SplitMatrix`` instead of a dense float64 array. Below it the dense
+#: matrix is at most ~0.3 GB for a 200-column design and the extra machinery
+#: buys nothing; above it the dense matrix grows by 1.6 GB per million rows.
+#: A 50,000-row book — the golden fit and every test fixture — is dense.
+SPARSE_ROW_THRESHOLD = 200_000
+
+#: Rows scored at a time by :meth:`DesignSpec.linear_predictor` (and therefore
+#: by ``GLMFit.predict``). Big enough that the per-chunk overhead disappears,
+#: small enough that the working set is a few tens of megabytes.
+SCORING_CHUNK_ROWS = 500_000
 
 
 @dataclass(frozen=True)
@@ -142,6 +170,37 @@ class Encoder(ABC):
         """Design columns from a frame (default: :meth:`transform` on the column)."""
         return self.transform(data[self.variable])
 
+    # -- integer codes: the compact form of a design row --------------------
+    def codes(self, data: pl.DataFrame) -> np.ndarray:
+        """One ``int32`` code per row — the compact stand-in for this term's
+        columns. For everything but an interaction it *is* the rate-table row
+        index (:meth:`row_index`), which is what lets the same integers drive
+        the design matrix, the rate tables and the scorer."""
+        return self.row_index(data[self.variable]).astype(np.int32, copy=False)
+
+    @property
+    def n_codes(self) -> int:
+        """Number of distinct codes (``max code + 1``)."""
+        return self.n_rows
+
+    def contribution(self, data: pl.DataFrame, coef: np.ndarray) -> np.ndarray:
+        """This term's part of the linear predictor, ``columns @ coef``,
+        computed **without building the columns** (a table lookup per row).
+
+        Equals ``transform_frame(data) @ coef`` to floating-point noise; it is
+        how :meth:`DesignSpec.linear_predictor`, and therefore
+        ``GLMFit.predict``, scores without ever materialising a design matrix.
+        """
+        table = self.lookup_table(np.asarray(coef, dtype=np.float64))
+        return table[self.codes(data)]
+
+    def lookup_table(self, coef: np.ndarray) -> np.ndarray:
+        """Linear-predictor contribution of every code, as a float64 array of
+        length :attr:`n_codes` (relative to the term's reference row)."""
+        raise NotImplementedError(
+            f"{type(self).__name__} has no code lookup table"
+        )  # pragma: no cover
+
 
 @dataclass
 class StepEncoder(Encoder):
@@ -210,6 +269,14 @@ class StepEncoder(Encoder):
         if self.null_indicator:
             cols = np.hstack([cols, np.isnan(x)[:, None].astype(np.float64)])
         return cols
+
+    def lookup_table(self, coef: np.ndarray) -> np.ndarray:
+        """``[0, cumsum(step coefficients), null coefficient]`` — one entry per
+        bin plus the null row, indexed by :meth:`codes`. The bin coefficients
+        are *increments*, so the effect of bin ``j`` is their partial sum."""
+        n_knots = len(self.knots)
+        null = float(coef[n_knots]) if self.null_indicator else 0.0
+        return np.concatenate([[0.0], np.cumsum(coef[:n_knots]), [null]])
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -292,6 +359,11 @@ class CategoricalEncoder(Encoder):
         other = (~vals.is_in(self.levels)).fill_null(True) | vals.is_null()
         cols.append(other.to_numpy())
         return np.column_stack(cols).astype(np.float64)
+
+    def lookup_table(self, coef: np.ndarray) -> np.ndarray:
+        """``[0, one coefficient per non-reference level, Other]``, indexed by
+        :meth:`codes` (0 = the reference level, last = Other / unseen / null)."""
+        return np.concatenate([[0.0], coef])
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -459,6 +531,28 @@ class LinearEncoder(Encoder):
         if self.null_indicator:
             cols = np.hstack([cols, nan[:, None].astype(np.float64)])
         return cols
+
+    def contribution(self, data: pl.DataFrame, coef: np.ndarray) -> np.ndarray:
+        """The log relativity at every row's value.
+
+        A piecewise-linear term is the one term that is **not** a pure lookup:
+        the effect moves *inside* a band, so the band index alone does not
+        determine it. It is still computed without any design columns — the
+        slope of each band times the amount of the (clamped) value that falls
+        inside it, which is the same continuous curve the rate table carries.
+        """
+        coef = np.asarray(coef, dtype=np.float64)
+        x = data[self.variable].cast(pl.Float64).to_numpy()
+        nan = np.isnan(x)
+        xc = np.clip(np.where(nan, self.lo, x), self.lo, self.hi)
+        out = np.zeros(len(x), dtype=np.float64)
+        for slope, start, width in zip(
+            coef[: self.n_bands], self.band_starts(), self.band_widths(), strict=True
+        ):
+            if slope != 0.0:
+                out += slope * np.clip(xc - start, 0.0, width)
+        out[nan] = float(coef[self.n_bands]) if self.null_indicator else 0.0
+        return out
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -638,13 +732,33 @@ class InteractionEncoder(Encoder):
         raise TypeError("InteractionEncoder needs two columns; use transform_frame")
 
     def transform_frame(self, data: pl.DataFrame) -> np.ndarray:
+        codes = self.codes(data)
+        out = np.zeros((data.height, len(self.cells)), dtype=np.float64)
+        for col in range(len(self.cells)):
+            np.copyto(out[:, col], codes == col + 1, casting="unsafe")
+        return out
+
+    def codes(self, data: pl.DataFrame) -> np.ndarray:
+        """Kept-cell code per row: ``0`` = "no kept cell" (every column zero,
+        relativity 1.00), ``1 + k`` = the ``k``-th kept cell, in column order.
+
+        Because "no cell" is a code of its own the whole interaction is one
+        integer per row, whatever the number of cells — which is what keeps a
+        big interaction from costing ``8 * n_rows * n_cells`` bytes."""
         ia, ib = self.cell_index(data)
         nb = self.b.n_rows
-        flat = ia * nb + ib
-        out = np.zeros((data.height, len(self.cells)), dtype=np.float64)
+        lookup = np.zeros(self.a.n_rows * nb, dtype=np.int32)
         for col, (i, j) in enumerate(self.cells):
-            out[:, col] = flat == (i * nb + j)
-        return out
+            lookup[i * nb + j] = col + 1
+        return lookup[ia * nb + ib]
+
+    @property
+    def n_codes(self) -> int:
+        return len(self.cells) + 1
+
+    def lookup_table(self, coef: np.ndarray) -> np.ndarray:
+        """``[0, one coefficient per kept cell]``, indexed by :meth:`codes`."""
+        return np.concatenate([[0.0], coef])
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -978,15 +1092,242 @@ class DesignSpec:
         return len(self.encoders)
 
     # -- matrix -----------------------------------------------------------
-    def build(self, data: pl.DataFrame) -> np.ndarray:
-        """Dense ``(n_rows, n_features)`` float64 design matrix for ``data``."""
+    def _require_columns(self, data: pl.DataFrame) -> None:
         missing = [c for c in self.required_columns if c not in data.columns]
         if missing:
             raise KeyError(f"Data is missing predictor columns: {missing}")
+
+    def codes(self, data: pl.DataFrame) -> dict[str, np.ndarray]:
+        """One ``int32`` code per row per variable (:meth:`Encoder.codes`).
+
+        This is the whole design in ``4`` bytes per row per variable — the form
+        both :meth:`build` and :meth:`linear_predictor` work from."""
+        self._require_columns(data)
+        return {var: enc.codes(data) for var, enc in self.encoders.items()}
+
+    def build(
+        self, data: pl.DataFrame, *, sparse: bool | None = None
+    ) -> np.ndarray | Any:
+        """The design matrix for ``data``.
+
+        Parameters
+        ----------
+        sparse : bool, optional
+            ``False`` returns the dense ``(n_rows, n_features)`` float64 numpy
+            array. ``True`` returns a tabmat :class:`~tabmat.SplitMatrix` that
+            holds integer codes instead of columns — the same matrix, a small
+            fraction of the memory (see :meth:`build_sparse`). The default is
+            **by row count**: dense below :data:`SPARSE_ROW_THRESHOLD` rows
+            (200,000), the split matrix at or above it. The threshold is where
+            the dense matrix starts to be worth avoiding but small enough that
+            an ordinary book still takes the path every 0.3 model took; a
+            50,000-row book — the golden fit, every test fixture — is dense.
+
+        Both forms are float64 and produce the same fit: coefficients and
+        predictions agree to 1e-10 with the same non-zero set
+        (``tests/test_scale.py``).
+        """
+        if sparse is None:
+            sparse = data.height >= SPARSE_ROW_THRESHOLD
+        return self.build_sparse(data) if sparse else self.build_dense(data)
+
+    def build_dense(self, data: pl.DataFrame) -> np.ndarray:
+        """Dense ``(n_rows, n_features)`` float64 design matrix for ``data``.
+
+        Written column by column straight into the output array, from the
+        integer codes, so nothing bigger than the result is ever allocated.
+        """
+        self._require_columns(data)
         n = data.height
-        out = np.empty((n, self.n_features), dtype=np.float64)
+        out = np.zeros((n, self.n_features), dtype=np.float64)
         for var, sl in self.slices().items():
-            out[:, sl] = self.encoders[var].transform_frame(data)
+            enc = self.encoders[var]
+            if isinstance(enc, LinearEncoder):
+                out[:, sl] = enc.transform_frame(data)
+                continue
+            code = enc.codes(data)
+            if isinstance(enc, StepEncoder):
+                n_knots = len(enc.knots)
+                for j in range(n_knots):
+                    np.copyto(
+                        out[:, sl.start + j],
+                        (code >= j + 1) & (code <= n_knots),
+                        casting="unsafe",
+                    )
+                if enc.null_indicator:
+                    np.copyto(
+                        out[:, sl.start + n_knots],
+                        code == n_knots + 1,
+                        casting="unsafe",
+                    )
+            else:  # categorical levels[1:] + Other, or interaction cells
+                for j in range(enc.n_features):
+                    np.copyto(out[:, sl.start + j], code == j + 1, casting="unsafe")
+        return out
+
+    def build_sparse(self, data: pl.DataFrame) -> Any:
+        """A tabmat :class:`~tabmat.SplitMatrix` for ``data`` (float64).
+
+        The blocks, **in this order**:
+
+        1. one :class:`~easy_glm.core.stepmatrix.StepMatrix` per step variable
+           — a bin index per row, ``4`` bytes whatever the number of knots;
+        2. one :class:`~tabmat.CategoricalMatrix` per categorical variable —
+           a level index per row, the reference level dropped;
+        3. one :class:`~tabmat.CategoricalMatrix` per interaction — the
+           kept-cell code per row, with "no cell" as the dropped category, so
+           a row in no kept cell is a row of zeros;
+        4. one dense float64 block holding what is left: the ``is null``
+           indicators and the piecewise-linear band columns.
+
+        Step blocks come first because ``SplitMatrix`` only ever asks the
+        *earlier* block of a pair for their cross product, and tabmat's own
+        blocks do not know ours (see :mod:`easy_glm.core.stepmatrix`).
+
+        The linear bands stay **dense on purpose**. Their columns are
+        real-valued, not 0/1, so the cumulative-sum trick that makes the step
+        blocks free does not apply; a ``(band index, amount into the band)``
+        pair per row would work — the row is the band's widths up to the band,
+        then the overlap, then zeros — but it needs its own sandwich kernel for
+        a term that has few columns to begin with (a piecewise-linear term is
+        an explicit per-variable choice, and 8 to 20 bands is typical). The
+        cost is stated rather than hidden: ``8 * n_rows`` bytes per band, which
+        at 5M rows and 20 bands is 0.8 GB for that one term. If that ever
+        binds, the pair representation is the fix.
+        """
+        import tabmat as tm
+
+        from .stepmatrix import StepMatrix
+
+        self._require_columns(data)
+        if self.n_features == 0:
+            raise ValueError("Cannot build a design matrix with no features")
+        n = data.height
+        if n == 0:
+            # tabmat's CategoricalMatrix cannot be built from zero rows; an
+            # empty dense block has the right shape and nothing to save.
+            return tm.DenseMatrix(
+                np.asarray(self.build(data, sparse=False), dtype=np.float64)
+            )
+        codes = self.codes(data)
+        slices = self.slices()
+        step_blocks: list[tuple[Any, np.ndarray]] = []
+        cat_blocks: list[tuple[Any, np.ndarray]] = []
+        cell_blocks: list[tuple[Any, np.ndarray]] = []
+        dense_cols: list[int] = []
+        dense_values: list[np.ndarray] = []
+
+        for var, sl in slices.items():
+            enc = self.encoders[var]
+            code = codes[var]
+            if isinstance(enc, StepEncoder):
+                n_knots = len(enc.knots)
+                step_blocks.append(
+                    (
+                        StepMatrix(code, n_knots, dtype=np.float64, name=var),
+                        np.arange(sl.start, sl.start + n_knots),
+                    )
+                )
+                if enc.null_indicator:
+                    dense_cols.append(sl.start + n_knots)
+                    dense_values.append(code == n_knots + 1)
+            elif isinstance(enc, LinearEncoder):
+                block = enc.transform_frame(data)
+                for j in range(enc.n_features):
+                    dense_cols.append(sl.start + j)
+                    dense_values.append(block[:, j])
+            elif isinstance(enc, CategoricalEncoder):
+                cat_blocks.append(
+                    (
+                        tm.CategoricalMatrix(
+                            code,
+                            categories=np.arange(enc.n_codes),
+                            drop_first=True,
+                            dtype=np.float64,
+                            column_name=var,
+                        ),
+                        np.arange(sl.start, sl.stop),
+                    )
+                )
+            elif isinstance(enc, InteractionEncoder):
+                cell_blocks.append(
+                    (
+                        tm.CategoricalMatrix(
+                            code,
+                            categories=np.arange(enc.n_codes),
+                            drop_first=True,
+                            dtype=np.float64,
+                            column_name=var,
+                        ),
+                        np.arange(sl.start, sl.stop),
+                    )
+                )
+            else:  # pragma: no cover - a new encoder must choose a block
+                raise NotImplementedError(
+                    f"No sparse design block for {type(enc).__name__}; build "
+                    "with sparse=False or add one in DesignSpec.build_sparse"
+                )
+
+        blocks = [*step_blocks, *cat_blocks, *cell_blocks]
+        if dense_cols:
+            dense = np.empty((n, len(dense_cols)), dtype=np.float64, order="F")
+            for j, values in enumerate(dense_values):
+                np.copyto(dense[:, j], values, casting="unsafe")
+            blocks.append((tm.DenseMatrix(dense), np.asarray(dense_cols)))
+        matrix = tm.SplitMatrix([m for m, _ in blocks], [i for _, i in blocks])
+        _check_step_blocks_first(matrix)
+        return matrix
+
+    def expected_design_bytes(self, n_rows: int) -> int:
+        """Bytes :meth:`build_sparse` should need for ``n_rows`` rows.
+
+        ``n * (4 * step variables + 4 * categoricals + 4 * interactions
+        + 8 * dense columns)``, where the dense columns are the ``is null``
+        indicators and the piecewise-linear bands. The benchmark
+        (``scripts/bench_scale.py``) asserts the real matrix against this.
+        """
+        per_row = 0
+        for enc in self.encoders.values():
+            if isinstance(enc, StepEncoder):
+                per_row += 4 + (8 if enc.null_indicator else 0)
+            elif isinstance(enc, LinearEncoder):
+                per_row += 8 * enc.n_features
+            else:
+                per_row += 4
+        return int(n_rows) * per_row
+
+    # -- scoring without a matrix -----------------------------------------
+    def linear_predictor(
+        self,
+        data: pl.DataFrame,
+        coef: np.ndarray,
+        intercept: float = 0.0,
+        *,
+        chunk_rows: int = SCORING_CHUNK_ROWS,
+    ) -> np.ndarray:
+        """``intercept + design @ coef``, computed from the codes in row chunks.
+
+        One table lookup per variable per chunk, in float64 — the same
+        arithmetic ``RateModel`` does, which is why the two agree exactly.
+        Nothing the size of a design matrix is ever allocated, so scoring a
+        5M-row book costs one float64 vector, not a second copy of the design.
+        """
+        self._require_columns(data)
+        coef = np.asarray(coef, dtype=np.float64)
+        if coef.shape != (self.n_features,):
+            raise ValueError(
+                f"coef must have one value per design column ({self.n_features}); "
+                f"got shape {coef.shape}"
+            )
+        n = data.height
+        out = np.full(n, float(intercept), dtype=np.float64)
+        slices = self.slices()
+        step = max(int(chunk_rows), 1)
+        for start in range(0, n, step):
+            part = data.slice(start, step)
+            block = out[start : start + part.height]
+            for var, sl in slices.items():
+                block += self.encoders[var].contribution(part, coef[sl])
         return out
 
     # -- serialisation ----------------------------------------------------
@@ -1034,3 +1375,55 @@ class DesignSpec:
             else:  # pragma: no cover
                 parts.append(f"{var}: {enc.kind}")
         return f"DesignSpec({', '.join(parts)})"
+
+
+# --------------------------------------------------------------------------
+# helpers for the compact (tabmat) design matrix
+# --------------------------------------------------------------------------
+def _check_step_blocks_first(matrix: Any) -> None:
+    """Fail loudly if a ``StepMatrix`` block is not before every other block.
+
+    ``SplitMatrix.sandwich`` computes the cross product of blocks ``i`` and
+    ``j`` (``i < j``) by asking block ``i``, and tabmat's own blocks raise
+    ``TypeError`` on a block type they have never heard of. Ordering is
+    therefore a correctness condition, not a preference, and it is cheap to
+    assert once at construction rather than to debug inside a Hessian.
+    """
+    from .stepmatrix import StepMatrix
+
+    seen_other = False
+    for block in matrix.matrices:
+        if isinstance(block, StepMatrix):
+            if seen_other:
+                raise RuntimeError(
+                    "StepMatrix blocks must come before every other block of "
+                    "the SplitMatrix (cross-sandwich dispatch); got "
+                    f"{[type(m).__name__ for m in matrix.matrices]}"
+                )
+        else:
+            seen_other = True
+
+
+def design_bytes(design: Any) -> int:
+    """Bytes a built design matrix actually holds (dense array or SplitMatrix).
+
+    Counts the payload of every block — the codes of a ``StepMatrix``, the
+    indices of a ``CategoricalMatrix``, the values of a dense block — so the
+    benchmark can compare it with
+    :meth:`DesignSpec.expected_design_bytes`.
+    """
+    import tabmat as tm
+
+    from .stepmatrix import StepMatrix
+
+    if isinstance(design, np.ndarray):
+        return int(design.nbytes)
+    if isinstance(design, tm.SplitMatrix):
+        return sum(design_bytes(block) for block in design.matrices)
+    if isinstance(design, StepMatrix):
+        return design.nbytes
+    if isinstance(design, tm.CategoricalMatrix):
+        return int(np.asarray(design.indices).nbytes)
+    if isinstance(design, tm.DenseMatrix):
+        return int(np.asarray(design.unpack()).nbytes)
+    raise TypeError(f"design_bytes does not know {type(design).__name__}")

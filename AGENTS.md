@@ -8,6 +8,8 @@ Purpose: Provide build/test commands, architecture guidance, and code style guid
 
 - Single test: `pytest tests/test_engine.py -k test_clone --maxfail=1 -q`
 - Full suite: `pytest -q` (includes Streamlit `AppTest` smoke tests for every workbench page)
+- Scale budget (deselected by default): `pytest -m slow` — fits 5M rows in a subprocess and fails above 3 GB peak; needs ~3 GB free
+- Scale benchmark: `PYTHONPATH=src .venv/bin/python scripts/bench_scale.py` (one subprocess per size; `--sizes`, `--representations`, `--json`, `--check-budget`)
 - Persona e2e: `EASY_GLM_E2E=1 EASY_GLM_SERVER_PYTHON=.venv/bin/python <python-with-playwright> -m pytest tests/e2e` (navigate via sidebar links only; grids are canvas widgets — edit a cell with `_helpers.edit_grid_cell`, which double-clicks the cell, types into the overlay editor and waits for the expected text; set `EASY_GLM_E2E_SHOTS=<dir>` to get screenshots when an edit does not register). Any message drawn right before `st.rerun()` must go through `ui.flash()` (shown at the top of the next run), or Streamlit ≥ 1.63 drops it.
 - Workbench: `python -m easy_glm.app [project.json]` (or `easy-glm-workbench`); headless: `--headless`
 - Lint: `ruff check .`
@@ -69,7 +71,8 @@ print('OK')
 2. **Building blocks:** `DesignSpec.from_data` → `fit_glm` (returns `GLMFit`) →
    `rate_tables` / `to_rate_model`. `EasyGLM.fit` is exactly these three calls.
 3. **Scoring:** `RateModel` (lookup tables, reproduces the GLM exactly);
-   `GLMFit.predict` (glum on `spec.build(data)`).
+   `GLMFit.predict` (the same rate-table lookups, from the integer codes in row
+   chunks — never `model.predict(spec.build(data))`).
 4. **Hand-built tables:** `RateModel.from_rate_tables({var: DataFrame(from, to,
    relativity)}, base_rate, ...)` — the table format written by `rate_tables`,
    `rate_model_tables` and the Excel export. The 0.2/0.3 blueprint + DuckDB
@@ -90,10 +93,19 @@ src/easy_glm/
 │   ├── design.py           # DesignSpec, StepEncoder (1{x>=k} + null col), LinearEncoder (one slope
 │   │                       #   column per band + clamp; no knots = "continuous"),
 │   │                       #   InteractionEncoder (A×B cells), CategoricalEncoder (one-hot + Other),
-│   │                       #   Feature metadata, quantile_knots, frequent_levels; JSON round-trip
+│   │                       #   Feature metadata, quantile_knots, frequent_levels; JSON round-trip.
+│   │                       #   Encoder.codes/contribution (int32 code per row, table lookup),
+│   │                       #   DesignSpec.codes / build(sparse=) -> dense array or tabmat
+│   │                       #   SplitMatrix / linear_predictor (chunked scoring, no matrix) /
+│   │                       #   expected_design_bytes; SPARSE_ROW_THRESHOLD, design_bytes
+│   ├── stepmatrix.py       # StepMatrix: a tabmat block holding one int32 bin index per row
+│   │                       #   instead of the K step columns (cumulative-sum trick for matvec /
+│   │                       #   transpose_matvec / sandwich / _cross_sandwich); install_glum_shim
 │   ├── fit.py              # fit_glm -> GLMFit (glum wrapper: families/links,
-│   │                       #   alpha or CV, monotone_bounds -> lower/upper_bounds);
-│   │                       #   fit_two_stage -> TwoStageFit (mains frozen, cells on top)
+│   │                       #   alpha or CV, monotone_bounds -> lower/upper_bounds,
+│   │                       #   sparse=, aggregate=, progress=);
+│   │                       #   fit_two_stage -> TwoStageFit (mains frozen, cells on top);
+│   │                       #   aggregate_rows / design_row_key (one row per distinct design row)
 │   ├── tables.py           # rate_tables, base_rate, to_rate_model (exact, from coefs)
 │   ├── excel.py            # write_rate_tables_xlsx, rate_model_tables (EasyGLM/RateModel.to_excel)
 │   ├── easyglm.py          # EasyGLM pipeline (fit/predict/save/load) on the above
@@ -273,6 +285,58 @@ User edits relativity in table
   row; `_precompute_variables` stores it as `null_relativity` and `score_numeric`
   applies it to NaN. Without that row NaN still raises (legacy behaviour).
 
+### Scale (0.4 piece G) Conventions
+
+- **float64 everywhere, no exceptions.** The design blocks, `P1`, the monotone
+  bounds, `sample_weight`, the offset, `y` and `coef_` are all cast to float64 in
+  `fit_glm`. The G spike measured what float32 does under glum 3.4.1: designs stop
+  converging past 1M rows (they hit `max_iter` and land 0.2–0.4 % off), `coef_`
+  comes back float32, and an uncast float64 `sample_weight` **segfaults tabmat** —
+  silent, data-dependent memory unsafety. `docs/spikes/g-scale/SPIKE_REPORT.md` §4.2
+  is the record. Never reintroduce a float32 design option.
+- **`StepMatrix` blocks come first in the `SplitMatrix`, and that is a correctness
+  condition.** `SplitMatrix.sandwich` computes the cross product of blocks `i` and
+  `j` (`i < j`) by calling `matrices[i]._cross_sandwich(matrices[j])`, and tabmat's
+  own blocks raise `TypeError` on a block type they do not know. Our block knows
+  about `StepMatrix`, `CategoricalMatrix` and `DenseMatrix`; theirs know nothing
+  about ours. `DesignSpec.build_sparse` orders the blocks steps → categoricals →
+  interaction cells → the one dense block (null indicators + piecewise-linear
+  bands) and `_check_step_blocks_first` asserts it at construction.
+- **A variable's `codes` are its rate-table row indices** (`Encoder.row_index`), so
+  the same integers drive the design matrix, the rate tables and the scorer.
+  Interactions are the one exception: their code is the kept-cell index with `0`
+  meaning "no kept cell", which is how the whole interaction fits in four bytes a
+  row. Never derive a code from a feature-name string.
+- **Scoring never builds a design matrix.** `GLMFit.predict` /
+  `linear_predictor` go through `DesignSpec.linear_predictor` — one float64
+  table lookup per variable, in `SCORING_CHUNK_ROWS` (500k) row chunks — not
+  `model.predict(X)`. That is what makes `RateModel.predict == fit.predict` true
+  by construction rather than by coincidence, and it is why diagnostics on a 5M-row
+  book never materialise a second copy of the design. A `LinearEncoder` is the one
+  term whose contribution is computed rather than looked up (the effect moves
+  inside a band).
+- **The compact form is the default at `SPARSE_ROW_THRESHOLD` (200,000) rows.**
+  Below it `build` returns the dense float64 array, which keeps the 50k golden fit
+  on exactly the path its numbers were recorded from (`tests/test_scale.py`
+  asserts that explicitly). `sparse=True/False` forces either.
+- **The glum shim is a pinned private-API patch.** `install_glum_shim()` wraps
+  `glum._validation.check_array_tabmat_compliant` with one branch so a `StepMatrix`
+  passes through instead of going to `sklearn.check_array` (which would densify it).
+  `pyproject.toml` pins `glum>=3.4,<3.5` for that reason; widen it only once the
+  pass-through is upstream. A test fits through that function so a glum change
+  fails the build rather than silently densifying a 5M-row design.
+- **Aggregation (`aggregate=True`) is exact but opt-in.** Rows with identical
+  design rows *and identical offsets* are fitted as one row with the summed weight
+  and the weighted mean target; the objective, gradient, Hessian and glum's
+  standardisation are unchanged, so the coefficients match to 1e-12. It is refused
+  with `cv=` (folds must be assigned to rows), the deviance *constant* differs
+  (compare differences only), and it saves little on a fine design — 5 % on the 50k
+  fixture. `modal_bins` and `n_train_rows` stay row-level.
+- **The design-bytes formula is asserted, not asserted-to.** `n x (4 per step
+  variable + 4 per categorical + 4 per interaction + 8 per null indicator + 8 per
+  linear band)` is `DesignSpec.expected_design_bytes`, and `scripts/bench_scale.py`
+  fails if the real matrix disagrees.
+
 ### Workbench Conventions
 
 - Pages never compute; they call `easy_glm.workflow` and read/write the `Project`
@@ -431,6 +495,7 @@ User edits relativity in table
 | `test_invariants.py` | RateModel == GLM, JSON and Excel round-trips over step / categorical (string and integer) / mixed / offset / interaction (joint **and** two-stage) / piecewise-linear designs with nulls and unseen levels |
 | `test_linear.py` | Pieces B / B2: `LinearEncoder` (clamp, per-band slope columns, nulls, the one-band `continuous` kind), band slope = the coefficient itself, continuity, monotone as a sign bound on slopes, exactness at/beyond the clamp, band-edit rule, snapshots/JSON/Excel/`from_rate_tables`, interaction with a linear parent, project validation, script round trip, workbench pages |
 | `test_interactions.py` | Piece A / A2: `InteractionEncoder` (cells, exposure, symmetry, JSON), the engine's cell table, Excel long + matrix sheets, the cell `P1` rule, and the two-stage fit (`TwoStageFit` composition, frozen mains, exactness, offsets, what it refuses) |
+| `test_scale.py` | Piece G: `StepMatrix` against the dense block for every operation (row/column subsets, cross-sandwich with step/categorical/dense blocks, `standardize`), the compact and dense design matrices being the same matrix, the block-order rule, the design-bytes formula, fit equivalence (fixed alpha, CV, monotone, two-stage, linear, continuous, nulls and unseen levels; 50k fixture and a 300k synthetic book), scoring without a matrix, exact aggregation, progress, the `-m slow` 5M-row memory budget, and **A2's final behaviour re-checked on the compact path** (an `offset=` array folded into `eta1`, the v3 `EasyGLM` bundle holding both stages, stage 1's `P1` not reaching the cells, and the exported script — which takes the row-count default and so runs dense — reproducing a run that was fitted sparse) |
 | `test_recovery.py` | Planted truth: the `Age x Region` cell recovered at a fixed and a CV alpha with thin cells left at 1.00, main tables unmoved by adding the interaction, and the flat/sloped/flat mileage curve of B2 |
 | `test_c1_foundations.py` | 0.3 bug regressions, format versions and migrations, editor defaults |
 | `test_scoring.py` | Isolated scoring: score_numeric (searchsorted), score_categorical (dict lookup), edge cases, fallbacks |

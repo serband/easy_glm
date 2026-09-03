@@ -91,9 +91,26 @@ eglm.rate_model.to_excel("rate_tables_adjusted.xlsx")   # tables as scored, incl
 Any `RateModel` — including one edited in the browser and downloaded as
 `.easyglm` — exports the same way: `RateModel.from_json("revised.easyglm").to_excel("revised.xlsx")`.
 
-**Performance.** On the bundled French motor set (~680k rows, 6 predictors) a
-fixed-`alpha` fit takes about a second and `cv=5` over a 20-point alpha path
-around 10–20 seconds; peak memory is ~1 GB (the design matrix is dense float64).
+**Performance and size.** A fixed-`alpha` fit of the full French motor set
+(~680k rows, 9 predictors) takes a couple of seconds and `cv=5` over a 20-point
+alpha path around 20 seconds. Books much bigger than that are fine: the design
+matrix stores **one integer per row per rating factor** rather than a column of
+noughts and ones per band, so memory grows with the number of *factors*, not
+the number of bands. Measured on a 24 GB laptop with a 227-column design
+(`scripts/bench_scale.py`):
+
+| rows | fit | peak memory |
+|---:|---:|---:|
+| 200,000 | 1 s | 0.4 GB |
+| 1,000,000 | 4 s | 0.8 GB |
+| 5,000,000 | 21 s | 2.6 GB |
+
+The compact form switches itself on at 200,000 rows (`fit_glm(..., sparse=)`
+forces either); it is float64 throughout and gives the same coefficients,
+the same non-zero set and predictions agreeing to 1e-10 with the dense matrix
+(`tests/test_scale.py`, `docs/checks/g-scale.md`). Scoring never builds a
+design matrix at all — `predict` adds up the rate-table lookups in row
+chunks — so a fitted model scores a book of any size in one pass.
 
 ---
 

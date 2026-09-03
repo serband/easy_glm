@@ -4,6 +4,7 @@ fit, compile the RateModel, apply manual adjustments, compute metrics."""
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
@@ -345,9 +346,22 @@ def snapshot_metrics(
     }
 
 
-def run_model(project: Project, df: pl.DataFrame, model_name: str) -> ModelRun:
+def run_model(
+    project: Project,
+    df: pl.DataFrame,
+    model_name: str,
+    *,
+    progress: Callable[[str], None] | None = None,
+) -> ModelRun:
     """Fit ``project.models[model_name]`` on the training rows of the prepared
     frame ``df`` (must contain the split column) and return a :class:`ModelRun`.
+
+    ``progress`` is called with a short status string about once a second while
+    the fit runs (see :func:`easy_glm.core.fit.fit_glm`); it is how the
+    workbench shows elapsed time on a long fit. The design matrix is chosen by
+    row count — a book past
+    :data:`~easy_glm.core.design.SPARSE_ROW_THRESHOLD` rows is fitted on the
+    compact one, which is the same fit in a fraction of the memory.
 
     A model **with interactions is fitted in two stages** (Q5): stage 1 is the
     main-effect model — bit for bit the fit the same model without the
@@ -387,6 +401,7 @@ def run_model(project: Project, df: pl.DataFrame, model_name: str) -> ModelRun:
         l1_ratio=pen.l1_ratio,
         min_alpha_ratio=pen.min_alpha_ratio,
         monotone=monotone_for(project, cfg),
+        progress=progress,
         **kwargs,
     )
     fit: GLMFit
