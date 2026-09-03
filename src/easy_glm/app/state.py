@@ -58,6 +58,7 @@ import re
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -71,9 +72,11 @@ from easy_glm.workflow import (
     ModelRun,
     Project,
     build_design,
+    expected_claims,
     leakage_report,
     load_source,
     prepare,
+    rate_model_for,
     rebuild_rate_model,
     run_model,
     train_holdout,
@@ -1041,6 +1044,38 @@ def refresh_adjustments(model: str) -> ModelRun | None:
     return run
 
 
+def fitted_expected_claims(model: str) -> float | None:
+    """Total expected claims of the model **as fitted** (no adjustments, no
+    base-rate override) on the training rows.
+
+    The reference every rate-table edit is measured against, and the target the
+    *Rebalance base rate* action puts the book back to. Cached on the fit's
+    hash: it changes only when the model is refitted.
+    """
+    run = get_run(model)
+    df = prepared_frame()
+    p = project()
+    if run is None or df is None:
+        return None
+    key = model_hash(p, model)
+    # one entry per model, each stamped with the fit it belongs to: a refit (or
+    # another project, whose data is part of the hash) is a miss, never a stale
+    # reference level
+    cache: dict[str, tuple[str, float]] = st.session_state.setdefault(
+        "_fitted_claims", {}
+    )
+    hit = cache.get(model)
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    train, _holdout = train_holdout(df, p.data.split)
+    if train.is_empty():
+        return None
+    fitted = rate_model_for(p, run, [], base_rate_override=None)
+    total = expected_claims(fitted, train, p.models[model])
+    cache[model] = (key, total)
+    return total
+
+
 # --------------------------------------------------------------------------
 # undo / redo of the rate-table edits
 # --------------------------------------------------------------------------
@@ -1053,23 +1088,48 @@ UNDO_KEY = "undo_stacks"
 UNDO_LIMIT = 50
 
 
-def _stacks(model: str) -> dict[str, list[list[Adjustment]]]:
+@dataclass(frozen=True)
+class EditStep:
+    """One undoable state of a model's rate tables.
+
+    The tables are the fit plus **two** post-fit things: the manual adjustments
+    and the base-rate override. ``rebuild_rate_model`` applies both, so an undo
+    step that carried only the adjustments would put the bands back and leave
+    someone else's base rate in force — a premium error with nothing on screen
+    to explain it.
+    """
+
+    adjustments: list[Adjustment]
+    base_rate_override: float | None
+
+
+def _stacks(model: str) -> dict[str, list[EditStep]]:
     init_state()
     store = st.session_state.setdefault(UNDO_KEY, {})
     return store.setdefault(model, {"past": [], "future": []})
 
 
-def record_undo(model: str, previous: list[Adjustment]) -> None:
-    """Remember ``previous`` — the model's adjustments *before* the change the
-    caller is about to make (or has just made) — as one undo step.
+def edit_state(model: str) -> EditStep | None:
+    """The model's current undoable state, deep-copied — call it *before*
+    changing anything and hand the result to :func:`record_undo`."""
+    cfg = project().models.get(model)
+    if cfg is None:
+        return None
+    return EditStep(copy.deepcopy(cfg.adjustments), cfg.base_rate_override)
 
-    A step is a whole list of adjustments, not a single edit, so undo restores
-    exactly the tables that were there: the adjustments are the tables (they are
-    re-applied to the fit by ``rebuild_rate_model``). Recording a new step drops
-    the redo history, as everywhere else.
+
+def record_undo(model: str, previous: EditStep | None) -> None:
+    """Remember ``previous`` — the state before the change the caller is about
+    to make (or has just made) — as one undo step.
+
+    A step is the whole state, not a single edit, so undo restores exactly the
+    tables that were there. Recording a new step drops the redo history, as
+    everywhere else.
     """
+    if previous is None:
+        return
     st_ = _stacks(model)
-    st_["past"].append(copy.deepcopy(previous))
+    st_["past"].append(previous)
     del st_["past"][:-UNDO_LIMIT]
     st_["future"].clear()
 
@@ -1095,14 +1155,16 @@ def redo(model: str) -> bool:
 
 def _move(model: str, take: str, keep: str) -> bool:
     st_ = _stacks(model)
-    if not st_[take]:
-        return False
     cfg = project().models.get(model)
-    if cfg is None:
+    if not st_[take] or cfg is None:
         return False
-    st_[keep].append(copy.deepcopy(cfg.adjustments))
-    del st_[keep][:-UNDO_LIMIT]
-    cfg.adjustments = st_[take].pop()
+    current = edit_state(model)
+    if current is not None:
+        st_[keep].append(current)
+        del st_[keep][:-UNDO_LIMIT]
+    step = st_[take].pop()
+    cfg.adjustments = copy.deepcopy(step.adjustments)
+    cfg.base_rate_override = step.base_rate_override
     touch()
     refresh_adjustments(model)
     return True

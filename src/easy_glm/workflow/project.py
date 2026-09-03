@@ -283,6 +283,25 @@ class ModelConfig:
     snapshots: list[TableSnapshot] = field(default_factory=list)
     notes: str = ""
 
+    def drop_adjustments_for(self, variable: str) -> int:
+        """Remove every adjustment on ``variable`` — from the working set **and
+        from every snapshot** — and return how many went.
+
+        One method because a snapshot is a copy of the adjustments: a caller
+        that cleaned only the working set (what removing an interaction used to
+        do) left a snapshot that could no longer be restored.
+        """
+
+        def keep(adjustments: list[Adjustment]) -> tuple[list[Adjustment], int]:
+            kept = [a for a in adjustments if a.variable != variable]
+            return kept, len(adjustments) - len(kept)
+
+        self.adjustments, dropped = keep(self.adjustments)
+        for snap in self.snapshots:
+            snap.adjustments, gone = keep(snap.adjustments)
+            dropped += gone
+        return dropped
+
 
 def _adjustment_to_dict(a: dict[str, Any]) -> dict[str, Any]:
     """One adjustment (already an ``asdict`` mapping) in the project's JSON

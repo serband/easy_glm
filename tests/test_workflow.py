@@ -180,8 +180,13 @@ class TestProject:
         cfg.adjustments = [Adjustment("DrivAge×Region", None, 30.0, 1.1)]
         with pytest.raises(ValueError, match="cell=True"):
             apply_adjustments(run.rate_model.clone(), cfg)
+        # a variable the model does not have is an AdjustmentError like every
+        # other refusal (it used to be a bare KeyError, which tracebacked the
+        # page instead of being dropped and reported — D5 review S1)
+        from easy_glm.workflow import AdjustmentError
+
         cfg.adjustments = [Adjustment("Nope", 1, 2, 1.1)]
-        with pytest.raises(KeyError, match="not a variable"):
+        with pytest.raises(AdjustmentError, match="not a variable"):
             apply_adjustments(run.rate_model.clone(), cfg)
         cfg.adjustments = []
 

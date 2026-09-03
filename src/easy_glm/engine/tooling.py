@@ -59,6 +59,11 @@ from .rate_model import derive_slopes
 
 #: default window of the moving average, in bands (must be odd, at least 3)
 DEFAULT_WINDOW = 3
+#: a relativity that moves by less than this has not moved. One constant for
+#: the whole edit path: a tool that called a change "changed" while
+#: :func:`easy_glm.app.grids.apply_row_edits` (which imports this) called it
+#: unchanged would enable *Apply* and then write nothing.
+TOL = 1e-9
 
 Direction = Literal["increasing", "decreasing"]
 
@@ -118,6 +123,11 @@ def _check_main_effect(cfg: VariableConfig, variable: str) -> None:
     if cfg.type not in ("numeric", "categorical", "linear"):
         raise ToolingError(
             f"{variable!r} has table type {cfg.type!r}, which has no tools"
+        )
+    if not groups(cfg):
+        raise ToolingError(
+            f"{variable!r} has no band a tool could change: its table is only the "
+            "null / Other row, which no tool touches."
         )
 
 
@@ -217,7 +227,7 @@ def _result(
     for g, v in zip(gs, new_values, strict=True):
         for i in g:
             values[i] = float(v)
-        if abs(float(v) - float(before[g[0]])) > 1e-12:
+        if abs(float(v) - float(before[g[0]])) > TOL:
             changed.append(level_label(cfg.table[g[0]], cfg.other_label))
     return ToolResult(
         variable=variable,
@@ -506,4 +516,29 @@ def apply_values(
     from .rate_model import RateModel
 
     RateModel._precompute_variables({"preview": out})
+    return out
+
+
+def preview_model(rm: Any, variable: str, values: list[float] | np.ndarray) -> Any:
+    """A **copy** of the rate model ``rm`` whose ``variable`` holds ``values``.
+
+    Everything else — the base rate, the other variables, the metadata, the
+    interaction cells — is the model's own, so scoring the result and scoring
+    ``rm`` differ by exactly this one table. That is how a page can price a tool
+    before applying it: the change in total expected claims is
+    ``predict`` on the two models, not an approximation from the table.
+    """
+    from .rate_model import RateModel
+
+    out = RateModel(
+        base_rate=rm.base_rate,
+        variables={
+            **rm.variables,
+            variable: apply_values(rm.variables[variable], values),
+        },
+        metadata=rm.metadata,
+        snapshots=rm.snapshots,
+        current_version=rm.current_version,
+        column_mapping=rm.column_mapping,
+    )
     return out

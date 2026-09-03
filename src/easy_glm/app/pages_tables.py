@@ -18,6 +18,8 @@ from easy_glm.workflow import (
     ae_by_pair,
     ae_by_variable,
     describe_diff,
+    expected_claims,
+    missing_variables,
     rate_model_diff,
     rate_model_for,
     totals,
@@ -80,10 +82,14 @@ def _challenger_selector(column, model: str):
 
 
 def _apply(
-    run_name: str, changed: bool, errors: list[str], before: list | None = None
+    run_name: str,
+    changed: bool,
+    errors: list[str],
+    before: S.EditStep | None = None,
 ) -> None:
-    """Save an edit: record one undo step (``before`` = the adjustments as they
-    were), autosave, re-apply to the cached run and redraw."""
+    """Save an edit: record one undo step (``before`` = the adjustments *and*
+    the base-rate override as they were), autosave, re-apply to the cached run
+    and redraw."""
     for e in errors:
         if changed:
             ui.flash("error", e)  # the rerun below would discard it otherwise
@@ -234,7 +240,7 @@ def _main_effect(run, var: str, df: pl.DataFrame, challenger=None) -> pl.DataFra
             column_config=col_cfg,
             key=S.widget_key(f"rel_editor_{run.name}_{var}"),
         )
-        before = list(cfg.adjustments)
+        before = S.edit_state(run.name)
         changed, errors = G.apply_row_edits(
             cfg,
             var,
@@ -338,7 +344,7 @@ def _interaction(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
             },
             key=S.widget_key(f"cell_editor_{run.name}_{var}"),
         )
-        before = list(cfg.adjustments)
+        before = S.edit_state(run.name)
         changed, errors = G.apply_cell_edits(cfg, var, grid, edited.values.tolist())
         _apply(run.name, changed, errors, before)
         with st.expander("Fitted cells (before adjustments)"):
@@ -449,7 +455,38 @@ def _tool_parameters(tool: str, var_cfg, key) -> dict:
     return kwargs
 
 
-def _tools(run, var: str, fitted: pl.DataFrame, working: pl.DataFrame) -> None:
+def _claims_change(
+    run, var: str, values: list[float], train: pl.DataFrame
+) -> float | None:
+    """``expected claims after this tool / expected claims now − 1`` on the
+    training rows — the **true** effect of the tool on the book.
+
+    Computed by scoring the two sets of tables, not from the table itself: the
+    premium is the exposure-weighted mean of the *relativities* (and of every
+    other factor's), which no average of logs can stand in for.
+    """
+    cfg = S.project().models[run.name]
+    if train.is_empty() or cfg.target is None:
+        return None
+    now = expected_claims(run.rate_model, train, cfg)
+    if not now > 0:
+        return None
+    after = expected_claims(T.preview_model(run.rate_model, var, values), train, cfg)
+    return after / now - 1.0
+
+
+def _pct(change: float | None, *, zero: str = "no change") -> str:
+    """A percentage change for a metric tile. Only an exactly-zero change (to
+    1e-9) reads as "no change" — a tool that moves the book by half a per cent
+    must never say it moved nothing."""
+    if change is None:
+        return "—"
+    return zero if abs(change) < 1e-9 else f"{change:+.3%}"
+
+
+def _tools(
+    run, var: str, fitted: pl.DataFrame, working: pl.DataFrame, df: pl.DataFrame
+) -> None:
     """The Tools expander above the editor: pick a tool, see what it would do,
     apply it as ordinary adjustments."""
     cfg = S.project().models[run.name]
@@ -463,10 +500,12 @@ def _tools(run, var: str, fitted: pl.DataFrame, working: pl.DataFrame) -> None:
         st.caption(
             "Each tool works on the bands of **this** table, never on the "
             "*Other / Unknown* row, and is saved as ordinary adjustments (no "
-            "refit). **Smoothing keeps the exposure-weighted mean of the log "
-            "relativities exactly where it is**, so the shape of the factor "
-            "changes and the premium level does not; a cap or a rounding moves "
-            "the level on purpose, and the number below says by how much."
+            "refit). A smoothing keeps the exposure-weighted mean of the "
+            "**log** relativities exactly where it is — that is the shape rule "
+            "— but that is *not* the same as leaving the premium alone: the "
+            "**expected claims** figure below is what the book actually does, "
+            "and *Rebalance base rate*, under the table, puts it back to where "
+            "the fitted model had it."
         )
         tool = st.selectbox("Tool", TOOLS, key=key("which"))
         kwargs = _tool_parameters(tool, var_cfg, key)
@@ -475,30 +514,34 @@ def _tools(run, var: str, fitted: pl.DataFrame, working: pl.DataFrame) -> None:
         except T.ToolingError as exc:
             st.info(str(exc))
             return
+        train = _ae_frame(df, "train")
+        claims_change = ui.guarded(
+            lambda: _claims_change(run, var, result.values, train),
+            "Pricing this tool",
+        )
         ui.metric_row(
             [
                 ("bands that would change", str(result.changed), None),
                 (
+                    "expected claims (training)",
+                    _pct(claims_change),
+                    "The real effect on the book: total expected claims on the "
+                    "training rows with these tables against the tables now. "
+                    "This is the money — a smoothing that keeps the mean log "
+                    "relativity can still move it, and usually does.",
+                ),
+                (
                     "mean log relativity now",
                     ui.fmt(result.log_mean_before, digits=6),
-                    "Exposure-weighted mean of the log relativities — the "
-                    "average premium effect of this factor. A smoothing must "
-                    "leave it alone, because the base rate is not refitted.",
+                    "Exposure-weighted mean of the log relativities: the shape "
+                    "rule a smoothing preserves. It is a geometric average, so "
+                    "it is not the premium — read the expected-claims tile for "
+                    "that.",
                 ),
                 (
                     "after this tool",
                     ui.fmt(result.log_mean_after, digits=6),
                     None,
-                ),
-                (
-                    "overall level",
-                    (
-                        "no change"
-                        if abs(result.level_shift) < 5e-5
-                        else f"{result.level_shift:+.2%}"
-                    ),
-                    "How much every risk's premium would move from this factor "
-                    "alone, before its own band changes.",
                 ),
             ]
         )
@@ -524,12 +567,23 @@ def _tools(run, var: str, fitted: pl.DataFrame, working: pl.DataFrame) -> None:
                 working_name="after this tool",
             )
         st.plotly_chart(chart, width="stretch")
-        st.caption(result.note)
+        st.caption(
+            result.note
+            + (
+                ""
+                if claims_change is None
+                else " On the training rows this would change total expected "
+                f"claims by **{_pct(claims_change, zero='nothing at all')}** — "
+                "the base rate is not refitted, so that change stays until you "
+                "rebalance it."
+            )
+        )
         if result.uniform_weights:
             st.warning(
                 "This table carries no training exposure (it was built by hand "
                 "or read from a file written before 0.4), so every band counted "
-                "the same in the average and in the level check above."
+                "the same in the average above (the expected-claims figure is "
+                "unaffected: it is measured on the data)."
             )
         if not result.changed:
             st.caption("Nothing would change: the table already looks like that.")
@@ -539,7 +593,7 @@ def _tools(run, var: str, fitted: pl.DataFrame, working: pl.DataFrame) -> None:
             type="primary",
             disabled=not result.changed,
         ):
-            before = list(cfg.adjustments)
+            before = S.edit_state(run.name)
             changed, errors = G.apply_row_edits(
                 cfg,
                 var,
@@ -553,9 +607,80 @@ def _tools(run, var: str, fitted: pl.DataFrame, working: pl.DataFrame) -> None:
                 ui.flash(
                     "success",
                     f"**{result.tool}** applied to **{var}**: "
-                    f"{result.changed} band(s) changed. {result.note}",
+                    f"{result.changed} band(s) changed, total expected claims "
+                    f"{_pct(claims_change, zero='unchanged')}. {result.note}",
                 )
             _apply(run.name, changed, errors, before)
+
+
+# --------------------------------------------------------------------------
+# off-balance: what the edits did to the book, and putting it back
+# --------------------------------------------------------------------------
+def _off_balance(run, df: pl.DataFrame) -> tuple[float, float] | None:
+    """``(off-balance, the base rate that removes it)``.
+
+    The off-balance is ``total expected claims now / total expected claims as
+    fitted − 1`` on the training rows: what every edit to this model's tables —
+    typed, smoothed, capped, rounded — has done to the book. Predictions are
+    linear in the base rate, so the base rate that puts the book back is one
+    ratio away.
+    """
+    cfg = S.project().models[run.name]
+    target = S.fitted_expected_claims(run.name)
+    train = _ae_frame(df, "train")
+    if target is None or not target > 0 or train.is_empty() or cfg.target is None:
+        return None
+    current = expected_claims(run.rate_model, train, cfg)
+    if not current > 0:
+        return None
+    return current / target - 1.0, run.rate_model.base_rate * target / current
+
+
+def _rebalance(run, df: pl.DataFrame) -> None:
+    """What the adjustments have done to the total expected claims, and a
+    one-click base-rate override that takes it back to the fitted level."""
+    p = S.project()
+    cfg = p.models[run.name]
+    if not cfg.adjustments and cfg.base_rate_override is None:
+        return
+    numbers = ui.guarded(lambda: _off_balance(run, df), "Measuring the off-balance")
+    if numbers is None:
+        return
+    off, base = numbers
+    balanced = abs(off) < 1e-9
+    c1, c2 = st.columns([3, 1])
+    c1.caption(
+        (
+            "**The book is balanced**: with these tables the model expects the "
+            "same total claims on the training rows as the fitted model did."
+            if balanced
+            else f"**Off-balance {off:+.3%}** — with these tables the model "
+            f"expects {abs(off):.3%} "
+            + ("more" if off > 0 else "less")
+            + " in total claims on the training rows than the fitted model did. "
+            "Editing a table does not refit the base rate, so this stays until "
+            "you put it back."
+        )
+        + " *Rebalance* sets the base-rate override to "
+        f"**{ui.fmt(base, digits=6)}**, which restores the fitted total exactly; "
+        "it changes no relativity and is one undo step."
+    )
+    if c2.button(
+        "Rebalance base rate",
+        key=S.widget_key("tables_rebalance"),
+        disabled=balanced,
+        help="Off-balance correction: keep the shape you have edited and put "
+        "the overall level back where the fit had it.",
+    ):
+        before = S.edit_state(run.name)
+        cfg.base_rate_override = base
+        ui.flash(
+            "success",
+            f"Base rate rebalanced to {base:.6g} — total expected claims on the "
+            f"training rows are back where the fitted model had them ({off:+.3%} "
+            "removed). No relativity changed; *Undo* puts the old base rate back.",
+        )
+        _apply(run.name, True, [], before)
 
 
 # --------------------------------------------------------------------------
@@ -604,6 +729,11 @@ def _snapshots(run) -> None:
                 st.error("Give the snapshot a name first.")
             elif any(sn.name == clean for sn in cfg.snapshots):
                 st.error(f"This model already has a snapshot called {clean!r}.")
+            elif clean in (FITTED_OPTION, CURRENT_OPTION):
+                st.error(
+                    f"{clean!r} is the name of one of the built-in versions in the "
+                    "comparison below; give the snapshot another name."
+                )
             else:
                 cfg.snapshots.append(
                     TableSnapshot(
@@ -643,17 +773,60 @@ def _snapshots(run) -> None:
             "Snapshot", names, key=key("chosen"), label_visibility="collapsed"
         )
         if c2.button("Restore", key=key("restore")):
-            before = list(cfg.adjustments)
             snap = next(sn for sn in cfg.snapshots if sn.name == chosen)
-            cfg.adjustments = copy.deepcopy(snap.adjustments)
-            cfg.base_rate_override = snap.base_rate_override
-            ui.flash("success", f"Restored the tables of snapshot **{chosen}**.")
-            _apply(run.name, True, [], before)
-        if c3.button("Delete", key=key("delete")):
-            cfg.snapshots = [sn for sn in cfg.snapshots if sn.name != chosen]
-            S.touch()
-            ui.flash("success", f"Snapshot **{chosen}** deleted.")
-            st.rerun()
+            gone = missing_variables(run.rate_model, snap.adjustments)
+            if gone:
+                # nothing is changed and nothing is saved: a snapshot older than
+                # the design cannot be applied, and applying half of it would be
+                # worse than applying none
+                st.error(
+                    f"Snapshot **{chosen}** cannot be restored: it adjusts "
+                    + ", ".join(f"**{g}**" for g in gone)
+                    + ", which this model no longer has. Nothing was changed. "
+                    "Put the factor back on the Model page and refit, or take a "
+                    "new snapshot and delete this one."
+                )
+            else:
+                before = S.edit_state(run.name)
+                cfg.adjustments = copy.deepcopy(snap.adjustments)
+                cfg.base_rate_override = snap.base_rate_override
+                ui.flash(
+                    "success",
+                    f"Restored the tables of snapshot **{chosen}** "
+                    f"({len(snap.adjustments)} adjustment(s)). *Undo* puts back "
+                    "the tables and the base rate you had.",
+                )
+                _apply(run.name, True, [], before)
+        # deleting a snapshot is the one destructive action undo does not cover,
+        # so it asks twice (the pattern the Project page uses for "New project")
+        confirm_key = f"_confirm_delete_snapshot_{run.name}"
+        pending = st.session_state.get(confirm_key)
+        if pending is not None and pending != chosen:
+            st.session_state.pop(confirm_key, None)  # another snapshot: ask again
+        confirming = pending == chosen
+        if c3.button(
+            "Delete twice" if confirming else "Delete",
+            key=key("delete"),
+            help="A snapshot is not covered by Undo, so this asks twice.",
+        ):
+            if not confirming:
+                st.session_state[confirm_key] = chosen
+                # the button's own label changes on the next run, so redraw —
+                # and the notice has to survive that rerun (ui.flash, not
+                # st.warning, or Streamlit >= 1.63 drops it)
+                ui.flash(
+                    "warning",
+                    f"Delete the snapshot **{chosen}** for good? Undo cannot bring "
+                    "it back. The button now reads *Delete twice*; press it to "
+                    "confirm, or pick another snapshot to forget it.",
+                )
+                st.rerun()
+            else:
+                cfg.snapshots = [sn for sn in cfg.snapshots if sn.name != chosen]
+                st.session_state.pop(confirm_key, None)
+                ui.flash("success", f"Snapshot **{chosen}** deleted.")
+                S.touch()
+                st.rerun()
 
         st.markdown("**Compare two snapshots**")
         options = [FITTED_OPTION, CURRENT_OPTION, *names]
@@ -761,7 +934,7 @@ def render() -> None:
                 "**Compare** page."
             )
     else:
-        _tools(run, var, run.tables[var], rate_model_tables(run.rate_model)[var])
+        _tools(run, var, run.tables[var], rate_model_tables(run.rate_model)[var], df)
         working = _main_effect(run, var, df, challenger)
 
     b1, b2, b3, b4 = st.columns(4)
@@ -784,13 +957,13 @@ def render() -> None:
         key=S.widget_key("tables_reset_var"),
         disabled=not any(a.variable == var for a in cfg.adjustments),
     ):
-        before = list(cfg.adjustments)
+        before = S.edit_state(run.name)
         cfg.adjustments = [a for a in cfg.adjustments if a.variable != var]
         _apply(run.name, True, [], before)
     if b4.button(
         "Reset all", key=S.widget_key("tables_reset_all"), disabled=not cfg.adjustments
     ):
-        before = list(cfg.adjustments)
+        before = S.edit_state(run.name)
         cfg.adjustments = []
         _apply(run.name, True, [], before)
     if cfg.adjustments:
@@ -812,6 +985,7 @@ def render() -> None:
                 )
             )
 
+    _rebalance(run, df)
     _snapshots(run)
 
     st.subheader("Export")

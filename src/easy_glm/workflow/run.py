@@ -26,7 +26,7 @@ from easy_glm.core.fit import GLMFit, fit_glm
 from easy_glm.core.tables import rate_tables, to_rate_model
 from easy_glm.engine.rate_model import RateModel
 
-from .diagnostics import model_metrics
+from .diagnostics import expected_claims, model_metrics
 from .prep import train_holdout
 from .project import Adjustment, Interaction, ModelConfig, Project, VariableDesign
 
@@ -265,9 +265,13 @@ def apply_adjustments(rm: RateModel, cfg: ModelConfig) -> None:
     for adj in cfg.adjustments:
         config = rm.variables.get(adj.variable)
         if config is None:
-            raise KeyError(
+            # an AdjustmentError, not a KeyError: the caller's job is to drop it
+            # and say so (a predictor left the model, or a snapshot is older
+            # than the design), never to show a traceback
+            raise AdjustmentError(
+                adj,
                 f"Adjustment refers to {adj.variable!r}, which is not a variable of "
-                f"the model (known: {list(rm.variables)})"
+                f"the model (known: {list(rm.variables)})",
             )
         is_cell = config.type == "interaction"
         if is_cell != bool(adj.cell):
@@ -414,6 +418,41 @@ def rate_model_for(
     else:
         apply_adjustments(rm, replace(cfg, adjustments=list(adjustments)))
     return rm
+
+
+def missing_variables(rm: RateModel, adjustments: list[Adjustment]) -> list[str]:
+    """Variables the adjustments name that ``rm`` does not have.
+
+    A set of adjustments that names one of these cannot be applied at all — the
+    caller (a snapshot restore, a project loaded against a changed design)
+    should say which factors are missing and leave the model alone rather than
+    apply half of them.
+    """
+    return sorted({a.variable for a in adjustments if a.variable not in rm.variables})
+
+
+def rebalance_override(
+    project: Project, run: ModelRun, df: pl.DataFrame
+) -> float | None:
+    """The base rate that puts **total expected claims back where the fitted
+    model had them** on the training rows — the off-balance correction after
+    editing rate tables.
+
+    Predictions are linear in the base rate, so this is one ratio:
+    ``base_rate x (expected claims as fitted) / (expected claims now)``. Returns
+    ``None`` when it cannot be computed (no training rows, or a model that
+    expects nothing).
+    """
+    cfg = project.models[run.name]
+    train, _holdout = train_holdout(df, project.data.split)
+    if train.is_empty():
+        return None
+    fitted = rate_model_for(project, run, [], base_rate_override=None)
+    target = expected_claims(fitted, train, cfg)
+    current = expected_claims(run.rate_model, train, cfg)
+    if not current > 0 or not target > 0:
+        return None
+    return float(run.rate_model.base_rate * target / current)
 
 
 def rebuild_rate_model(project: Project, run: ModelRun, df: pl.DataFrame) -> ModelRun:

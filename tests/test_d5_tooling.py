@@ -29,11 +29,16 @@ from easy_glm.engine.models import BandRow, FromToRow, VariableConfig
 from easy_glm.engine.rate_model import RateModel
 from easy_glm.workflow import (
     Adjustment,
+    AdjustmentError,
     Project,
     TableSnapshot,
     VariableDesign,
+    apply_adjustments,
+    expected_claims,
+    missing_variables,
     rate_model_diff,
     rate_model_for,
+    rebalance_override,
     rebuild_rate_model,
     run_model,
 )
@@ -710,7 +715,13 @@ class TestTablesPageTools:
         _button(at, "Restore").click().run()
         assert not at.exception, [e.value for e in at.exception]
         assert not _adjustments(at)
+        # deleting a snapshot asks twice: it is the one action undo cannot undo
         _button(at, "Delete").click().run()
+        assert not at.exception
+        assert [s.name for s in _snapshots(at)] == ["as fitted", "smoothed"]
+        assert any("for good" in w.value for w in at.warning)
+        _button(at, "Delete twice").click().run()
+        assert not at.exception
         assert [s.name for s in _snapshots(at)] == ["smoothed"]
 
     def test_the_page_carries_the_training_exposure_into_the_editor(self, page):
@@ -728,3 +739,334 @@ def _relativities(at, var: str) -> list[float]:
     """The relativities the session's rate model would score with."""
     run = at.session_state["runs"]["freq"][1]
     return [r.relativity for r in run.rate_model.variables[var].table]
+
+
+# --------------------------------------------------------------------------
+# review round 1: what a tool does to the book, and putting the level back
+# --------------------------------------------------------------------------
+class TestExpectedClaims:
+    """B1 — the number the panel reports must be the money, not a geometric
+    average of it."""
+
+    def test_a_smoothing_moves_the_book_even_though_the_log_mean_is_kept(
+        self, workspace, data
+    ):
+        p = Project.from_json(workspace["project"])
+        run = run_model(p, data, "freq")
+        cfg = p.models["freq"]
+        train = data.filter(pl.col("traintest") == 1)
+
+        result = tooling.smooth_moving_average(
+            run.rate_model.variables["DrivAge"], "DrivAge", window=3
+        )
+        # the shape rule holds ...
+        assert abs(result.log_mean_after - result.log_mean_before) < TOL
+        # ... and it is *not* the same as leaving the premium alone
+        before = expected_claims(run.rate_model, train, cfg)
+        after = expected_claims(
+            tooling.preview_model(run.rate_model, "DrivAge", result.values),
+            train,
+            cfg,
+        )
+        assert before > 0
+        assert abs(after / before - 1.0) > 1e-6, (
+            "a smoothing that happens to leave the book untouched would make "
+            "this test vacuous; pick a wobblier factor"
+        )
+
+    def test_preview_model_changes_one_table_and_nothing_else(self, workspace, data):
+        p = Project.from_json(workspace["project"])
+        run = run_model(p, data, "freq")
+        values = [r.relativity for r in run.rate_model.variables["DrivAge"].table]
+        same = tooling.preview_model(run.rate_model, "DrivAge", values)
+        np.testing.assert_allclose(
+            same.predict(data.head(200), exposure_col=None),
+            run.rate_model.predict(data.head(200), exposure_col=None),
+            rtol=0,
+            atol=0,
+        )
+        assert same.base_rate == run.rate_model.base_rate
+        # the original is untouched by the preview
+        capped = tooling.cap_floor(
+            run.rate_model.variables["DrivAge"], "DrivAge", cap=0.5
+        )
+        tooling.preview_model(run.rate_model, "DrivAge", capped.values)
+        assert [
+            r.relativity for r in run.rate_model.variables["DrivAge"].table
+        ] == values
+
+    def test_rebalance_puts_total_expected_claims_back_exactly(self, workspace, data):
+        p = Project.from_json(workspace["project"])
+        run = run_model(p, data, "freq")
+        cfg = p.models["freq"]
+        train = data.filter(pl.col("traintest") == 1)
+        target = expected_claims(run.rate_model, train, cfg)
+
+        # cap the curve hard: the book loses money
+        capped = tooling.cap_floor(
+            run.rate_model.variables["DrivAge"], "DrivAge", cap=0.9
+        )
+        for row, value in zip(
+            run.rate_model.variables["DrivAge"].table, capped.values, strict=True
+        ):
+            if abs(value - row.relativity) > 1e-12:
+                cfg.adjustments.append(Adjustment("DrivAge", row.from_, row.to_, value))
+        rebuild_rate_model(p, run, data)
+        assert expected_claims(run.rate_model, train, cfg) < target * (1 - 1e-4)
+
+        # rebalance: the level is back to the penny, the relativities untouched
+        relativities = [r.relativity for r in run.rate_model.variables["DrivAge"].table]
+        cfg.base_rate_override = rebalance_override(p, run, data)
+        rebuild_rate_model(p, run, data)
+        assert expected_claims(run.rate_model, train, cfg) == pytest.approx(
+            target, rel=1e-10
+        )
+        assert [
+            r.relativity for r in run.rate_model.variables["DrivAge"].table
+        ] == pytest.approx(relativities, abs=1e-12)
+        # and it is idempotent: rebalancing a balanced book changes nothing
+        again = rebalance_override(p, run, data)
+        assert again == pytest.approx(run.rate_model.base_rate, rel=1e-12)
+
+
+class TestStaleAdjustments:
+    """S1 — a set of adjustments that no longer fits the model is refused with
+    a message, never applied half-way and never a traceback."""
+
+    def test_missing_variables_names_what_cannot_be_applied(self, workspace, data):
+        p = Project.from_json(workspace["project"])
+        run = run_model(p, data, "freq")
+        adjustments = [
+            Adjustment("Region", "R1", "R1", 1.5),
+            Adjustment("Gone", 1.0, 2.0, 1.5),
+            Adjustment("AlsoGone", 1.0, 2.0, 1.5),
+        ]
+        assert missing_variables(run.rate_model, adjustments) == ["AlsoGone", "Gone"]
+        assert missing_variables(run.rate_model, []) == []
+
+    def test_an_adjustment_on_a_missing_variable_is_an_adjustment_error(
+        self, workspace, data
+    ):
+        """Not a KeyError: the workbench drops an AdjustmentError and says so,
+        so a stale snapshot or project can never traceback the page."""
+        p = Project.from_json(workspace["project"])
+        run = run_model(p, data, "freq")
+        cfg = p.models["freq"]
+        cfg.adjustments = [Adjustment("Gone", 1.0, 2.0, 1.5)]
+        with pytest.raises(AdjustmentError) as exc:
+            apply_adjustments(rate_model_for(p, run, []), cfg)
+        assert "not a variable of the model" in str(exc.value)
+        assert exc.value.adjustment is cfg.adjustments[0]
+
+    def test_removing_an_interaction_cleans_its_snapshots_too(self):
+        p = Project(name="x")
+        p.new_model("m")
+        cfg = p.models["m"]
+        cfg.adjustments = [
+            Adjustment("A×B", 1.0, 2.0, 1.5, from_b="R1", to_b="R1", cell=True),
+            Adjustment("A", 1.0, 2.0, 1.1),
+        ]
+        cfg.snapshots = [TableSnapshot("before", "now", list(cfg.adjustments))]
+        assert cfg.drop_adjustments_for("A×B") == 2
+        assert [a.variable for a in cfg.adjustments] == ["A"]
+        assert [a.variable for a in cfg.snapshots[0].adjustments] == ["A"]
+        assert cfg.drop_adjustments_for("A×B") == 0
+
+
+def test_a_table_of_only_the_null_row_has_nothing_to_work_on():
+    """N1 — no band means no tool, rather than a nan level check."""
+    cfg = VariableConfig(type="categorical", table=[FromToRow(None, None, 1.2, 3.0)])
+    for call in (
+        lambda: tooling.cap_floor(cfg, "x", cap=1.0),
+        lambda: tooling.round_relativities(cfg, "x", decimals=2),
+        lambda: tooling.smooth_moving_average(cfg, "x", ordered=True),
+    ):
+        with pytest.raises(tooling.ToolingError, match="no band"):
+            call()
+
+
+def test_the_change_threshold_is_the_editors():
+    """N2 — a tool that called something changed while the editor called it
+    unchanged would enable Apply and then write nothing."""
+    from easy_glm.app import grids
+
+    assert grids.TOL == tooling.TOL
+
+
+# --------------------------------------------------------------------------
+# review round 1: the same three things through the page
+# --------------------------------------------------------------------------
+def _script_for(project_path: str) -> str:
+    """The page script, on a project file that already holds what the test
+    needs (a snapshot, a removed predictor, ...) and autosaves to that file."""
+    return f"""
+import importlib
+import streamlit as st
+from easy_glm.app import state as S
+from easy_glm.workflow import Project
+
+S.init_state()
+if not st.session_state.get("_loaded"):
+    S.set_project(Project.from_json({project_path!r}), {project_path!r})
+    st.session_state._loaded = True
+if S.get_run("freq") is None:
+    S.fit_model("freq")
+importlib.import_module("easy_glm.app.pages_tables").render()
+st.session_state["_project"] = S.project()
+"""
+
+
+def _metric(at, label: str) -> str:
+    found = [m for m in at.metric if m.label == label]
+    assert found, f"no {label!r} metric among {[m.label for m in at.metric]}"
+    return found[0].value
+
+
+def _base_rate(at) -> float:
+    return at.session_state["runs"]["freq"][1].rate_model.base_rate
+
+
+class TestLevelOnThePage:
+    """B1 — the panel tells the truth about the money, and can put it back."""
+
+    def test_the_panel_reports_the_real_change_in_expected_claims(self, workspace):
+        at = AppTest.from_string(_script(workspace["project"]), default_timeout=240)
+        at.run()
+        assert not at.exception, [e.value for e in at.exception]
+        shown = _metric(at, "expected claims (training)")
+        assert shown not in ("no change", "—"), shown
+        assert shown.endswith("%")
+        # it agrees with the engine, to the digits the tile prints
+        run = at.session_state["runs"]["freq"][1]
+        p = at.session_state["_project"]
+        cfg = p.models["freq"]
+        train = _train_rows(at)
+        result = tooling.smooth_moving_average(
+            run.rate_model.variables["DrivAge"], "DrivAge", window=3
+        )
+        before = expected_claims(run.rate_model, train, cfg)
+        after = expected_claims(
+            tooling.preview_model(run.rate_model, "DrivAge", result.values), train, cfg
+        )
+        assert shown == f"{after / before - 1:+.3%}"
+        # the log-mean tiles are still there, and are still equal for a smoothing
+        assert _metric(at, "mean log relativity now") == _metric(at, "after this tool")
+
+    def test_rebalance_puts_the_book_back_and_is_one_undo_step(self, workspace):
+        at = AppTest.from_string(_script(workspace["project"]), default_timeout=240)
+        at.run()
+        # nothing edited yet: no off-balance block at all
+        assert not [b for b in at.button if b.label == "Rebalance base rate"]
+        p0 = at.session_state["_project"]
+        run0 = at.session_state["runs"]["freq"][1]
+        target = expected_claims(
+            rate_model_for(p0, run0, [], base_rate_override=None),
+            _train_rows(at),
+            p0.models["freq"],
+        )
+
+        _button(at, "Apply to the table").click().run()
+        assert not at.exception, [e.value for e in at.exception]
+        assert any("Off-balance" in c.value for c in at.caption)
+        base_before = _base_rate(at)
+
+        _button(at, "Rebalance base rate").click().run()
+        assert not at.exception, [e.value for e in at.exception]
+        p = at.session_state["_project"]
+        cfg = p.models["freq"]
+        run = at.session_state["runs"]["freq"][1]
+        assert cfg.base_rate_override is not None
+        assert expected_claims(run.rate_model, _train_rows(at), cfg) == pytest.approx(
+            target, rel=1e-10
+        )
+        assert _base_rate(at) != base_before
+        assert any("balanced" in c.value for c in at.caption)
+        # and it is one undo step, base rate included
+        _button(at, "Undo").click().run()
+        assert at.session_state["_project"].models["freq"].base_rate_override is None
+        assert _base_rate(at) == base_before
+
+
+class TestUndoRestoresTheBaseRate:
+    """B2 — a snapshot carries a base rate; undoing its restore must give the
+    old one back, not leave the snapshot's in force."""
+
+    def test_undo_after_a_restore_returns_the_base_rate_and_the_predictions(
+        self, workspace, data
+    ):
+        p = Project.from_json(workspace["project"])
+        p.models["freq"].snapshots = [
+            TableSnapshot("levelled", "now", [], base_rate_override=0.5)
+        ]
+        path = workspace["folder"] / "with_override.easyglm-project.json"
+        p.to_json(path)
+        at = AppTest.from_string(_script_for(str(path)), default_timeout=240)
+        at.run()
+        assert not at.exception, [e.value for e in at.exception]
+        fitted_base = _base_rate(at)
+        sample = data.head(300)
+        before = at.session_state["runs"]["freq"][1].predict(sample)
+
+        _button(at, "Restore").click().run()
+        assert not at.exception, [e.value for e in at.exception]
+        assert _base_rate(at) == 0.5
+        assert at.session_state["_project"].models["freq"].base_rate_override == 0.5
+
+        _button(at, "Undo").click().run()
+        assert not at.exception, [e.value for e in at.exception]
+        assert _base_rate(at) == fitted_base
+        assert at.session_state["_project"].models["freq"].base_rate_override is None
+        np.testing.assert_array_equal(
+            at.session_state["runs"]["freq"][1].predict(sample), before
+        )
+
+
+class TestRestoringAStaleSnapshot:
+    """S1 — a snapshot older than the design says so and changes nothing."""
+
+    def test_restore_refuses_and_saves_nothing_when_a_factor_is_gone(self, workspace):
+        p = Project.from_json(workspace["project"])
+        cfg = p.models["freq"]
+        cfg.snapshots = [
+            TableSnapshot("with Region", "now", [Adjustment("Region", "R1", "R1", 1.5)])
+        ]
+        cfg.predictors = [v for v in cfg.predictors if v != "Region"]
+        path = workspace["folder"] / "stale.easyglm-project.json"
+        p.to_json(path)
+        at = AppTest.from_string(_script_for(str(path)), default_timeout=240)
+        at.run()
+        assert not at.exception, [e.value for e in at.exception]
+
+        _button(at, "Restore").click().run()
+        assert not at.exception, [e.value for e in at.exception]
+        assert any(
+            "cannot be restored" in e.value and "Region" in e.value for e in at.error
+        )
+        # nothing changed, and nothing was written to the project file
+        assert not at.session_state["_project"].models["freq"].adjustments
+        assert not Project.from_json(path).models["freq"].adjustments
+        # the page is still usable: the other buttons are there
+        assert [b for b in at.button if b.label == "Snapshot as…"]
+
+
+def test_the_fitted_reference_is_stamped_with_the_fit_it_belongs_to(workspace):
+    """The rebalance target is cached; a cache that outlived a refit would
+    rebalance the book to another model's level."""
+    at = AppTest.from_string(_script(workspace["project"]), default_timeout=240)
+    at.run()
+    _button(at, "Apply to the table").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    stamp, total = at.session_state["_fitted_claims"]["freq"]
+    assert total > 0
+    from easy_glm.app import state as S
+
+    assert stamp == S.model_hash(at.session_state["_project"], "freq")
+
+
+def _train_rows(at) -> pl.DataFrame:
+    """The training rows of the AppTest session."""
+    from easy_glm.workflow import train_holdout
+
+    p = at.session_state["_project"]
+    train, _holdout = train_holdout(at.session_state["prepared"][1], p.data.split)
+    return train

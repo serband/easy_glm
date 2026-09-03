@@ -593,7 +593,16 @@ def _interactions(train: pl.DataFrame) -> None:
             c3.caption(f"penalty weight {it.penalty_weight:g}")
             if c4.button("Remove", key=S.widget_key(f"rm_inter_{name}_{i}")):
                 cfg.interactions.pop(i)
-                cfg.adjustments = [a for a in cfg.adjustments if a.variable != it.name]
+                # the cells are gone for good, so their adjustments go with them
+                # — out of the working set *and* out of every snapshot, which
+                # could otherwise never be restored again
+                dropped = cfg.drop_adjustments_for(it.name)
+                if dropped:
+                    ui.flash(
+                        "info",
+                        f"{it.name} removed, with {dropped} cell adjustment(s) "
+                        "of its own (snapshots included).",
+                    )
                 S.touch()
                 st.rerun()
     else:

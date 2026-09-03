@@ -58,6 +58,22 @@ def totals(
     return actual, expected, w
 
 
+def expected_claims(rm: Any, df: pl.DataFrame, cfg: ModelConfig) -> float:
+    """Total expected claims (or expected cost) of ``rm`` on ``df``: the sum of
+    the per-unit predictions times the weight, exactly as :func:`totals`
+    computes the *expected* side of an A/E.
+
+    This is what the **premium level** means on a book, and it is the number an
+    edit to a rate table has to be judged by: relativities multiply, so
+    preserving the exposure-weighted mean of the *log* relativities (what a
+    smoothing does, plan §R6) is not the same as preserving this sum — the
+    difference is the off-balance the base rate has to absorb.
+    """
+    pred = rm.predict(df, exposure_col=None)
+    _actual, expected, _w = totals(df, cfg, pred)
+    return float(expected.sum())
+
+
 # --------------------------------------------------------------------------
 # deviance
 # --------------------------------------------------------------------------
