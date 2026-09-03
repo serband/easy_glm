@@ -555,6 +555,15 @@ from the fit. That is section 2.
   policies. The thinnest region bands here carry a few hundred; treat their
   numbers as direction, not as a price.
 
+### With an interaction as well
+
+Nothing about this changes if the model also has a two-way interaction. Such a
+model is fitted in two stages (the answer to Q5): the main effects first, then
+the interaction cells as pure adjustments on top of them. The premium offset
+belongs to the first stage, so the multiplier tables above are the same numbers
+whether or not an interaction is in the model, and the cells sit on top of them
+as further adjustments. The scorer still reproduces the model exactly.
+
 ### The algebra behind it
 
 Offsetting by `log(premium)` is the same model as fitting `loss / premium`

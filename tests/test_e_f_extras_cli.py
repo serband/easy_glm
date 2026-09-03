@@ -26,9 +26,10 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 
 from easy_glm import DesignSpec, fit_glm, to_rate_model
 from easy_glm.core.design import CategoricalEncoder, StepEncoder
-from easy_glm.core.fit import penalty_weights
+from easy_glm.core.fit import TwoStageFit, penalty_weights
 from easy_glm.engine import RateModel
 from easy_glm.workflow import (
+    Interaction,
     Project,
     VariableDesign,
     premium_offset_column,
@@ -623,12 +624,19 @@ class TestSolveBaseRate:
         )
 
     def test_the_relativities_do_not_move(self, data_path):
+        """Applied the way the workbench applies it — `rebuild_rate_model`,
+        which recompiles the *same* fit — so "do not move" can be asserted
+        exactly rather than to a tolerance that would hide a real shift."""
+        from easy_glm.workflow import rebuild_rate_model
+
         p, df, run = self._run(data_path)
         before = [r.relativity for r in run.rate_model.variables["Region"].table]
+        base_before = run.rate_model.base_rate
         p.models["change"].base_rate_override = solve_base_rate(run, df, 0.62)
-        after_run = run_model(p, df, "change")
-        after = [r.relativity for r in after_run.rate_model.variables["Region"].table]
+        rebuild_rate_model(p, run, df)
+        after = [r.relativity for r in run.rate_model.variables["Region"].table]
         assert before == after
+        assert run.rate_model.base_rate != base_before
 
     def test_an_existing_override_does_not_change_the_answer(self, data_path):
         p, df, run = self._run(data_path)
@@ -1098,3 +1106,165 @@ class TestWorkbenchPages:
         html = to_report_html(p, {"change": run}, df, champion="change")
         assert "multiplier on current premium" in html
         assert "differential" in html
+
+
+# --------------------------------------------------------------------------
+# E x A2 — a rate change whose model also has an interaction
+# --------------------------------------------------------------------------
+def interacting_project(data_path: Path) -> Project:
+    """The rate-change project plus a DrivAge × Region interaction, so the
+    model is fitted in two stages (mains frozen) *and* offsets on the premium."""
+    p = rate_change_project(data_path)
+    p.models["change"].interactions = [
+        Interaction("DrivAge", "Region", min_cell_exposure=0.02)
+    ]
+    return p
+
+
+class TestRateChangeWithAnInteraction:
+    def test_the_fit_is_two_stage(self, data_path):
+        p = interacting_project(data_path)
+        run = run_model(p, prepare(p), "change")
+        assert isinstance(run.fit, TwoStageFit)
+        assert run.alpha_stage2 is not None
+
+    def test_the_rate_model_still_reproduces_the_glm(self, data_path):
+        """The exactness invariant across both pieces at once: the base rate and
+        main tables come from stage 1, the cells from stage 2, and the offset is
+        applied by the RateModel — `RateModel.predict == fit.predict`."""
+        p = interacting_project(data_path)
+        df = prepare(p)
+        run = run_model(p, df, "change")
+        assert np.allclose(
+            run.rate_model.predict(df, exposure_col=None),
+            run.fit.predict(df),
+            rtol=1e-10,
+            atol=0.0,
+        )
+
+    def test_the_mains_are_identical_with_and_without_the_interaction(self, data_path):
+        """Q5's promise has to survive the premium offset: stage 1 is the fit the
+        model gets with no interaction at all, offset and all."""
+        plain = run_model(
+            rate_change_project(data_path),
+            prepare(rate_change_project(data_path)),
+            "change",
+        )
+        p = interacting_project(data_path)
+        two_stage = run_model(p, prepare(p), "change")
+        assert two_stage.rate_model.base_rate == pytest.approx(
+            plain.rate_model.base_rate, rel=1e-12
+        )
+        for var in ("DrivAge", "Region"):
+            assert [
+                r.relativity for r in two_stage.rate_model.variables[var].table
+            ] == (
+                pytest.approx(
+                    [r.relativity for r in plain.rate_model.variables[var].table],
+                    rel=1e-12,
+                )
+            )
+
+    def test_the_tables_are_still_multipliers_on_the_premium(self, data_path):
+        p = interacting_project(data_path)
+        run = run_model(p, prepare(p), "change")
+        assert run.rate_model.metadata.offset_is_premium is True
+        assert run.rate_model.relativity_label == "multiplier on current premium"
+
+    def test_the_base_rate_solve_works_on_a_two_stage_fit(self, data_path):
+        """The base rate comes from stage 1 and the cells from stage 2, but the
+        prediction is still proportional to the base rate, so the closed form
+        holds."""
+        p = interacting_project(data_path)
+        df = prepare(p)
+        run = run_model(p, df, "change")
+        target = 0.62
+        p.models["change"].base_rate_override = solve_base_rate(run, df, target)
+        run = run_model(p, df, "change")
+        from easy_glm.workflow import totals
+
+        _, expected, _ = totals(df, run.config, run.predict(df))
+        assert float(df["ClaimNb"].sum()) / float(expected.sum()) == pytest.approx(
+            target, rel=1e-10
+        )
+
+    def test_the_exported_script_rebuilds_it(self, data_path, tmp_path):
+        """The two-stage branch of the exporter must also carry the premium
+        derivation, the offset and the `offset_is_premium` label."""
+        p = interacting_project(data_path)
+        df = prepare(p)
+        run = run_model(p, df, "change")
+        src = to_script(p, "change", run=run, output_prefix="both")
+        assert "pl.col('Premium').cast(pl.Float64).log().alias('log_Premium')" in src
+        assert "stage1 = fit_glm(" in src and "stage2 = fit_glm(" in src
+        assert "TwoStageFit(stage1, stage2)" in src
+        assert "offset_col='log_Premium'" in src
+        assert "offset_is_premium=True" in src
+        script = tmp_path / "both.py"
+        script.write_text(src)
+        proc = subprocess.run(
+            [sys.executable, str(script)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            env=_env(),
+        )
+        assert proc.returncode == 0, proc.stderr
+        rebuilt = RateModel.from_json(tmp_path / "both.easyglm")
+        assert rebuilt.metadata.offset_is_premium is True
+        assert np.allclose(
+            rebuilt.predict(df, exposure_col=None),
+            run.rate_model.predict(df, exposure_col=None),
+            rtol=1e-10,
+            atol=0.0,
+        )
+
+    def test_a_tweedie_power_reaches_both_stages(self, data_path):
+        p = interacting_project(data_path)
+        cfg = p.models["change"]
+        cfg.family = "tweedie"
+        cfg.tweedie_power = 1.8
+        run = run_model(p, prepare(p), "change")
+        assert isinstance(run.fit, TwoStageFit)
+        for stage in (run.fit.stage1, run.fit.stage2):
+            assert stage.model.family_instance.power == pytest.approx(1.8)
+        src = to_script(p, "change", run=run)
+        assert src.count("tweedie_power=1.8") == 2  # one per stage
+
+    def test_a_penalty_weight_on_a_main_reaches_stage_one_only(self, data_path):
+        """Stage 2 fits cells only, so a main's weight belongs to stage 1's P1
+        and must not appear in stage 2's."""
+        from easy_glm.core.fit import penalty_weights
+
+        p = interacting_project(data_path)
+        p.design.variables["Region"] = VariableDesign(penalty_weight=0.0)
+        df = prepare(p)
+        run = run_model(p, df, "change")
+        assert isinstance(run.fit, TwoStageFit)
+        train = df.filter(pl.col("traintest") == 1)
+        mains = run.fit.stage1.spec
+        p1 = penalty_weights(mains, mains.build(train), None, scale_predictors=True)
+        assert p1 is not None
+        for feature, weight in zip(mains.features, p1, strict=True):
+            if feature.variable == "Region":
+                assert weight == 0.0
+        cells = run.fit.stage2.spec
+        cell_p1 = penalty_weights(
+            cells, cells.build(train), None, scale_predictors=False
+        )
+        assert cell_p1 is not None and np.all(cell_p1 == 0.5)
+
+    def test_an_interaction_penalty_weight_still_multiplies_the_cells(self, data_path):
+        from easy_glm.core.design import InteractionEncoder
+        from easy_glm.core.fit import penalty_weights
+
+        p = interacting_project(data_path)
+        p.models["change"].interactions[0].penalty_weight = 4.0
+        df = prepare(p)
+        run = run_model(p, df, "change")
+        assert isinstance(run.fit, TwoStageFit)
+        cells = run.fit.stage2.spec
+        assert all(isinstance(e, InteractionEncoder) for e in cells.encoders.values())
+        train = df.filter(pl.col("traintest") == 1)
+        p1 = penalty_weights(cells, cells.build(train), None, scale_predictors=False)
+        assert p1 is not None and np.all(p1 == 4.0 * 0.5)

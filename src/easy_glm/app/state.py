@@ -92,12 +92,18 @@ _SAMPLE_KEYS = ("sample_rows", "sample_seed")
 #: as if its numbers were slopes.
 #: 4 — merge of W4 (per-session .fitting markers, pruning rules) and B2 above;
 #: both bumped 2 → 3 independently, so the merged tree moves on to 4.
-#: 5 — E: every encoder gained ``penalty_weight``, ``ModelMetadata`` gained
-#: ``offset_is_premium`` and ``ModelConfig`` gained ``tweedie_power``. A run
-#: pickled by an earlier build unpickles without those attributes, so anything
-#: reading them (the penalty rule, the table labels) would see a half-built
-#: object rather than a clean cache miss.
-PERSIST_FORMAT = 5
+#: 5 — A2: a model with interactions is now fitted in **two stages** and its run
+#: holds a ``TwoStageFit`` (mains frozen, cells fitted on top as adjustments).
+#: A run pickled by an earlier build holds a joint fit whose main tables include
+#: part of the interaction — the same shape, a different meaning — so those runs
+#: are a cache miss and are refitted.
+#: 6 — merge of A2 (above) and E: every encoder gained ``penalty_weight``,
+#: ``ModelMetadata`` gained ``offset_is_premium`` and ``ModelConfig`` gained
+#: ``tweedie_power``, so a run pickled by an earlier build unpickles *without*
+#: those attributes and anything reading them (the penalty rule, the table
+#: labels, the family) would see a half-built object. Both pieces bumped 4 → 5
+#: independently, so the merged tree moves on to 6.
+PERSIST_FORMAT = 6
 #: A marker left by *another* session is only removed once it is this old:
 #: younger than this it may belong to a fit that is still running in another
 #: tab, and taking its marker away would cost that tab its own warning.

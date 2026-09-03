@@ -96,7 +96,8 @@ src/easy_glm/
 │   │                       #   InteractionEncoder (A×B cells), CategoricalEncoder (one-hot + Other),
 │   │                       #   Feature metadata, quantile_knots, frequent_levels; JSON round-trip
 │   ├── fit.py              # fit_glm -> GLMFit (glum wrapper: families/links,
-│   │                       #   alpha or CV, monotone_bounds -> lower/upper_bounds)
+│   │                       #   alpha or CV, monotone_bounds -> lower/upper_bounds);
+│   │                       #   fit_two_stage -> TwoStageFit (mains frozen, cells on top)
 │   ├── tables.py           # rate_tables, base_rate, to_rate_model (exact, from coefs)
 │   ├── excel.py            # write_rate_tables_xlsx, rate_model_tables (EasyGLM/RateModel.to_excel)
 │   ├── easyglm.py          # EasyGLM pipeline (fit/predict/save/load) on the above
@@ -227,6 +228,21 @@ User edits relativity in table
   read straight off the coefficients and `log_rel_at_from` accumulates from `lo`,
   so continuity is automatic. Nulls are all-zero band columns plus `is null`.
   A `LinearEncoder` with no interior knots is the `continuous` kind (one band).
+- **Interactions are fitted in two stages, never jointly** (`core/fit.py::fit_two_stage`,
+  the actuary's answer to Q5). Stage 1 is `spec.main_effects_spec()` — bit for bit the
+  fit the model gets with no interaction — and stage 2 is `spec.interactions_spec()`
+  with `fit_intercept=False` and `offset = eta1` (stage 1's linear predictor plus any
+  offset column). The composed `TwoStageFit` *is* a `GLMFit` (full spec, stage 1's
+  coefficients then stage 2's, stage 1's intercept), so nothing downstream special-cases
+  it. Never take a main table or the base rate from anything but stage 1: "adding an
+  interaction moves no main relativity" is a promise made to the actuary and is tested
+  to 1e-13 (glum's own run-to-run noise) in `test_recovery.py`. Whether a fit *had* two
+  stages is `isinstance(fit, TwoStageFit)`, never "the design has an interaction": an
+  interaction whose cells are all below the exposure floor has an encoder and no
+  columns, and `fit_two_stage` then returns a plain `GLMFit`. Anything that emits or
+  branches on a stage 2 (the exported script, the Model page, `EasyGLM.save`) must ask
+  the fit. Stage 2 carries no intercept, so any overall re-levelling it wants lands in
+  the cells — say so wherever a cell is described as a "pure adjustment".
 - **Band columns and interaction cells carry a `P1`** (`core/fit.py::penalty_weights`).
   glum penalises the *standardised* coefficient, so a column with little spread buys a
   large effect cheaply. For a band the effect is its **rise** (`beta_j x width_j`), so
@@ -237,7 +253,9 @@ User edits relativity in table
   standardised form **raises** a term's total penalty (`sd(u) <= 0.5`, so every
   `P1_j >= 1`): 1.6-4.1x on the check's multi-band fits and 3.6-6.3x on a one-band term.
   Only the unstandardised form is a pure redistribution. Any statement that this rule
-  "only redistributes" is wrong.
+  "only redistributes" is wrong. For cells the two forms are the *same* penalty
+  (`0.5/sd` x `sd` = `0.5`), which is what lets stage 2 — where glum refuses to
+  standardise, having no intercept — penalise a cell exactly as a joint fit did.
 - Categorical reference level = `levels[0]` (most frequent, no column); `Other`
   column catches lumped, unseen and null values.
 - `fit_glm` requires `alpha=` or `cv=`; never let glum's `alpha_search` pick
@@ -282,8 +300,17 @@ User edits relativity in table
   the product back into a probability. Such a model refuses an exposure column in three
   places — `to_rate_model`, `RateModel.predict` and `exposure_for`, which never gives
   it one — because a probability is not an amount.
+- All of the above compose with the **two-stage** interaction fit: stage 1 (the
+  frozen mains) carries the offset column, the family and every main's
+  `penalty_weight`; stage 2 fits only the cells, so a main's weight never reaches
+  it, and the cells' `P1` is `penalty_weight * 0.5` there (glum cannot
+  standardise without an intercept). `tweedie_power` travels in `fit_two_stage`'s
+  kwargs, so both stages use the same distribution, and the exported two-stage
+  script writes it in both calls.
 - `solve_base_rate(run, df, r)` sets the base rate so **total actual / total expected =
-  r** on the rows given. For a rate-change model that ratio is the loss ratio the book
+  r** on the rows given. It works on a `TwoStageFit` unchanged: the base rate is
+  stage 1's and the cells are stage 2's, but the prediction is still proportional
+  to the base rate. For a rate-change model that ratio is the loss ratio the book
   would be written at; for an ordinary model r = 1 rebalances it. It reads the run's
   *current* base rate, so an existing override cancels out and solving twice is
   idempotent. Logit models are refused (a probability is not proportional to the base
@@ -413,11 +440,13 @@ User edits relativity in table
 |---|---|
 | `test_engine.py` | RateModel: from_rate_tables (0.3 table format, null/Other rows, validation), from_glm_model, predict (numeric/categorical/multi), update_relativity, snapshots (+ metrics), switch_to, clone, JSON roundtrip, exposure, column mapping, metadata |
 | `test_golden.py` | Golden French-motor numbers on the checked-in 50k subsample (runs in CI) |
-| `test_invariants.py` | RateModel == GLM, JSON and Excel round-trips over step / categorical (string and integer) / mixed / offset / interaction / piecewise-linear designs with nulls and unseen levels |
+| `test_invariants.py` | RateModel == GLM, JSON and Excel round-trips over step / categorical (string and integer) / mixed / offset / interaction (joint **and** two-stage) / piecewise-linear designs with nulls and unseen levels |
 | `test_linear.py` | Pieces B / B2: `LinearEncoder` (clamp, per-band slope columns, nulls, the one-band `continuous` kind), band slope = the coefficient itself, continuity, monotone as a sign bound on slopes, exactness at/beyond the clamp, band-edit rule, snapshots/JSON/Excel/`from_rate_tables`, interaction with a linear parent, project validation, script round trip, workbench pages |
+| `test_interactions.py` | Piece A / A2: `InteractionEncoder` (cells, exposure, symmetry, JSON), the engine's cell table, Excel long + matrix sheets, the cell `P1` rule, and the two-stage fit (`TwoStageFit` composition, frozen mains, exactness, offsets, what it refuses) |
+| `test_recovery.py` | Planted truth: the `Age x Region` cell recovered at a fixed and a CV alpha with thin cells left at 1.00, main tables unmoved by adding the interaction, and the flat/sloped/flat mileage curve of B2 |
 | `test_c1_foundations.py` | 0.3 bug regressions, format versions and migrations, editor defaults |
 | `test_scoring.py` | Isolated scoring: score_numeric (searchsorted), score_categorical (dict lookup), edge cases, fallbacks |
-| `test_workflow.py` | Project JSON/validation, prep steps, univariate, leakage report on planted leaks, build_design overrides, run_model (metrics, exactness, adjustments, CV), diagnostics, exported script executed in a subprocess and compared |
+| `test_workflow.py` | Project JSON/validation, prep steps, univariate, leakage report on planted leaks, build_design overrides, run_model (metrics, exactness, adjustments, CV, the two stages and `Interaction.alpha`), diagnostics, exported script executed in a subprocess and compared |
 | `test_e_f_extras_cli.py` | Pieces E/F: the `current_premium` role and its derived offset (error message, filter order), the "multiplier on current premium" labels through Excel and JSON, the **offset identity** of plan §R6/S1 (Poisson, `scale_predictors=False`, alpha x sum(P)/n, 1e-8) with Gamma recorded as *not* matching, per-variable penalty weights (`P1` aligned with `spec.features`, an unpenalised categorical keeping every level), Tweedie power, binomial (probabilities, odds labels, three refusals of exposure), `solve_base_rate` (rate change, rebalance, weights, an existing override, idempotence), and the `easy-glm` CLI through `subprocess` |
 | `test_w4_runs_folder.py` | W4: the shared runs folder (two AppTest sessions per two-tab case) and every finding of `docs/reviews/w3-breakage-2.md` |
 | `test_d3_d4_compare_report.py` | D3/D4: `relativity_diff` (identical runs, one known adjustment, a moved knot on the common grid, step-vs-linear, symmetry, the base rate, the tolerance boundary, two zeros), `to_report_html` (self-contained, **no `<script>` at all**, one section per predictor, an accessible name per chart, compare section only with a challenger — and an explanation when the challenger cannot be scored, size), `_svg` (ticks, degenerate charts, escaping), the Compare page / sidebar challenger / Export report button through AppTest. **D4's "opens in a browser with no console error"**: the static half (no script, no external `src`/`href`) is proved here on every run; the browser half is `test_it_opens_in_a_headless_browser_without_console_errors`, which *skips* where Playwright is absent (the default venv) and runs in the Playwright venv and in `tests/e2e/test_persona_data_scientist.py` — CI must run one of those two for the criterion to be covered |

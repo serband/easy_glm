@@ -8,7 +8,7 @@ from .design import (
 )
 from .easyglm import EasyGLM
 from .excel import write_rate_tables_xlsx
-from .fit import GLMFit, fit_glm
+from .fit import GLMFit, TwoStageFit, fit_glm, fit_two_stage
 from .plots import plot_all_ratetables
 from .split import HOLDOUT_FLAG, TRAIN_FLAG, validate_train_test_column
 from .tables import base_rate, rate_tables, to_rate_model
@@ -21,7 +21,9 @@ __all__ = [
     "InteractionEncoder",
     "LinearEncoder",
     "GLMFit",
+    "TwoStageFit",
     "fit_glm",
+    "fit_two_stage",
     "rate_tables",
     "base_rate",
     "to_rate_model",

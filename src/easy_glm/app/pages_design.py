@@ -600,12 +600,40 @@ def _interactions(train: pl.DataFrame) -> None:
         return
     cfg = p.models[name]
     if cfg.interactions:
+        st.caption(
+            "The cells are fitted in a **second stage**, on top of the frozen main "
+            "effects. *Cells alpha* is that stage's penalty: leave it at 0 to use the "
+            "same alpha as the mains (a cell then costs what a main effect that half "
+            "the exposure shares costs). The second stage is one fit, so if several "
+            "interactions set it the largest is used — to shrink one interaction "
+            "harder than another, use its penalty weight."
+        )
         for i, it in enumerate(list(cfg.interactions)):
-            c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
+            c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 2, 1])
             c1.markdown(f"**{it.name}**")
             c2.caption(f"min cell exposure {it.min_cell_exposure:.2%}")
             c3.caption(f"penalty weight {it.penalty_weight:g}")
-            if c4.button("Remove", key=S.widget_key(f"rm_inter_{name}_{i}")):
+            # A hand-edited project may carry an alpha outside the widget's
+            # usual range; Streamlit raises if the value is out of bounds, so
+            # widen the bounds to the stored value rather than crash the page
+            # the user needs in order to fix it (validate() reports it).
+            current_alpha = float(it.alpha or 0.0)
+            new_alpha = c4.number_input(
+                "Cells alpha (0 = as mains)",
+                min(0.0, current_alpha),
+                max(10.0, current_alpha),
+                current_alpha,
+                0.0001,
+                format="%.5f",
+                key=S.widget_key(f"inter_alpha_{name}_{i}"),
+                help="Penalty of the second stage, which fits this interaction's cells",
+            )
+            wanted = float(new_alpha) or None
+            if wanted != it.alpha:
+                it.alpha = wanted
+                S.touch()
+                st.rerun()
+            if c5.button("Remove", key=S.widget_key(f"rm_inter_{name}_{i}")):
                 cfg.interactions.pop(i)
                 cfg.adjustments = [a for a in cfg.adjustments if a.variable != it.name]
                 S.touch()
@@ -617,7 +645,7 @@ def _interactions(train: pl.DataFrame) -> None:
         st.info("The model needs at least two predictors before adding an interaction.")
         return
     with st.container(border=True):
-        c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
+        c1, c2, c3, c4, c5 = st.columns([2, 2, 1, 1, 1])
         a = c1.selectbox("First variable", preds, key=S.widget_key(f"inter_a_{name}"))
         b = c2.selectbox(
             "Second variable",
@@ -636,6 +664,16 @@ def _interactions(train: pl.DataFrame) -> None:
         )
         weight = c4.number_input(
             "Penalty weight", 0.1, 100.0, 1.0, 0.1, key=S.widget_key(f"inter_w_{name}")
+        )
+        alpha = c5.number_input(
+            "Cells alpha (0 = as mains)",
+            0.0,
+            10.0,
+            0.0,
+            0.0001,
+            format="%.5f",
+            key=S.widget_key(f"inter_alpha_new_{name}"),
+            help="Penalty of the second stage, which fits the cells on top of the mains",
         )
         errors: list[str] = []
         if a == b:
@@ -721,6 +759,7 @@ def _interactions(train: pl.DataFrame) -> None:
                     b,
                     min_cell_exposure=float(share) / 100.0,
                     penalty_weight=float(weight),
+                    alpha=float(alpha) or None,
                 )
             )
             S.touch()

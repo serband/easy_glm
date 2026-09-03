@@ -151,6 +151,15 @@ from the fit. That is section 2.
   policies. The thinnest region bands here carry a few hundred; treat their
   numbers as direction, not as a price.
 
+### With an interaction as well
+
+Nothing about this changes if the model also has a two-way interaction. Such a
+model is fitted in two stages (the answer to Q5): the main effects first, then
+the interaction cells as pure adjustments on top of them. The premium offset
+belongs to the first stage, so the multiplier tables above are the same numbers
+whether or not an interaction is in the model, and the cells sit on top of them
+as further adjustments. The scorer still reproduces the model exactly.
+
 ### The algebra behind it
 
 Offsetting by `log(premium)` is the same model as fitting `loss / premium`
@@ -238,7 +247,7 @@ the Excel summary label them "odds relativity" so they cannot be read as
 probabilities. On a synthetic lapse model here the age bands run from
 **0.709** to **1.722** times the base odds of
 **0.2637**, and the scorer converts back: it returns probabilities between
-**0.138** and **0.395**, matching the GLM to 5.6e-17. A
+**0.138** and **0.395**, matching the GLM to 1.1e-16. A
 probability is not an amount, so such a model **refuses** to be multiplied by
 exposure — asking for it is an error message, not a silently meaningless number.
 
