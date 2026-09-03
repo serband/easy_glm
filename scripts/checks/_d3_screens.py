@@ -79,14 +79,17 @@ with sync_playwright() as p:
     # -- Compare page
     nav(pg, "Compare")
     main = pg.locator('[data-testid="stMain"]')
-    shot(pg, "d3_compare_metrics")
+    # anchor on the metrics table so the holdout rows are in frame, not cut off
+    shot(pg, "d3_compare_metrics", pg.get_by_text("Metrics side by side").first)
     pg.get_by_role("tab", name="A/E by variable", exact=True).click()
     settle(pg)
     select(pg, "Variable", "DrivAge")
     shot(pg, "d3_compare_ae", pg.locator(".js-plotly-plot").first)
     pg.get_by_role("tab", name="Relativities that differ", exact=True).click()
     settle(pg)
-    shot(pg, "d3_compare_diff", pg.get_by_test_id("stDataFrame").first)
+    # anchor on the tolerance box so the headline, the caption and the table
+    # are all in frame (there are three grids on the page now)
+    shot(pg, "d3_compare_diff", pg.get_by_text("Report a band when").first)
     assert "row(s)" in main.inner_text(), main.inner_text()[:400]
 
     # -- the report, downloaded from the Export page and opened in the browser

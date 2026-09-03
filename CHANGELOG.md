@@ -19,10 +19,16 @@
   editable on the page), on the log scale so `+0.10` reads as "the challenger
   charges about 10 % more for that band". Interactions are compared cell by cell,
   piecewise-linear terms by their band-start values, and the base rates against
-  each other. Bands are matched by their rate-table label, so a model whose knots
-  or levels moved gets *band only in …* rows rather than invented comparisons;
-  a factor only one model has is listed once. Two identical models give an empty
-  table. `workflow.describe_diff` puts the statuses into words for a page.
+  each other — the overall level change is also shown on its own line above the
+  table (`workflow.base_rate_change`), because a band's premium change is its
+  relativity change multiplied by it. **Numeric factors are compared on the
+  union of both models' band edges**, so a moved knot reports exactly the range
+  of ages that would be charged differently, and the same factor banded in one
+  model and a straight line in the other is still compared like for like (the
+  `kind` column then reads `numeric → linear`); levels and interaction cells are
+  matched by name, and a factor only one model has is listed once. Two identical
+  models — or two bands both floored to the same value, zero included — give an
+  empty table. `workflow.describe_diff` puts the statuses into words for a page.
 - **One self-contained HTML report.** `workflow.to_report_html(project, runs, df,
   champion=..., challenger=...)` and a **Download HTML report** button on the
   Export page: a single file — summary (data, split, metrics), one block per
@@ -31,9 +37,16 @@
   challenger is chosen, every coefficient and the exported Python script in an
   appendix, with the generation time and library versions. Nothing is fetched
   from the internet when it is opened: the charts are written as plain SVG
-  (`workflow/_svg.py`), which keeps the French-motor report around 250 kB
-  instead of the 4.8 MB an inlined charting library would cost, and means it
-  cannot produce a browser error.
+  (`workflow/_svg.py`) with a `<title>` naming each one, which keeps the
+  French-motor report at 350–400 kB instead of the 4.8 MB an inlined charting
+  library would cost, and means the file contains no JavaScript and so cannot
+  produce a browser error. A challenger the report cannot score on these rows
+  is explained in the comparison section's place, never silently dropped.
+- **Known limitation.** D4 asks for the report "from the Export page *and the
+  CLI*". Only the Export page (and `workflow.to_report_html` for scripts) ships
+  here — there is no `easy-glm` console script yet, so the CLI half of D4 lands
+  with workstream F (`easy-glm run project.json`) and must not be forgotten when
+  0.4.0 is cut.
 - Tests: `tests/test_d3_d4_compare_report.py` (the diff on hand-made
   differences, the report's self-containment / one section per predictor /
   compare-section-only-with-a-challenger / size / headless render, and the pages

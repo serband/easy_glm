@@ -213,9 +213,9 @@ against each other; two identical models give an empty table
 page writes the whole model up as **one self-contained file** — summary and split, a
 block per rating factor with its relativities and its actual-vs-expected on train and
 holdout, interaction heatmaps, lift and Gini, the comparison section, every coefficient
-and the reproducing Python script — about 250 kB, nothing fetched from the internet
-when it is opened, so it can be emailed or attached to a filing
-(`workflow.to_report_html`).
+and the reproducing Python script — a few hundred kB (350–400 kB for the French
+motor set), nothing fetched from the internet when it is opened, so it can be
+emailed or attached to a filing (`workflow.to_report_html`).
 
 ---
 

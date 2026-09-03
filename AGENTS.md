@@ -110,6 +110,7 @@ src/easy_glm/
 │   ├── export.py           # to_script (self-contained Python; tested by execution)
 │   ├── report.py           # to_report_html — ONE self-contained HTML file
 │   └── _svg.py             # the report's charts as plain SVG (no JS, no library)
+│                           #   every chart carries a <title> = its accessible name
 ├── app/                    # Streamlit workbench (thin views over workflow + state)
 │   ├── main.py             # st.navigation entry; --project=path
 │   ├── state.py            # session Project, hash-keyed caches (raw/prepared/runs/leakage), autosave
@@ -237,6 +238,13 @@ User edits relativity in table
   when the pickle is corrupt or its design no longer matches *readable* data — data
   that cannot be read right now is a miss that keeps the fit;
   adjustments/base-rate override are re-applied from the project on load.
+- Comparing two models: `relativity_diff` puts **numeric and piecewise-linear**
+  factors on the union of both models' band edges (so a moved knot, or a factor
+  banded in one model and straight in the other, is still compared like for like)
+  and matches **categorical levels and interaction cells by label**. Identical
+  values are never a change, zeros included. The base rate is both a row of the
+  table and, through `base_rate_change`, the headline above it — a band's premium
+  change is its relativity change times the level change.
 - Champion vs challenger: the sidebar (`main.py`) owns one "compare with" model in
   `state.CHALLENGER_KEY` (`S.challenger()` / `S.set_challenger()`; not an app-state
   key, so another project never inherits it). Diagnostics, Rate tables, Compare and
@@ -291,7 +299,7 @@ User edits relativity in table
 | `test_c1_foundations.py` | 0.3 bug regressions, format versions and migrations, editor defaults |
 | `test_scoring.py` | Isolated scoring: score_numeric (searchsorted), score_categorical (dict lookup), edge cases, fallbacks |
 | `test_workflow.py` | Project JSON/validation, prep steps, univariate, leakage report on planted leaks, build_design overrides, run_model (metrics, exactness, adjustments, CV), diagnostics, exported script executed in a subprocess and compared |
-| `test_d3_d4_compare_report.py` | D3/D4: `relativity_diff` (identical runs, one known adjustment, moved knots, a variable only one model has, the base rate, the tolerance), `to_report_html` (self-contained, one section per predictor, compare section only with a challenger, size, headless render), the Compare page / sidebar challenger / Export report button through AppTest |
+| `test_d3_d4_compare_report.py` | D3/D4: `relativity_diff` (identical runs, one known adjustment, a moved knot on the common grid, step-vs-linear, symmetry, the base rate, the tolerance boundary, two zeros), `to_report_html` (self-contained, **no `<script>` at all**, one section per predictor, an accessible name per chart, compare section only with a challenger — and an explanation when the challenger cannot be scored, size), `_svg` (ticks, degenerate charts, escaping), the Compare page / sidebar challenger / Export report button through AppTest. **D4's "opens in a browser with no console error"**: the static half (no script, no external `src`/`href`) is proved here on every run; the browser half is `test_it_opens_in_a_headless_browser_without_console_errors`, which *skips* where Playwright is absent (the default venv) and runs in the Playwright venv and in `tests/e2e/test_persona_data_scientist.py` — CI must run one of those two for the criterion to be covered |
 | `test_w2_pages.py` | W2 pages: interaction section, linear editor, kind selector, A/E-by-pair, pair search, cell/band edits via `app.grids`, break-it (empty project, missing file, removed predictor) |
 | `tests/e2e/` | Playwright persona runs (actuary rate review, data-scientist comparison incl. the Compare page and the downloaded HTML report); opt-in `EASY_GLM_E2E=1`, server from `EASY_GLM_SERVER_PYTHON` |
 | `test_app.py` | AppTest: every workbench page renders (with and without a fit), main entry point, leakage scan action |
