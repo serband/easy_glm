@@ -85,17 +85,30 @@ def encoder_for(
                 f"Cannot derive knots for {variable!r} (constant or all-null on train)"
             )
         return StepEncoder(variable, knots, null_indicator=null_ind)
+    share = vd.min_level_share if vd.min_level_share is not None else d.min_level_share
     levels = vd.levels or frequent_levels(
-        series,
-        min_share=(
-            vd.min_level_share if vd.min_level_share is not None else d.min_level_share
-        ),
-        max_levels=vd.max_levels,
-        weights=weights,
+        series, min_share=share, max_levels=vd.max_levels, weights=weights
     )
     if not levels:
-        raise ValueError(f"Cannot derive levels for {variable!r} (all null on train)")
-    return CategoricalEncoder(variable, levels)
+        if series.null_count() == series.len():
+            raise ValueError(
+                f"Cannot derive levels for {variable!r}: all null on train"
+            )
+        raise ValueError(
+            f"No level of {variable!r} reaches the minimum level share ({share:.2%} of "
+            f"training rows; {series.n_unique()} distinct values). Lower the share "
+            "on the Design page or treat the column differently"
+        )
+    return CategoricalEncoder(variable, levels, other_label=other_label_for(levels))
+
+
+def other_label_for(levels: list[str]) -> str:
+    """The lumped-bucket label: ``"Other"`` unless a real level is called that
+    (e.g. after a recode with default "Other"), then ``"Other (lumped)"``."""
+    label = "Other"
+    while label in levels:
+        label += " (lumped)"
+    return label
 
 
 def build_design(

@@ -21,6 +21,11 @@ from easy_glm.workflow import Project  # noqa: E402
 N_ROWS = 3000
 
 
+def wk(at, name: str) -> str:
+    """Session-state key of a page widget (keys carry the project token)."""
+    return f"{name}_{at.session_state['project_token']}"
+
+
 def _frame(seed: int = 5, n: int = N_ROWS) -> pl.DataFrame:
     rng = np.random.default_rng(seed)
     age = rng.integers(18, 80, n).astype(float)
@@ -415,9 +420,11 @@ pages_variables.render()
             at = AppTest.from_string(script, default_timeout=180)
             at.run()
             assert not at.exception
-            at.text_input(key="derived_name").set_value("AgeSq")
-            at.text_input(key="derived_expr").set_value("pl.col('DrivAge') ** 2")
-            at.button(key="derived_preview").click().run()
+            at.text_input(key=wk(at, "derived_name")).set_value("AgeSq")
+            at.text_input(key=wk(at, "derived_expr")).set_value(
+                "pl.col('DrivAge') ** 2"
+            )
+            at.button(key=wk(at, "derived_preview")).click().run()
             assert not at.exception, [e.value for e in at.exception]
             assert not at.error, [e.value for e in at.error]
             assert at.dataframe or at.markdown  # a preview appeared
@@ -441,13 +448,16 @@ else:
     pages_project.render()
     out["other_sample"] = S.project().data.sample_rows
     out["on_disk"] = Project.from_json({str(other)!r}).data.sample_rows
-    out["widget"] = st.session_state.get("sample_rows")
+    out["widget"] = st.session_state.get(S.widget_key("sample_rows"))
 """
         script = _script(workspace["project"], body)
         at = AppTest.from_string(script, default_timeout=180)
         at.run()
         assert not at.exception
-        assert at.session_state["sample_rows"] == 60
+        keys = [
+            k for k in at.session_state.filtered_state if k.startswith("sample_rows_")
+        ]
+        assert keys and at.session_state[keys[0]] == 60
         for phase in (1, 2):  # open the other project, then one more rerun
             at.session_state["phase"] = phase
             at.run()

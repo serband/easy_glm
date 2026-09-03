@@ -83,7 +83,10 @@ def _main_effect(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
                 width="stretch",
             )
         which = st.radio(
-            "A/E rows", ["holdout", "train"], horizontal=True, key="tables_ae_rows"
+            "A/E rows",
+            ["holdout", "train"],
+            horizontal=True,
+            key=S.widget_key("tables_ae_rows"),
         )
         frame = _ae_frame(df, which)
         if not frame.is_empty():
@@ -143,7 +146,7 @@ def _main_effect(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
             disabled = ["bin", "fitted"]
             col_cfg = {
                 "fitted": st.column_config.NumberColumn(format="%.4f"),
-                "working": st.column_config.NumberColumn(format="%.4f", min_value=0.0),
+                "working": st.column_config.NumberColumn(format="%.4f", min_value=1e-4),
             }
         edited = st.data_editor(
             grid,
@@ -152,7 +155,7 @@ def _main_effect(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
             height=min(38 * (len(rows) + 1) + 4, 560),
             disabled=disabled,
             column_config=col_cfg,
-            key=f"rel_editor_{run.name}_{var}",
+            key=S.widget_key(f"rel_editor_{run.name}_{var}"),
         )
         changed, errors = G.apply_row_edits(
             cfg,
@@ -200,7 +203,10 @@ def _interaction(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
             width="stretch",
         )
         which = st.radio(
-            "A/E rows", ["holdout", "train"], horizontal=True, key="tables_ae_rows"
+            "A/E rows",
+            ["holdout", "train"],
+            horizontal=True,
+            key=S.widget_key("tables_ae_rows"),
         )
         frame = _ae_frame(df, which)
         if not frame.is_empty():
@@ -248,10 +254,10 @@ def _interaction(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
             width="stretch",
             height=min(38 * (len(grid["rows"]) + 1) + 4, 560),
             column_config={
-                c: st.column_config.NumberColumn(format="%.4f", min_value=0.0)
+                c: st.column_config.NumberColumn(format="%.4f", min_value=1e-4)
                 for c in grid["cols"]
             },
-            key=f"cell_editor_{run.name}_{var}",
+            key=S.widget_key(f"cell_editor_{run.name}_{var}"),
         )
         changed, errors = G.apply_cell_edits(cfg, var, grid, edited.values.tolist())
         _apply(run.name, changed, errors)
@@ -273,7 +279,7 @@ def render() -> None:
         return
     c1, c2 = st.columns([2, 3])
     with c1:
-        run = ui.run_selector("Model", key="tables_run")
+        run = ui.run_selector("Model", key=S.widget_key("tables_run"))
     if run is None:
         return
     cfg = p.models[run.name]
@@ -301,7 +307,7 @@ def render() -> None:
         return f"{v}  ({kind})" if kind in ("interaction", "linear") else v
 
     display = {_display(v): v for v in variables}
-    chosen = st.selectbox("Variable", list(display), key="tables_var")
+    chosen = st.selectbox("Variable", list(display), key=S.widget_key("tables_var"))
     var = display[chosen]
     missing = [c for c in run.spec.required_columns if c not in df.columns]
     if missing:
@@ -319,14 +325,16 @@ def render() -> None:
     b1, b2 = st.columns(2)
     if b1.button(
         "Reset this variable",
-        key="tables_reset_var",
+        key=S.widget_key("tables_reset_var"),
         disabled=not any(a.variable == var for a in cfg.adjustments),
     ):
         cfg.adjustments = [a for a in cfg.adjustments if a.variable != var]
         S.touch()
         S.refresh_adjustments(run.name)
         st.rerun()
-    if b2.button("Reset all", key="tables_reset_all", disabled=not cfg.adjustments):
+    if b2.button(
+        "Reset all", key=S.widget_key("tables_reset_all"), disabled=not cfg.adjustments
+    ):
         cfg.adjustments = []
         S.touch()
         S.refresh_adjustments(run.name)
@@ -356,20 +364,20 @@ def render() -> None:
         "Excel rate tables (.xlsx)",
         ui.excel_bytes(run),
         file_name=f"{p.name}_{run.name}_rate_tables.xlsx",
-        key="dl_xlsx",
+        key=S.widget_key("dl_xlsx"),
         help="Current (adjusted) tables; interactions get a long sheet and a matrix sheet",
     )
     c2.download_button(
         "Scorer (.easyglm)",
         ui.easyglm_bytes(run),
         file_name=f"{p.name}_{run.name}.easyglm",
-        key="dl_easyglm",
+        key=S.widget_key("dl_easyglm"),
     )
     c3.download_button(
         "This table (.csv)",
         ui.frame_bytes(working),
         file_name=f"{run.name}_{var}.csv",
-        key="dl_csv",
+        key=S.widget_key("dl_csv"),
     )
     if st.button(
         "Open the full relativity editor in a new tab",

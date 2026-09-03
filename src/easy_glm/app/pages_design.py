@@ -3,6 +3,8 @@ two-way interactions of the selected model."""
 
 from __future__ import annotations
 
+import math
+
 import pandas as pd
 import polars as pl
 import streamlit as st
@@ -36,9 +38,12 @@ def _parse_numbers(text: str) -> list[float]:
         if not tok:
             continue
         try:
-            out.append(float(tok))
+            value = float(tok)
         except ValueError as exc:
             raise ValueError(f"{tok!r} is not a number") from exc
+        if not math.isfinite(value):
+            raise ValueError(f"{tok!r} is not a finite number")
+        out.append(value)
     return sorted(set(out))
 
 
@@ -129,7 +134,7 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
                 "monotone", options=MONO_OPTIONS, required=True
             ),
         },
-        key="design_grid",
+        key=S.widget_key("design_grid"),
     )
     changed = False
     for _, r in edited.iterrows():
@@ -161,6 +166,14 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
         )
         if r["knots"] == "custom" and not isinstance(new.knots, list):
             new.knots = []  # to be filled in the detail panel
+        numeric = v in train.columns and train[v].dtype in NUMERIC_DTYPES
+        if new.monotone and (not numeric or new.kind == "categorical"):
+            ui.flash(
+                "error",
+                f"{v}: monotone constraints apply to numeric step designs only; "
+                "the constraint was not saved",
+            )
+            new.monotone = vd.monotone if numeric and vd.kind != "categorical" else None
         if new != vd:
             if new == VariableDesign():
                 p.design.variables.pop(v, None)
@@ -183,7 +196,7 @@ def _kind_selector(var: str, vd: VariableDesign, numeric: bool) -> None:
         "Kind",
         KIND_OPTIONS,
         index=KIND_OPTIONS.index(current),
-        key=f"kind_{var}",
+        key=S.widget_key(f"kind_{var}"),
         help="auto = step for numbers, categorical for text",
     )
     if kind != current:
@@ -211,9 +224,9 @@ def _step_detail(
         "Knots (comma-separated; editing switches to custom)",
         ", ".join(f"{k:g}" for k in enc.knots),
         height=90,
-        key=f"knots_{var}",
+        key=S.widget_key(f"knots_{var}"),
     )
-    if st.button("Apply knots", key=f"apply_knots_{var}"):
+    if st.button("Apply knots", key=S.widget_key(f"apply_knots_{var}")):
         try:
             knots = _parse_numbers(knots_txt)
         except ValueError as exc:
@@ -272,7 +285,7 @@ def _linear_detail(
         "Knot strategy",
         KNOT_OPTIONS,
         index=KNOT_OPTIONS.index(strategy_now),
-        key=f"lin_strategy_{var}",
+        key=S.widget_key(f"lin_strategy_{var}"),
         help="Where the slope may change. quantile: n_bins quantiles · integer: every integer · custom: your list",
     )
     n_bins = c2.number_input(
@@ -280,33 +293,33 @@ def _linear_detail(
         2,
         200,
         int(vd.n_bins or d.n_bins),
-        key=f"lin_nbins_{var}",
+        key=S.widget_key(f"lin_nbins_{var}"),
         disabled=strategy != "quantile",
     )
     knots_txt = c3.text_area(
         "Knots (custom)",
         ", ".join(f"{k:g}" for k in enc.knots),
         height=70,
-        key=f"lin_knots_{var}",
+        key=S.widget_key(f"lin_knots_{var}"),
         disabled=strategy != "custom",
     )
     use_default = st.checkbox(
         "Clamp to the training range (rounded outward)",
         vd.clamp is None,
-        key=f"lin_defaultclamp_{var}",
+        key=S.widget_key(f"lin_defaultclamp_{var}"),
     )
     c1, c2, c3 = st.columns([1, 1, 2])
     lo = c1.number_input(
         "Clamp lo",
         value=float(vd.clamp[0]) if vd.clamp else rlo,
-        key=f"lin_lo_{var}",
+        key=S.widget_key(f"lin_lo_{var}"),
         disabled=use_default,
         format="%g",
     )
     hi = c2.number_input(
         "Clamp hi",
         value=float(vd.clamp[1]) if vd.clamp else rhi,
-        key=f"lin_hi_{var}",
+        key=S.widget_key(f"lin_hi_{var}"),
         disabled=use_default,
         format="%g",
     )
@@ -314,7 +327,9 @@ def _linear_detail(
         "Values below lo / above hi get the relativity at the clamp. Knots must lie "
         "strictly inside the clamp range."
     )
-    if st.button("Apply linear design", key=f"apply_lin_{var}", type="primary"):
+    if st.button(
+        "Apply linear design", key=S.widget_key(f"apply_lin_{var}"), type="primary"
+    ):
         errors: list[str] = []
         clamp: list[float] | None
         if use_default:
@@ -323,6 +338,11 @@ def _linear_detail(
         else:
             lo_c, hi_c = float(lo), float(hi)
             clamp = [lo_c, hi_c]
+            if hi_c <= tmin or lo_c >= tmax:
+                errors.append(
+                    f"Clamp range {lo_c:g} – {hi_c:g} does not overlap the training "
+                    f"range {tmin:g} – {tmax:g}; the term would be flat everywhere"
+                )
             if not lo_c < hi_c:
                 errors.append("Clamp lo must be below clamp hi")
         knots: list[float] = list(enc.knots)
@@ -393,9 +413,9 @@ def _categorical_detail(
         "Levels (first = reference; others lumped into Other)",
         ", ".join(enc.levels),
         height=90,
-        key=f"levels_{var}",
+        key=S.widget_key(f"levels_{var}"),
     )
-    if st.button("Apply levels", key=f"apply_levels_{var}"):
+    if st.button("Apply levels", key=S.widget_key(f"apply_levels_{var}")):
         levels = [
             x.strip() for x in levels_txt.replace("\n", ",").split(",") if x.strip()
         ]
@@ -426,7 +446,7 @@ def _detail(train: pl.DataFrame, preview: pl.DataFrame, predictors: list[str]) -
     p = S.project()
     st.subheader("Variable detail")
     c1, c2 = st.columns([2, 1])
-    var = c1.selectbox("Variable", predictors, key="design_detail_var")
+    var = c1.selectbox("Variable", predictors, key=S.widget_key("design_detail_var"))
     vd = p.design.variables.get(var, VariableDesign())
     numeric = train[var].dtype in NUMERIC_DTYPES
     with c2:
@@ -447,9 +467,9 @@ def _detail(train: pl.DataFrame, preview: pl.DataFrame, predictors: list[str]) -
                 "Knots (comma-separated)",
                 ", ".join(f"{k:g}" for k in suggestion),
                 height=90,
-                key=f"knots_{var}",
+                key=S.widget_key(f"knots_{var}"),
             )
-            if st.button("Apply knots", key=f"apply_knots_{var}"):
+            if st.button("Apply knots", key=S.widget_key(f"apply_knots_{var}")):
                 try:
                     knots = _parse_numbers(knots_txt)
                 except ValueError as err:
@@ -483,7 +503,7 @@ def _interaction_model_name() -> str | None:
         "Model",
         names,
         index=names.index(current),
-        key="design_inter_model",
+        key=S.widget_key("design_inter_model"),
         help="Interactions belong to a model (its predictors must include both parents)",
     )
 
@@ -507,7 +527,7 @@ def _interactions(train: pl.DataFrame) -> None:
             c1.markdown(f"**{it.name}**")
             c2.caption(f"min cell exposure {it.min_cell_exposure:.2%}")
             c3.caption(f"penalty weight {it.penalty_weight:g}")
-            if c4.button("Remove", key=f"rm_inter_{name}_{i}"):
+            if c4.button("Remove", key=S.widget_key(f"rm_inter_{name}_{i}")):
                 cfg.interactions.pop(i)
                 cfg.adjustments = [a for a in cfg.adjustments if a.variable != it.name]
                 S.touch()
@@ -520,12 +540,12 @@ def _interactions(train: pl.DataFrame) -> None:
         return
     with st.container(border=True):
         c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
-        a = c1.selectbox("First variable", preds, key=f"inter_a_{name}")
+        a = c1.selectbox("First variable", preds, key=S.widget_key(f"inter_a_{name}"))
         b = c2.selectbox(
             "Second variable",
             preds,
             index=min(1, len(preds) - 1),
-            key=f"inter_b_{name}",
+            key=S.widget_key(f"inter_b_{name}"),
         )
         share = c3.number_input(
             "Min cell exposure (%)",
@@ -533,11 +553,11 @@ def _interactions(train: pl.DataFrame) -> None:
             50.0,
             0.5,
             0.1,
-            key=f"inter_share_{name}",
+            key=S.widget_key(f"inter_share_{name}"),
             help="Cells below this share of the pair's training exposure get no adjustment",
         )
         weight = c4.number_input(
-            "Penalty weight", 0.1, 100.0, 1.0, 0.1, key=f"inter_w_{name}"
+            "Penalty weight", 0.1, 100.0, 1.0, 0.1, key=S.widget_key(f"inter_w_{name}")
         )
         errors: list[str] = []
         if a == b:
@@ -614,7 +634,7 @@ def _interactions(train: pl.DataFrame) -> None:
         if st.button(
             "Add interaction",
             type="primary",
-            key=f"inter_add_{name}",
+            key=S.widget_key(f"inter_add_{name}"),
             disabled=bool(errors),
         ):
             cfg.interactions.append(

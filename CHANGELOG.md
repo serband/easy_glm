@@ -2,6 +2,41 @@
 
 ## 0.4.0 (unreleased)
 
+### Workbench hardening (W3) — the break-it review's blocking findings
+- **No more silent loss of work.** *New empty project* asks for a second click and
+  starts with no file (the old project file is never rewritten); the same project
+  open in two tabs no longer overwrites itself — before every autosave the
+  workbench checks whether the file changed on disk and, if so, pauses with a
+  notice offering *Reload from disk* or *Overwrite*; renaming a column in the
+  roles grid renames it in every role, type, recode, design, split and model
+  reference instead of the Target box jumping to the first column; a random split
+  can no longer be named after an existing data column.
+- **Tracebacks became messages.** A data file whose columns differ from the
+  project's, a rename onto an existing name, a cleared rename cell, a derived
+  column that cannot run (now executed before it is added), the Split page with
+  no usable column or a text indicator column, five kinds of broken project file
+  (upload or path), saving to an impossible path or a read-only file, and a model
+  called `a/b` (names are validated; legacy names get file-safe downloads) all
+  end with a sentence on the page. A failing pipeline step is reported on every
+  page, and a failing autosave at the top of every page.
+- **Model references a missing column**: the model is never re-pointed. The
+  selector is left blank, the Model page names the missing column, Fit is
+  disabled and any persisted fit is ignored until you choose.
+- Smaller fixes from the same review: target/weight/offset offer numeric columns
+  only; uploads are stored next to the project rather than in a temp folder; a
+  cleared recode cell is no mapping; the minimum-level-share message says what
+  it means; a clamp range outside the training range is refused; relativities
+  cannot be set to 0; a real level called *Other* gets a distinct lumped label;
+  non-finite knots are refused; the Project page never shows another project's
+  name or path; huge base-rate overrides warn and absurd percentages print as
+  "—"; target = weight and alpha = 0 are validation problems; the divide box is
+  unticked without a weight; the split slider clamps out-of-range values and an
+  empty split name is refused; deleting a model removes its persisted fit;
+  monotone on a categorical is refused in the grid.
+- Tests: `tests/test_w3_hardening.py` (one per finding), an opt-in Playwright
+  break-it run (`tests/e2e/test_breakit.py`) and the plain-language replay in
+  `docs/checks/w3-hardening.md` (`scripts/checks/w3_hardening.py --write`).
+
 ### Workbench pages for interactions and piecewise-linear terms (W2)
 - **Design page**: an *Interactions* section per model — add a pair (minimum cell
   exposure, penalty weight) with a preview of the training exposure per cell and

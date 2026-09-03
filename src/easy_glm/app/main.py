@@ -124,9 +124,15 @@ with st.sidebar:
         )
     if st.button("Save project", width="stretch"):
         path = st.session_state.project_path or S.default_project_path(p)
-        p.to_json(path)
-        st.session_state.project_path = path
-        st.toast(f"Saved {path}")
+        err = S.save_project(path)
+        if err:
+            st.error(err)
+        else:
+            st.toast(f"Saved {path}")
+    if st.session_state.get("conflict"):
+        st.error("Autosave paused: the project file changed on disk (see the notice).")
+    elif any(e.startswith("Autosave") for e in st.session_state.get("errors", [])):
+        st.error("Autosave is failing — edits are not being saved.")
     st.caption(S.persistence_note())
 
 nav.run()

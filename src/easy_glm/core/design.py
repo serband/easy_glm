@@ -820,7 +820,10 @@ class DesignSpec:
                 )
                 if not levels:
                     raise ValueError(f"Cannot derive levels for {var!r}: all null.")
-                encoders[var] = CategoricalEncoder(var, levels)
+                other = "Other"
+                while other in levels:  # a real level called "Other" (e.g. a recode)
+                    other += " (lumped)"
+                encoders[var] = CategoricalEncoder(var, levels, other_label=other)
         spec = cls(encoders)
         for a, b in interactions or []:
             for parent in (a, b):

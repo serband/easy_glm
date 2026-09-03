@@ -15,6 +15,19 @@ import polars as pl
 
 from .project import DataConfig, DataSource, Project, Split
 
+NUMERIC_DTYPES_FOR_SPLIT = (
+    pl.Int8,
+    pl.Int16,
+    pl.Int32,
+    pl.Int64,
+    pl.UInt8,
+    pl.UInt16,
+    pl.UInt32,
+    pl.UInt64,
+    pl.Float32,
+    pl.Float64,
+)
+
 _SAFE_BUILTINS = {
     "abs": abs,
     "min": min,
@@ -152,11 +165,41 @@ def add_split_column(df: pl.DataFrame, split: Split) -> pl.DataFrame:
     if split.mode == "column":
         if split.column not in df.columns:
             raise KeyError(f"Split column {split.column!r} not found")
-        flag = (pl.col(split.column) == pl.lit(split.train_value)).cast(pl.Int64)
-        return df.with_columns(flag.alias(split.column))
+        dtype = df.schema[split.column]
+        if dtype in NUMERIC_DTYPES_FOR_SPLIT:
+            try:
+                value = float(split.train_value)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"Split column {split.column!r} is numeric but the value meaning "
+                    f"TRAIN is {split.train_value!r}; enter a number"
+                ) from None
+            flag = (pl.col(split.column).cast(pl.Float64) == pl.lit(value)).cast(
+                pl.Int64
+            )
+        else:
+            # text / categorical / boolean indicators: compare as text
+            flag = (
+                pl.col(split.column).cast(pl.Utf8) == pl.lit(str(split.train_value))
+            ).cast(pl.Int64)
+        out = df.with_columns(flag.alias(split.column))
+        if out[split.column].sum() == 0:
+            raise ValueError(
+                f"No row of {split.column!r} equals the TRAIN value "
+                f"{split.train_value!r}; check the value on the Split page"
+            )
+        return out
     if split.mode == "random":
+        name = str(split.column).strip()
+        if not name:
+            raise ValueError("The random split column needs a name")
+        if name in df.columns:
+            raise ValueError(
+                f"The random split column {name!r} would overwrite an existing data "
+                "column; choose another name on the Split page"
+            )
         is_train = np.random.default_rng(split.seed).random(df.height) < split.fraction
-        return df.with_columns(pl.Series(split.column, is_train.astype(np.int64)))
+        return df.with_columns(pl.Series(name, is_train.astype(np.int64)))
     raise ValueError(f"Unknown split mode {split.mode!r}")
 
 

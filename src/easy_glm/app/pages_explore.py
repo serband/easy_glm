@@ -24,9 +24,11 @@ def _univariate(df: pl.DataFrame) -> None:
     reserved = {p.target, p.weight, p.offset, p.data.split.column} - {None}
     candidates = [c for c in df.columns if c not in reserved]
     c1, c2, c3 = st.columns([3, 1, 1])
-    var = c1.selectbox("Variable", candidates, key="explore_var")
-    n_bins = c2.slider("Bands", 5, 50, 20, key="explore_bins")
-    subset = c3.radio("Rows", ["train", "all"], horizontal=True, key="explore_subset")
+    var = c1.selectbox("Variable", candidates, key=S.widget_key("explore_var"))
+    n_bins = c2.slider("Bands", 5, 50, 20, key=S.widget_key("explore_bins"))
+    subset = c3.radio(
+        "Rows", ["train", "all"], horizontal=True, key=S.widget_key("explore_subset")
+    )
     frame = (
         df.filter(pl.col(p.data.split.column) == 1)
         if subset == "train" and p.data.split.column in df.columns
@@ -126,7 +128,10 @@ def _leakage(df: pl.DataFrame) -> None:
     ].to_list()
     c1, c2, c3 = st.columns([3, 1, 1])
     chosen = c1.multiselect(
-        "Variables", rep["variable"].to_list(), default=flagged, key="leak_pick"
+        "Variables",
+        rep["variable"].to_list(),
+        default=flagged,
+        key=S.widget_key("leak_pick"),
     )
     leak = p.exploration.setdefault("leakage", {"ignored": [], "acknowledged": []})
     if (

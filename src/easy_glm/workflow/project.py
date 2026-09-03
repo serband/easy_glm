@@ -9,11 +9,42 @@ from __future__ import annotations
 
 import json
 import warnings
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
 from easy_glm.engine.models import INTERACTION_SEP
+
+#: Characters a model name may not contain (names become file and sheet names).
+_MODEL_NAME_BAD = set('/\\:*?"<>|') | {chr(c) for c in range(32)}
+MODEL_NAME_MAX = 60
+
+
+def validate_model_name(name: str, existing: Iterable[str] = ()) -> str | None:
+    """Why ``name`` cannot be a model name, or ``None`` if it can.
+
+    Model names appear in file names (persisted fits, downloads) and worksheet
+    names, so path separators, control characters and Windows-reserved
+    characters are refused; names are compared after stripping whitespace.
+    """
+    stripped = (name or "").strip()
+    if not stripped:
+        return "Model name cannot be empty"
+    if stripped in (".", ".."):
+        return "Model name cannot be '.' or '..'"
+    bad = sorted({c for c in stripped if c in _MODEL_NAME_BAD})
+    if bad:
+        shown = (
+            ", ".join(repr(c) for c in bad if c.isprintable()) or "control characters"
+        )
+        return f"Model name cannot contain {shown}"
+    if len(stripped) > MODEL_NAME_MAX:
+        return f"Model name is longer than {MODEL_NAME_MAX} characters"
+    if stripped in set(existing):
+        return f"A model named {stripped!r} already exists"
+    return None
+
 
 PROJECT_VERSION = 2  # 1 = easy_glm 0.3 files (loaded and migrated)
 
@@ -246,7 +277,14 @@ class Project:
             self.data.split.mode = "column"
 
     def new_model(self, name: str, **overrides: Any) -> ModelConfig:
-        """Create a model config pre-filled from the roles."""
+        """Create a model config pre-filled from the roles.
+
+        Raises ``ValueError`` for a name that cannot be used in file and sheet
+        names (see :func:`validate_model_name`)."""
+        problem = validate_model_name(name, self.models)
+        if problem:
+            raise ValueError(problem)
+        name = name.strip()
         cfg = ModelConfig(
             target=self.target,
             weight=self.weight,
@@ -260,10 +298,125 @@ class Project:
             self.champion = name
         return cfg
 
-    # -- validation -----------------------------------------------------
-    def validate(self, model: str | None = None) -> list[str]:
-        """Return a list of problems (empty = valid)."""
+    # -- consistent edits ------------------------------------------------
+    def rename_column(self, old: str, new: str) -> list[str]:
+        """Rename a (post-rename) column everywhere it is referenced: roles,
+        types, recodes, design, split, exploration lists and every model
+        (target / weight / offset, predictors, monotone, interactions,
+        adjustments). Returns the models that were updated."""
+        if old == new:
+            return []
+        for store in (self.data.roles, self.data.types, self.data.recodes):
+            if old in store:
+                store[new] = store.pop(old)
+        if old in self.design.variables:
+            self.design.variables[new] = self.design.variables.pop(old)
+        if self.data.split.column == old:
+            self.data.split.column = new
+        leak = self.exploration.get("leakage", {})
+        for key in ("ignored", "acknowledged"):
+            lst = leak.get(key, [])
+            leak[key] = [new if v == old else v for v in lst]
+        touched: list[str] = []
+        for name, cfg in self.models.items():
+            hit = False
+            for attr in ("target", "weight", "offset"):
+                if getattr(cfg, attr) == old:
+                    setattr(cfg, attr, new)
+                    hit = True
+            if old in cfg.predictors:
+                cfg.predictors = [new if v == old else v for v in cfg.predictors]
+                hit = True
+            if old in cfg.monotone:
+                cfg.monotone[new] = cfg.monotone.pop(old)
+                hit = True
+            for it in cfg.interactions:
+                if it.a == old:
+                    it.a = new
+                    hit = True
+                if it.b == old:
+                    it.b = new
+                    hit = True
+            for adj in cfg.adjustments:
+                parts = adj.variable.split(INTERACTION_SEP)
+                if old in parts:
+                    adj.variable = INTERACTION_SEP.join(
+                        new if x == old else x for x in parts
+                    )
+                    hit = True
+            if hit:
+                touched.append(name)
+        return touched
+
+    def apply_role_change(self, column: str, role: str) -> list[str]:
+        """Set a role and keep every model consistent; returns plain-language
+        notices (a predictor that left a model, an interaction dropped ...)."""
+        notices: list[str] = []
+        self.set_role(column, role)
+        if role == "predictor":
+            return notices
+        for name, cfg in self.models.items():
+            if column in cfg.predictors:
+                cfg.predictors = [v for v in cfg.predictors if v != column]
+                notices.append(
+                    f"{column} was removed from model {name}: its role is now {role}"
+                )
+            dropped = [it for it in cfg.interactions if column in (it.a, it.b)]
+            if dropped:
+                cfg.interactions = [it for it in cfg.interactions if it not in dropped]
+                notices.append(
+                    f"Interaction(s) {', '.join(it.name for it in dropped)} removed from "
+                    f"model {name}: {column} is no longer a predictor"
+                )
+            cfg.monotone.pop(column, None)
+        return notices
+
+    def missing_columns(
+        self, columns: Iterable[str], model: str | None = None
+    ) -> list[str]:
+        """Problems for column references that are not in ``columns`` (the
+        prepared data): roles, split column and every model's references."""
+        have = set(columns)
         problems: list[str] = []
+        for role in ("target", "weight", "exposure", "offset"):
+            col = self.column_with_role(role)
+            if col is not None and col not in have:
+                problems.append(f"{role} column {col!r} is not in the data")
+        if self.data.split.mode == "column" and self.data.split.column not in have:
+            problems.append(
+                f"split column {self.data.split.column!r} is not in the data"
+            )
+        names = [model] if model else list(self.models)
+        for name in names:
+            cfg = self.models.get(name)
+            if cfg is None:
+                continue
+            for attr in ("target", "weight", "offset"):
+                col = getattr(cfg, attr)
+                if col is not None and col not in have:
+                    problems.append(f"{name}: {attr} column {col!r} is not in the data")
+            gone = [v for v in cfg.predictors if v not in have]
+            if gone:
+                problems.append(f"{name}: predictor(s) not in the data: {gone}")
+            for it in cfg.interactions:
+                for parent in (it.a, it.b):
+                    if parent not in have:
+                        problems.append(
+                            f"{name}: interaction parent {parent!r} is not in the data"
+                        )
+        return problems
+
+    # -- validation -----------------------------------------------------
+    def validate(
+        self, model: str | None = None, columns: Iterable[str] | None = None
+    ) -> list[str]:
+        """Return a list of problems (empty = valid). With ``columns`` (the
+        prepared data's columns) every column reference is checked too."""
+        problems: list[str] = []
+        if columns is not None:
+            problems.extend(self.missing_columns(columns, model))
+        if self.data.split.mode == "random" and not str(self.data.split.column).strip():
+            problems.append("split column name cannot be empty")
         for role in SINGLE_ROLES:
             if len(self.columns_with_role(role)) > 1:
                 problems.append(f"More than one column has role {role!r}")
@@ -285,6 +438,11 @@ class Project:
                 problems.append(
                     f"design[{var!r}]: monotone constraints are not available for "
                     "piecewise-linear terms; use a step design or drop the constraint"
+                )
+            if vd.monotone and vd.kind == "categorical":
+                problems.append(
+                    f"design[{var!r}]: monotone constraints apply to numeric step "
+                    "designs only"
                 )
             if vd.clamp is not None and (
                 len(vd.clamp) != 2 or not float(vd.clamp[0]) < float(vd.clamp[1])
@@ -308,6 +466,17 @@ class Project:
                 problems.append(
                     f"{name}: divide_target_by_weight needs a weight column"
                 )
+            if cfg.target and cfg.weight and cfg.target == cfg.weight:
+                problems.append(f"{name}: target and weight are the same column")
+            if cfg.target and cfg.offset and cfg.target == cfg.offset:
+                problems.append(f"{name}: target and offset are the same column")
+            if cfg.target and cfg.target in cfg.predictors:
+                problems.append(f"{name}: the target cannot also be a predictor")
+            if cfg.penalty.alpha is not None and cfg.penalty.alpha <= 0:
+                problems.append(
+                    f"{name}: alpha must be > 0 (alpha = 0 is an unpenalised fit "
+                    "that the solver cannot handle; use a small value such as 1e-4)"
+                )
             if not cfg.predictors:
                 problems.append(f"{name}: no predictors")
             bad = [p for p in cfg.predictors if self.data.roles.get(p) != "predictor"]
@@ -318,6 +487,12 @@ class Project:
             for v, d in cfg.monotone.items():
                 if d not in ("increasing", "decreasing"):
                     problems.append(f"{name}: monotone[{v!r}] invalid")
+                vd_kind = self.design.variables.get(v)
+                if vd_kind is not None and vd_kind.kind == "categorical":
+                    problems.append(
+                        f"{name}: monotone[{v!r}] — {v!r} is categorical; monotone "
+                        "constraints apply to numeric step designs only"
+                    )
                 vd = self.design.variables.get(v)
                 if vd is not None and vd.kind == "linear":
                     problems.append(

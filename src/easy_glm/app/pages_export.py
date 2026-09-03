@@ -23,7 +23,9 @@ def render() -> None:
         return
     names = list(p.models)
     default = p.champion if p.champion in names else names[0]
-    name = st.selectbox("Model", names, index=names.index(default), key="export_model")
+    name = st.selectbox(
+        "Model", names, index=names.index(default), key=S.widget_key("export_model")
+    )
     run = S.get_run(name)
     if run is None:
         st.warning(
@@ -45,26 +47,26 @@ def render() -> None:
         src,
         file_name=f"{p.name}_{name}.py",
         type="primary",
-        key="dl_script",
+        key=S.widget_key("dl_script"),
     )
     c2.download_button(
         "Project JSON",
         json.dumps(p.to_dict(), indent=2, default=str),
         file_name=f"{p.name}.easyglm-project.json",
-        key="dl_project",
+        key=S.widget_key("dl_project"),
     )
     if run is not None:
         c3.download_button(
             "Excel rate tables",
             ui.excel_bytes(run),
             file_name=f"{p.name}_{name}_rate_tables.xlsx",
-            key="dl_xlsx2",
+            key=S.widget_key("dl_xlsx2"),
         )
         c4.download_button(
             "Scorer (.easyglm)",
             ui.easyglm_bytes(run),
             file_name=f"{p.name}_{name}.easyglm",
-            key="dl_easyglm2",
+            key=S.widget_key("dl_easyglm2"),
         )
     with st.expander("Project JSON"):
         st.json(p.to_dict(), expanded=False)

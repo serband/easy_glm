@@ -66,7 +66,27 @@ _SAMPLE_KEYS = ("sample_rows", "sample_seed")
 #: in a development checkout where the installed version number does not move.
 PERSIST_FORMAT = 1
 #: Project-page widgets whose keyed value must not leak into another project.
-_PROJECT_PAGE_WIDGETS = ("sample_rows", "src_path", "proj_name", "proj_path")
+# session-state keys that belong to the app itself; everything else is widget
+# state (or a page's scratch result) and is dropped when another project is
+# loaded, so no page carries the previous project's edits into the new one
+_APP_STATE_KEYS = frozenset(
+    {
+        "project",
+        "project_path",
+        "project_token",
+        "project_mtime",
+        "conflict",
+        "prep_error",
+        "raw",
+        "prepared",
+        "sample",
+        "raw_sample",
+        "runs",
+        "leakage",
+        "errors",
+        "load_error",
+    }
+)
 _KEY_RE = re.compile(r"[0-9a-f]{16}")
 
 
@@ -129,6 +149,12 @@ def init_state() -> None:
     ss = st.session_state
     ss.setdefault("project", Project(name="untitled"))
     ss.setdefault("project_path", None)
+    ss.setdefault("project_token", uuid.uuid4().hex[:8])
+    ss.setdefault(
+        "project_mtime", None
+    )  # mtime_ns of the file as last read/written here
+    ss.setdefault("conflict", None)  # path whose on-disk copy changed under us
+    ss.setdefault("prep_error", None)
     ss.setdefault("raw", None)  # (hash, DataFrame) — full source frame
     ss.setdefault("prepared", None)  # (hash, DataFrame) — full prepared frame
     ss.setdefault("sample", None)  # (hash, DataFrame) — exploration sample
@@ -145,28 +171,131 @@ def project() -> Project:
 
 
 def set_project(p: Project, path: str | None = None) -> None:
+    """Make ``p`` the session's project. ``path`` is where it autosaves;
+    ``None`` means an unsaved project (a new project never inherits the file
+    of the one it replaces)."""
     init_state()
     st.session_state.project = p
-    if path is not None:
-        st.session_state.project_path = path
+    st.session_state.project_path = path
+    st.session_state.project_mtime = _file_mtime(path)
+    st.session_state.conflict = None
+    st.session_state.prep_error = None
+    st.session_state.load_error = None
+    # keyed widgets keep their value across projects (Streamlit carries a
+    # key's value even when the widget's default changes): give every project
+    # its own widget keys (see ``widget_key``) and drop every other widget's
+    # state, so a reload never re-applies this tab's stale edits
+    st.session_state.project_token = uuid.uuid4().hex[:8]
     for key in ("raw", "prepared", "sample", "raw_sample", "leakage"):
         st.session_state[key] = None
     st.session_state.runs = {}
-    for (
-        widget
-    ) in _PROJECT_PAGE_WIDGETS:  # a keyed widget keeps its value across projects
-        st.session_state.pop(widget, None)
+    for key in list(st.session_state.keys()):
+        if key not in _APP_STATE_KEYS and not key.startswith("_"):
+            st.session_state.pop(key, None)
+
+
+def widget_key(name: str) -> str:
+    """A widget key that changes whenever another project is loaded, so a
+    text box never shows the previous project's value."""
+    init_state()
+    return f"{name}_{st.session_state.project_token}"
+
+
+def _file_mtime(path: str | None) -> int | None:
+    if not path:
+        return None
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return None
+
+
+def file_changed_on_disk() -> bool:
+    """True when the project file was modified by someone else (another tab,
+    another session) since this session last read or wrote it."""
+    path = st.session_state.get("project_path")
+    if not path:
+        return False
+    seen = st.session_state.get("project_mtime")
+    now = _file_mtime(path)
+    return seen is not None and now is not None and now != seen
+
+
+def _write_project(path: str) -> None:
+    project().to_json(path)
+    st.session_state.project_mtime = _file_mtime(path)
+
+
+def save_project(path: str, *, force: bool = False) -> str | None:
+    """Write the project to ``path``; returns an error message instead of
+    raising. A save to the current path that would overwrite another
+    session's changes is refused unless ``force`` (see :func:`touch`)."""
+    path = (path or "").strip()
+    if not path:
+        return "Give the project file a name first"
+    if Path(path).is_dir():
+        return f"{path} is a folder; give the project file a name"
+    same_file = path == st.session_state.get("project_path")
+    if same_file and not force and file_changed_on_disk():
+        st.session_state.conflict = path
+        return (
+            f"{path} was changed by another session; reload it or overwrite it "
+            "using the notice at the top of the page"
+        )
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        project().to_json(path)
+    except (OSError, TypeError, ValueError) as exc:
+        # the project keeps autosaving to the previous file
+        return f"Could not save the project to {path}: {exc}"
+    st.session_state.project_path = path
+    st.session_state.project_mtime = _file_mtime(path)
+    st.session_state.conflict = None
+    st.session_state.errors = [
+        e for e in st.session_state.get("errors", []) if not e.startswith("Autosave")
+    ]
+    return None
+
+
+def resolve_conflict(action: str) -> str | None:
+    """``"reload"`` replaces this session's project with the file on disk;
+    ``"overwrite"`` writes this session's version over it."""
+    path = st.session_state.get("conflict") or st.session_state.get("project_path")
+    if not path:
+        return None
+    if action == "reload":
+        try:
+            set_project(Project.from_json(path), path)
+        except Exception as exc:  # noqa: BLE001 - never a traceback
+            return f"Could not reload {path}: {exc}"
+        return None
+    return save_project(path, force=True)
 
 
 def touch() -> None:
-    """Call after mutating the project: autosave and invalidate nothing
-    (caches are hash-keyed, so stale entries simply stop matching)."""
+    """Call after mutating the project: autosave (never raises; a failure is
+    shown on every page) and invalidate nothing — caches are hash-keyed, so
+    stale entries simply stop matching. While the file on disk has been changed
+    by another session, autosave pauses until the user reloads or overwrites."""
     path = st.session_state.get("project_path")
-    if path:
-        try:
-            project().to_json(path)
-        except OSError as exc:  # pragma: no cover - surfaced in the UI
-            st.session_state.errors.append(f"Autosave failed: {exc}")
+    if not path:
+        return
+    if st.session_state.get("conflict"):
+        return
+    if file_changed_on_disk():
+        st.session_state.conflict = path
+        # show the notice straight away (it is drawn at the top of the page)
+        st.rerun()
+    try:
+        _write_project(path)
+    except Exception as exc:  # noqa: BLE001 - surfaced in the UI on every page
+        msg = f"Autosave failed: {exc}"
+        errors = st.session_state.setdefault("errors", [])
+        if msg not in errors:
+            errors.append(msg)
+            # the error strip is drawn at the top of the page, before the
+            # widget that triggered this save: redraw so it shows straight away
+            st.rerun()
 
 
 def default_project_path(p: Project) -> str:
@@ -192,8 +321,14 @@ def raw_frame(force: bool = False) -> pl.DataFrame | None:
             df = load_source(p.data.source)
     except Exception as exc:  # noqa: BLE001 - surfaced on the page, never a traceback
         st.session_state.raw = None
+        if isinstance(exc, FileNotFoundError):
+            reason = "the file does not exist"
+        elif isinstance(exc, IsADirectoryError):
+            reason = "the path is a folder, not a file"
+        else:
+            reason = str(exc)
         st.session_state.load_error = (
-            f"Could not load {p.data.source.path}: {exc}. Check the path on the "
+            f"Could not load {p.data.source.path}: {reason}. Check the path on the "
             "Project & data page."
         )
         return None
@@ -215,8 +350,17 @@ def prepared_frame() -> pl.DataFrame | None:
     cached = st.session_state.prepared
     if cached is not None and cached[0] == h:
         return cached[1]
-    with st.spinner("Preparing data ..."):
-        df = prepare(p, raw)
+    try:
+        with st.spinner("Preparing data ..."):
+            df = prepare(p, raw)
+    except Exception as exc:  # noqa: BLE001 - a bad recode/derived/filter/split
+        st.session_state.prepared = None
+        st.session_state.prep_error = (
+            f"The data steps fail: {exc}. Fix or remove the offending rename, "
+            "recode, derived column, filter or split on the Variables / Split pages."
+        )
+        return None
+    st.session_state.prep_error = None
     st.session_state.prepared = (h, df)
     return df
 
@@ -501,14 +645,28 @@ def load_persisted_run(model: str) -> ModelRun | None:
 # --------------------------------------------------------------------------
 def get_run(model: str) -> ModelRun | None:
     """The run for ``model`` matching the current spec: from the session, else
-    from the persisted folder, else None."""
+    from the persisted folder, else None. A run whose columns are no longer
+    in the prepared data is never returned (nothing may look fitted while the
+    model references a missing column)."""
     p = project()
     if model not in p.models:
+        return None
+    prepared = st.session_state.get("prepared")
+    if prepared is not None and p.missing_columns(prepared[1].columns, model):
         return None
     cached = st.session_state.runs.get(model)
     if cached is not None and cached[0] == model_hash(p, model):
         return cached[1]
     return load_persisted_run(model)
+
+
+def remove_model_runs(model: str) -> None:
+    """Forget a deleted model's fit in the session and on disk."""
+    st.session_state.runs.pop(model, None)
+    folder = runs_dir()
+    if folder is not None and folder.exists():
+        for f in _run_files(folder, model):
+            _remove_run_file(f)
 
 
 def stale_run(model: str) -> ModelRun | None:
@@ -600,10 +758,11 @@ def status() -> dict[str, bool]:
     split_ok = p.data.split.mode == "random" or (
         raw is not None and p.data.split.column in raw[1].columns
     )
+    loaded = bool(p.data.source.path) and raw is not None
     return {
-        "data": bool(p.data.source.path),
+        "data": loaded,
         "roles": p.target is not None and bool(p.predictors),
-        "split": bool(p.data.source.path) and split_ok,
+        "split": loaded and split_ok and not st.session_state.get("prep_error"),
         "model": bool(p.models),
         "fitted": any(get_run(m) is not None for m in p.models),
     }

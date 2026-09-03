@@ -123,7 +123,7 @@ def render() -> None:
         return
     c1, c2, c3 = st.columns([2, 2, 1])
     with c1:
-        run = ui.run_selector("Model", key="diag_run")
+        run = ui.run_selector("Model", key=S.widget_key("diag_run"))
     if run is None:
         return
     missing = [c for c in run.spec.required_columns if c not in df.columns]
@@ -137,12 +137,17 @@ def render() -> None:
     fitted = [n for n in S.current_runs() if S.get_run(n) is not None and n != run.name]
     with c2:
         chal_name = st.selectbox(
-            "Compare with (challenger)", ["(none)"] + fitted, key="diag_chal"
+            "Compare with (challenger)",
+            ["(none)"] + fitted,
+            key=S.widget_key("diag_chal"),
         )
     challenger = S.get_run(chal_name) if chal_name != "(none)" else None
     with c3:
         which = st.radio(
-            "Rows", ["holdout", "train", "all"], horizontal=True, key="diag_subset"
+            "Rows",
+            ["holdout", "train", "all"],
+            horizontal=True,
+            key=S.widget_key("diag_subset"),
         )
     frame = _subset(df, which)
     if frame.is_empty():
@@ -189,9 +194,11 @@ def render() -> None:
             "Variable",
             in_model + others,
             format_func=lambda v: v if v in mains else f"{v} (not in model)",
-            key="diag_var",
+            key=S.widget_key("diag_var"),
         )
-        n_bins = c2.slider("Bands (numeric, not in model)", 5, 50, 20, key="diag_bins")
+        n_bins = c2.slider(
+            "Bands (numeric, not in model)", 5, 50, 20, key=S.widget_key("diag_bins")
+        )
         kn = knots.get(var)
         tbl = ae_by_variable(frame, var, actual, expected, w, n_bins=n_bins, knots=kn)
         cmp_tbl = (
@@ -223,16 +230,16 @@ def render() -> None:
             "Rows",
             options,
             format_func=lambda v: v if v in mains else f"{v} (not in model)",
-            key="pair_a",
+            key=S.widget_key("pair_a"),
         )
         b = c2.selectbox(
             "Columns",
             options,
             index=min(1, len(options) - 1),
             format_func=lambda v: v if v in mains else f"{v} (not in model)",
-            key="pair_b",
+            key=S.widget_key("pair_b"),
         )
-        nb = c3.slider("Bands (not in model)", 3, 20, 8, key="pair_bins")
+        nb = c3.slider("Bands (not in model)", 3, 20, 8, key=S.widget_key("pair_bins"))
         if a == b:
             st.error("Pick two different variables.")
         else:
@@ -252,7 +259,7 @@ def render() -> None:
                 ui.polars_table(tbl)
 
     with tabs[2]:
-        n = st.slider("Bins", 5, 20, 10, key="lift_bins")
+        n = st.slider("Bins", 5, 20, 10, key=S.widget_key("lift_bins"))
         lt = lift_table(actual, expected, w, n_bins=n)
         g = gini(actual, expected, w)
         st.caption(
@@ -279,7 +286,9 @@ def render() -> None:
         options = (["challenger"] if exp_chal is not None else []) + [
             "a column (e.g. current premium)"
         ]
-        pick = st.radio("Benchmark", options, horizontal=True, key="dl_pick")
+        pick = st.radio(
+            "Benchmark", options, horizontal=True, key=S.widget_key("dl_pick")
+        )
         exp_b, name_b = None, ""
         if pick == "challenger":
             exp_b, name_b = exp_chal, chal_name
@@ -295,12 +304,12 @@ def render() -> None:
                 col = st.selectbox(
                     "Benchmark column (already on the same total scale, or per unit × weight)",
                     numeric_cols,
-                    key="dl_col",
+                    key=S.widget_key("dl_col"),
                 )
                 per_unit = st.checkbox(
                     "Column is per unit of weight (multiply by weight)",
                     True,
-                    key="dl_unit",
+                    key=S.widget_key("dl_unit"),
                 )
                 exp_b = frame[col].cast(pl.Float64).to_numpy() * (
                     w if per_unit else 1.0
@@ -326,7 +335,7 @@ def render() -> None:
         if not candidates:
             st.info("Every available variable is already in the model (or is an id).")
         elif (
-            st.button("Run residual search", key="rfs_go")
+            st.button("Run residual search", key=S.widget_key("rfs_go"))
             or "rfs_result" in st.session_state
         ):
             res = residual_factor_search(frame, candidates, actual, expected, w)
@@ -348,7 +357,9 @@ def render() -> None:
                 },
             )
             if res.height:
-                top = st.selectbox("Show", res["variable"].to_list(), key="rfs_show")
+                top = st.selectbox(
+                    "Show", res["variable"].to_list(), key=S.widget_key("rfs_show")
+                )
                 t = ae_by_variable(frame, top, actual, expected, w, n_bins=10)
                 st.plotly_chart(
                     C.ae_chart(t, title=f"{top} (not in model) — actual vs expected"),
@@ -383,7 +394,8 @@ def render() -> None:
         elif not pairs:
             st.info("Every pair of predictors is already an interaction of this model.")
         elif (
-            st.button("Search pairs", key="rps_go") or "rps_result" in st.session_state
+            st.button("Search pairs", key=S.widget_key("rps_go"))
+            or "rps_result" in st.session_state
         ):
             with st.spinner(f"Scoring {len(pairs)} pairs ..."):
                 res = residual_pair_search(
@@ -419,7 +431,9 @@ def render() -> None:
                         ),
                     },
                 )
-                top_pair = st.selectbox("Show", res["pair"].to_list(), key="rps_show")
+                top_pair = st.selectbox(
+                    "Show", res["pair"].to_list(), key=S.widget_key("rps_show")
+                )
                 row = res.filter(pl.col("pair") == top_pair).row(0, named=True)
                 # the same 8-band grid the search scored, so worst_cell is visible
                 _pair_heatmap(

@@ -89,6 +89,11 @@ def workspace(tmp_path_factory):
     return {"folder": folder, "project": str(path), "data": str(data)}
 
 
+def wk(at, name: str) -> str:
+    """Session-state key of a page widget (keys carry the project token)."""
+    return f"{name}_{at.session_state['project_token']}"
+
+
 def _script(page: str, project_path: str, *, fit: bool, prelude: str = "") -> str:
     return f"""
 import importlib
@@ -134,8 +139,8 @@ class TestDesignPage:
 
     def test_add_interaction_with_preview_and_validation(self, workspace):
         at = _run(_script("pages_design", workspace["project"], fit=False))
-        first = at.selectbox(key="inter_a_freq")
-        second = at.selectbox(key="inter_b_freq")
+        first = at.selectbox(key=wk(at, "inter_a_freq"))
+        second = at.selectbox(key=wk(at, "inter_b_freq"))
         # same variable twice -> error, button disabled
         second.set_value(first.value).run()
         assert any("two different" in e for e in _errors(at))
@@ -162,8 +167,8 @@ class TestDesignPage:
         at = _run(
             _script("pages_design", workspace["project"], fit=False, prelude=prelude)
         )
-        at.selectbox(key="design_detail_var").set_value("DrivAge").run()
-        at.selectbox(key="kind_DrivAge").set_value("linear").run()
+        at.selectbox(key=wk(at, "design_detail_var")).set_value("DrivAge").run()
+        at.selectbox(key=wk(at, "kind_DrivAge")).set_value("linear").run()
         assert not at.exception
         vd = at.session_state["_project"].design.variables["DrivAge"]
         assert vd.kind == "linear" and vd.monotone is None
@@ -173,12 +178,12 @@ class TestDesignPage:
 
     def test_linear_editor_apply_custom_knots_and_clamp(self, workspace):
         at = _run(_script("pages_design", workspace["project"], fit=False))
-        at.selectbox(key="design_detail_var").set_value("Density").run()
-        at.radio(key="lin_strategy_Density").set_value("custom").run()
-        at.text_area(key="lin_knots_Density").set_value("10, 100, 1000").run()
-        at.checkbox(key="lin_defaultclamp_Density").set_value(False).run()
-        at.number_input(key="lin_lo_Density").set_value(1.0).run()
-        at.number_input(key="lin_hi_Density").set_value(5000.0).run()
+        at.selectbox(key=wk(at, "design_detail_var")).set_value("Density").run()
+        at.radio(key=wk(at, "lin_strategy_Density")).set_value("custom").run()
+        at.text_area(key=wk(at, "lin_knots_Density")).set_value("10, 100, 1000").run()
+        at.checkbox(key=wk(at, "lin_defaultclamp_Density")).set_value(False).run()
+        at.number_input(key=wk(at, "lin_lo_Density")).set_value(1.0).run()
+        at.number_input(key=wk(at, "lin_hi_Density")).set_value(5000.0).run()
         [b for b in at.button if b.label == "Apply linear design"][0].click().run()
         assert not at.exception and not _errors(at)
         vd = at.session_state["_project"].design.variables["Density"]
@@ -191,17 +196,17 @@ class TestDesignPage:
 
     def test_linear_editor_rejects_knots_outside_clamp_and_bad_clamp(self, workspace):
         at = _run(_script("pages_design", workspace["project"], fit=False))
-        at.selectbox(key="design_detail_var").set_value("Density").run()
-        at.radio(key="lin_strategy_Density").set_value("custom").run()
-        at.text_area(key="lin_knots_Density").set_value("10, 9000").run()
-        at.checkbox(key="lin_defaultclamp_Density").set_value(False).run()
-        at.number_input(key="lin_lo_Density").set_value(1.0).run()
-        at.number_input(key="lin_hi_Density").set_value(5000.0).run()
+        at.selectbox(key=wk(at, "design_detail_var")).set_value("Density").run()
+        at.radio(key=wk(at, "lin_strategy_Density")).set_value("custom").run()
+        at.text_area(key=wk(at, "lin_knots_Density")).set_value("10, 9000").run()
+        at.checkbox(key=wk(at, "lin_defaultclamp_Density")).set_value(False).run()
+        at.number_input(key=wk(at, "lin_lo_Density")).set_value(1.0).run()
+        at.number_input(key=wk(at, "lin_hi_Density")).set_value(5000.0).run()
         [b for b in at.button if b.label == "Apply linear design"][0].click().run()
         assert any("outside the clamp" in e for e in _errors(at))
         vd = at.session_state["_project"].design.variables["Density"]
         assert vd.knots == "quantile"  # unchanged
-        at.number_input(key="lin_hi_Density").set_value(0.5).run()
+        at.number_input(key=wk(at, "lin_hi_Density")).set_value(0.5).run()
         [b for b in at.button if b.label == "Apply linear design"][0].click().run()
         assert any("lo must be below" in e for e in _errors(at))
 
@@ -231,11 +236,11 @@ def test_model_page_lists_interactions(workspace):
 class TestDiagnosticsPage:
     def test_pair_tab_and_pair_search(self, workspace):
         at = _run(_script("pages_diagnostics", workspace["project"], fit=True))
-        assert at.selectbox(key="pair_a") is not None
-        at.selectbox(key="pair_a").set_value("DrivAge").run()
-        at.selectbox(key="pair_b").set_value("Region").run()
+        assert at.selectbox(key=wk(at, "pair_a")) is not None
+        at.selectbox(key=wk(at, "pair_a")).set_value("DrivAge").run()
+        at.selectbox(key=wk(at, "pair_b")).set_value("Region").run()
         assert not at.exception and not _errors(at)
-        at.selectbox(key="pair_b").set_value("DrivAge").run()
+        at.selectbox(key=wk(at, "pair_b")).set_value("DrivAge").run()
         assert any("two different" in e for e in _errors(at))
         # pair search over the remaining pairs
         [b for b in at.button if b.label == "Search pairs"][0].click().run()
@@ -278,7 +283,7 @@ class TestDiagnosticsPage:
 class TestTablesPage:
     def test_interaction_and_linear_tables_render(self, workspace):
         at = _run(_script("pages_tables", workspace["project"], fit=True))
-        sel = at.selectbox(key="tables_var")
+        sel = at.selectbox(key=wk(at, "tables_var"))
         labels = {o.split("  ")[0]: o for o in sel.options}  # display labels
         assert "DrivAge×Region" in labels and "Density" in labels
         assert labels["DrivAge×Region"].endswith("(interaction)")
@@ -511,8 +516,8 @@ def test_flash_notice_survives_the_rerun(workspace):
     """The kind switch reruns immediately; the warning must reach the next run."""
     prelude = 'S.project().design.variables["DrivAge"] = __import__("easy_glm.workflow", fromlist=["VariableDesign"]).VariableDesign(monotone="decreasing")'
     at = _run(_script("pages_design", workspace["project"], fit=False, prelude=prelude))
-    at.selectbox(key="design_detail_var").set_value("DrivAge").run()
-    at.selectbox(key="kind_DrivAge").set_value("linear").run()
+    at.selectbox(key=wk(at, "design_detail_var")).set_value("DrivAge").run()
+    at.selectbox(key=wk(at, "kind_DrivAge")).set_value("linear").run()
     assert any("Monotone constraint" in w.value for w in at.warning)
     # one-shot: gone on the following run
     at.run()

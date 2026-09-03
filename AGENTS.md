@@ -234,6 +234,24 @@ User edits relativity in table
   adjustments/base-rate override are re-applied from the project on load.
 - Navigation between pages must be client-side (sidebar links) to keep session state;
   Playwright drivers should click sidebar links rather than `goto` page URLs.
+- Errors are messages, never tracebacks: pages call `ui.guarded` / `ui.require_data`,
+  `state.prepared_frame()` stores a failing step in `prep_error` and returns None,
+  `state.save_project` / `state.touch` return or record errors instead of raising.
+  `open_project_file` validates before replacing the open project.
+- Multi-tab rule: `state.touch()` compares the file's mtime with the one this session
+  last read/wrote; a mismatch sets `conflict`, pauses autosave and shows
+  `ui.conflict_notice()` (reload = `set_project` from disk, overwrite = forced save).
+- Rename rule: column renames go through `Project.rename_column` (roles, types,
+  recodes, design, split, every model reference); role changes through
+  `Project.apply_role_change`; `Project.missing_columns` / `validate(columns=...)` refuse
+  a model that references a column the prepared data lacks — never re-point a selector
+  (`index=None` + an error). Model names go through `validate_model_name`; downloads use
+  `ui.safe_filename`.
+- `state.set_project` bumps `project_token` and drops every session-state key that is
+  not app state (`_APP_STATE_KEYS`) or `_`-prefixed, so widgets never carry the previous
+  project's values; project-page text boxes use `state.widget_key(name)`.
+- Break-it findings left open after W3 (cosmetic): 15, 23, 28, 32, 35, 38 in
+  `docs/reviews/w2-breakage.md`.
 
 ### Golden numbers
 
