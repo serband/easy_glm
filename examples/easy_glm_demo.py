@@ -7,6 +7,8 @@ Run as a script:
     python examples/easy_glm_demo.py
 """
 
+from pathlib import Path
+
 import numpy as np
 import polars as pl
 
@@ -20,7 +22,7 @@ from easy_glm.engine import RateModel
 SAMPLE_SIZE = 10_000  # rows to use (0 = full dataset)
 BASE_RATE = 0.05
 USE_CV = True
-LAUNCH_EDITOR = True
+LAUNCH_EDITOR = False  # set True to open the relativity editor in a browser tab
 EDITOR_PORT = 8501
 
 PREDICTORS = [
@@ -36,8 +38,9 @@ PREDICTORS = [
 # 1. Load & sample
 # ---------------------------------------------------------------------------
 
-print("Loading French motor insurance dataset...")
-df = easy_glm.load_external_dataframe()
+print("Loading the checked-in French motor sample...")
+DATA = Path(__file__).resolve().parents[1] / "tests/fixtures/french_motor_50k.parquet"
+df = pl.read_parquet(DATA)
 
 if SAMPLE_SIZE and SAMPLE_SIZE < len(df):
     df = df.sample(n=SAMPLE_SIZE, seed=42)
@@ -59,7 +62,8 @@ eglm = easy_glm.EasyGLM.fit(
     weight_col="Exposure",
     train_test_col="traintest",
     divide_target_by_weight=True,
-    use_cv=USE_CV,
+    cv=5 if USE_CV else None,
+    alpha=None if USE_CV else 0.001,
     base_rate=BASE_RATE,
 )
 
@@ -89,21 +93,20 @@ ae_overall = holdout["ClaimNb"].sum() / holdout_preds.sum()
 print(f"\nHoldout A/E (overall): {ae_overall:.4f}")
 
 # ---------------------------------------------------------------------------
-# 5. Per-variable A/E drill-down
+# 5. Per-variable A/E drill-down (spread across each variable's own bands)
 # ---------------------------------------------------------------------------
 
+from easy_glm.workflow import ae_by_variable  # noqa: E402
+
 print("\nPer-variable A/E on holdout:")
+holdout_actual = holdout["ClaimNb"].to_numpy()
+holdout_weight = holdout["Exposure"].to_numpy()
 for var in PREDICTORS:
-    result = eglm.rate_model.compute_ae_for_variable(holdout, var)
-    subsets = result["subsets"]
-    for split_name in ("train", "test"):
-        if split_name not in subsets:
-            continue
-        buckets = subsets[split_name]
-        actual = sum(b["actual"] for b in buckets)
-        expected = sum(b["expected"] for b in buckets)
-        ae = actual / expected if expected > 0 else float("nan")
-        print(f"  {var:15s}  {split_name:5s}  A/E = {ae:.4f}  ({len(buckets)} bins)")
+    table = ae_by_variable(holdout, var, holdout_actual, holdout_preds, holdout_weight)
+    print(
+        f"  {var:15s}  A/E ranges {table['ae'].min():.3f}-{table['ae'].max():.3f}  "
+        f"({table.height} bins)"
+    )
 
 # ---------------------------------------------------------------------------
 # 6. Save
