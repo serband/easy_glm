@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import errno
 import json
+import math
 import os
 import re
 import warnings
@@ -19,6 +20,24 @@ from typing import Any
 from uuid import uuid4
 
 from easy_glm.engine.models import INTERACTION_SEP
+
+
+def _is_finite_number(value: Any) -> bool:
+    """Whether ``value`` is a real, finite number.
+
+    A hand-edited project file can put anything in a numeric field (``"abc"``,
+    ``null`` surviving a dataclass default, a list). Every place below that
+    used to compare such a value with ``<=``/``<`` raised ``TypeError`` (a
+    string) or ``ValueError`` (``float("abc")``) straight out of
+    :meth:`Project.validate`, which both the CLI and the Model/Design pages
+    call unguarded — so a bad value crashed the tool instead of being one more
+    line in the problem list. Checking this first turns it into that line.
+    """
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
 
 
 def _col_pattern(column: str) -> re.Pattern[str]:
@@ -679,7 +698,10 @@ class Project:
                 problems.append(f"Column {c!r} has unknown role {r!r}")
         if self.data.split.mode not in ("column", "random"):
             problems.append("split.mode must be 'column' or 'random'")
-        if self.data.split.mode == "random" and not 0 < self.data.split.fraction < 1:
+        if self.data.split.mode == "random" and not (
+            _is_finite_number(self.data.split.fraction)
+            and 0 < self.data.split.fraction < 1
+        ):
             problems.append("split.fraction must be in (0, 1)")
         for var, vd in self.design.variables.items():
             if vd.kind not in (None, "step", "linear", "continuous", "categorical"):
@@ -695,7 +717,10 @@ class Project:
                     "designs only"
                 )
             if vd.clamp is not None and (
-                len(vd.clamp) != 2 or not float(vd.clamp[0]) < float(vd.clamp[1])
+                not isinstance(vd.clamp, (list, tuple))
+                or len(vd.clamp) != 2
+                or not all(_is_finite_number(v) for v in vd.clamp)
+                or not vd.clamp[0] < vd.clamp[1]
             ):
                 problems.append(f"design[{var!r}].clamp must be [lo, hi] with lo < hi)")
             if not (
@@ -719,7 +744,9 @@ class Project:
                 continue
             if cfg.family not in FAMILIES:
                 problems.append(f"{name}: unknown family {cfg.family!r}")
-            if cfg.family == "tweedie" and not 1.0 < float(cfg.tweedie_power) < 2.0:
+            if cfg.family == "tweedie" and not (
+                _is_finite_number(cfg.tweedie_power) and 1.0 < cfg.tweedie_power < 2.0
+            ):
                 problems.append(
                     f"{name}: tweedie_power must be strictly between 1 and 2 "
                     f"(1 = Poisson, 2 = Gamma), got {cfg.tweedie_power!r}"
@@ -736,7 +763,9 @@ class Project:
                 problems.append(f"{name}: target and offset are the same column")
             if cfg.target and cfg.target in cfg.predictors:
                 problems.append(f"{name}: the target cannot also be a predictor")
-            if cfg.penalty.alpha is not None and cfg.penalty.alpha <= 0:
+            if cfg.penalty.alpha is not None and not (
+                _is_finite_number(cfg.penalty.alpha) and cfg.penalty.alpha > 0
+            ):
                 problems.append(
                     f"{name}: alpha must be > 0 (alpha = 0 is an unpenalised fit "
                     "that the solver cannot handle; use a small value such as 1e-4)"
@@ -771,13 +800,18 @@ class Project:
                 if pair in seen_pairs:
                     problems.append(f"{name}: interaction {it.name} listed twice")
                 seen_pairs.add(pair)
-                if not 0 <= it.min_cell_exposure < 1:
+                if not (
+                    _is_finite_number(it.min_cell_exposure)
+                    and 0 <= it.min_cell_exposure < 1
+                ):
                     problems.append(
                         f"{name}: {it.name} min_cell_exposure not in [0, 1)"
                     )
-                if it.penalty_weight <= 0:
+                if not (_is_finite_number(it.penalty_weight) and it.penalty_weight > 0):
                     problems.append(f"{name}: {it.name} penalty_weight must be > 0")
-                if it.alpha is not None and it.alpha <= 0:
+                if it.alpha is not None and not (
+                    _is_finite_number(it.alpha) and it.alpha > 0
+                ):
                     problems.append(
                         f"{name}: {it.name} alpha must be > 0 (leave it unset to "
                         "use the mains' alpha)"

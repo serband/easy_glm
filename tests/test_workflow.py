@@ -229,6 +229,57 @@ class TestProject:
         assert any("listed twice" in p for p in problems)
         assert any("min_cell_exposure" in p for p in problems)
 
+    def test_a_non_numeric_field_is_reported_not_raised(self, project):
+        """Breaker #3: a hand-edited project.json can put anything in a
+        numeric field (``"abc"``, a boolean, ``NaN``, the wrong shape). Every
+        comparison below used to assume a real number and raised
+        ``TypeError``/``ValueError`` straight out of ``validate()`` — which the
+        CLI and the Model/Design pages call unguarded, so this was a crash,
+        not a message. Each case must come back as one more problem string."""
+        cfg = project.models["freq"]
+
+        cfg.penalty.alpha = "abc"
+        assert any("alpha must be > 0" in p for p in project.validate("freq"))
+        cfg.penalty.alpha = float("nan")
+        assert any("alpha must be > 0" in p for p in project.validate("freq"))
+        cfg.penalty.alpha = 0.002  # restore
+
+        cfg.family = "tweedie"
+        cfg.tweedie_power = "abc"
+        assert any(
+            "tweedie_power must be strictly between" in p
+            for p in project.validate("freq")
+        )
+        cfg.family = "poisson"
+        cfg.tweedie_power = 1.5  # restore
+
+        it = cfg.interactions[0]
+        it.penalty_weight = "abc"
+        assert any("penalty_weight must be > 0" in p for p in project.validate("freq"))
+        it.penalty_weight = 1.0
+        it.min_cell_exposure = "abc"
+        assert any("min_cell_exposure" in p for p in project.validate("freq"))
+        it.min_cell_exposure = 0.02
+        it.alpha = "abc"
+        assert any(
+            "alpha must be > 0 (leave it unset" in p for p in project.validate("freq")
+        )
+        it.alpha = None
+
+        project.design.variables["DrivAge"].clamp = ["abc", 10]
+        assert any("clamp must be" in p for p in project.validate("freq"))
+        project.design.variables["DrivAge"].clamp = [1, "abc"]
+        assert any("clamp must be" in p for p in project.validate("freq"))
+        project.design.variables["DrivAge"].clamp = 5  # not even a pair
+        assert any("clamp must be" in p for p in project.validate("freq"))
+        project.design.variables["DrivAge"].clamp = None
+
+        project.data.split.fraction = "abc"
+        assert any("split.fraction" in p for p in project.validate("freq"))
+        project.data.split.fraction = 0.7
+
+        assert project.validate("freq") == []  # everything restored cleanly
+
     def test_json_roundtrip(self, project, tmp_path):
         project.models["freq"].adjustments.append(
             __import__("easy_glm.workflow", fromlist=["Adjustment"]).Adjustment(
