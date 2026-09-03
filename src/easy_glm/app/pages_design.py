@@ -216,8 +216,34 @@ def _kind_selector(var: str, vd: VariableDesign, numeric: bool) -> None:
         st.rerun()
 
 
+def _knots_outside_the_data(var: str, knots: list[float], series: pl.Series) -> None:
+    """Flash a warning for knots the training rows never reach. They are
+    accepted (the actuary may be keeping room for next year's data) but they
+    make an empty bin, so the page has to say which ones."""
+    s = series.drop_nulls().cast(pl.Float64)
+    if s.is_empty():
+        return
+    lo, hi = float(s.min()), float(s.max())
+    above = [k for k in knots if k > hi]
+    below = [k for k in knots if k <= lo]
+    for bad, where, edge in ((above, "above", hi), (below, "at or below", lo)):
+        if bad:
+            ui.flash(
+                "warning",
+                f"{var}: knot(s) {', '.join(f'{k:g}' for k in bad)} are {where} the "
+                f"training {'largest' if where == 'above' else 'smallest'} value "
+                f"({edge:g}); the bin they open has no training rows, so its "
+                "relativity comes only from the penalty. Saved anyway.",
+            )
+
+
 def _step_detail(
-    var: str, vd: VariableDesign, enc: StepEncoder, preview: pl.DataFrame, divide
+    var: str,
+    vd: VariableDesign,
+    enc: StepEncoder,
+    train: pl.DataFrame,
+    preview: pl.DataFrame,
+    divide,
 ) -> None:
     p = S.project()
     knots_txt = st.text_area(
@@ -235,6 +261,7 @@ def _step_detail(
             if not knots:
                 st.error("At least one knot is needed")
             else:
+                _knots_outside_the_data(var, knots, train[var])
                 vd.knots = knots
                 p.design.variables[var] = vd
                 S.touch()
@@ -481,7 +508,7 @@ def _detail(train: pl.DataFrame, preview: pl.DataFrame, predictors: list[str]) -
                     st.rerun()
         return
     if isinstance(enc, StepEncoder):
-        _step_detail(var, vd, enc, preview, divide)
+        _step_detail(var, vd, enc, train, preview, divide)
     elif isinstance(enc, LinearEncoder):
         _linear_detail(var, vd, enc, train, preview, divide)
     elif isinstance(enc, CategoricalEncoder):

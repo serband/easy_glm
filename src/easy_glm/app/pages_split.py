@@ -18,6 +18,42 @@ def final_columns(raw: pl.DataFrame) -> list[str]:
     return names
 
 
+#: roles a column cannot keep once it becomes the train/holdout indicator
+_ROLES_IN_USE = ("target", "weight", "exposure", "offset", "predictor", "id")
+
+
+def _role_change_confirmed(col: str) -> bool:
+    """True when ``col`` may be made the split indicator. A column that is
+    already doing a job in the model would lose that role silently, so it takes
+    one confirming click (the models that use it are named first)."""
+    p = S.project()
+    role = p.data.roles.get(col)
+    if role not in _ROLES_IN_USE:
+        return True
+    key = S.widget_key(f"split_role_ok_{col}")
+    if st.session_state.get(key):
+        return True
+    users = sorted(
+        m
+        for m, cfg in p.models.items()
+        if col in ([cfg.target, cfg.weight, cfg.offset] + list(cfg.predictors))
+    )
+    st.warning(
+        f"**{col}** is currently the **{role}**"
+        + (f" of model(s) {', '.join(users)}" if users else "")
+        + ". A train/holdout indicator cannot also be a modelling column: using it "
+        "here takes that role away and the model(s) would lose it. Nothing has "
+        "changed yet."
+    )
+    if st.button(
+        f"Use {col} as the split indicator anyway",
+        key=S.widget_key(f"split_role_btn_{col}"),
+    ):
+        st.session_state[key] = True
+        st.rerun()
+    return False
+
+
 def _column_mode(raw: pl.DataFrame) -> bool:
     p = S.project()
     sp = p.data.split
@@ -48,6 +84,8 @@ def _column_mode(raw: pl.DataFrame) -> bool:
             tv_parsed = float(tv)
         except ValueError:
             tv_parsed = tv
+    if col is not None and col != sp.column and not _role_change_confirmed(col):
+        return False
     changed = False
     if col is not None and (col != sp.column or tv_parsed != sp.train_value):
         previous = sp.column
@@ -86,6 +124,13 @@ def _seed_value(seed: object) -> tuple[int, str | None, bool]:
             "the split now uses 42.",
             True,
         )
+    if value < 0:
+        return (
+            42,
+            f"The seed in the project file ({value}) is negative, which no random "
+            "split can use; the split now uses 42.",
+            True,
+        )
     if abs(value) > _MAX_SHOWN_SEED:
         return (
             10_000,
@@ -111,24 +156,35 @@ def _random_mode(raw: pl.DataFrame) -> bool:
     c1, c2, c3 = st.columns(3)
     frac_value = min(max(float(sp.fraction), 0.5), 0.95)
     if frac_value != sp.fraction:
-        st.warning(
+        # the change is saved a few lines below and the page redraws, which
+        # would swallow a plain st.warning: say what changed on the next run
+        ui.flash(
+            "warning",
             f"Training fraction {sp.fraction:g} in the project file is outside the "
-            f"0.50–0.95 range; showing {frac_value:.2f}."
+            f"0.50–0.95 range; it has been changed to {frac_value:.2f} and saved. "
+            "Set the slider yourself if you meant something else.",
         )
     frac = c1.slider(
         "Training fraction", 0.5, 0.95, frac_value, 0.05, key=S.widget_key("split_frac")
     )
     shown_seed, seed_problem, repair_seed = _seed_value(sp.seed)
-    if seed_problem:
+    if seed_problem and repair_seed:
+        # the repair is saved below and the page redraws: the explanation has
+        # to survive that rerun, or the seed changes with nothing said
+        ui.flash("warning", seed_problem)
+    elif seed_problem:
         st.warning(seed_problem)
-    # the box shows the seed the project holds — the range widens for a value
-    # from outside it (a hand-edited file) rather than showing another number
-    # (or raising), so the page never names a seed the split did not use
-    seed = c2.number_input(
+    # the box shows the seed the project holds, whatever it is, and takes any
+    # seed a split can use; one it cannot (a negative number) is refused with a
+    # message and the box goes back — the page never names a seed the split
+    # did not use, and never keeps a typed number the project does not hold
+    seed = ui.number_in_range(
+        c2,
         "Seed",
-        min(0, shown_seed),
-        max(10_000, shown_seed),
-        shown_seed,
+        value=shown_seed,
+        lo=0,  # the box itself cannot hold more than _MAX_SHOWN_SEED
+        what="The seed",
+        step=1,
         key=S.widget_key("split_seed"),
         help="0 – 10000",
     )

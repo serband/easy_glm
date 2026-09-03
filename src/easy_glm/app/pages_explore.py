@@ -16,8 +16,9 @@ def _univariate(df: pl.DataFrame) -> None:
     p = S.project()
     if S.is_sampled():
         st.caption(
-            f"Charts use the exploration sample of {df.height:,} rows "
-            "(Project page); fits and diagnostics use the full data."
+            f"Charts use the exploration sample of {df.height:,} "
+            f"{'row' if df.height == 1 else 'rows'} (Project page); fits and "
+            "diagnostics use the full data."
         )
     cfg = p.models.get(p.champion) if p.champion else None
     divide = cfg.divide_target_by_weight if cfg else bool(p.weight)

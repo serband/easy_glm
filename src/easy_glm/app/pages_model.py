@@ -16,6 +16,15 @@ from . import ui
 def _model_picker() -> str | None:
     p = S.project()
     names = list(p.models)
+    # Create / Delete on the previous run asked for another model to be shown.
+    # The selectbox keeps whatever its key holds, and Streamlit refuses to
+    # touch a widget's key once the widget exists, so the keys are dropped here
+    # — before the picker is drawn — and the boxes fall back to their defaults
+    # (``model_current`` below). Without this, Create says "created" and the
+    # page underneath goes on editing and fitting the model that was selected.
+    if st.session_state.pop("model_pending", False):
+        st.session_state.pop(S.widget_key("model_select"), None)
+        st.session_state.pop(S.widget_key("model_new_name"), None)
     c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
     current = st.session_state.get("model_current")
     if current not in names:
@@ -35,18 +44,21 @@ def _model_picker() -> str | None:
         if len(p.models) == 1:
             p.champion = new_name
         st.session_state.model_current = new_name
+        st.session_state["model_pending"] = True  # show what was created
         S.touch()
-        ui.flash("success", f"Model {new_name!r} created")
+        ui.flash("success", f"Model {new_name!r} created and selected")
         st.rerun()
     if name_problem:
         c2.caption(f"⚠ {name_problem}")
     if names and c4.button("Delete", disabled=len(names) == 0):
         p.models.pop(sel, None)
-        S.remove_model_runs(sel)
+        kept = S.remove_model_runs(sel)
         if p.champion == sel:
             p.champion = next(iter(p.models), None)
+        st.session_state.model_current = next(iter(p.models), None)
+        st.session_state["model_pending"] = True
         S.touch()
-        ui.flash("info", f"Model {sel!r} deleted")
+        ui.flash("warning" if kept else "info", kept or f"Model {sel!r} deleted")
         st.rerun()
     if not names:
         st.info(
@@ -123,10 +135,16 @@ def _config(name: str) -> None:
             )
         else:
             target, weight, offset = cfg.target, cfg.weight, cfg.offset
+        div_key = S.widget_key(f"div_{name}")
+        if weight is None and st.session_state.get(div_key):
+            # Streamlit keeps a key's value even when the default changes: an
+            # unticked-and-disabled box must not stay ticked from when there
+            # was a weight column (the project holds False either way)
+            st.session_state.pop(div_key, None)
         divide = st.checkbox(
             "Divide target by weight (model a rate, e.g. claims / exposure)",
             cfg.divide_target_by_weight and weight is not None,
-            key=S.widget_key(f"div_{name}"),
+            key=div_key,
             disabled=weight is None,
         )
         missing_preds = [v for v in cfg.predictors if v not in p.predictors]
@@ -144,11 +162,14 @@ def _config(name: str) -> None:
             key=S.widget_key(f"preds_{name}"),
         )
         if cfg.interactions:
-            bad = [
-                it.name
-                for it in cfg.interactions
-                if it.a not in preds or it.b not in preds
-            ]
+            bad = sorted(
+                {
+                    parent
+                    for it in cfg.interactions
+                    for parent in (it.a, it.b)
+                    if parent not in preds
+                }
+            )
             st.caption(
                 "Interactions (edit on the Design page): "
                 + ", ".join(
@@ -170,11 +191,13 @@ def _config(name: str) -> None:
             key=S.widget_key(f"pmode_{name}"),
             horizontal=True,
         )
-        alpha = c2.number_input(
+        alpha = ui.number_in_range(
+            c2,
             "alpha",
-            0.0,
-            10.0,
-            float(cfg.penalty.alpha or 0.001),
+            value=float(cfg.penalty.alpha or 0.001),
+            lo=0.0,
+            hi=10.0,
+            what="alpha",
             format="%.5f",
             key=S.widget_key(f"alpha_{name}"),
             disabled=mode != "fixed",
@@ -211,10 +234,12 @@ def _config(name: str) -> None:
             horizontal=True,
             key=S.widget_key(f"base_{name}"),
         )
-        bro = c2.number_input(
+        bro = ui.number_in_range(
+            c2,
             "Base rate override (0 = exact)",
-            0.0,
             value=float(cfg.base_rate_override or 0.0),
+            lo=0.0,
+            what="The base rate override",
             format="%.6f",
             key=S.widget_key(f"bro_{name}"),
         )
@@ -280,6 +305,10 @@ def _config(name: str) -> None:
         S.touch()
         if rebuild_only and S.get_run(name) is not None:
             S.refresh_adjustments(name)
+        else:
+            # the status chips and the sidebar were drawn before this change:
+            # redraw, or they would say "Fitted" next to "refit to update"
+            st.rerun()
 
 
 def _explain_fit_error(exc: Exception) -> str:
@@ -317,6 +346,14 @@ def _fit_and_results(name: str) -> None:
         except Exception as exc:  # noqa: BLE001
             st.error(f"Fit failed: {_explain_fit_error(exc)}")
             return
+        if run.dropped_predictors:
+            ui.flash(
+                "warning",
+                "Left out of the design because they are constant or all-null on "
+                "the training rows: "
+                + ", ".join(f"**{v}**" for v in run.dropped_predictors)
+                + f". {name} was fitted without them.",
+            )
         st.rerun()
     if c2.button(
         "Make champion", disabled=p.champion == name, key=S.widget_key(f"champ_{name}")
@@ -339,6 +376,12 @@ def _fit_and_results(name: str) -> None:
         c3.info("Not fitted yet.")
     if run is None:
         return
+    if run.dropped_predictors:
+        st.warning(
+            "Not in this fit — constant or all-null on the training rows: "
+            + ", ".join(f"**{v}**" for v in run.dropped_predictors)
+            + ". Remove them from the predictor list, or check the data."
+        )
 
     s = run.summary()
     ui.metric_row(
