@@ -242,3 +242,117 @@ stated in the order an actuary would ask them, the "In short" paragraph is the
 right summary, and the two findings left open (6, the implausible offset, and
 8, matching a fit to its data file by modification time) are named with an
 honest reason for each. Fix S1 and S3 and the page is correct as written.
+
+---
+
+# Re-check (commits 9afa0b1, aaf12de, 3e6c93b)
+
+Re-checked only `git diff ddc57b9..HEAD` — the builder's answer to the three
+should-fix items, the six nits and the five missing tests. The paused-tab marker
+scenario was re-run from scratch with the reviewer's own scripts, and the whole
+regression set was re-run from cold.
+
+## Final verdict
+
+**Accept, no reservations.** All three should-fix items are fixed at the level
+they were raised, and four of the six nits were fixed as well — including two I
+had only suggested (the non-atomic project write, and the missing-file gap in
+rule 2), which were the two most likely to bite later. Nothing in the new diff
+introduces a fresh risk.
+
+## S1 — the markers now obey the folder's rules ✅
+
+The marker is now named `<tag>-<key>-<session>.fitting`, so a tab can tell its
+own from anyone else's; `_clear_fit_marker` removes exactly the one it wrote and
+returns early while `runs_write_paused()`; `_remove_run_file` no longer takes
+markers with it; and `interrupted_fits()` deletes a marker only when the result
+is on disk, when this session wrote it, or when it is older than
+`MARKER_GRACE_SECONDS` (300 s) — and never at all while deleting is paused.
+
+Re-run of my original scenario, with a live marker from another session sitting
+in the folder and tab B showing the conflict notice:
+
+| Action in the paused tab | Folder (name, size, `mtime_ns`, SHA-1 — **markers included**) |
+|---|---|
+| **Fit** | byte-identical, nothing added, nothing removed |
+| **Delete** | byte-identical |
+
+And the surrounding behaviour: a session clears its *own* marker when its own
+fit finishes (folder left with just the `.pkl` and `.json`); a fresh tab opened
+while another is fitting reports the running fit but **leaves the young marker
+alone**; a marker from another session aged past 300 s is reported and then
+cleared. The check page's "What to check yourself" bullet — now "not even the
+small marker files a fit leaves while it runs" — is true as written.
+
+## S2 — the Delete sentence survives ✅
+
+`ui.flash(...)` now sits above `S.touch()` in `pages_model.py`. Re-run of the
+case that failed before (tab A saves; tab B, with no conflict notice up yet,
+clicks Delete): B now shows **both** *"Model 'm1' was removed from this tab
+only: the project file was changed by another browser tab…"* **and** the
+conflict banner, the runs folder is byte-identical, the project file is
+byte-identical and still holds the model, and a fresh session reports "Fitted
+and up to date".
+
+## S3 — the caveat is on the page ✅
+
+`docs/checks/w4-runs-folder.md` now carries the paragraph an actuary needs:
+*"if you open a second tab while a fit is running, that second tab may report
+the running fit as interrupted… let it finish"*, plus why a marker that is not
+yours is left alone for five minutes, and why the notice repeats in later
+sessions (because until the model is fitted again it is still true). The
+builder went further than the one sentence I asked for and made the underlying
+behaviour safe as well, which is the better order.
+
+Two consequences worth knowing, both correct and both stated: the notice now
+**repeats** in every new session until that model is refitted (the old code
+said it once and deleted the evidence), and a fit that legitimately runs longer
+than five minutes can still have its marker tidied by another tab. Both are the
+right trade-off for a tool where losing a warning is worse than repeating one.
+
+## Nits
+
+| # | Nit | Status |
+|---|---|---|
+| 1 | Fractional seed taken silently | Addressed as a help-text change: *"A whole number, 0 – 10000 (anything after the decimal point is dropped)"*, with a test pinning box and project together at 2. No message, but the box now says what it does — acceptable |
+| 2 | Knot warning grammar | Fixed and verified for all three shapes: *"knot 999999 is above the largest training value (84); the bin it opens has…"*, *"knots 888888, 999999 are… the bins they open have…"*, *"knots 1, 2 are at or below the smallest training value (18)…"* |
+| 3 | Project file written in place | **Fixed properly.** `Project.to_json` writes a unique temporary file next to the target and `os.replace`s it over, so no reader ever sees half a file. I checked the two things such a change usually breaks: a read-only project file still raises `PermissionError` (the explicit `os.access` guard — a rename would otherwise have sailed past it), the "Autosave failed" banner still appears and still clears on the next successful edit, and no `.tmp` file is left in the folder on either path |
+| 4 | A deleted project file is not "changed" | **Fixed.** `_project_file_missing()` now feeds `runs_delete_paused()`. Verified directly: with the file present `delete_paused` is False; with the file deleted under the same session it is True, and the runs folder is untouched while it is gone |
+| 5 | "Overwrite resumes saving" could read as "and tidies now" | Fixed — the new paragraph between rules 2 and 3 says the losing version keeps its fit until that model is next fitted, which is what I measured |
+| 6 | Trailing newline from the check script | Fixed (`print(text, end="")`); the page now regenerates **byte for byte** |
+
+## Missing tests — all five added
+
+`test_breakage2_s1_markers_obey_the_same_pause_rules` (byte-level snapshot with
+markers, plus the grace period), `..._a_finished_fit_leaves_only_its_own_marker_behind`,
+`test_breakage2_s2_delete_says_so_before_the_conflict_notice_is_up`,
+`test_breakage2_s3_deleting_resumes_once_the_conflict_is_resolved`
+(parametrised over Reload **and** Overwrite), `test_breakage2_03b_delete_moves_the_picker_too`
+(down to the last model), and `test_breakage2_nit_number_boxes_take_whole_seeds_and_refuse_negatives`
+(fractional seed and a negative base-rate override). `test_breakage2_28` was
+correctly rewritten to assert the new "says it again while it is still true"
+behaviour rather than the old "once then forget".
+
+The test helper `_snap` now hashes the folder the same way my scripts do, which
+is the right thing to assert for this piece.
+
+## Two things left, neither worth a commit
+
+- A marker written by the intermediate commit d52ea28 (`<tag>-<key>.fitting`,
+  no session part) is not recognised by `_marker_parts` and so is neither
+  reported nor cleaned. Only a developer who ran that one commit can have one.
+- `test_breakage2_s3_deleting_resumes_once_the_conflict_is_resolved` is named
+  after should-fix S3 but is in fact the review's *missing test 3*. Naming only.
+
+## What I re-ran, with numbers
+
+| Check | Result |
+|---|---|
+| Full suite (`.venv`, Streamlit 1.57) | **467 passed**, 17 warnings, 3 min 10 s (was 460) |
+| Six app test files on Streamlit 1.63 | **160 passed**, 24.6 s (was 153) |
+| `ruff check .` | All checks passed |
+| `black --check .` | 89 files unchanged |
+| Golden | `git diff 0145f80..HEAD -- tests/test_golden.py tests/fixtures` still empty — untouched |
+| Persona e2e | **3 passed**, 1 min 40 s; server stopped, port released |
+| Check page regenerates | `scripts/checks/w4_runs_folder.py` output is now **identical byte for byte** to `docs/checks/w4-runs-folder.md` |
+| My own scripts, re-run against the new tree | finding 1 (folder and project file byte-identical through Fit and Delete, fresh session still fitted), finding 2 (both fits kept, third session restores, a later save prunes only the stale file), three tabs, the deleted project file, Overwrite and Reload, the paused-tab marker scenario, own-marker clearing, the foreign young marker, the aged marker, the read-only project file and its recovery, the knot messages in singular and plural |
