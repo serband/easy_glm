@@ -22,7 +22,7 @@ join up by construction.
 Three conventions, all from the plan review (questions Q1–Q3):
 
 1. **Flat outside the data.** The curve is clamped at the training range — for `BonusMalus` here `50` to `230` — and stays level beyond it, so a value far outside anything seen in training gets the relativity at the nearer edge, never an extrapolated one. The default clamp is the training minimum and maximum **rounded outward to a round number** (each end moves by less than 1 % of the range: 17.65–29,857 becomes 0–29,900; 18–80 stays 18–80) and the end bands keep their fitted slope up to that number, so the curve does not stop exactly where the data stops. Set the clamp yourself on the Design page when the exact edge matters.
-2. **Relativity 1.00 sits at the lower edge of the most exposed band**, so the base risk is a round, visible number (here `BonusMalus` = 50).
+2. **Relativity 1.00 sits at the lower edge of the most exposed band**, so the base risk is a round, visible number (here `BonusMalus` = 50). A **continuous** factor has only one band and so only two points the table can carry a 1.00 at — the two ends of the range. It goes to whichever end the bulk of the business is nearer to (the exposure-weighted median against the middle of the range), which for a factor skewed low is the bottom. Because such a curve has a single slope, moving the 1.00 point only rescales the base rate; the ratios between relativities do not move, and you can override the base rate directly.
 3. **Few slopes, not few bends** (your Q3 answer). Each fitted number is the slope of one band and the penalty removes slopes, so flat stretches are the norm: of the 9 bands of the `BonusMalus` curve below, 2 came back exactly flat, and of the 20 bands of `Density`, 9. **Monotone constraints are available on these terms**: a direction bounds every band slope to one sign, which keeps the curve rising (or falling) throughout without forcing any particular shape on it.
 
 ## `BonusMalus`: step versus piecewise-linear
@@ -33,17 +33,17 @@ Relativity of the `BonusMalus` factor alone (base 1.00 at the base row of each t
 |---:|---:|---:|
 | 40 (below clamp → flat) | 1.0000 | 1.0000 |
 | 50 | 1.0000 | 1.0000 |
-| 55 | 1.5613 | 1.6035 |
-| 60 | 2.7730 | 2.4118 |
-| 70 | 2.1094 | 2.3345 |
-| 80 | 2.3797 | 2.4399 |
-| 90 | 2.4669 | 3.0481 |
-| 100 | 4.6981 | 4.2800 |
-| 120 | 4.6981 | 6.8322 |
-| 150 | 4.6981 | 13.7795 |
-| 200 | 4.6981 | 44.3628 |
-| 230 | 4.6981 | 89.4727 |
-| 300 (above clamp → flat) | 4.6981 | 89.4727 |
+| 55 | 1.5613 | 1.6052 |
+| 60 | 2.7730 | 2.3899 |
+| 70 | 2.1094 | 2.3821 |
+| 80 | 2.3797 | 2.4386 |
+| 90 | 2.4669 | 3.1617 |
+| 100 | 4.6981 | 4.4110 |
+| 120 | 4.6981 | 5.9144 |
+| 150 | 4.6981 | 9.1829 |
+| 200 | 4.6981 | 19.1174 |
+| 230 | 4.6981 | 29.6823 |
+| 300 (above clamp → flat) | 4.6981 | 29.6823 |
 
 The linear curve has 8 candidate knots, so 9 bands; the fit gave 7 of them a slope and left 2 flat, against 8 non-zero step increments.
 
@@ -51,22 +51,31 @@ The linear curve has 8 candidate knots, so 9 bands; the fit gave 7 of them a slo
 
 | | step | piecewise-linear |
 |---|---:|---:|
-| A/E | 1.0191 | 1.0199 |
-| Gini | 0.3072 | 0.3106 |
-| Deviance explained | 4.79% | 4.97% |
-| Non-zero coefficients (whole model) | 71 | 72 |
+| A/E | 1.0191 | 1.0196 |
+| Gini | 0.3072 | 0.3103 |
+| Deviance explained | 4.79% | 4.94% |
+| Non-zero coefficients (whole model) | 71 | 71 |
 
 The bonus-malus effect is close to log-linear, so a description made of sloped
-stretches fits the holdout a little better (Gini 0.3072 → 0.3106, deviance explained 4.79% → 4.97%) for about the same number of fitted numbers.
+stretches fits the holdout a little better (Gini 0.3072 → 0.3103, deviance explained 4.79% → 4.94%) for about the same number of fitted numbers.
 That is the typical case for a linear term; it is not a general predictive gain.
 
 **One thing to look at before shipping such a curve.** Above about 120 the data
 is thin. The step design pooled everything from 100 upwards into one band; the
-linear term keeps its slope going through the thin region up to the clamp, so the
-table charges far more at 200–230 than the step table does. Within the training
+linear term fits the thin region its own slope and carries it up to the clamp, so
+the table charges 30× at 230 where the step table charges 4.7×. Within the training
 range the curve follows the data it has, however little. If that is not what you
 would charge, either set the clamp for this factor to where the data runs out
 (e.g. 150 — the curve is then flat above it) or keep the step design. See Q10.
+
+The penalty is now measured **per unit of rise across a band**, which is what
+makes that tail behave. A band's fitted number is a slope, so a wide band that few
+policies reach used to buy a large rise for a small penalty — on this data the top
+band's rise cost about 4 % of what the first band's cost, leaving the thinnest part
+of the curve the *least* penalised part of it. Each band is now charged the same
+for the same rise, whatever its width and however few policies reach it, so the
+curve's shape no longer depends on where the knots happen to fall. On this fit it
+brought 230 down from 89× to 30× while the holdout barely moved.
 
 ## Keeping a curve monotone: `BonusMalus` increasing
 
@@ -76,41 +85,43 @@ Ask for a direction on the Design page and every band slope is bounded to that s
 |---:|---:|---:|
 | 40 | 1.0000 | 1.0000 |
 | 50 | 1.0000 | 1.0000 |
-| 55 | 1.6035 | 1.6045 |
-| 60 | 2.4118 | 2.3792 |
-| 70 | 2.3345 | 2.3792 |
-| 80 | 2.4399 | 2.4410 |
-| 90 | 3.0481 | 3.0502 |
-| 100 | 4.2800 | 4.2841 |
-| 120 | 6.8322 | 6.8381 |
-| 150 | 13.7795 | 13.7895 |
-| 200 | 44.3628 | 44.3857 |
-| 230 | 89.4727 | 89.5074 |
-| 300 | 89.4727 | 89.5074 |
+| 55 | 1.6052 | 1.6055 |
+| 60 | 2.3899 | 2.3864 |
+| 70 | 2.3821 | 2.3864 |
+| 80 | 2.4386 | 2.4387 |
+| 90 | 3.1617 | 3.1619 |
+| 100 | 4.4110 | 4.4114 |
+| 120 | 5.9144 | 5.9149 |
+| 150 | 9.1829 | 9.1836 |
+| 200 | 19.1174 | 19.1183 |
+| 230 | 29.6823 | 29.6833 |
+| 300 | 29.6823 | 29.6833 |
 
-Every band slope is at least zero (9 of 9, 3 of them exactly flat); holdout Gini 0.3106 unconstrained vs 0.3106 constrained, deviance explained 4.97% vs 4.96%.
+Every band slope is at least zero (9 of 9, 3 of them exactly flat); holdout Gini 0.3103 unconstrained vs 0.3103 constrained, deviance explained 4.94% vs 4.94%.
 
 ## A second example: `Density` (skewed) — and the **continuous** option
 
-`Density` is heavily skewed (most policies below 5,000). Asked for a linear term with 19 candidate knots, the fit left 9 of its 20 bands flat and gave 11 a slope, between 0 and 27000, where the step design used 11 increments. Holdout Gini 0.3072 (step) vs 0.3069 (linear), deviance explained 4.79% vs 4.78%: here the step design describes the low end better. Which shape to use is a judgement per factor; all of them are available.
+`Density` is heavily skewed (most policies below 5,000). Asked for a linear term with 19 candidate knots, the fit left 9 of its 20 bands flat and gave 11 a slope, between 0 and 27000, where the step design used 11 increments. Holdout Gini 0.3072 (step) vs 0.3067 (linear), deviance explained 4.79% vs 4.78%: here the step design describes the low end better. Which shape to use is a judgement per factor; all of them are available.
 
 There is now a third choice for a numeric factor, **continuous**: one straight line over the whole range, no knots at all, so the relativity is a single rate per unit. It is the same machinery as a linear term with one band — same rate table, same editor, same Excel sheet, same exported script — and it is the shortest honest description of a factor you believe simply trends. Numeric factors still default to **step** (your Q9 answer); linear, continuous and categorical are the explicit overrides, one per factor, on the Design page.
 
+Asked for one straight line through `Density`, this fit answered **no slope at all** (the column below is 1.00 everywhere, slope 0): over the whole range the trend it could buy was too small to pay for itself under a penalty that charges per unit of rise. Holdout Gini 0.3063 against 0.3072 for the step design — it was not carrying much. That is "flat unless the data insists" doing its job, not a broken option: the same choice on `BonusMalus`, which really does trend, keeps its slope (0.0253 per point, 96× at 230, holdout Gini 0.2928) — and shows the other side of the coin, since one straight line has to keep climbing through the thin tail that the 8-knot version flattens off.
+
 | Density | step (0.3) | piecewise-linear | continuous |
 |---:|---:|---:|---:|
-| 1 | 0.6835 | 0.6973 | 1.0000 |
-| 25 | 0.7312 | 0.7234 | 1.0001 |
-| 100 | 0.8060 | 0.8200 | 1.0002 |
-| 500 | 0.9214 | 0.9339 | 1.0011 |
-| 1,000 | 1.0000 | 1.0000 | 1.0022 |
-| 2,500 | 1.0424 | 1.0587 | 1.0055 |
-| 5,000 | 1.0715 | 1.0719 | 1.0111 |
-| 10,000 | 1.0715 | 1.0719 | 1.0223 |
-| 20,000 | 1.0715 | 1.0719 | 1.0452 |
-| 27,000 | 1.0715 | 1.0719 | 1.0614 |
-| 40,000 (above clamp → flat) | 1.0715 | 1.0719 | 1.0614 |
+| 1 | 0.6835 | 0.7111 | 1.0000 |
+| 25 | 0.7312 | 0.7277 | 1.0000 |
+| 100 | 0.8060 | 0.8146 | 1.0000 |
+| 500 | 0.9214 | 0.9331 | 1.0000 |
+| 1,000 | 1.0000 | 1.0000 | 1.0000 |
+| 2,500 | 1.0424 | 1.0561 | 1.0000 |
+| 5,000 | 1.0715 | 1.0679 | 1.0000 |
+| 10,000 | 1.0715 | 1.0679 | 1.0000 |
+| 20,000 | 1.0715 | 1.0679 | 1.0000 |
+| 27,000 | 1.0715 | 1.0679 | 1.0000 |
+| 40,000 (above clamp → flat) | 1.0715 | 1.0679 | 1.0000 |
 
-Holdout for the continuous version: Gini 0.3062, deviance explained 4.77%, A/E 1.0189.
+Holdout for the continuous version: Gini 0.3063, deviance explained 4.77%, A/E 1.0189.
 
 ## Guarantees (tested on every change)
 
@@ -126,8 +137,14 @@ Holdout for the continuous version: Gini 0.3062, deviance explained 4.77%, A/E 1
   above 0 (the editor refuses 0 and says so).
 - A monotone direction bounds every band slope to one sign, so the curve cannot
   turn round; the penalty may still flatten a band to zero, which both directions
-  allow. A **continuous** factor is a linear factor with a single band: identical
-  table type, editor, Excel sheet and exported script.
+  allow. It binds that factor's **own** curve: an interaction sitting on top of it
+  can still move the combined effect the other way for some level of the other
+  factor (true of step factors too). A **continuous** factor is a linear factor
+  with a single band: identical table type, editor, Excel sheet and exported
+  script.
+- Every band pays the same penalty for the same **rise** in relativity across it,
+  whatever its width and however few policies reach it, so a thin tail is no
+  longer the cheapest place for the model to put a slope.
 - Excel and the exported script carry the slopes and the base point; a model rebuilt
   from either scores identically. A table typed or rounded by hand (four decimals) reads
   back as a continuous curve, because the slopes are re-derived from the row values;

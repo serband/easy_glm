@@ -375,6 +375,21 @@ class LinearEncoder(Encoder):
                 f"LinearEncoder({self.variable!r}) knots {bad} must lie strictly "
                 f"inside the clamp range ({lo}, {hi})"
             )
+        # a band narrower than a billionth of the range is not a band: its slope
+        # is unidentifiable, its column name collides with its neighbour's and
+        # ``from_rate_tables`` would read the table back with an infinite slope
+        edges = [lo, *knots, hi]
+        thin = [
+            (edges[i], edges[i + 1])
+            for i in range(len(edges) - 1)
+            if edges[i + 1] - edges[i] < (hi - lo) * 1e-9
+        ]
+        if thin:
+            raise ValueError(
+                f"LinearEncoder({self.variable!r}) knots are too close together: "
+                f"band(s) {thin} are narrower than a billionth of the clamp range "
+                f"({lo}, {hi}); drop or move the knot"
+            )
         self.knots = knots
         self.clamp = (lo, hi)
 

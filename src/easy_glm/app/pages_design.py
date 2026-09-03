@@ -188,7 +188,9 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
                 f"{v}: monotone constraints apply to numeric designs (step, linear "
                 "or continuous) only; the constraint was not saved",
             )
-            new.monotone = vd.monotone if numeric and vd.kind != "categorical" else None
+            new.monotone = (
+                vd.monotone if numeric and new.kind != "categorical" else None
+            )
         if new != vd:
             if new == VariableDesign():
                 p.design.variables.pop(v, None)

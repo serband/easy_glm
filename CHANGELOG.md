@@ -14,9 +14,33 @@
   `slope` column is now the coefficient itself rather than a cumulative sum, so
   Excel, the editor, the exported script, `.easyglm` files and
   `RateModel.from_rate_tables` all keep working unchanged. On the French motor
-  set the `BonusMalus` curve improves from Gini 0.3091 / 4.88 % deviance
-  explained to 0.3106 / 4.97 % and two of its nine bands come back exactly flat
-  (`docs/checks/b-linear.md`).
+  set the `BonusMalus` curve improves from Gini 0.3072 / 4.79 % deviance
+  explained (the step design) to 0.3103 / 4.94 % and two of its nine bands come
+  back exactly flat (`docs/checks/b-linear.md`). The hinge basis earlier in this
+  release reached 0.3091 / 4.88 %.
+- **Every band pays the same penalty for the same rise.** glum penalises the
+  standardised coefficient, so a wide band that few policies reach used to buy a
+  large rise in relativity for a small penalty: on the French motor set the top
+  bonus-malus band's rise cost about 4 % of what the first band's cost, which
+  left the thinnest, least trustworthy part of a curve the *least* penalised part
+  of it. Band columns now carry a `P1` weight (`core/fit.py::penalty_weights`,
+  the rule interaction cells already had) that equalises the cost per unit of
+  rise. The columns themselves are untouched, so a band's coefficient is still
+  exactly its slope. On the French motor set this brings the bonus-malus
+  relativity at 230 down from 89× to 30× with the holdout essentially unmoved
+  (Gini 0.3106 → 0.3103). A `continuous` term whose trend is too small to pay for
+  itself is now shrunk away entirely, which is the same rule doing its job.
+- **The 1.00 point of a `continuous` term is stated rather than incidental**: a
+  single band has only two points a rate table can carry 1.00 at, so it goes to
+  whichever end of the range the exposure-weighted median is nearer to. With one
+  slope that only rescales the base rate; the ratios between relativities do not
+  move.
+- **Fits cached in a `*.easyglm-runs` folder by an earlier 0.4 development build
+  are ignored and refitted** (`PERSIST_FORMAT` 2 → 3). The basis change altered
+  what a `LinearEncoder`'s coefficients *mean* without changing anything about
+  the pickle's shape, so such a run would have loaded cleanly and been re-read as
+  if its numbers were band slopes. `.easyglm` scorers and project files are
+  unaffected and need no migration.
 - **Monotone constraints work on piecewise-linear terms again.** A direction is a
   sign bound on every band slope (`increasing` → slope ≥ 0), which keeps the
   curve rising or falling throughout without forcing it convex — the reason the
@@ -28,18 +52,13 @@
   rate-table type, the editor, the Excel sheet and the exported script. The
   Design page now offers *auto · step · linear · continuous · categorical* with
   a line of help each. Numeric variables still default to **step** (Q9).
-- **Fits cached in a `*.easyglm-runs` folder by an earlier 0.4 development build
-  are ignored and refitted** (`PERSIST_FORMAT` 2 → 3). The basis change altered
-  what a `LinearEncoder`'s coefficients *mean* without changing anything about
-  the pickle's shape, so such a run would have loaded cleanly and been re-read as
-  if its numbers were band slopes. `.easyglm` scorers and project files are
-  unaffected and need no migration.
-- Planted-truth tests (`tests/test_recovery.py`) now plant a sloped / **flat** /
-  sloped mileage curve and assert that every band inside the flat stretch has a
-  slope of exactly zero while the sloped stretches are recovered within 10 %,
-  plus a monotone case where a *decreasing* constraint on a rising curve gives a
-  flat term and never a positive slope. The old "bends are sparse" assertion is
-  gone with this basis: there are no change-of-slope coefficients left to count.
+- Planted-truth tests (`tests/test_recovery.py`) now plant a **flat** / sloped /
+  **flat** mileage curve and assert that the rate table's slope is exactly zero
+  for all nine bands inside the flat stretches and non-zero for exactly the six
+  bands of the sloped one, which is recovered within 10 %, plus a monotone case
+  where a *decreasing* constraint on a rising curve gives a flat term and never a
+  positive slope. The old "bends are sparse" assertion is gone with this basis:
+  there are no change-of-slope coefficients left to count.
 
 ### Workbench hardening (W3) — the break-it review's blocking findings
 - **No more silent loss of work.** *New empty project* asks for a second click and

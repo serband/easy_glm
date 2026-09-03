@@ -61,6 +61,18 @@ def encoder_for(
         if not numeric:
             raise ValueError(f"{variable!r} is not numeric; cannot use a {kind} design")
         n_bins = vd.n_bins or d.n_bins
+        null_ind = d.null_indicator if vd.null_indicator is None else vd.null_indicator
+        clamp = (float(vd.clamp[0]), float(vd.clamp[1])) if vd.clamp else None
+        if kind == "continuous":
+            # one band, a single slope on the clamped value: no knots to derive
+            return linear_encoder_from_data(
+                variable,
+                series,
+                knots=[],
+                n_bins=n_bins,
+                clamp=clamp,
+                null_indicator=null_ind,
+            )
         if isinstance(vd.knots, list | tuple):
             knots: list[float] | None = [float(k) for k in vd.knots]
         elif vd.knots == "integer":
@@ -69,14 +81,11 @@ def encoder_for(
             )
         else:
             knots = quantile_knots(series, n_bins)
-        null_ind = d.null_indicator if vd.null_indicator is None else vd.null_indicator
-        if kind in ("linear", "continuous"):
-            clamp = (float(vd.clamp[0]), float(vd.clamp[1])) if vd.clamp else None
+        if kind == "linear":
             return linear_encoder_from_data(
                 variable,
                 series,
-                # "continuous" = one band, a single slope on the clamped value
-                knots=[] if kind == "continuous" else (knots or []),
+                knots=knots or [],
                 n_bins=n_bins,
                 clamp=clamp,
                 null_indicator=null_ind,

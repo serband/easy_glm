@@ -143,6 +143,7 @@ def main(write: bool) -> None:
     mono_fit = fit(train, [LINEAR_VAR], monotone={LINEAR_VAR: "increasing"})
     # B2: kind="continuous" — the linear encoder with no interior knots
     cont_fit = fit(train, [SECOND_VAR], knots={SECOND_VAR: []})
+    cont_main_fit = fit(train, [LINEAR_VAR], knots={LINEAR_VAR: []})
     step_rm, lin_rm, lin2_rm = (
         to_rate_model(step_fit),
         to_rate_model(lin_fit),
@@ -154,7 +155,14 @@ def main(write: bool) -> None:
         metrics(lin2_fit, holdout),
     )
     m_mono, m_cont = metrics(mono_fit, holdout), metrics(cont_fit, holdout)
+    m_cont_main = metrics(cont_main_fit, holdout)
     mono_rm, cont_rm = to_rate_model(mono_fit), to_rate_model(cont_fit)
+    cont_main_rm = to_rate_model(cont_main_fit)
+    cont_main_curve = curve(cont_main_rm, LINEAR_VAR, PROBE)
+    cont_main_slope = float(
+        cont_main_fit.coef[cont_main_fit.spec.slices()[LINEAR_VAR]][0]
+    )
+    cont_slope = float(cont_fit.coef[cont_fit.spec.slices()[SECOND_VAR]][0])
     zero_lin, n_lin = flat_bands(lin_fit, LINEAR_VAR)
     zero_lin2, n_lin2 = flat_bands(lin2_fit, SECOND_VAR)
     mono_curve = curve(mono_rm, LINEAR_VAR, PROBE)
@@ -224,7 +232,13 @@ def main(write: bool) -> None:
         "their fitted slope up to that number, so the curve does not stop exactly where the "
         "data stops. Set the clamp yourself on the Design page when the exact edge matters.",
         "2. **Relativity 1.00 sits at the lower edge of the most exposed band**, so the base "
-        f"risk is a round, visible number (here `{LINEAR_VAR}` = {base_row['from'][0]:g}).",
+        f"risk is a round, visible number (here `{LINEAR_VAR}` = {base_row['from'][0]:g}). "
+        "A **continuous** factor has only one band and so only two points the table can "
+        "carry a 1.00 at — the two ends of the range. It goes to whichever end the bulk of "
+        "the business is nearer to (the exposure-weighted median against the middle of the "
+        "range), which for a factor skewed low is the bottom. Because such a curve has a "
+        "single slope, moving the 1.00 point only rescales the base rate; the ratios "
+        "between relativities do not move, and you can override the base rate directly.",
         "3. **Few slopes, not few bends** (your Q3 answer). Each fitted number is the "
         "slope of one band and the penalty removes slopes, so flat stretches are the "
         f"norm: of the {n_lin} bands of the `{LINEAR_VAR}` curve below, {zero_lin} came "
@@ -271,11 +285,22 @@ def main(write: bool) -> None:
         "",
         "**One thing to look at before shipping such a curve.** Above about 120 the data",
         "is thin. The step design pooled everything from 100 upwards into one band; the",
-        "linear term keeps its slope going through the thin region up to the clamp, so the",
-        "table charges far more at 200–230 than the step table does. Within the training",
+        "linear term fits the thin region its own slope and carries it up to the clamp, so",
+        f"the table charges {lin_curve[-2]:.0f}× at 230 where the step table charges "
+        f"{step_curve[-2]:.1f}×. Within the training",
         "range the curve follows the data it has, however little. If that is not what you",
         "would charge, either set the clamp for this factor to where the data runs out",
         "(e.g. 150 — the curve is then flat above it) or keep the step design. See Q10.",
+        "",
+        "The penalty is now measured **per unit of rise across a band**, which is what",
+        "makes that tail behave. A band's fitted number is a slope, so a wide band that few",
+        "policies reach used to buy a large rise for a small penalty — on this data the top",
+        "band's rise cost about 4 % of what the first band's cost, leaving the thinnest part",
+        "of the curve the *least* penalised part of it. Each band is now charged the same",
+        "for the same rise, whatever its width and however few policies reach it, so the",
+        "curve's shape no longer depends on where the knots happen to fall. On this fit it",
+        "brought 230 down from 89× to "
+        f"{lin_curve[-2]:.0f}× while the holdout barely moved.",
         "",
         f"## Keeping a curve monotone: `{LINEAR_VAR}` increasing",
         "",
@@ -316,6 +341,19 @@ def main(write: bool) -> None:
         "factors still default to **step** (your Q9 answer); linear, continuous and "
         "categorical are the explicit overrides, one per factor, on the Design page.",
         "",
+        f"Asked for one straight line through `{SECOND_VAR}`, this fit answered **no "
+        f"slope at all** (the column below is 1.00 everywhere, slope {cont_slope:g}): "
+        "over the whole range the trend it could buy was too small to pay for itself "
+        "under a penalty that charges per unit of rise. Holdout Gini "
+        f"{m_cont['gini']:.4f} against {m_step['gini']:.4f} for the step design — it was "
+        'not carrying much. That is "flat unless the data insists" doing its job, not '
+        "a broken option: the same choice on "
+        f"`{LINEAR_VAR}`, which really does trend, keeps its slope "
+        f"({cont_main_slope:.4f} per point, {cont_main_curve[-2]:.0f}× at 230, holdout "
+        f"Gini {m_cont_main['gini']:.4f}) — and shows the other side of the coin, since "
+        "one straight line has to keep climbing through the thin tail that the "
+        f"{len(enc.knots)}-knot version flattens off.",
+        "",
         f"| {SECOND_VAR} | step (0.3) | piecewise-linear | continuous |",
         "|---:|---:|---:|---:|",
         *[
@@ -345,8 +383,14 @@ def main(write: bool) -> None:
         "  above 0 (the editor refuses 0 and says so).",
         "- A monotone direction bounds every band slope to one sign, so the curve cannot",
         "  turn round; the penalty may still flatten a band to zero, which both directions",
-        "  allow. A **continuous** factor is a linear factor with a single band: identical",
-        "  table type, editor, Excel sheet and exported script.",
+        "  allow. It binds that factor's **own** curve: an interaction sitting on top of it",
+        "  can still move the combined effect the other way for some level of the other",
+        "  factor (true of step factors too). A **continuous** factor is a linear factor",
+        "  with a single band: identical table type, editor, Excel sheet and exported",
+        "  script.",
+        "- Every band pays the same penalty for the same **rise** in relativity across it,",
+        "  whatever its width and however few policies reach it, so a thin tail is no",
+        "  longer the cheapest place for the model to put a slope.",
         "- Excel and the exported script carry the slopes and the base point; a model rebuilt",
         "  from either scores identically. A table typed or rounded by hand (four decimals) reads",
         "  back as a continuous curve, because the slopes are re-derived from the row values;",
@@ -365,7 +409,7 @@ def main(write: bool) -> None:
         "",
     ]
     text = "\n".join(lines)
-    print(text)
+    print(text, end="")  # stdout is byte-identical to the written document
     if write:
         DOC.write_text(text)
         print(f"\nwritten: {DOC}")

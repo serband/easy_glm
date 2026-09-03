@@ -251,6 +251,19 @@ class TestDesignPage:
         )
         assert any("monotone" in e.lower() for e in _errors(at_bad))
 
+    def test_model_page_lists_a_monotone_constraint_on_a_linear_term(self, workspace):
+        """The caption is the only place the Model page shows a design-level
+        constraint; the linear path through it is new in B2."""
+        prelude = 'S.project().design.variables["Density"] = __import__("easy_glm.workflow", fromlist=["VariableDesign"]).VariableDesign(kind="continuous", monotone="increasing")'
+        at = _run(
+            _script("pages_model", workspace["project"], fit=False, prelude=prelude)
+        )
+        assert any(
+            "Monotone constraints from the Design page" in c.value
+            and "Density increasing" in c.value
+            for c in at.caption
+        ), [c.value for c in at.caption]
+
 
 # --------------------------------------------------------------------------
 # Model page

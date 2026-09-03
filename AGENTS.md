@@ -216,6 +216,13 @@ User edits relativity in table
   read straight off the coefficients and `log_rel_at_from` accumulates from `lo`,
   so continuity is automatic. Nulls are all-zero band columns plus `is null`.
   A `LinearEncoder` with no interior knots is the `continuous` kind (one band).
+- **Band columns and interaction cells carry a `P1`** (`core/fit.py::penalty_weights`).
+  glum penalises the *standardised* coefficient, so a column with little spread buys a
+  large effect cheaply. For a band the effect is its **rise** (`beta_j x width_j`), so
+  `P1_j = 0.5 / sd(column_j / width_j)` makes one unit of rise cost the same in every
+  band; without standardisation the same equality needs `P1_j = width_j x n_bands /
+  (hi - lo)`. Never rescale the columns themselves to achieve this — `beta_j` must stay
+  band `j`'s slope so the table can read it straight off the coefficients.
 - Categorical reference level = `levels[0]` (most frequent, no column); `Other`
   column catches lumped, unseen and null values.
 - `fit_glm` requires `alpha=` or `cv=`; never let glum's `alpha_search` pick
@@ -224,7 +231,13 @@ User edits relativity in table
   term or the band-slope columns of a linear/continuous term (work with L1; glum's
   own `monotonic_constraints` does not). Bounding slopes makes the curve monotone
   without forcing convexity, which is why linear terms may be constrained.
-  Categoricals and interactions cannot.
+  Categoricals and interactions cannot; a constraint binds the factor's own curve,
+  never the interaction cells on top of it.
+- The 1.00 point of a linear term must be an **edge of a table row** — that is how the
+  rate table, the Excel `is_base` column and `from_rate_tables` carry `x_base`. A
+  one-band (`continuous`) term therefore bases at whichever clamp the exposure-weighted
+  median is nearer to (`core/fit.py::_continuous_base_row`), not at a point inside the
+  band.
 - Numeric `VariableConfig` tables may end with a `FromToRow(None, None, rel)` null
   row; `_precompute_variables` stores it as `null_relativity` and `score_numeric`
   applies it to NaN. Without that row NaN still raises (legacy behaviour).

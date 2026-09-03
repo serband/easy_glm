@@ -94,12 +94,13 @@ def rate_model_tables(rm: RateModel) -> dict[str, pl.DataFrame]:
             columns["relativity_to"] = pl.Series(
                 [float(r.relativity_to) for r in cfg.table], dtype=pl.Float64
             )
-            # the band whose lower edge is x_base (the first sloped band when
-            # x_base is the lower clamp); from_rate_tables recovers x_base from it
+            # the row whose lower edge is x_base: the band starting there, or
+            # the open "≥ hi" row when x_base is the upper clamp (a one-band
+            # term whose exposure sits at the top of the range);
+            # from_rate_tables recovers x_base from it
             columns["is_base"] = [
                 cfg.x_base is not None
                 and r.from_ is not None
-                and r.to_ is not None
                 and float(r.from_) == float(cfg.x_base)
                 for r in cfg.table
             ]
