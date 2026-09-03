@@ -40,6 +40,15 @@ def rename_in_expression(expr: str, old: str, new: str) -> str:
 #: Characters a model name may not contain (names become file and sheet names).
 _MODEL_NAME_BAD = set('/\\:*?"<>|') | {chr(c) for c in range(32)}
 MODEL_NAME_MAX = 60
+#: Windows keeps these names for devices: a file called ``CON.xlsx`` (or
+#: ``NUL``, ``COM1`` ...) cannot be created there, whatever the extension, so a
+#: model that would be exported under such a name is refused here rather than
+#: on the actuary's PC.
+_MODEL_NAME_RESERVED = (
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
 
 
 def validate_model_name(name: str, existing: Iterable[str] = ()) -> str | None:
@@ -60,6 +69,11 @@ def validate_model_name(name: str, existing: Iterable[str] = ()) -> str | None:
             ", ".join(repr(c) for c in bad if c.isprintable()) or "control characters"
         )
         return f"Model name cannot contain {shown}"
+    if stripped.split(".")[0].upper() in _MODEL_NAME_RESERVED:
+        return (
+            f"Model name {stripped!r} is reserved by Windows (CON, NUL, PRN, AUX, "
+            "COM1-9, LPT1-9); its downloads could not be saved there"
+        )
     if len(stripped) > MODEL_NAME_MAX:
         return f"Model name is longer than {MODEL_NAME_MAX} characters"
     if stripped in set(existing):

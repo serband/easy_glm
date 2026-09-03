@@ -49,6 +49,7 @@ from .project import (
 from .run import (
     AdjustmentError,
     ModelRun,
+    UnusableColumnError,
     build_design,
     encoder_for,
     exposure_for,
@@ -87,6 +88,7 @@ __all__ = [
     "monotone_for",
     "run_model",
     "AdjustmentError",
+    "UnusableColumnError",
     "rebuild_rate_model",
     "exposure_for",
     "ModelRun",

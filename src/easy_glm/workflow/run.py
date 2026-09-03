@@ -46,6 +46,17 @@ def integer_knots(series: pl.Series, max_knots: int) -> list[float] | None:
     return [float(k) for k in range(lo + 1, hi + 1)]
 
 
+class UnusableColumnError(ValueError):
+    """A predictor that cannot become GLM features at all because of what the
+    *training rows* hold: a constant column, or one that is entirely null.
+
+    It is told apart from every other design error because nothing the user can
+    set on the Design page would rescue it — the only sensible outcomes are to
+    drop the column from the design or to refuse the whole fit. The workbench
+    drops it and names it, so one useless column cannot block a whole model.
+    """
+
+
 def encoder_for(
     variable: str,
     series: pl.Series,
@@ -81,7 +92,7 @@ def encoder_for(
                 null_indicator=null_ind,
             )
         if not knots:
-            raise ValueError(
+            raise UnusableColumnError(
                 f"Cannot derive knots for {variable!r} (constant or all-null on train)"
             )
         return StepEncoder(variable, knots, null_indicator=null_ind)
@@ -91,7 +102,7 @@ def encoder_for(
     )
     if not levels:
         if series.null_count() == series.len():
-            raise ValueError(
+            raise UnusableColumnError(
                 f"Cannot derive levels for {variable!r}: all null on train"
             )
         raise ValueError(
@@ -118,18 +129,37 @@ def build_design(
     *,
     weight_col: str | None = None,
     interactions: list[Interaction] | None = None,
+    dropped: list[str] | None = None,
 ) -> DesignSpec:
     """A :class:`DesignSpec` for ``predictors`` (and ``interactions`` on top of
-    them) from the project's design config; kept cells are decided on ``train``."""
+    them) from the project's design config; kept cells are decided on ``train``.
+
+    Pass ``dropped`` (an empty list) to skip predictors that cannot be encoded
+    from the training rows at all — a constant or all-null column — instead of
+    raising: their names are appended to it. Every other design problem is
+    still an error, because the user can act on it.
+    """
     weights = train[weight_col] if weight_col and weight_col in train.columns else None
     encoders: dict[str, Encoder] = {}
     for var in predictors:
         if var not in train.columns:
             raise KeyError(f"Predictor {var!r} not in the prepared data")
         vd = project.design.variables.get(var, VariableDesign())
-        encoders[var] = encoder_for(var, train[var], vd, project, weights=weights)
+        try:
+            encoders[var] = encoder_for(var, train[var], vd, project, weights=weights)
+        except UnusableColumnError:
+            if dropped is None:
+                raise
+            dropped.append(var)
+    if predictors and not encoders:
+        raise ValueError(
+            "Every predictor is constant or all-null on the training rows: "
+            + ", ".join(dropped or predictors)
+        )
     spec = DesignSpec(encoders)
     for it in interactions or []:
+        if dropped is not None and (it.a not in encoders or it.b not in encoders):
+            continue  # a parent was dropped: the interaction goes with it
         spec.add_interaction(
             InteractionEncoder.from_data(
                 spec[it.a],
@@ -172,6 +202,9 @@ class ModelRun:
     )
     train_rows: int = 0
     holdout_rows: int = 0
+    #: predictors left out of the design because they are constant or all-null
+    #: on the training rows (the fit ran without them; the page names them)
+    dropped_predictors: list[str] = field(default_factory=list)
 
     def predict(self, df: pl.DataFrame) -> np.ndarray:
         """Per-unit predictions from the (possibly adjusted) rate model."""
@@ -262,12 +295,14 @@ def run_model(project: Project, df: pl.DataFrame, model_name: str) -> ModelRun:
     if train.is_empty():
         raise ValueError("No training rows after the split")
 
+    dropped: list[str] = []
     spec = build_design(
         project,
         train,
         cfg.predictors,
         weight_col=cfg.weight,
         interactions=cfg.interactions,
+        dropped=dropped,
     )
     pen = cfg.penalty
     kwargs: dict[str, Any] = {}
@@ -320,6 +355,7 @@ def run_model(project: Project, df: pl.DataFrame, model_name: str) -> ModelRun:
         project_snapshot=project.to_dict(),
         train_rows=train.height,
         holdout_rows=holdout.height,
+        dropped_predictors=dropped,
     )
 
 
