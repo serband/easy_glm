@@ -225,7 +225,13 @@ User edits relativity in table
   coefficients then stage 2's, stage 1's intercept), so nothing downstream special-cases
   it. Never take a main table or the base rate from anything but stage 1: "adding an
   interaction moves no main relativity" is a promise made to the actuary and is tested
-  to 1e-13 (glum's own run-to-run noise) in `test_recovery.py`.
+  to 1e-13 (glum's own run-to-run noise) in `test_recovery.py`. Whether a fit *had* two
+  stages is `isinstance(fit, TwoStageFit)`, never "the design has an interaction": an
+  interaction whose cells are all below the exposure floor has an encoder and no
+  columns, and `fit_two_stage` then returns a plain `GLMFit`. Anything that emits or
+  branches on a stage 2 (the exported script, the Model page, `EasyGLM.save`) must ask
+  the fit. Stage 2 carries no intercept, so any overall re-levelling it wants lands in
+  the cells — say so wherever a cell is described as a "pure adjustment".
 - **Band columns and interaction cells carry a `P1`** (`core/fit.py::penalty_weights`).
   glum penalises the *standardised* coefficient, so a column with little spread buys a
   large effect cheaply. For a band the effect is its **rise** (`beta_j x width_j`), so

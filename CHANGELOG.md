@@ -34,12 +34,30 @@
   `spec.main_effects_spec()`, `eta1 = stage1.linear_predictor(train)`, `fit_glm`
   on `spec.interactions_spec()` with `offset=eta1, fit_intercept=False`, then
   `TwoStageFit(stage1, stage2)` — so what runs outside the workbench is what ran
-  inside it, cell adjustments included.
-- **The cell penalty rule is unchanged**, and is now written the same way in
-  both places: `P1 = penalty_weight × 0.5 / sd` under glum's standardisation and
+  inside it, cell adjustments included. Whether there really were two stages is
+  read off the **fit**, not off the design: an interaction whose every cell is
+  below the exposure floor has no columns to fit, so no stage-2 block is written
+  (it would have been a fit on a zero-column design, which does not run). A
+  script exported *before* fitting cannot know that yet — only the data can say
+  which cells clear the floor — so it calls `fit_two_stage`, which decides at
+  run time, and each interaction is now written out with its own cell floor and
+  penalty weight instead of the shared defaults.
+- **`EasyGLM.save` / `load` handle a two-stage fit** (bundle version 3): both
+  glum estimators are written and the pair is rebuilt on load. Before, the
+  bundle held stage 1's estimator against the composed mains+cells spec and the
+  first prediction after loading raised.
+- **The cell penalty rule is unchanged on the product path, and corrected off
+  it.** `P1 = penalty_weight × 0.5 / sd` under glum's standardisation and
   `penalty_weight × 0.5` without it are the *same* penalty per unit of
   adjustment, which is what lets stage 2 — where glum refuses to standardise,
   because there is no intercept — penalise a cell exactly as the joint fit did.
+  Getting there meant changing `penalty_weights`' **unstandardised** branch from
+  `penalty_weight` to `penalty_weight × 0.5`: the two branches used to disagree
+  by a factor of two, and 0.5 is the value R3 specified. Every path the
+  workbench, the exported script and `EasyGLM` take standardises, so no fitted
+  model moves; a caller who passed `scale_predictors=False` to `fit_glm` on a
+  design with cells by hand will find those cells penalised half as hard as
+  before and should halve their `alpha` to reproduce an earlier fit.
 - **The second stage has its own alpha.** It defaults to the mains' alpha (a
   cell then costs what a main effect that half the exposure shares costs), and
   cross-validates on its own path when the mains do. `Interaction.alpha`
@@ -47,8 +65,18 @@
   because the second stage is one fit.
 - The Model page says which model was fitted in two stages, with the alpha of
   each and how many cells were rated, and shows a regularisation path per stage;
-  the Rate tables page says the base rate comes from the main-effect fit alone.
-  `run.summary()` and a saved snapshot's metrics carry both alphas.
+  when an interaction is present but **no** cell cleared its exposure floor it
+  says that instead, rather than falling silent about a matrix of 1.000s. The
+  Design page offers each interaction's *cells alpha*, and the Rate tables page
+  says the base rate comes from the main-effect fit alone. `run.summary()` and a
+  saved snapshot's metrics carry both alphas.
+- **A cell is a pure adjustment to the mains, but not purely an interaction.**
+  Stage 2 has no intercept — that is what pins the base rate — so any overall
+  re-levelling it wants goes into the cells. On the French motor check that is
+  0.38 % of each adjusted cell, and holdout A/E moves 1.0191 → 1.0223 with the
+  interaction added. Both are now stated in `docs/checks/a-interactions.md` and
+  on the Model page; a base-rate override moves the level back in one number
+  without touching a relativity.
 - **Fits cached in a `*.easyglm-runs` folder by an earlier 0.4 development build
   are ignored and refitted** (`PERSIST_FORMAT` 4 → 5): such a run holds a joint
   fit whose main tables include part of the interaction — the same shape, a
