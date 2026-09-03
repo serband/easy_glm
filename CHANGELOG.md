@@ -61,7 +61,8 @@
   A test fits a two-block matrix through that path so the day glum changes it
   is the day the build goes red, not the day a 5M-row design is silently
   densified.
-- Nothing pickled changed shape or meaning, so `PERSIST_FORMAT` stays at 5: a
+- Nothing pickled changed shape or meaning, so this piece did not move
+  `PERSIST_FORMAT` (D5 and E/F did; the release ships at 7): a
   persisted `GLMFit` still holds the same glum model and the same coefficients,
   and reading it back under the new scoring gives the same predictions to
   1e-15.

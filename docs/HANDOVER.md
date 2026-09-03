@@ -41,7 +41,7 @@ file). They do **not** review code. Never ask them coding questions.
 | D3, D4 | Compare page, HTML report | merged | done, reviewed |
 | A2 | two-stage interactions (mains frozen, Q5) | merged | done, 2 review rounds, approved |
 | D5 | smooth / cap-floor / round / undo / snapshots / rebalance | merged | done, 2 review rounds, approved |
-| E+F | rate-change offset, per-factor penalties, Tweedie/lapse, target loss ratio, CLI, mypy | `piece/e-f` | round-2 re-check running; then merge (needs D5 + G merged in: PERSIST_FORMAT → 7) |
+| E+F | rate-change offset, per-factor penalties, Tweedie/lapse, target loss ratio, CLI, mypy | merged | done, 2 review rounds, approved (PERSIST_FORMAT 7) |
 | G | scale: bin-index design matrices for 1–5M rows | merged | done, reviewed, approved (5M rows × 227 columns in 2.6 GB, 21 s) |
 | Breaker #3 | on the merged workbench (Compare, report, tooling) | — | not started |
 | R11 | README + examples release gate | — | not started; written last against the final API |
@@ -55,8 +55,8 @@ record every decision taken since it was written).
 
 ## Order of remaining work
 
-1. E+F: round-2 re-check → merge release-0.4 into piece/e-f (PERSIST_FORMAT: both 6 → 7) → merge.
-2. (D5 and G merged.)
+1. (All engineering pieces merged: 776 tests.)
+2. Breaker #3 and the README gate run in parallel worktrees (`piece/breaker3`, `piece/readme`).
 4. Breaker #3 on the merged workbench; fix findings with tests.
 5. R11: write README examples + `examples/`, `tests/test_readme.py`, run in CI;
    review the README as a first-time user.
