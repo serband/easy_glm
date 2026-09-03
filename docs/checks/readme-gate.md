@@ -6,7 +6,7 @@
 
 Every code block on the front page of this repository — the one a new user reads first — actually runs, in the order it is shown, against the checked-in sample of the data. This is checked by a test (`tests/test_readme.py`), which runs in the normal test suite and therefore in CI on every change: if a README block stops working, the build goes red, the same as a broken feature would.
 
-**Last run: 19 python blocks from README.md and 9 scripts in `examples/` all ran without error, on 2026-09-03, on Python 3.14.7, in 26 seconds in total** (4s for the README, 22s for the examples).
+**Last run: 6 python blocks from README.md and 9 scripts in `examples/` all ran without error, on 2026-09-03, on Python 3.14.7, in 23 seconds in total** (1s for the README, 21s for the examples).
 
 1 block(s) on the README are marked as needing a browser or the workbench's own server (opening the relativity editor) and are not run here — the test caps how many blocks may claim that exemption, so it cannot be used to quietly skip something that should work.
 
@@ -14,15 +14,15 @@ Every code block on the front page of this repository — the one a new user rea
 
 | Script | Seconds | Result |
 |---|---:|---|
-| `examples/advanced_pipeline.py` | 1.1 | OK |
-| `examples/basic_usage.py` | 2.2 | OK |
-| `examples/benchmark_demo.py` | 8.9 | OK |
-| `examples/easy_glm_demo.py` | 1.5 | OK |
-| `examples/exploring_fit.py` | 2.3 | OK |
-| `examples/lapse_model.py` | 1.1 | OK |
-| `examples/large_book.py` | 1.3 | OK |
-| `examples/rate_change.py` | 1.2 | OK |
-| `examples/scoring_editor.py` | 2.3 | OK |
+| `examples/advanced_pipeline.py` | 1.4 | OK |
+| `examples/basic_usage.py` | 1.3 | OK |
+| `examples/benchmark_demo.py` | 10.4 | OK |
+| `examples/easy_glm_demo.py` | 1.3 | OK |
+| `examples/exploring_fit.py` | 1.3 | OK |
+| `examples/lapse_model.py` | 1.4 | OK |
+| `examples/large_book.py` | 1.7 | OK |
+| `examples/rate_change.py` | 1.4 | OK |
+| `examples/scoring_editor.py` | 1.3 | OK |
 
 ## What would make this fail
 

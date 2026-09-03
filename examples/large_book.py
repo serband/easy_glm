@@ -1,4 +1,4 @@
-"""Fit a big book to show the compact design-matrix path (0.4 piece G).
+"""Fit a large book to show the compact design-matrix path.
 
 Generates a synthetic motor book of ``--rows`` rows (default 300,000 — above
 ``easy_glm.core.design.SPARSE_ROW_THRESHOLD`` (200,000), where ``DesignSpec``

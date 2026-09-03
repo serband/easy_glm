@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.1 (2026-09-03)
+
+### A shorter path from first model to review
+
+- Reworked the README for a practising actuary: a first frequency model, a
+  controlled design-and-validation workflow, review of a saved scorer, then
+  the workbench and specialist recipes. The first-use path now explains the
+  required policy-period data, the frequency calculation, base rate,
+  relativities, A/E and the `Other / Unknown` fallback in plain language.
+- Reorganised examples into a learning sequence. `basic_usage.py` fits and
+  saves a scorer; `exploring_fit.py` and `scoring_editor.py` consume that
+  saved scorer without refitting; `easy_glm_demo.py` creates a workbench
+  project. Rate change, lapse and scale remain clearly labelled specialist
+  recipes.
+- Added a focused documentation test that verifies the saved scorer passes
+  from the first example to the review and scoring examples.
+
 ## 0.4.0 (2026-09-03)
 
 ### The README is a release gate now (R11)

@@ -1,4 +1,4 @@
-"""Fit the change from the premium you charge today (0.4 pieces E1/E4).
+"""Fit the change from the premium you charge today.
 
 Shows the standard rate-review setup: give the column holding today's premium
 the role ``current_premium`` in a :class:`~easy_glm.workflow.Project`, and

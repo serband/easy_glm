@@ -1,138 +1,105 @@
-"""Explore a fitted model: relativity plots, A/E charts, train-vs-test.
+"""Review a saved model: factor A/E, a table change and snapshots.
 
-Assumes you already have a fitted ``EasyGLM`` object.  If you don't, run
-``basic_usage.py`` first, or fit one inline (see the commented block at the
-top of this file).
+This is deliberately a post-fit example. First create ``my_model.easyglm``
+with ``python examples/basic_usage.py``, then run:
 
-Run as a script:
-    python examples/exploring_fit.py
+    python examples/exploring_fit.py my_model.easyglm
+
+The script uses the checked-in French motor sample only to calculate review
+statistics. It does not fit a replacement model.
 """
 
+from __future__ import annotations
+
+import argparse
 from pathlib import Path
 
 import numpy as np
 import polars as pl
 
-import easy_glm
+from easy_glm.engine import RateModel
 from easy_glm.workflow import ae_by_variable
-
-# ---------------------------------------------------------------------------
-# Either load a previously saved model or fit one now
-# ---------------------------------------------------------------------------
 
 DATA = Path(__file__).resolve().parents[1] / "tests/fixtures/french_motor_50k.parquet"
 
-# --- Option A: reload from disk (if you ran basic_usage.py first) ---
-# eglm = easy_glm.EasyGLM.load("my_model")
-# df = pl.read_parquet(DATA)
-# rng = np.random.default_rng(42)
-# df = df.with_columns(
-#     pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64)
-# )
 
-# --- Option B: fit inline (standalone run) ---
-df = pl.read_parquet(DATA)
-rng = np.random.default_rng(42)
-df = df.with_columns(pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64))
+def review(model_path: Path) -> None:
+    """Load ``model_path`` and print an actuarial review of its holdout fit."""
+    rate_model = RateModel.from_json(model_path)
+    df = pl.read_parquet(DATA)
+    rng = np.random.default_rng(42)
+    df = df.with_columns(
+        pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64)
+    )
+    holdout = df.filter(pl.col("traintest") == 0)
+    actual = holdout["ClaimNb"].to_numpy()
+    expected_before = rate_model.predict(holdout)
+    exposure = holdout["Exposure"].to_numpy()
 
-PREDICTORS = ["VehAge", "Region", "VehGas", "DrivAge", "BonusMalus", "Density"]
+    print(f"Reviewing {model_path}: {len(rate_model.variables)} rating variables")
+    print(f"Overall holdout A/E: {actual.sum() / expected_before.sum():.3f}\n")
+    print("A/E range by factor:")
+    for variable in rate_model.variables:
+        table = ae_by_variable(holdout, variable, actual, expected_before, exposure)
+        print(
+            f"  {variable:15s} {table['ae'].min():.2f}–{table['ae'].max():.2f} "
+            f"across {table.height} bands or levels"
+        )
 
-eglm = easy_glm.EasyGLM.fit(
-    data=df,
-    target="ClaimNb",
-    model_type="Poisson",
-    predictors=PREDICTORS,
-    weight_col="Exposure",
-    train_test_col="traintest",
-    divide_target_by_weight=True,
-    cv=5,
-    base_rate=0.05,
-)
+    # Capture the imported model before any commercial change.
+    baseline_version = rate_model.create_snapshot("Imported model")
+    variable = "DrivAge"
+    row = rate_model.variables[variable].table[
+        len(rate_model.variables[variable].table) // 2
+    ]
+    before = row.relativity
+    rate_model.update_relativity(variable, row.from_, row.to_, before * 1.05)
+    expected_after = rate_model.predict(holdout)
+    expected_change = expected_after.sum() / expected_before.sum() - 1
+    rate_model.base_rate *= expected_before.sum() / expected_after.sum()
+    expected_rebalanced = rate_model.predict(holdout)
+    changed_version = rate_model.create_snapshot(
+        "Illustrative 5% DrivAge change, rebalanced"
+    )
+    if row.from_ is None:
+        band = f"< {row.to_}"
+    elif row.to_ is None:
+        band = f"≥ {row.from_}"
+    else:
+        band = f"[{row.from_}, {row.to_})"
 
-# ---------------------------------------------------------------------------
-# 1. Relativity tables — one per predictor
-# ---------------------------------------------------------------------------
-
-print("=== Relativities ===\n")
-for name, table in eglm.relativities.items():
-    print(f"{name}  ({len(table)} bins)")
-    print(table.head(3), "\n")
-
-# ---------------------------------------------------------------------------
-# 2. Non-constant variables (signal-bearing)
-# ---------------------------------------------------------------------------
-
-non_const = eglm.rate_model.non_constant_variables
-print("=== Variables with signal ===")
-for name in sorted(non_const):
-    rels = [r.relativity for r in eglm.rate_model.variables[name].table]
-    print(f"  {name:15s}  range: [{min(rels):.3f}, {max(rels):.3f}]")
-# → Variables where all bins have the same relativity are excluded.
-
-# ---------------------------------------------------------------------------
-# 3. Matplotlib relativity charts (numeric → line, categorical → bar)
-# ---------------------------------------------------------------------------
-
-# easy_glm.plot_all_ratetables(eglm.relativities)
-
-# ---------------------------------------------------------------------------
-# 4. A/E on holdout — per variable, per bin
-# ---------------------------------------------------------------------------
-
-holdout = df.filter(pl.col("traintest") == 0)
-holdout_actual = holdout["ClaimNb"].to_numpy()
-holdout_weight = holdout["Exposure"].to_numpy()
-holdout_preds = eglm.rate_model.predict(holdout)
-
-print("\n=== A/E on holdout, per variable, per bin ===\n")
-for var in PREDICTORS:
-    table = ae_by_variable(holdout, var, holdout_actual, holdout_preds, holdout_weight)
-    first, last = table.row(0, named=True), table.row(-1, named=True)
     print(
-        f"  {var:15s}  A/E ranges {table['ae'].min():.3f}-{table['ae'].max():.3f}  "
-        f"first bin: A={first['actual']:.2f}/E={first['expected']:.2f}  "
-        f"last bin: A={last['actual']:.2f}/E={last['expected']:.2f}"
+        f"\nIllustrative change: {variable} {band} {before:.3f} → "
+        f"{before * 1.05:.3f}"
+    )
+    print(
+        f"Expected claims changed by {expected_change:+.2%}. "
+        "The base rate was then rebalanced; total expected claims now agree: "
+        f"{np.isclose(expected_rebalanced.sum(), expected_before.sum(), rtol=1e-9)}."
+    )
+    print(
+        f"Snapshots available: {baseline_version} (before), {changed_version} (after)"
     )
 
-# ---------------------------------------------------------------------------
-# 5. Tweak a relativity, recompute A/E, compare
-# ---------------------------------------------------------------------------
 
-print("=== Tweak & compare ===\n")
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "model",
+        nargs="?",
+        type=Path,
+        default=Path("my_model.easyglm"),
+        help="saved .easyglm model (default: my_model.easyglm)",
+    )
+    args = parser.parse_args()
+    if not args.model.exists():
+        print(
+            f"No saved model at {args.model}. Run 'python examples/basic_usage.py' "
+            "first, then pass the .easyglm file to this review script."
+        )
+        return
+    review(args.model)
 
-# Save current state
-rm = eglm.rate_model
-original_preds = rm.predict(holdout)
-original_ae = holdout["ClaimNb"].sum() / original_preds.sum()
-print(f"Before tweak — overall A/E: {original_ae:.4f}")
 
-# Nudge one relativity
-var = "DrivAge"
-config = rm.variables[var]
-row = config.table[len(config.table) // 2]  # middle bin
-print(
-    f"Tweaking {var} bin [{row.from_}, {row.to_}): {row.relativity:.4f} → {row.relativity * 1.2:.4f}"
-)
-rm.update_relativity(var, row.from_, row.to_, row.relativity * 1.2)
-
-# Re-score
-tweaked_preds = rm.predict(holdout)
-tweaked_ae = holdout["ClaimNb"].sum() / tweaked_preds.sum()
-print(f"After  tweak — overall A/E: {tweaked_ae:.4f}")
-
-# Drill into the tweaked variable
-table = ae_by_variable(holdout, var, holdout_actual, tweaked_preds, holdout_weight)
-print(
-    f"  {var:15s}  A/E ranges {table['ae'].min():.3f}-{table['ae'].max():.3f} after the tweak"
-)
-
-# ---------------------------------------------------------------------------
-# 6. Reset to original (discard the tweak)
-# ---------------------------------------------------------------------------
-
-rm.create_snapshot("tweaked")
-rm.switch_to(1)  # back to version 1 (original fit)
-print(
-    f"\nReset to version 1 — A/E: "
-    f"{holdout['ClaimNb'].sum() / rm.predict(holdout).sum():.4f}"
-)
+if __name__ == "__main__":
+    main()

@@ -1,122 +1,96 @@
-""".easyglm roundtrip: save, reload, score, and launch the relativity editor.
+"""Score new business from a saved model and prepare it for review.
 
-This example focuses on what happens *after* fitting — the portable
-``.easyglm`` file is the artifact you ship for production scoring or
-hand off to an actuary to review in the editor.
+First create ``my_model.easyglm`` with ``python examples/basic_usage.py``.
+Then run:
 
-Run as a script:
-    python examples/scoring_editor.py
+    python examples/scoring_editor.py my_model.easyglm
+
+This example does not fit a model. A saved scorer is the hand-off point
+between modelling, pricing review and portfolio scoring.
 """
 
+from __future__ import annotations
+
+import argparse
 from pathlib import Path
 
-import numpy as np
 import polars as pl
 
-import easy_glm
 from easy_glm.engine import RateModel
 
-# ---------------------------------------------------------------------------
-# 0. Fit a quick model (skip if you already have a .easyglm file)
-# ---------------------------------------------------------------------------
 
-DATA = Path(__file__).resolve().parents[1] / "tests/fixtures/french_motor_50k.parquet"
-df = pl.read_parquet(DATA)
-rng = np.random.default_rng(42)
-df = df.with_columns(pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64))
+def score(model_path: Path) -> RateModel:
+    """Load a scorer, score a small new-business file and save a review copy."""
+    rate_model = RateModel.from_json(model_path)
+    new_business = pl.DataFrame(
+        {
+            "DrivAge": [35, 52, 22],
+            "Region": ["Ile-de-France", "Bretagne", "Nord-Pas-de-Calais"],
+            "BonusMalus": [50, 68, 90],
+            "Density": [2000, 500, 8000],
+        }
+    )
 
-PREDICTORS = ["VehAge", "Region", "VehGas", "DrivAge", "BonusMalus", "Density"]
+    predictions = rate_model.predict(new_business, exposure_col=None)
+    print(f"Loaded {model_path}: {len(rate_model.variables)} rating variables")
+    print("Per-unit predicted frequency or cost:")
+    for risk, prediction in enumerate(predictions, start=1):
+        print(f"  Risk {risk}: {prediction:.6f}")
 
-eglm = easy_glm.EasyGLM.fit(
-    data=df,
-    target="ClaimNb",
-    model_type="Poisson",
-    predictors=PREDICTORS,
-    weight_col="Exposure",
-    train_test_col="traintest",
-    divide_target_by_weight=True,
-    cv=5,
-    base_rate=0.05,
-)
-
-# ---------------------------------------------------------------------------
-# 1. Export as .easyglm (portable JSON)
-# ---------------------------------------------------------------------------
-
-eglm.rate_model.to_json("portfolio_v1.easyglm")
-print("Exported → portfolio_v1.easyglm")
-
-# ---------------------------------------------------------------------------
-# 2. Reload on a different machine / process (no refit needed)
-# ---------------------------------------------------------------------------
-
-rm = RateModel.from_json("portfolio_v1.easyglm")
-print(f"Loaded: {len(rm.variables)} variables, base_rate={rm.base_rate}")
-print(f"Snapshots: {len(rm.snapshots)}")
-for s in rm.list_snapshots():
-    print(f"  v{s['version']}: {s['description']} ({s['timestamp'][:19]})")
-
-# ---------------------------------------------------------------------------
-# 3. Score new business (pure lookup — no glum, no DuckDB)
-# ---------------------------------------------------------------------------
-
-new_business = pl.DataFrame(
-    {
-        "VehAge": [3, 8, 0],
-        "Region": ["Ile-de-France", "Bretagne", "Nord-Pas-de-Calais"],
-        "VehGas": ["Regular", "Diesel", "Regular"],
-        "DrivAge": [35, 52, 22],
-        "BonusMalus": [50, 68, 90],
-        "Density": [2000, 500, 8000],
+    # A mapping makes a saved scorer usable when a downstream file has
+    # different but unambiguous field names.
+    renamed_data = new_business.rename(
+        {
+            "DrivAge": "driver_age",
+            "Region": "region_code",
+            "BonusMalus": "bonus_malus",
+            "Density": "population_density",
+        }
+    )
+    rate_model.column_mapping = {
+        "driver_age": "DrivAge",
+        "region_code": "Region",
+        "bonus_malus": "BonusMalus",
+        "population_density": "Density",
     }
-)
+    assert (rate_model.predict(renamed_data, exposure_col=None) == predictions).all()
+    rate_model.create_snapshot("Source columns mapped for review")
+    out = Path("review_copy.easyglm")
+    rate_model.to_json(out)
+    print(f"Wrote {out} with the source-column mapping and a named snapshot.")
+    return rate_model
 
-premiums = rm.predict(new_business)
-for i, p in enumerate(premiums):
-    print(f"  Risk {i + 1}: {p:.6f}")
-# → Risk 1: 0.053832
-#   Risk 2: 0.188926
-#   ...
 
-# ---------------------------------------------------------------------------
-# 4. Column mapping — when dataset column names differ from model variables
-# ---------------------------------------------------------------------------
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "model",
+        nargs="?",
+        type=Path,
+        default=Path("my_model.easyglm"),
+        help="saved .easyglm model (default: my_model.easyglm)",
+    )
+    parser.add_argument(
+        "--open-editor",
+        action="store_true",
+        help="open the saved scorer in the browser editor after scoring",
+    )
+    args = parser.parse_args()
+    if not args.model.exists():
+        print(
+            f"No saved model at {args.model}. Run 'python examples/basic_usage.py' "
+            "first, then pass the .easyglm file to this scoring script."
+        )
+        return
+    rate_model = score(args.model)
+    if args.open_editor:
+        rate_model.launch_editor()
+        print("Opened the editor. Supply data there to calculate A/E.")
+    else:
+        print(
+            "Open the editor with: python examples/scoring_editor.py my_model.easyglm --open-editor"
+        )
 
-mismatched_data = pl.DataFrame(
-    {
-        "vehicle_age": [3, 8],
-        "region_code": ["Ile-de-France", "Bretagne"],
-        "fuel": ["Regular", "Diesel"],
-        "driver_age": [35, 52],
-        "bonus_malus": [50, 68],
-        "pop_density": [2000, 500],
-    }
-)
 
-# keys are the *dataset* column names, values the model variables they map to
-rm.column_mapping = {
-    "vehicle_age": "VehAge",
-    "region_code": "Region",
-    "fuel": "VehGas",
-    "driver_age": "DrivAge",
-    "bonus_malus": "BonusMalus",
-    "pop_density": "Density",
-}
-
-mapped_preds = rm.predict(mismatched_data)
-print(f"\nWith column mapping: {mapped_preds.round(6)}")
-
-# ---------------------------------------------------------------------------
-# 5. Create a named snapshot & save a revision
-# ---------------------------------------------------------------------------
-
-rm.create_snapshot("Initial import (auto-mapped)")
-rm.to_json("portfolio_v1.easyglm")  # overwrite with snapshots included
-print(f"\nSnapshots after save: {len(rm.snapshots)}")
-
-# ---------------------------------------------------------------------------
-# 6. Launch the relativity editor (browser)
-# ---------------------------------------------------------------------------
-
-# rm.launch_editor(data=df)
-# print("Editor launched at http://localhost:8501")
+if __name__ == "__main__":
+    main()

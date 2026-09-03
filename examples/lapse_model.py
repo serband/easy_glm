@@ -1,4 +1,4 @@
-"""A lapse (binomial) model: odds relativities, a probability scorer (0.4 E3).
+"""A lapse (binomial) model: odds relativities and a probability scorer.
 
 ``log`` and ``logit`` are both multiplicative links, so a binomial fit compiles
 to the same kind of rate table as a frequency model — read here as **odds

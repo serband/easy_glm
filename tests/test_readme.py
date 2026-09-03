@@ -125,3 +125,30 @@ def test_example_runs(example, tmp_path):
         f"--- stdout ---\n{result.stdout[-4000:]}\n"
         f"--- stderr ---\n{result.stderr[-4000:]}"
     )
+
+
+def test_post_fit_examples_use_the_saved_scorer(tmp_path):
+    """The review and scoring lessons consume the first lesson's artefact."""
+    basic = ROOT / "examples" / "basic_usage.py"
+    review = ROOT / "examples" / "exploring_fit.py"
+    scoring = ROOT / "examples" / "scoring_editor.py"
+
+    for example, args in (
+        (basic, []),
+        (review, ["my_model.easyglm"]),
+        (scoring, ["my_model.easyglm"]),
+    ):
+        result = subprocess.run(
+            [sys.executable, str(example), *args],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        assert result.returncode == 0, (
+            f"{example.name} exited {result.returncode}\n"
+            f"--- stdout ---\n{result.stdout[-4000:]}\n"
+            f"--- stderr ---\n{result.stderr[-4000:]}"
+        )
+
+    assert (tmp_path / "review_copy.easyglm").exists()
