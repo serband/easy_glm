@@ -21,6 +21,10 @@ scorer (``.easyglm`` export, relativity editor) and reproduces the GLM exactly.
    :class:`GLMFit` with ``predict`` / ``coef_table``.
 3. :func:`rate_tables` / :func:`to_rate_model` — exact relativities and base
    rate read off the coefficients.
+
+With interactions, :func:`fit_two_stage` fits the mains first and the cells on
+top of them (:class:`TwoStageFit`), so adding an interaction never moves a
+main-effect table or the base rate and every cell is a pure adjustment.
 """
 
 from importlib.metadata import PackageNotFoundError
@@ -39,8 +43,10 @@ from .core import (
     InteractionEncoder,
     LinearEncoder,
     StepEncoder,
+    TwoStageFit,
     base_rate,
     fit_glm,
+    fit_two_stage,
     load_external_dataframe,
     plot_all_ratetables,
     rate_tables,
@@ -60,7 +66,9 @@ __all__ = [
     "InteractionEncoder",
     "LinearEncoder",
     "GLMFit",
+    "TwoStageFit",
     "fit_glm",
+    "fit_two_stage",
     "rate_tables",
     "base_rate",
     "to_rate_model",
