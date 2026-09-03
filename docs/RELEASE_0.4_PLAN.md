@@ -487,3 +487,27 @@ Sequencing: B2 and A2 run right after W3 (hardening), before D3/D4.
   no interior knots — implemented as the linear encoder with a single band, so
   it shares the table type, editor and export. The Design page lists the three
   explicit overrides (categorical, linear, continuous) next to the default.
+
+### R11. README and examples that run (release gate, added 2026-09-03)
+The README is the "how do I use this" a visitor lands on; in 0.3 not every
+example on it worked, which destroys trust. For 0.4:
+* **Every fenced `python` block in `README.md` is executed by
+  `tests/test_readme.py`** (blocks extracted in order, run in one namespace in a
+  temp working directory, with `load_external_dataframe()` redirected to the
+  50k fixture and a `traintest` column added when the block expects one). A
+  block that must not run (e.g. `pip install`) is a `bash` block, never a
+  `python` block. Blocks may be marked `<!-- readme-test: skip -->` only with a
+  reason in the comment; the test asserts fewer than three skips.
+* **Every `examples/*.py` runs in CI** on the fixture (`EASY_GLM_DATA` env var
+  overrides the download) with a total runtime under two minutes; each example
+  asserts its own headline result (e.g. holdout A/E within 0.9–1.1).
+* README content, in this order, each block runnable end to end: install ·
+  fit in one call · look at the rate tables · A/E on holdout · adjust a
+  relativity and see the effect · export Excel, `.easyglm`, the Python script ·
+  reload the scorer and score new business · open the workbench on the same
+  project · building blocks (DesignSpec → fit_glm → to_rate_model) · interactions
+  · piecewise-linear terms · rate-change setup with an offset. Screenshots of the
+  workbench from `docs/checks/img/`.
+* Sequenced **last before 0.4.0** (after B2, A2, D3, D4) so the examples show
+  the final API; reviewed like any piece, and the reviewer runs every block by
+  hand as well as via the test.
