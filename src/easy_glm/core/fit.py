@@ -1,9 +1,25 @@
-"""Fit a penalised GLM on the design matrix of a :class:`DesignSpec`."""
+"""Fit a penalised GLM on the design matrix of a :class:`DesignSpec`.
+
+Three things here are about **size** rather than statistics (piece G):
+
+* the design handed to glum is whatever :meth:`DesignSpec.build` returns — a
+  dense float64 array for a small book, a compact tabmat ``SplitMatrix`` for a
+  big one. Both give the same fit; ``sparse=`` forces either.
+* **scoring never builds a design matrix.** ``GLMFit.predict`` and
+  ``GLMFit.linear_predictor`` add up one rate-table lookup per variable in row
+  chunks (:meth:`DesignSpec.linear_predictor`), which is exactly what
+  ``RateModel`` does — so the two agree by construction and diagnostics on a
+  5M-row book never materialise a second copy of the design.
+* ``aggregate=True`` fits one row per *distinct design row* with the summed
+  weights. Exact, opt-in, and worth it only on a coarse design.
+"""
 
 from __future__ import annotations
 
+import threading
+import time
 import warnings
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,7 +31,14 @@ from glum import (
     TweedieDistribution,
 )
 
-from .design import DesignSpec, InteractionEncoder, LinearEncoder, StepEncoder
+from .design import (
+    SCORING_CHUNK_ROWS,
+    DesignSpec,
+    InteractionEncoder,
+    LinearEncoder,
+    StepEncoder,
+)
+from .stepmatrix import install_glum_shim
 
 _FAMILY_ALIASES: dict[str, str] = {
     "poisson": "poisson",
@@ -178,13 +201,45 @@ class GLMFit:
         return out
 
     # -- prediction -------------------------------------------------------
-    def design_matrix(self, data: pl.DataFrame) -> np.ndarray:
-        return self.spec.build(data)
+    def design_matrix(self, data: pl.DataFrame, *, sparse: bool | None = None):
+        """The design matrix for ``data`` (see :meth:`DesignSpec.build`).
+
+        Nothing in scoring needs this — :meth:`linear_predictor` and
+        :meth:`predict` work from the codes — so it is here for inspection and
+        for callers that want the columns themselves.
+        """
+        return self.spec.build(data, sparse=sparse)
+
+    def _link_inverse(self, lp: np.ndarray) -> np.ndarray:
+        """The mean for a linear predictor, using glum's own link object so the
+        answer is identical to ``model.predict``."""
+        link = getattr(self.model, "_link_instance", None)
+        if link is None:  # pragma: no cover - only before a fit
+            link = getattr(self.model, "link_instance", None)
+        if link is not None:
+            return np.asarray(link.inverse(lp), dtype=float)
+        if self.link == "log":  # pragma: no cover - defensive
+            return np.exp(lp)
+        raise RuntimeError(f"Cannot invert the {self.link!r} link without glum")
 
     def linear_predictor(
-        self, data: pl.DataFrame, *, offset: np.ndarray | None = None
+        self,
+        data: pl.DataFrame,
+        *,
+        offset: np.ndarray | None = None,
+        chunk_rows: int = SCORING_CHUNK_ROWS,
     ) -> np.ndarray:
-        lp = self.intercept + self.design_matrix(data) @ self.coef
+        """``intercept + design @ coef`` (+ ``offset``), computed from the
+        integer codes in row chunks — never from a design matrix.
+
+        The arithmetic is one float64 table lookup per variable per chunk, the
+        same thing :class:`~easy_glm.engine.rate_model.RateModel` does, so a
+        book of any size costs one float64 vector rather than a second copy of
+        the design.
+        """
+        lp = self.spec.linear_predictor(
+            data, self.coef, self.intercept, chunk_rows=chunk_rows
+        )
         if offset is not None:
             lp = lp + np.asarray(offset, dtype=float)
         return lp
@@ -209,11 +264,15 @@ class GLMFit:
         self, data: pl.DataFrame, *, offset: np.ndarray | None = None
     ) -> np.ndarray:
         """Predictions on the response scale (per unit of weight if the target
-        was divided by the weight). Uses the stored offset column if present."""
+        was divided by the weight). Uses the stored offset column if present.
+
+        Computed by :meth:`linear_predictor` (rate-table lookups, chunked) and
+        glum's own link, **not** by ``model.predict(X)``: no design matrix is
+        built, so scoring a book costs the same whether it has fifty thousand
+        rows or five million.
+        """
         offset = self.scoring_offset(data, offset)
-        return np.asarray(
-            self.model.predict(self.design_matrix(data), offset=offset), dtype=float
-        )
+        return self._link_inverse(self.linear_predictor(data, offset=offset))
 
     def __repr__(self) -> str:
         nnz = int((self.coef != 0).sum())
@@ -301,7 +360,7 @@ def _modal_bins(
 
 def penalty_weights(
     spec: DesignSpec,
-    design: np.ndarray,
+    design: Any,
     weights: np.ndarray | None,
     *,
     scale_predictors: bool,
@@ -362,6 +421,13 @@ def penalty_weights(
     The columns themselves are never rescaled, so ``beta_j`` stays band ``j``'s
     slope and the rate table reads it off the coefficients unchanged.
 
+    ``design`` may be the dense float64 array or the compact tabmat
+    ``SplitMatrix`` :meth:`DesignSpec.build` returns; the standard deviations
+    come from the matrix's own weighted-column-statistics method in the second
+    case, so no column is ever expanded. The two differ only by floating-point
+    noise (they sum the same numbers in a different order), which is why the
+    two paths' fitted coefficients agree to 1e-10 rather than exactly.
+
     Returns ``None`` when the spec has neither linear terms nor interactions
     (glum's default applies).
     """
@@ -372,11 +438,29 @@ def penalty_weights(
     w = np.ones(design.shape[0]) if weights is None else np.asarray(weights, float)
     w = w / w.sum()
     slices = spec.slices()
+    cached_stds: list[np.ndarray] = []
 
-    def _sd(cols: np.ndarray) -> np.ndarray:
-        mean = w @ cols
-        var = w @ (cols**2) - mean**2
-        sd = np.sqrt(np.clip(var, 0.0, None))
+    def _sd(idx: np.ndarray | slice, scale: np.ndarray | None = None) -> np.ndarray:
+        """Weighted sd of the design columns ``idx``, each divided by ``scale``."""
+        if isinstance(design, np.ndarray):
+            cols = design[:, idx]
+            if scale is not None:
+                cols = cols / scale
+            mean = w @ cols
+            var = w @ (cols**2) - mean**2
+            sd = np.sqrt(np.clip(var, 0.0, None))
+        else:
+            if not cached_stds:
+                cached_stds.append(
+                    np.asarray(
+                        design._get_col_stds(w, design.transpose_matvec(w)), dtype=float
+                    )
+                )
+            sd = cached_stds[0][idx]
+            if scale is not None:
+                sd = sd / scale
+        # a constant column has no spread to standardise by; glum leaves it
+        # alone, and 0.5 is the weight of a column half the exposure shares
         return np.where(sd > 0, sd, 0.5)
 
     for var, enc in linears:
@@ -384,16 +468,148 @@ def penalty_weights(
         idx = np.arange(start, start + enc.n_bands)
         widths = np.asarray(enc.band_widths(), dtype=float)
         if scale_predictors:
-            p1[idx] = 0.5 / _sd(design[:, idx] / widths)
+            p1[idx] = 0.5 / _sd(idx, widths)
         else:
             p1[idx] = widths * enc.n_bands / (enc.hi - enc.lo)
     for enc in spec.interactions:
         sl = slices[enc.variable]
         if scale_predictors:
-            p1[sl] = enc.penalty_weight * 0.5 / _sd(design[:, sl])
+            p1[sl] = enc.penalty_weight * 0.5 / _sd(sl)
         else:
             p1[sl] = enc.penalty_weight * 0.5
     return p1
+
+
+# --------------------------------------------------------------------------
+# progress
+# --------------------------------------------------------------------------
+#: Seconds between progress messages while a fit is running.
+PROGRESS_INTERVAL_SECONDS = 1.0
+
+Progress = Callable[[str], None]
+
+
+class _ElapsedProgress:
+    """Report elapsed time while a fit runs, from a background thread.
+
+    glum 3.4.1 offers no hook: its ``verbose`` flag prints to the console and
+    there is no callback per alpha on the path or per cross-validation fold, so
+    there is no honest fraction to show. What *can* be shown is what stage the
+    fit is in and how long it has been there, which is what a long fit's
+    watcher actually wants. A daemon thread ticks every
+    :data:`PROGRESS_INTERVAL_SECONDS`; the callback is called from that thread,
+    so a caller that draws something must be ready for that (the workbench
+    attaches Streamlit's script context to it).
+
+    Any exception the callback raises is swallowed: a progress display must
+    never be able to fail a fit.
+    """
+
+    def __init__(self, progress: Progress | None, label: str) -> None:
+        self._progress = progress
+        self._label = label
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._start = 0.0
+
+    def _emit(self, seconds: float) -> None:
+        if self._progress is None:
+            return
+        try:
+            self._progress(f"{self._label} — {seconds:.0f}s")
+        except Exception:  # pragma: no cover - a display must not fail a fit
+            pass
+
+    def _loop(self) -> None:
+        while not self._stop.wait(PROGRESS_INTERVAL_SECONDS):
+            self._emit(time.monotonic() - self._start)
+
+    def __enter__(self) -> _ElapsedProgress:
+        if self._progress is None:
+            return self
+        self._start = time.monotonic()
+        self._emit(0.0)
+        self._thread = threading.Thread(
+            target=self._loop, name="easy_glm-progress", daemon=True
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        if self._thread is None:
+            return
+        self._stop.set()
+        self._thread.join(timeout=PROGRESS_INTERVAL_SECONDS * 2)
+        if exc[0] is None:
+            self._emit(time.monotonic() - self._start)
+
+
+# --------------------------------------------------------------------------
+# aggregation by identical design row
+# --------------------------------------------------------------------------
+def design_row_key(
+    spec: DesignSpec, data: pl.DataFrame, offset: np.ndarray | None = None
+) -> pl.DataFrame:
+    """The columns that decide a row's design row (and so its prediction).
+
+    The integer code of every variable, plus — for a piecewise-linear term,
+    whose columns move *inside* a band — the clamped value itself, plus the
+    offset when there is one. Two rows agreeing on all of these have identical
+    design rows and identical offsets.
+    """
+    columns: dict[str, pl.Series] = {}
+    for var, enc in spec.encoders.items():
+        columns[f"c:{var}"] = pl.Series(f"c:{var}", enc.codes(data))
+        if isinstance(enc, LinearEncoder):
+            x = data[var].cast(pl.Float64).to_numpy()
+            columns[f"x:{var}"] = pl.Series(
+                f"x:{var}", np.clip(np.where(np.isnan(x), enc.lo, x), enc.lo, enc.hi)
+            )
+    if offset is not None:
+        columns["o:"] = pl.Series("o:", np.asarray(offset, dtype=float))
+    return pl.DataFrame(columns)
+
+
+def aggregate_rows(
+    spec: DesignSpec,
+    data: pl.DataFrame,
+    y: np.ndarray,
+    weights: np.ndarray | None,
+    offset: np.ndarray | None,
+) -> tuple[pl.DataFrame, np.ndarray, np.ndarray, np.ndarray | None]:
+    """Group rows with identical design rows; return one row per group.
+
+    Returns ``(rows, y_bar, weight_sum, offset)`` where ``rows`` is a frame of
+    representative raw rows (one per group, so the design built from it is the
+    group's design row), ``weight_sum`` is the group's total weight and
+    ``y_bar`` its weighted mean target.
+
+    **Why this is exact.** For every exponential-dispersion family the part of
+    the deviance that depends on the coefficients is linear in ``y``, so rows
+    sharing a design row (and an offset) contribute exactly
+    ``W_g * (-ybar_g * theta(mu_g) + b(theta(mu_g)))``. Objective, gradient and
+    Hessian are unchanged, the weighted column means and standard deviations
+    glum standardises by are unchanged, and the weights still sum to the same
+    total so ``alpha`` means the same thing. What is *not* preserved is the
+    deviance constant (the ``y log y`` terms) and anything per row.
+    """
+    n = data.height
+    w = np.ones(n) if weights is None else np.asarray(weights, dtype=float)
+    keys = design_row_key(spec, data, offset)
+    key_names = keys.columns
+    frame = keys.with_columns(
+        pl.Series("_w", w),
+        pl.Series("_wy", w * np.asarray(y, dtype=float)),
+        pl.int_range(pl.len(), dtype=pl.UInt32).alias("_row"),
+    )
+    grouped = frame.group_by(key_names, maintain_order=False).agg(
+        pl.col("_w").sum(), pl.col("_wy").sum(), pl.col("_row").first()
+    )
+    rep = grouped["_row"].to_numpy()
+    weight_sum = grouped["_w"].to_numpy().astype(float)
+    y_bar = grouped["_wy"].to_numpy().astype(float) / weight_sum
+    rows = data[rep]
+    return rows, y_bar, weight_sum, None if offset is None else offset[rep]
 
 
 def fit_glm(
@@ -414,6 +630,9 @@ def fit_glm(
     scale_predictors: bool = True,
     offset: np.ndarray | None = None,
     fit_intercept: bool = True,
+    sparse: bool | None = None,
+    aggregate: bool = False,
+    progress: Progress | None = None,
     **glum_kwargs: Any,
 ) -> GLMFit:
     """Fit an L1/elastic-net GLM on ``spec.build(data)``.
@@ -458,6 +677,32 @@ def fit_glm(
     fit_intercept : bool
         ``False`` fits no intercept — the second stage of an interaction fit,
         where the level already sits in the offset.
+    sparse : bool, optional
+        Force the compact (``True``) or the dense (``False``) design matrix.
+        The default decides by row count (:data:`~easy_glm.core.design.
+        SPARSE_ROW_THRESHOLD`, 200,000 rows). Both give the same fit; the
+        compact one holds an integer per row per variable instead of the
+        columns, which is what lets a 5M-row book fit in memory.
+    aggregate : bool
+        Fit **one row per distinct design row**, carrying the summed weight and
+        the weighted mean target. This is exact for every family easy_glm
+        offers — the objective, gradient and Hessian are unchanged, and so are
+        the coefficients (to 1e-12) — because the part of the deviance that
+        depends on the coefficients is linear in the target. Whether it is
+        *worth* anything depends entirely on the design: a coarse one (few
+        knots, few levels, no continuous term) can collapse a book several
+        fold, a fine one barely at all (1.5x on the French motor set), and the
+        grouping itself costs a pass over the data. Off by default, and
+        refused with ``cv`` (folds must be assigned to rows, not groups) and
+        when the fit has a piecewise-linear term with many distinct values.
+        Nothing downstream changes: rate tables, predictions and diagnostics
+        are still per row.
+    progress : callable, optional
+        Called with a short status string (``"Fitting 1,000,000 rows x 197
+        columns — 12s"``) about once a second while the fit runs, from a
+        background thread. glum exposes no per-alpha or per-fold hook, so what
+        is reported is the stage and the elapsed time, not a fraction. Any
+        exception the callback raises is swallowed.
     glum_kwargs
         Anything else for the glum estimator (``max_iter``, ``P1``, ``link``,
         ``lower_bounds`` ...). Passing your own ``P1`` replaces the per-cell
@@ -473,10 +718,17 @@ def fit_glm(
     if data.is_empty():
         raise ValueError("No training rows.")
 
+    if aggregate and cv is not None:
+        raise ValueError(
+            "aggregate=True cannot be combined with cv=: cross-validation folds "
+            "have to be assigned to rows, and aggregation replaces the rows. "
+            "Choose an alpha (or cross-validate once without aggregation and "
+            "refit with that alpha)."
+        )
+
     fam, family_name, default_link = resolve_family(family)
     link = glum_kwargs.pop("link", default_link)
 
-    design = spec.build(data)
     y = data[target].cast(pl.Float64).to_numpy()
     sw = None
     if weight_col:
@@ -515,10 +767,21 @@ def fit_glm(
         )
     _validate_target(y, family_name)
 
+    modal_bins = _modal_bins(spec, data, sw)
+    n_train_rows = data.height
+    fit_rows = data
+    if aggregate:
+        fit_rows, y, sw, offset = aggregate_rows(spec, data, y, sw, offset)
+    design = spec.build(fit_rows, sparse=sparse)
+    if not isinstance(design, np.ndarray):
+        # glum validates its input with a private function that only knows
+        # tabmat's own block types; teach it about ours (see stepmatrix.py)
+        install_glum_shim()
+
     if "P1" not in glum_kwargs:
         p1 = penalty_weights(spec, design, sw, scale_predictors=scale_predictors)
         if p1 is not None:
-            glum_kwargs["P1"] = p1
+            glum_kwargs["P1"] = np.asarray(p1, dtype=np.float64)
 
     lower = glum_kwargs.pop("lower_bounds", None)
     upper = glum_kwargs.pop("upper_bounds", None)
@@ -527,6 +790,18 @@ def fit_glm(
         mlo, mup = monotone_bounds(spec, monotone)
         lower = mlo if lower is None else np.maximum(np.asarray(lower, float), mlo)
         upper = mup if upper is None else np.minimum(np.asarray(upper, float), mup)
+    # float64 for everything the solver touches: a float32 design silently
+    # stops converging past a million rows and segfaults tabmat when the
+    # sample weight is not cast to match (docs/spikes/g-scale, §4.2)
+    if lower is not None:
+        lower = np.asarray(lower, dtype=np.float64)
+    if upper is not None:
+        upper = np.asarray(upper, dtype=np.float64)
+    if sw is not None:
+        sw = np.asarray(sw, dtype=np.float64)
+    if offset is not None:
+        offset = np.asarray(offset, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
 
     common: dict[str, Any] = dict(
         family=fam,
@@ -550,7 +825,14 @@ def fit_glm(
             raise ValueError("A list of l1_ratio values requires cv=...")
         model = GeneralizedLinearRegressor(alpha=alpha, **common)
 
-    model.fit(design, y, sample_weight=sw, offset=offset)
+    shape = f"{design.shape[0]:,} rows x {design.shape[1]:,} columns"
+    label = (
+        f"Cross-validating {cv} folds over {n_alphas} penalties, {shape}"
+        if cv is not None
+        else f"Fitting {shape}"
+    )
+    with _ElapsedProgress(progress, label):
+        model.fit(design, y, sample_weight=sw, offset=offset)
 
     return GLMFit(
         spec=spec,
@@ -562,8 +844,8 @@ def fit_glm(
         offset_col=offset_col,
         divide_target_by_weight=divide_target_by_weight,
         monotone=monotone,
-        modal_bins=_modal_bins(spec, data, sw),
-        n_train_rows=data.height,
+        modal_bins=modal_bins,
+        n_train_rows=n_train_rows,
     )
 
 
@@ -660,14 +942,14 @@ class TwoStageFit(GLMFit):
     def predict(
         self, data: pl.DataFrame, *, offset: np.ndarray | None = None
     ) -> np.ndarray:
-        """``link_inverse(eta1 + eta2 + offset)`` — the two stages composed."""
-        offset = self.scoring_offset(data, offset)
-        cells = self.stage2.design_matrix(data) @ self.stage2.coef
-        total = cells if offset is None else cells + np.asarray(offset, dtype=float)
-        return np.asarray(
-            self.stage1.model.predict(self.stage1.design_matrix(data), offset=total),
-            dtype=float,
-        )
+        """``link_inverse(eta1 + eta2 + offset)`` — the two stages composed.
+
+        No special case is needed: the composed fit's spec is the mains
+        followed by the cells and its coefficients are stage 1's followed by
+        stage 2's, on disjoint columns, so the inherited rate-table scoring
+        adds up ``eta1 + eta2`` by itself.
+        """
+        return super().predict(data, offset=offset)
 
     def __repr__(self) -> str:
         nnz = int((self.coef != 0).sum())
@@ -726,13 +1008,32 @@ def fit_two_stage(
         # nothing for a second stage to fit and the design *is* the main-effect
         # design; a plain GLMFit comes back and every cell reads 1.00
         return fit_glm(data, spec, target, **kwargs)
+
+    outer_progress: Progress | None = kwargs.get("progress")
+
+    def _stage_progress(name: str) -> Progress | None:
+        """Prefix the caller's progress messages with the stage they belong to."""
+        if outer_progress is None:
+            return None
+        return lambda message: outer_progress(f"{name} — {message}")
+
+    kwargs = {**kwargs, "progress": _stage_progress("Stage 1, main effects")}
     fit1 = fit_glm(data, spec.main_effects_spec(), target, **kwargs)
     eta1 = fit1.linear_predictor(data)
     if fit1.offset_col:
         eta1 = eta1 + data[fit1.offset_col].cast(pl.Float64).to_numpy()
 
-    dropped = {"monotone", "offset_col", "offset", "alpha", "cv", "fit_intercept"}
+    dropped = {
+        "monotone",
+        "offset_col",
+        "offset",
+        "alpha",
+        "cv",
+        "fit_intercept",
+        "progress",
+    }
     kw2 = {k: v for k, v in kwargs.items() if k not in dropped}
+    kw2["progress"] = _stage_progress("Stage 2, interaction cells")
     kw2["scale_predictors"] = False  # glum refuses to standardise with no intercept
     if stage2_alpha is not None:
         kw2["alpha"] = float(stage2_alpha)

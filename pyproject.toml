@@ -26,11 +26,25 @@ dependencies = [
     "polars>=1.17.0",
     "numpy>=1.24.0",
     "pyarrow>=14.0.0",
-    "glum>=3.0.0",
+    # 3.4.* is pinned by piece G: the compact design matrix passes a tabmat
+    # block glum does not know through its private input validation
+    # (easy_glm.core.stepmatrix.install_glum_shim). The dense path works with
+    # any 3.x, so widen this once the pass-through is upstream.
+    "glum>=3.4.0,<3.5",
+    "tabmat>=4.0.0",       # the design matrix blocks (glum's own dependency)
     "pandas>=2.0.0",
     "rdata>=0.9.0",        # load_external_dataframe (French motor .rda), imported lazily
     "joblib>=1.0.0",       # EasyGLM.save / load
     "xlsxwriter>=3.0.0",   # Excel rate-table export
+]
+
+
+[tool.pytest.ini_options]
+# The 5M-row memory benchmark is marked slow and is *not* run by `pytest -q`;
+# run it on its own with `pytest -m slow`, which overrides this filter.
+addopts = "-m 'not slow'"
+markers = [
+    "slow: long, memory-hungry checks (the 5M-row scale budget). Run with -m slow.",
 ]
 
 
