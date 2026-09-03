@@ -1,5 +1,61 @@
 # Review: piece R11 — the README release gate (round 1)
 
+## Round 2 verdict
+
+**APPROVED.** All three round-1 findings are fixed in commit `425f3a4`
+("README: printed outputs rounded to 5 decimals so the comments stay true"),
+which I re-verified against a fresh run rather than taking on trust:
+
+- **B1 (blocking) — fixed.** §8 now does
+  `print(np.round(reloaded.predict(holdout.head(3)), 5))` with comment
+  `# → [0.00172 0.00687 0.08667]`. A fresh `pytest -q -s tests/test_readme.py`
+  prints `[0.00172 0.00687 0.08667]` — exact match, character for character.
+- **S1 — fixed.** §6 now does
+  `print("base rate:", round(base_rate(fit), 5), round(base_rate(two_stage_fit), 5))`
+  with comment `# → base rate: 0.04341 0.04341   (the same number; they
+  differ only by solver noise)`. Fresh run prints `base rate: 0.04341
+  0.04341` — exact match, and rounding to 5 decimals makes "the same number"
+  literally true (the underlying floats still differ in the 15th digit,
+  correctly attributed to solver noise rather than papered over).
+- **S2 — fixed.** §17 now does
+  `print("workbench run and exported script agree to 5 decimals:",
+  np.max(np.abs(original_preds - script_preds)) < 1e-5)` with comment
+  `# → workbench run and exported script agree to 5 decimals: True`. Fresh
+  run prints exactly that. This also reframes the claim honestly: it no
+  longer implies a specific machine-epsilon figure that varies by platform,
+  just the threshold that's actually being asserted.
+
+**Verification performed, not just read:**
+- Interpreter/path re-confirmed: `easy_glm.__file__` resolves under
+  `<worktree>/src`.
+- `pytest -q -s tests/test_readme.py` → **11 passed in 23.08s** (19 README
+  blocks in 3.5s), fresh run, full stdout captured and diffed against every
+  `# →` comment by hand, not sampled.
+- **All 27 `# →` comments in README.md re-checked against this run's actual
+  output** (the 24 unaffected by the commit were already verified in round 1
+  and are unchanged by this diff; the 3 changed ones are covered above): all
+  27 match to the precision shown. No new mismatches introduced.
+- Diff scope confirmed via `git show 425f3a4`: only `README.md` (the three
+  blocks above) and `docs/reviews/readme-gate.md` (this file, now committed)
+  changed — no source, no test, no example touched, so the full-suite,
+  black/ruff/mypy, rules, links, and metadata findings from round 1 stand
+  unchanged and don't need re-running.
+
+**Adopted standard, noted for the record:** the owner has set "agreement to
+5 decimals" as the bar for these three illustrative values rather than
+quoting finer, solver-noise-sensitive digits. That's a reasonable, explicit
+choice and is now applied consistently across all three spots that needed
+it; nothing else on the page quotes precision it can't back up.
+
+No blocking items remain. The nice-to-haves from round 1 (unglossed
+`elastic-net`/`tabmat`, `aggregate=`/`progress=`/`penalty_weight`/
+`tweedie_power` not shown on the front page) were not addressed and are not
+being asked for — they're optional and were flagged as such in round 1.
+
+---
+
+# Review: piece R11 — the README release gate (round 1)
+
 ## Verdict
 
 **Not yet approved — one blocking fix required.** The gate itself is real (it
