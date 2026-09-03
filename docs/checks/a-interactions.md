@@ -4,62 +4,77 @@
 
 ## What an interaction is here
 
-`DrivAge×BonusMalus` sits **on top of** the two main-effect tables: a policy's relativity is the DrivAge factor × the BonusMalus factor × one cell of the adjustment matrix below. A cell of 1.000 means *no adjustment* — either the data did not ask for one (the lasso kept it at 1) or the cell had too little exposure to be rated on its own (shown with its exposure so you can tell the two apart). This is the Emblem-style layout agreed in the plan (mains + adjustment matrix, joint fit).
+`DrivAge×BonusMalus` sits **on top of** the two main-effect tables: a policy's relativity is the DrivAge factor × the BonusMalus factor × one cell of the adjustment matrix below. A cell of 1.000 means *no adjustment* — either the data did not ask for one (the lasso kept it at 1) or the cell had too little exposure to be rated on its own (shown with its exposure so you can tell the two apart). This is the Emblem-style layout agreed in the plan: mains + adjustment matrix.
+
+## This is the two-stage process you asked for
+
+You said: *mains are frozen; interactions are fitted only after offsetting the main effects — finalise the mains, then find and fit interactions as stand-alone adjustments on top of stage 1.* That is exactly how the model below is built.
+
+1. **Stage 1** fits the nine main effects on their own. It is the same fit, number for number, that this model gets with no interaction at all.
+2. Stage 1 is then **frozen**: its rate tables and its base rate are the ones the model ships with, whatever happens next.
+3. **Stage 2** fits the interaction cells with stage 1's prediction as an offset and no intercept of its own, so every cell is a *pure adjustment* to a finished model. Nothing in stage 2 can move a main-effect relativity or the base rate.
+
+The `DrivAge` table below is printed twice — without the interaction and with it — and every row is identical (largest change 7e-16, which is arithmetic rounding, not a difference in the model); the base rate matches to 0e+00. For comparison the table also carries the relativities the **joint fit** (the single fit this replaced) produced from the same data: it moved the same table by up to 21.1% and the base rate by 1.5%, because the split between mains and cells was not unique.
 
 ## Defaults in force (from the questions for the actuary)
 
 - **Q4** minimum cell exposure: 0.5% of the interaction's training exposure (28 of 210 cells were rated on their own; the rest adjust by 1.000).
-- **Q5** joint fit: the main-effect tables move when the interaction is added; both versions of the DrivAge table are shown below so the movement is visible.
-- Thin cells are penalised harder than fat ones (an unstandardised penalty scaled so that a 50/50 cell is treated like a 50/50 main effect), so sparse corners of the matrix do not pick up noise.
+- **Q5 mains frozen (built).** Two stages, as above. The cost is that the mains never get to give a cell back part of what it is carrying, so the adjustments are a little larger than the joint fit's and the headline metrics move by a hair; the gain is that adding, changing or removing an interaction cannot re-price a factor you have already signed off.
+- Thin cells are penalised harder than fat ones (per unit of adjustment every cell pays the same, so a cell with little data cannot buy a large effect cheaply), so sparse corners of the matrix do not pick up noise. The rule is unchanged by the two stages: stage 2 penalises a cell exactly as the joint fit did.
 - **Alpha 0.0003 was fixed by hand for this check** — at the plan's default 0.001 the penalty kept no cells at all, so there would have been nothing to look at. The workbench chooses alpha by cross-validation; at a CV-chosen alpha the same planted effect (controlled check below) comes back at roughly 65–85% of its true size — ordinary lasso shrinkage — and the remainder shows up in the A/E-by-pair table, which is why that table is part of this document.
 - In the matrix, `1.000 (14,759)` and `1.000 (20)` mean different things: the first cell had plenty of data and the lasso left it alone, the second was too thin to be rated on its own. The exposure in brackets tells them apart.
 
 ## Holdout metrics with and without the interaction
 
-| quantity | without | with |
-|---|---|---|
-| A/E | 1.0191 | 1.0194 |
-| Gini | 0.3072 | 0.3105 |
-| deviance explained | 4.79% | 4.93% |
-| non-zero coefficients | 71 / 117 | 79 / 145 |
-| cells adjusted (≠ 1.000) | — | 7 of 28 rated cells |
+| quantity | without | with (two stages) | with (old joint fit) |
+|---|---|---|---|
+| A/E | 1.0191 | 1.0223 | 1.0194 |
+| Gini | 0.3072 | 0.3083 | 0.3105 |
+| deviance explained | 4.79% | 4.84% | 4.93% |
+| non-zero coefficients | 71 / 117 | 80 / 145 | 79 / 145 |
+| cells adjusted (≠ 1.000) | — | 9 of 28 rated cells | 7 of 28 rated cells |
+| largest cell adjustment | — | 1.180 | 1.579 |
+
+The last column is the fit this replaced, on the same data and the same alpha. Freezing the mains costs a little lift here — Gini 0.3083 against 0.3105, deviance explained 4.84% against 4.93%, both still above the 0.3072 / 4.79% of the model with no interaction at all — because the joint fit is free to place part of the interaction wherever it fits best, including inside the main tables. That freedom is exactly what you asked us to give up, and the price is on this line so you can see it.
 
 Rate tables (mains × matrix) reproduce the GLM on the holdout: max relative difference below 1e-12.
 
 ## DrivAge main table, without and with the interaction
 
-| band | without | with | change |
-|---|---|---|---|
-| < 25.0 | 0.838 | 0.661 | -21.1% |
-| [25.0, 28.0) | 0.563 | 0.566 | +0.5% |
-| [28.0, 30.0) | 0.563 | 0.566 | +0.5% |
-| [30.0, 32.0) | 0.571 | 0.581 | +1.8% |
-| [32.0, 34.0) | 0.621 | 0.630 | +1.4% |
-| [34.0, 36.0) | 0.680 | 0.689 | +1.3% |
-| [36.0, 38.0) | 0.725 | 0.731 | +0.9% |
-| [38.0, 40.0) | 0.757 | 0.762 | +0.7% |
-| [40.0, 42.0) | 0.829 | 0.834 | +0.5% |
-| [42.0, 44.0) | 0.898 | 0.901 | +0.4% |
-| [44.0, 46.0) | 1.000 | 1.000 | +0.0% |
-| [46.0, 48.0) | 1.000 | 1.000 | +0.0% |
-| [48.0, 51.0) | 1.000 | 1.000 | +0.0% |
-| [51.0, 53.0) | 1.000 | 1.000 | +0.0% |
-| [53.0, 55.0) | 0.977 | 0.976 | -0.2% |
-| [55.0, 57.0) | 0.906 | 0.960 | +5.9% |
-| [57.0, 61.0) | 0.898 | 0.960 | +6.9% |
-| [61.0, 65.0) | 0.898 | 0.961 | +7.0% |
-| [65.0, 72.0) | 0.898 | 1.001 | +11.5% |
-| ≥ 72.0 | 0.907 | 1.062 | +17.0% |
-| Other / Unknown | 0.838 | 0.661 | -21.1% |
+| band | without | with (two stages) | change | old joint fit |
+|---|---|---|---|---|
+| < 25.0 | 0.8378 | 0.8378 | 0.00% | 0.6610 |
+| [25.0, 28.0) | 0.5626 | 0.5626 | 0.00% | 0.5655 |
+| [28.0, 30.0) | 0.5626 | 0.5626 | 0.00% | 0.5655 |
+| [30.0, 32.0) | 0.5705 | 0.5705 | 0.00% | 0.5811 |
+| [32.0, 34.0) | 0.6214 | 0.6214 | 0.00% | 0.6302 |
+| [34.0, 36.0) | 0.6801 | 0.6801 | 0.00% | 0.6890 |
+| [36.0, 38.0) | 0.7250 | 0.7250 | 0.00% | 0.7314 |
+| [38.0, 40.0) | 0.7569 | 0.7569 | 0.00% | 0.7621 |
+| [40.0, 42.0) | 0.8294 | 0.8294 | 0.00% | 0.8337 |
+| [42.0, 44.0) | 0.8980 | 0.8980 | 0.00% | 0.9013 |
+| [44.0, 46.0) | 1.0000 | 1.0000 | 0.00% | 1.0000 |
+| [46.0, 48.0) | 1.0000 | 1.0000 | 0.00% | 1.0000 |
+| [48.0, 51.0) | 1.0000 | 1.0000 | 0.00% | 1.0000 |
+| [51.0, 53.0) | 1.0000 | 1.0000 | 0.00% | 1.0000 |
+| [53.0, 55.0) | 0.9771 | 0.9771 | 0.00% | 0.9755 |
+| [55.0, 57.0) | 0.9063 | 0.9063 | 0.00% | 0.9600 |
+| [57.0, 61.0) | 0.8976 | 0.8976 | 0.00% | 0.9600 |
+| [61.0, 65.0) | 0.8976 | 0.8976 | 0.00% | 0.9606 |
+| [65.0, 72.0) | 0.8976 | 0.8976 | 0.00% | 1.0008 |
+| ≥ 72.0 | 0.9071 | 0.9071 | 0.00% | 1.0616 |
+| Other / Unknown | 0.8378 | 0.8378 | 0.00% | 0.6610 |
 
-The `Other / Unknown` row (drivers with no recorded age) moves with the `< 25.0` band because missing ages sit in the lowest band and the data has no such drivers, so no separate effect was fitted for them.
+**Every change is 0.00%** — that is the point of the two stages. The last column shows the same table from the joint fit for comparison: it re-priced the youngest band by -21.1% when the interaction was added, which is the behaviour you asked us to remove.
+
+The `Other / Unknown` row (drivers with no recorded age) tracks the `< 25.0` band because missing ages sit in the lowest band and the data has no such drivers, so no separate effect was fitted for them.
 
 ## Adjustment matrix `DrivAge×BonusMalus` — relativity (training exposure)
 
 | DrivAge \ BonusMalus | < 53.0 | [53.0, 57.0) | [57.0, 60.0) | [60.0, 64.0) | [64.0, 72.0) | [72.0, 76.0) | [76.0, 85.0) | [85.0, 95.0) | ≥ 95.0 | Other / Unknown |
 |---|---|---|---|---|---|---|---|---|---|---|
-| < 25.0 | 1.000 (373) | 1.000 (20) | 1.000 (29) | 1.000 (48) | 1.000 (265) | 1.000 (351) | 1.000 (1,496) | 1.000 (2,370) | 1.579 (3,790) | — |
-| [25.0, 28.0) | 1.000 (276) | 1.000 (159) | 1.000 (279) | 1.000 (531) | 1.000 (1,859) | 1.000 (1,092) | 1.000 (1,818) | 1.000 (1,633) | 1.121 (1,643) | — |
+| < 25.0 | 1.000 (373) | 1.000 (20) | 1.000 (29) | 1.000 (48) | 1.000 (265) | 1.000 (351) | 0.848 (1,496) | 0.913 (2,370) | 1.121 (3,790) | — |
+| [25.0, 28.0) | 1.000 (276) | 1.000 (159) | 1.000 (279) | 1.000 (531) | 1.000 (1,859) | 1.000 (1,092) | 1.000 (1,818) | 1.000 (1,633) | 1.015 (1,643) | — |
 | [28.0, 30.0) | 1.000 (810) | 1.000 (612) | 1.000 (758) | 1.000 (922) | 1.000 (1,663) | 1.000 (750) | 1.000 (1,276) | 1.000 (1,008) | 1.000 (891) | — |
 | [30.0, 32.0) | 1.000 (2,327) | 1.000 (1,019) | 1.000 (999) | 1.000 (944) | 1.000 (1,630) | 1.000 (688) | 1.000 (1,097) | 1.000 (864) | 1.000 (767) | — |
 | [32.0, 34.0) | 1.000 (4,201) | 1.000 (1,005) | 1.000 (890) | 1.000 (916) | 1.000 (1,476) | 1.000 (568) | 1.000 (887) | 1.000 (651) | 1.000 (579) | — |
@@ -71,13 +86,13 @@ The `Other / Unknown` row (drivers with no recorded age) moves with the `< 25.0`
 | [44.0, 46.0) | 1.000 (9,522) | 1.000 (491) | 1.000 (396) | 1.000 (391) | 1.000 (475) | 1.000 (167) | 1.000 (298) | 1.000 (247) | 1.000 (258) | — |
 | [46.0, 48.0) | 1.000 (9,749) | 1.000 (445) | 1.000 (332) | 1.000 (366) | 1.000 (423) | 1.000 (153) | 1.000 (280) | 1.000 (217) | 1.000 (221) | — |
 | [48.0, 51.0) | 1.000 (15,539) | 1.000 (603) | 1.000 (483) | 1.000 (483) | 1.000 (513) | 1.000 (211) | 1.000 (371) | 1.000 (311) | 1.000 (322) | — |
-| [51.0, 53.0) | 1.000 (10,972) | 1.000 (425) | 1.000 (347) | 1.000 (345) | 1.000 (379) | 1.000 (161) | 1.000 (281) | 1.000 (224) | 1.000 (212) | — |
+| [51.0, 53.0) | 1.004 (10,972) | 1.000 (425) | 1.000 (347) | 1.000 (345) | 1.000 (379) | 1.000 (161) | 1.000 (281) | 1.000 (224) | 1.000 (212) | — |
 | [53.0, 55.0) | 1.000 (10,340) | 1.000 (353) | 1.000 (263) | 1.000 (341) | 1.000 (316) | 1.000 (140) | 1.000 (237) | 1.000 (186) | 1.000 (192) | — |
-| [55.0, 57.0) | 0.979 (9,226) | 1.000 (299) | 1.000 (247) | 1.000 (264) | 1.000 (281) | 1.000 (117) | 1.000 (193) | 1.000 (145) | 1.000 (164) | — |
-| [57.0, 61.0) | 0.906 (13,853) | 1.000 (417) | 1.000 (356) | 1.000 (400) | 1.000 (428) | 1.000 (160) | 1.000 (267) | 1.000 (207) | 1.000 (241) | — |
-| [61.0, 65.0) | 0.919 (10,304) | 1.000 (320) | 1.000 (244) | 1.000 (283) | 1.000 (318) | 1.000 (130) | 1.000 (203) | 1.000 (123) | 1.000 (173) | — |
-| [65.0, 72.0) | 0.809 (14,811) | 1.000 (352) | 1.000 (318) | 1.000 (357) | 1.000 (340) | 1.000 (129) | 1.000 (225) | 1.000 (134) | 1.000 (154) | — |
-| ≥ 72.0 | 0.805 (14,759) | 1.000 (371) | 1.000 (278) | 1.000 (352) | 1.000 (322) | 1.000 (97) | 1.000 (178) | 1.000 (130) | 1.000 (134) | — |
+| [55.0, 57.0) | 1.000 (9,226) | 1.000 (299) | 1.000 (247) | 1.000 (264) | 1.000 (281) | 1.000 (117) | 1.000 (193) | 1.000 (145) | 1.000 (164) | — |
+| [57.0, 61.0) | 0.983 (13,853) | 1.000 (417) | 1.000 (356) | 1.000 (400) | 1.000 (428) | 1.000 (160) | 1.000 (267) | 1.000 (207) | 1.000 (241) | — |
+| [61.0, 65.0) | 0.997 (10,304) | 1.000 (320) | 1.000 (244) | 1.000 (283) | 1.000 (318) | 1.000 (130) | 1.000 (203) | 1.000 (123) | 1.000 (173) | — |
+| [65.0, 72.0) | 0.915 (14,811) | 1.000 (352) | 1.000 (318) | 1.000 (357) | 1.000 (340) | 1.000 (129) | 1.000 (225) | 1.000 (134) | 1.000 (154) | — |
+| ≥ 72.0 | 0.956 (14,759) | 1.000 (371) | 1.000 (278) | 1.000 (352) | 1.000 (322) | 1.000 (97) | 1.000 (178) | 1.000 (130) | 1.000 (134) | — |
 | Other / Unknown | — | — | — | — | — | — | — | — | — | — |
 
 ## A/E by DrivAge × BonusMalus cell on the holdout (cells with exposure > 300)
@@ -85,20 +100,21 @@ The `Other / Unknown` row (drivers with no recorded age) moves with the `< 25.0`
 | model | worst |log A/E| | exposure-weighted RMS |log A/E| | worst cell |
 |---|---|---|---|
 | without | 0.740 | 0.139 | [28.0, 30.0) | [60.0, 64.0) |
-| with | 0.722 | 0.120 | [28.0, 30.0) | [60.0, 64.0) |
+| with | 0.740 | 0.128 | [28.0, 30.0) | [60.0, 64.0) |
 
 ## Controlled check on synthetic data
 
-A synthetic book of 40,000 policies with a planted effect: drivers under 25 in one region claim e^0.9 = 2.46× more than the mains alone would say, and a deliberately rare region (about 80 policies) carries no effect at all.
+The same two-stage process on a synthetic book of 40,000 policies with a planted effect: drivers under 25 in one region claim e^0.9 = 2.46× more than the mains alone would say, and a deliberately rare region (about 80 policies) carries no effect at all.
 
 | quantity | value |
 |---|---|
 | planted effect (log scale) | 0.900 |
-| recovered by the model (log scale) | 0.889 |
+| recovered by the model (log scale) | 0.888 |
 | cells of the rare, no-effect region | 1.000 – 1.000 (all 1.000 = untouched) |
 | A/E-by-pair on the model *without* the interaction, planted cell | 1.497 (|log| 0.40 > 0.2 flags it) |
 
 ## Questions for you
 
+- The two stages are now the only way an interaction is fitted. Is that what you want everywhere, or would you like the joint fit kept as an option for exploratory work? Default: two stages only.
 - Is **mains + adjustment matrix** how you want to read an interaction in Excel (sheet `DrivAge×BonusMalus` is the long table, `DrivAge×BonusMalus (matrix)` the grid with exposure alongside)? Default: yes.
 - Is 0.5% of exposure a sensible floor for rating a cell on its own? Default: yes; it is a per-interaction setting.

@@ -2,6 +2,58 @@
 
 ## 0.4.0 (unreleased)
 
+### Interactions are fitted on top of frozen main effects (A2)
+- **Adding an interaction no longer moves a single main-effect relativity** (the
+  actuary's answer to Q5). A model with interactions is now fitted in **two
+  stages**: stage 1 is the main-effect model — the same fit, number for number,
+  that the model gets with no interaction at all — and stage 2 fits the
+  interaction cells on top of it, with stage 1's linear predictor (plus any
+  offset column) as its offset and no intercept of its own. The rate tables and
+  the base rate come from stage 1 alone, so they are identical with and without
+  the interaction, and every cell is a **pure adjustment**: 1.00 means "no
+  adjustment" and nothing else. On the French motor set the joint fit used to
+  re-price the youngest `DrivAge` band by −21.1 % and the base rate by 1.5 %
+  when `DrivAge × BonusMalus` was added; both are now 0.00 %
+  (`docs/checks/a-interactions.md`).
+- **What it costs, stated plainly.** The mains can no longer take back part of
+  what a cell is carrying, so the cells are larger and a little lift is given
+  up: on the same data and the same alpha, holdout Gini 0.3083 and 4.84 %
+  deviance explained against the joint fit's 0.3105 / 4.93 % — both still above
+  the 0.3072 / 4.79 % of the model with no interaction. That trade is the
+  point: an interaction you add, change or remove can never re-price a factor
+  you have already signed off.
+- **New: `TwoStageFit` and `fit_two_stage`** (both exported from `easy_glm`). A
+  `TwoStageFit` *is* a `GLMFit` — the same spec (mains then cells), stage 1's
+  coefficients followed by stage 2's, stage 1's intercept — so `rate_tables`,
+  `base_rate`, `to_rate_model`, `coef_table`, the Excel export, `.easyglm`
+  files and the diagnostics need no special case, and
+  `RateModel.predict == exp(eta1 + eta2)` to 1e-10 on nulls in both parents,
+  unseen levels, offsets and piecewise-linear parents. `fit_glm` gained
+  `offset=<array>` and `fit_intercept=` for the second stage.
+- **The exported script writes both stages** — `fit_glm` on
+  `spec.main_effects_spec()`, `eta1 = stage1.linear_predictor(train)`, `fit_glm`
+  on `spec.interactions_spec()` with `offset=eta1, fit_intercept=False`, then
+  `TwoStageFit(stage1, stage2)` — so what runs outside the workbench is what ran
+  inside it, cell adjustments included.
+- **The cell penalty rule is unchanged**, and is now written the same way in
+  both places: `P1 = penalty_weight × 0.5 / sd` under glum's standardisation and
+  `penalty_weight × 0.5` without it are the *same* penalty per unit of
+  adjustment, which is what lets stage 2 — where glum refuses to standardise,
+  because there is no intercept — penalise a cell exactly as the joint fit did.
+- **The second stage has its own alpha.** It defaults to the mains' alpha (a
+  cell then costs what a main effect that half the exposure shares costs), and
+  cross-validates on its own path when the mains do. `Interaction.alpha`
+  overrides it; per-interaction differences still belong in `penalty_weight`,
+  because the second stage is one fit.
+- The Model page says which model was fitted in two stages, with the alpha of
+  each and how many cells were rated, and shows a regularisation path per stage;
+  the Rate tables page says the base rate comes from the main-effect fit alone.
+  `run.summary()` and a saved snapshot's metrics carry both alphas.
+- **Fits cached in a `*.easyglm-runs` folder by an earlier 0.4 development build
+  are ignored and refitted** (`PERSIST_FORMAT` 4 → 5): such a run holds a joint
+  fit whose main tables include part of the interaction — the same shape, a
+  different meaning.
+
 ### The persisted-run folder is shared state (W4) — the second breaker session
 - **No tab may throw away another tab's fit.** Fits live in
   `<project>.easyglm-runs/` next to the project file, and every browser tab with
