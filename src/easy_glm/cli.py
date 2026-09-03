@@ -165,7 +165,8 @@ def summary_lines(project: Project, run: ModelRun) -> list[str]:
         f"  rows          train {run.train_rows:,} · holdout {run.holdout_rows:,}",
         f"  penalty       alpha {s['alpha']:.6g} · {s['non_zero']} of "
         f"{s['features']} terms non-zero",
-        f"  base rate     {rm.base_rate:.6g}  ({rm.relativity_label} per band)",
+        f"  base rate     {rm.base_rate:.6g}  "
+        f"(each table entry is a {rm.relativity_label})",
     ]
     if rm.metadata.offset_col:
         lines.append(f"  offset        {rm.metadata.offset_col}")

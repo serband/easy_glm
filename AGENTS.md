@@ -10,9 +10,13 @@ Purpose: Provide build/test commands, architecture guidance, and code style guid
 - Full suite: `pytest -q` (includes Streamlit `AppTest` smoke tests for every workbench page)
 - Persona e2e: `EASY_GLM_E2E=1 EASY_GLM_SERVER_PYTHON=.venv/bin/python <python-with-playwright> -m pytest tests/e2e` (navigate via sidebar links only; grids are canvas widgets — edit a cell with `_helpers.edit_grid_cell`, which double-clicks the cell, types into the overlay editor and waits for the expected text; set `EASY_GLM_E2E_SHOTS=<dir>` to get screenshots when an edit does not register). Any message drawn right before `st.rerun()` must go through `ui.flash()` (shown at the top of the next run), or Streamlit ≥ 1.63 drops it.
 - Workbench: `python -m easy_glm.app [project.json]` (or `easy-glm-workbench`); headless: `--headless`
+- Command line: `easy-glm run|export|validate|workbench project.json` (module form for a
+  source checkout: `PYTHONPATH=src python -m easy_glm.cli run project.json --out out/`)
 - Lint: `ruff check .`
+- Types: `mypy src/easy_glm/core src/easy_glm/workflow --ignore-missing-imports` (a CI step;
+  `core` and `workflow` are kept clean, the app and engine are not checked yet)
 - Format: `black .`
-- Run all quality steps: `black . && ruff check . && pytest -q`
+- Run all quality steps: `black . && ruff check . && mypy src/easy_glm/core src/easy_glm/workflow --ignore-missing-imports && pytest -q`
 
 ## Releasing
 
@@ -99,15 +103,18 @@ src/easy_glm/
 │   ├── data.py             # load_external_dataframe (with Parquet caching)
 │   ├── plots.py            # plot_all_ratetables (matplotlib/seaborn via the viz extra)
 │   └── split.py            # TRAIN_FLAG / HOLDOUT_FLAG, validate_train_test_column
+├── cli.py                  # `easy-glm` console script: run / export / validate / workbench
 ├── workflow/               # GUI-agnostic workflow engine (docs/WORKBENCH_PLAN.md)
 │   ├── project.py          # Project spec (data/roles/recodes/derived/filters/split,
 │   │                       #   design overrides, model configs, adjustments); JSON; validate
-│   ├── prep.py             # load_source, apply_variables, add_split_column, prepare
+│   ├── prep.py             # load_source, apply_variables (incl. the derived
+│   │                       #   log(current premium) offset), add_split_column, prepare
 │   ├── explore.py          # univariate, leakage_report (single-factor GLM strength etc.)
 │   ├── diagnostics.py      # deviance, lift, gini, double lift, ae_by_variable,
 │   │                       #   residual_factor_search, alpha_path, model_metrics,
 │   │                       #   relativity_diff / describe_diff (champion vs challenger)
-│   ├── run.py              # build_design, run_model -> ModelRun, rebuild_rate_model
+│   ├── run.py              # build_design, run_model -> ModelRun, rebuild_rate_model,
+│   │                       #   solve_base_rate (target loss ratio), exposure_for/link_for
 │   ├── export.py           # to_script (self-contained Python; tested by execution)
 │   ├── report.py           # to_report_html — ONE self-contained HTML file
 │   └── _svg.py             # the report's charts as plain SVG (no JS, no library)
@@ -251,6 +258,50 @@ User edits relativity in table
   row; `_precompute_variables` stores it as `null_relativity` and `score_numeric`
   applies it to NaN. Without that row NaN still raises (legacy behaviour).
 
+### Rate-change, penalties, families (piece E)
+
+- A column with the role **`current_premium`** makes `prep.apply_variables` derive
+  `log_<premium>` **after the row filters** (so `pl.col('Premium') > 0` does its job
+  first) and refuse the whole frame, by name and count, when a premium has no
+  logarithm. `Project.offset_column` pre-fills that column as the offset of every new
+  model; `rename_column` and `apply_role_change` carry the derivation with the role.
+  `to_script` writes the `pl.col(...).log().alias(...)` line out: the setup must be
+  visible in the script, never implied by a role.
+- `ModelMetadata.offset_is_premium` only changes **labels**
+  (`RateModel.relativity_label` / `relativity_note`, used by Excel, the Rate tables page
+  and the Export page). No number depends on it. It defaults to False, so `.easyglm`
+  files written before it read correctly and the format version did not move.
+- **Every encoder carries a `penalty_weight`** that multiplies whatever per-column rule
+  `penalty_weights` already applied to it (band rises, interaction cells); 0 =
+  unpenalised. It weights the **L1** penalty only — with `l1_ratio < 1` glum's ridge
+  part still applies to every column.
+- `resolve_family(family, tweedie_power)`: the power must be strictly in (1, 2), and
+  passing it for another family is an error, not a silent no-op.
+- **`log` and `logit` are both multiplicative links.** A logit fit's tables are *odds*
+  relativities and its base rate is the base risk's odds; `RateModel._response` turns
+  the product back into a probability. Such a model refuses an exposure column in three
+  places — `to_rate_model`, `RateModel.predict` and `exposure_for`, which never gives
+  it one — because a probability is not an amount.
+- `solve_base_rate(run, df, r)` sets the base rate so **total actual / total expected =
+  r** on the rows given. For a rate-change model that ratio is the loss ratio the book
+  would be written at; for an ordinary model r = 1 rebalances it. It reads the run's
+  *current* base rate, so an existing override cancels out and solving twice is
+  idempotent. Logit models are refused (a probability is not proportional to the base
+  rate).
+
+### Command line (piece F)
+
+- `easy_glm/cli.py` never raises through to the user: every failure is a `CliError`
+  rendered as a message with exit code 1 (2 is argparse's usage error).
+- Every artefact command **fits afresh** — persisted workbench runs are deliberately
+  not reused, so a command line result never depends on someone's browser session.
+- Two `.easyglm` files from the same project are *not* byte-identical: snapshots carry a
+  timestamp, and glum's solver is not bit-reproducible (~1e-15 on a relativity, even
+  between two fits in one process). Compare predictions, or JSON with timestamps
+  stripped and floats to a tolerance — never bytes.
+- `safe_filename` lives in `workflow.project` (the CLI must not import Streamlit);
+  `app.ui` re-exports it.
+
 ### Workbench Conventions
 
 - Pages never compute; they call `easy_glm.workflow` and read/write the `Project`
@@ -367,6 +418,7 @@ User edits relativity in table
 | `test_c1_foundations.py` | 0.3 bug regressions, format versions and migrations, editor defaults |
 | `test_scoring.py` | Isolated scoring: score_numeric (searchsorted), score_categorical (dict lookup), edge cases, fallbacks |
 | `test_workflow.py` | Project JSON/validation, prep steps, univariate, leakage report on planted leaks, build_design overrides, run_model (metrics, exactness, adjustments, CV), diagnostics, exported script executed in a subprocess and compared |
+| `test_e_f_extras_cli.py` | Pieces E/F: the `current_premium` role and its derived offset (error message, filter order), the "multiplier on current premium" labels through Excel and JSON, the **offset identity** of plan §R6/S1 (Poisson, `scale_predictors=False`, alpha x sum(P)/n, 1e-8) with Gamma recorded as *not* matching, per-variable penalty weights (`P1` aligned with `spec.features`, an unpenalised categorical keeping every level), Tweedie power, binomial (probabilities, odds labels, three refusals of exposure), `solve_base_rate` (rate change, rebalance, weights, an existing override, idempotence), and the `easy-glm` CLI through `subprocess` |
 | `test_w4_runs_folder.py` | W4: the shared runs folder (two AppTest sessions per two-tab case) and every finding of `docs/reviews/w3-breakage-2.md` |
 | `test_d3_d4_compare_report.py` | D3/D4: `relativity_diff` (identical runs, one known adjustment, a moved knot on the common grid, step-vs-linear, symmetry, the base rate, the tolerance boundary, two zeros), `to_report_html` (self-contained, **no `<script>` at all**, one section per predictor, an accessible name per chart, compare section only with a challenger — and an explanation when the challenger cannot be scored, size), `_svg` (ticks, degenerate charts, escaping), the Compare page / sidebar challenger / Export report button through AppTest. **D4's "opens in a browser with no console error"**: the static half (no script, no external `src`/`href`) is proved here on every run; the browser half is `test_it_opens_in_a_headless_browser_without_console_errors`, which *skips* where Playwright is absent (the default venv) and runs in the Playwright venv and in `tests/e2e/test_persona_data_scientist.py` — CI must run one of those two for the criterion to be covered |
 | `test_w2_pages.py` | W2 pages: interaction section, linear editor, kind selector, A/E-by-pair, pair search, cell/band edits via `app.grids`, break-it (empty project, missing file, removed predictor) |

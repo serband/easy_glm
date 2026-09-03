@@ -349,19 +349,20 @@ def _config(name: str) -> None:
 
 
 def _target_loss_ratio(col, name: str, cfg, run) -> None:
-    """Enter the loss ratio the book should be priced to; the base rate that
+    """Enter the loss ratio the book should be written at; the base rate that
     achieves it on the training rows is solved and stored as the override.
 
-    The denominator is the current-premium column when the project has one — so
-    the number really is a loss ratio — and the model's own target otherwise,
-    where 1.00 simply balances the model to the data.
+    The solve puts **actual ÷ expected** at the number typed. For a rate-change
+    model (the offset is the current premium) the prediction is the price and
+    the actual is the loss, so that ratio is the loss ratio and the base rate
+    becomes the overall rate change. For an ordinary model, 1.00 balances it to
+    the data.
     """
     p = S.project()
     premium = p.current_premium
-    label = f"Target loss ratio (÷ {premium})" if premium else "Target ratio (÷ actual)"
     ratio = ui.number_in_range(
         col,
-        label,
+        "Target loss ratio",
         value=1.0,
         lo=0.0001,
         hi=100.0,
@@ -371,11 +372,14 @@ def _target_loss_ratio(col, name: str, cfg, run) -> None:
         key=S.widget_key(f"tlr_{name}"),
         help=(
             "Solve sets the base-rate override so that, on the training rows, "
+            "total actual ÷ total expected equals this number. "
             + (
-                f"the total expected cost is this multiple of the total {premium}."
+                f"This model's prediction is a multiple of {premium}, so that "
+                "ratio is the loss ratio the book would be written at and the "
+                "base rate becomes the overall rate change."
                 if premium
-                else "the total expected equals this multiple of the total actual "
-                "(1.00 = overall A/E exactly 1)."
+                else "1.00 balances the model to the data (overall A/E exactly "
+                "1); 1.05 leaves the expected 5 % below the actual."
             )
             + " The relativities are untouched, and solving again from an "
             "existing override gives the same answer."
@@ -399,9 +403,13 @@ def _target_loss_ratio(col, name: str, cfg, run) -> None:
         st.session_state["solved_base_rate"] = name
         ui.flash(
             "success",
-            f"Base rate override set to {value:.6g} — "
-            f"{'expected ÷ ' + premium if premium else 'expected ÷ actual'} is "
-            f"now {float(ratio):.4g} on the training rows.",
+            f"Base rate override set to {value:.6g} — actual ÷ expected is now "
+            f"{float(ratio):.4g} on the training rows"
+            + (
+                f", i.e. the book is priced to a {float(ratio):.1%} loss ratio."
+                if premium
+                else "."
+            ),
         )
         S.touch()
         st.rerun()

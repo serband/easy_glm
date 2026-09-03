@@ -2,6 +2,73 @@
 
 ## 0.4.0 (unreleased)
 
+### Rate reviews, modelling extras and a command line (E / F)
+- **Fit the change from the premium you charge today.** Give a column the role
+  **current premium** on the Variables page and easy_glm derives `log_<premium>`
+  and pre-fills it as the offset of every new model. The rate tables are then
+  **multipliers on the current premium** — the base rate carries the level, each
+  relativity is a differential change — and the Rate tables page, the Export
+  page and the Excel `Summary` sheet all say so, so a multiplier cannot be
+  misread as a rate. The derivation is written into the exported Python script
+  as a line of polars rather than left implicit in a role. Rows whose premium
+  has no logarithm (zero, negative, missing) are refused by name and count, with
+  the row filter to add; the filter runs first, so `pl.col('Premium') > 0` is the
+  fix and not a trap. Renaming the premium column carries every model's offset
+  with it; taking the role away clears them with a notice.
+- **A target loss ratio, solved.** `workflow.solve_base_rate(run, df, ratio)` and
+  a box on the Model page set the base rate so that total actual ÷ total expected
+  equals the number you type. For a rate-change model that ratio *is* the loss
+  ratio the book would be written at; for an ordinary model 1.00 rebalances it
+  (overall A/E exactly 1). Closed form — one pass over the rows, no search — and
+  it reads the model's *current* base rate, so an existing override cancels out
+  and solving twice gives the same answer. The relativities never move. Binomial
+  models are refused: a probability is not proportional to the base rate.
+- **A penalty weight per factor.** `VariableDesign.penalty_weight` (a column on
+  the Design page, `DesignSpec.from_data(penalty_weight={...})`) multiplies the
+  per-column rules `core/fit.py::penalty_weights` already applies: 2 shrinks a
+  factor twice as hard as the rest of the design and **0 leaves it unpenalised**,
+  so every level of a territory table you have committed to survives the lasso.
+  On the check's book a heavy penalty leaves 8 of 20 regions; at weight 0 all 20
+  stay. It weights the L1 penalty only.
+- **Tweedie power on the Model page.** `ModelConfig.tweedie_power` /
+  `fit_glm(tweedie_power=...)`, strictly between 1 and 2, default 1.5, saved with
+  the model and written into the exported script. Passing it for another family
+  is an error rather than a silent no-op.
+- **Binomial models have rate tables now.** `log` and `logit` are both
+  multiplicative links: a lapse or conversion model compiles to the same tables
+  read as **odds relativities** (labelled that way on every page and in Excel),
+  its base rate is the base risk's odds, and the scorer converts back, returning
+  a probability that matches the GLM to 1e-16. Because a probability is not an
+  amount, such a model **refuses** to be multiplied by exposure — in
+  `to_rate_model`, in `RateModel.predict`, and in the workbench, which never
+  hands it an exposure column. `rate_tables` on a binomial fit used to raise;
+  a genuinely non-multiplicative link (identity) still does.
+- **`easy-glm` on the command line.** `easy-glm run project.json [--model NAME]
+  [--out DIR]` fits and writes all four artefacts — the `.easyglm` scorer, the
+  Excel rate tables, the runnable Python script and the self-contained HTML
+  report — then prints rows, alpha, base rate and train/holdout A/E, Gini and
+  deviance explained. `easy-glm export --script | --report | --excel` writes any
+  subset, `easy-glm validate` checks a project *and its data* without fitting,
+  and `easy-glm workbench` opens the browser tool. Every artefact command fits
+  afresh, which is what makes the exported script self-contained. Nothing ever
+  prints a traceback: problems are messages with exit code 1, so a scheduled job
+  can tell success from failure. This closes the CLI half of D4.
+- **`mypy` on `core` and `workflow`** is a CI step (`--ignore-missing-imports`).
+  It found 30 problems; all are fixed rather than silenced except two
+  `type: ignore` on polars scalars. Three mattered: a model with no target
+  reached `diagnostics.unit_values` / `totals` and failed inside polars instead
+  of saying so; `single_factor_strength` and `run_model` passed a possibly-`None`
+  target to `fit_glm`; and `EasyGLM.blueprint` asked every encoder for `.levels`,
+  which a piecewise-linear term does not have.
+- `app.state.PERSIST_FORMAT` 4 → 5: encoders, `ModelMetadata` and `ModelConfig`
+  each gained a field, so a run pickled by an earlier build is a cache miss
+  rather than a half-built object.
+- Tests: `tests/test_e_f_extras_cli.py` (66) — including the offset identity of
+  plan §R6/S1 measured at 5.6e-12 (Poisson, `scale_predictors=False`, alpha
+  × Σ premium ÷ n) with the Gamma case recorded as *not* matching, and the CLI
+  driven end to end through `subprocess`. Plain-language replay:
+  `docs/checks/e-f-extras-cli.md` (`scripts/checks/e_f_extras_cli.py --write`).
+
 ### The persisted-run folder is shared state (W4) — the second breaker session
 - **No tab may throw away another tab's fit.** Fits live in
   `<project>.easyglm-runs/` next to the project file, and every browser tab with
@@ -161,11 +228,6 @@
   library would cost, and means the file contains no JavaScript and so cannot
   produce a browser error. A challenger the report cannot score on these rows
   is explained in the comparison section's place, never silently dropped.
-- **Known limitation.** D4 asks for the report "from the Export page *and the
-  CLI*". Only the Export page (and `workflow.to_report_html` for scripts) ships
-  here — there is no `easy-glm` console script yet, so the CLI half of D4 lands
-  with workstream F (`easy-glm run project.json`) and must not be forgotten when
-  0.4.0 is cut.
 - Tests: `tests/test_d3_d4_compare_report.py` (the diff on hand-made
   differences, the report's self-containment / one section per predictor /
   compare-section-only-with-a-challenger / size / headless render, and the pages

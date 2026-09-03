@@ -424,36 +424,40 @@ def solve_base_rate(
     weight: str | None = None,
     against: str | None = None,
 ) -> float:
-    """Base rate that makes ``sum(expected) == target_ratio * sum(against)``.
+    """Base rate that puts the model's **actual ÷ expected at ``target_ratio``**.
 
-    The base rate multiplies every prediction, so the answer is closed form —
-    one pass over ``df``, no search::
+    That one sentence covers both things an actuary uses this for, because in a
+    rate review the model's prediction *is* the price:
 
-        new base rate = current base rate x target_ratio x sum(against)
-                                                         / sum(expected)
+    * **Rate change (the model offsets on the current premium).** Its
+      predictions are premiums, the actual is the loss, so actual ÷ expected is
+      the **loss ratio** the book would be written at. Ask for 0.65 and the base
+      rate becomes the **overall rate change** — exactly what Q6 says the base
+      rate of a rate-change model means — while every relativity, i.e. every
+      differential change, stays where it was.
+    * **Re-balancing an ordinary model.** Ask for 1.00 and total expected equals
+      total actual: overall A/E is exactly 1, the usual tidy-up after
+      hand-editing relativities. 1.05 loads the model 5 % (A/E 1.05 means the
+      expected is 5 % *below* the actual).
 
-    where *expected* is the run's own prediction for each row on the same scale
-    as its A/E (per-unit prediction times the exposure or weight the model was
-    fitted with — :func:`easy_glm.workflow.totals`), computed with whatever base
-    rate the run currently carries. That last point is what makes an **existing
-    ``base_rate_override`` harmless**: the ratio ``sum(against) / sum(expected)``
-    moves in exact proportion to it, so solving twice, or solving after an
-    override, gives the same number.
+    The base rate multiplies every prediction, so this is closed form — one pass
+    over ``df``, no search::
 
-    ``against`` — what the total is measured against — defaults to the
-    project's ``current_premium`` column when the model has one, and to the
-    model's target column otherwise. That default is what makes the two readings
-    of ``target_ratio`` right:
+        new base rate = current base rate x sum(against)
+                                          / (target_ratio x sum(expected))
 
-    * **with a current premium**: expected losses = ``target_ratio`` x premium,
-      i.e. ``target_ratio`` *is* the loss ratio the book is priced to.
-    * **without one**: expected = ``target_ratio`` x actual, i.e. 1.0 rebalances
-      the model to the data (overall A/E exactly 1) and 1.05 loads it 5 %.
+    *expected* is the run's own prediction per row on the same scale as its A/E
+    (per-unit prediction times the exposure or weight the model was fitted with
+    — :func:`easy_glm.workflow.totals`), computed with whatever base rate the
+    run currently carries. That last point is what makes an existing
+    ``base_rate_override`` harmless: the ratio moves in exact proportion to it,
+    so solving after an override, or solving twice, gives the same number.
 
-    ``weight`` overrides the column that turns per-unit predictions into row
-    totals; leave it out to use the model's own convention. Rows are used as
-    given, so pass the frame you want the balance to hold on (the training rows,
-    the whole book, one segment).
+    ``against`` is the total the model is measured against — the model's target
+    column (the actual losses or claims) by default. ``weight`` overrides the
+    column that turns per-unit predictions into row totals; leave it out to use
+    the model's own convention. Rows are used as given, so pass the frame the
+    balance should hold on (the training rows, the whole book, one segment).
 
     Binomial models are refused: a probability is not proportional to the base
     rate, so no closed form exists.
@@ -478,15 +482,14 @@ def solve_base_rate(
         if weight not in df.columns:
             raise KeyError(f"Weight column {weight!r} is not in the data")
         expected = run.predict(df) * df[weight].cast(pl.Float64).to_numpy()
-    column = against if against is not None else _balance_column(run)
-    if column is None:
+    if against is None:
         target_total = float(np.sum(actual))
         what = f"the model's target ({cfg.target})"
     else:
-        if column not in df.columns:
-            raise KeyError(f"Column {column!r} is not in the data")
-        target_total = float(df[column].cast(pl.Float64).sum())
-        what = column
+        if against not in df.columns:
+            raise KeyError(f"Column {against!r} is not in the data")
+        target_total = float(df[against].cast(pl.Float64).sum())
+        what = against
     expected_total = float(np.sum(expected))
     if not np.isfinite(expected_total) or expected_total <= 0:
         raise ValueError(
@@ -498,16 +501,7 @@ def solve_base_rate(
             f"The total of {what} on these rows is not a positive number, so "
             "there is no base rate that hits the target"
         )
-    return float(run.rate_model.base_rate) * ratio * target_total / expected_total
-
-
-def _balance_column(run: ModelRun) -> str | None:
-    """The project's current-premium column, if the run remembers one."""
-    try:
-        snapshot = Project.from_dict(run.project_snapshot)
-    except Exception:  # noqa: BLE001 - a snapshot we cannot read is just no default
-        return None
-    return snapshot.current_premium
+    return float(run.rate_model.base_rate) * target_total / (ratio * expected_total)
 
 
 def rebuild_rate_model(project: Project, run: ModelRun, df: pl.DataFrame) -> ModelRun:

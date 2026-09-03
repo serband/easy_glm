@@ -21,6 +21,9 @@ import numpy as np
 import polars as pl
 import pytest
 
+pytest.importorskip("streamlit")
+from streamlit.testing.v1 import AppTest  # noqa: E402
+
 from easy_glm import DesignSpec, fit_glm, to_rate_model
 from easy_glm.core.design import CategoricalEncoder, StepEncoder
 from easy_glm.core.fit import penalty_weights
@@ -586,6 +589,8 @@ class TestBinomial:
 # E4 — the target-loss-ratio base rate
 # --------------------------------------------------------------------------
 class TestSolveBaseRate:
+    """The solve puts actual / expected at the target ratio."""
+
     def _run(self, data_path):
         p = rate_change_project(data_path)
         df = prepare(p)
@@ -597,25 +602,31 @@ class TestSolveBaseRate:
         _, expected, _ = totals(df, run.config, run.predict(df))
         return float(expected.sum())
 
-    def test_it_hits_the_target_against_the_current_premium(self, data_path):
+    def test_a_rate_change_model_is_priced_to_the_loss_ratio(self, data_path):
+        """The prediction is a multiple of the current premium, so actual /
+        expected is the loss ratio the book would be written at."""
         p, df, run = self._run(data_path)
         target = 0.62
         p.models["change"].base_rate_override = solve_base_rate(run, df, target)
         run = run_model(p, df, "change")
-        assert self._expected(run, df) / float(df["Premium"].sum()) == pytest.approx(
-            target, rel=1e-10
-        )
+        actual = float(df["ClaimNb"].sum())
+        assert actual / self._expected(run, df) == pytest.approx(target, rel=1e-10)
 
-    def test_without_a_premium_it_balances_against_the_actual(self, data_path):
+    def test_one_point_zero_balances_the_model(self, data_path):
         p, df, run = self._run(data_path)
-        p.data.roles["Premium"] = "ignore"  # no current premium any more
-        p.models["change"].offset = None
-        df = prepare(p)
-        run = run_model(p, df, "change")
         p.models["change"].base_rate_override = solve_base_rate(run, df, 1.0)
         run = run_model(p, df, "change")
-        actual = float(df["ClaimNb"].sum())
-        assert self._expected(run, df) == pytest.approx(actual, rel=1e-10)
+        assert self._expected(run, df) == pytest.approx(
+            float(df["ClaimNb"].sum()), rel=1e-10
+        )
+
+    def test_the_relativities_do_not_move(self, data_path):
+        p, df, run = self._run(data_path)
+        before = [r.relativity for r in run.rate_model.variables["Region"].table]
+        p.models["change"].base_rate_override = solve_base_rate(run, df, 0.62)
+        after_run = run_model(p, df, "change")
+        after = [r.relativity for r in after_run.rate_model.variables["Region"].table]
+        assert before == after
 
     def test_an_existing_override_does_not_change_the_answer(self, data_path):
         p, df, run = self._run(data_path)
@@ -635,7 +646,7 @@ class TestSolveBaseRate:
 
     def test_weights_are_respected(self, data_path):
         """A frequency model: the expected total is per-unit prediction times
-        exposure, so the solved base rate has to use the same weights."""
+        exposure, so the solve has to use the same weights."""
         p = rate_change_project(data_path)
         p.data.roles["Premium"] = "ignore"
         p.data.roles["Exposure"] = "weight"
@@ -651,12 +662,12 @@ class TestSolveBaseRate:
         assert float(pred.sum()) == pytest.approx(float(df["ClaimNb"].sum()), rel=1e-10)
         assert run.rate_model.metadata.exposure_col == "Exposure"
 
-    def test_an_explicit_weight_column_overrides_the_convention(self, data_path):
+    def test_an_explicit_column_and_weight_override_the_convention(self, data_path):
         p, df, run = self._run(data_path)
-        value = solve_base_rate(run, df, 1.0, weight="Exposure", against="ClaimNb")
+        value = solve_base_rate(run, df, 1.0, weight="Exposure", against="Premium")
         scaled = value / run.rate_model.base_rate
         expected = float((run.predict(df) * df["Exposure"].to_numpy()).sum())
-        assert scaled == pytest.approx(float(df["ClaimNb"].sum()) / expected, rel=1e-12)
+        assert scaled == pytest.approx(float(df["Premium"].sum()) / expected, rel=1e-12)
 
     def test_a_binomial_model_is_refused(self, data_path):
         p = binomial_project(data_path)
@@ -669,6 +680,11 @@ class TestSolveBaseRate:
         p, df, run = self._run(data_path)
         with pytest.raises(ValueError, match="positive number"):
             solve_base_rate(run, df, 0.0)
+
+    def test_an_empty_frame_is_refused(self, data_path):
+        p, df, run = self._run(data_path)
+        with pytest.raises(ValueError, match="No rows"):
+            solve_base_rate(run, df.head(0), 1.0)
 
 
 # --------------------------------------------------------------------------
@@ -965,3 +981,96 @@ def _assert_same_model_json(a, b, path: str = "") -> None:
         assert a == pytest.approx(b, rel=1e-12, abs=0.0), path
     else:
         assert a == b, path
+
+
+# --------------------------------------------------------------------------
+# the workbench pages for all of the above
+# --------------------------------------------------------------------------
+def _app_script(page: str, project_path: Path, *, fit: bool, model: str) -> str:
+    return f"""
+import importlib
+import streamlit as st
+from easy_glm.app import state as S
+from easy_glm.workflow import Project
+
+S.init_state()
+if not st.session_state.get("_loaded"):
+    S.set_project(Project.from_json({str(project_path)!r}), None)
+    st.session_state._loaded = True
+if {fit!r} and S.get_run({model!r}) is None:
+    S.fit_model({model!r})
+importlib.import_module("easy_glm.app." + {page!r}).render()
+st.session_state["_project"] = S.project()
+"""
+
+
+def _run_app(script: str):
+    at = AppTest.from_string(script, default_timeout=240)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    return at
+
+
+def _wk(at, name: str) -> str:
+    return f"{name}_{at.session_state['project_token']}"
+
+
+@pytest.fixture
+def rate_change_on_disk(data_path, tmp_path) -> Path:
+    p = rate_change_project(data_path)
+    path = tmp_path / "rate-change.json"
+    p.to_json(path)
+    return path
+
+
+class TestWorkbenchPages:
+    def test_the_rate_tables_page_says_what_the_numbers_are(self, rate_change_on_disk):
+        at = _run_app(
+            _app_script("pages_tables", rate_change_on_disk, fit=True, model="change")
+        )
+        assert any("multiplier on current premium" in m.value for m in at.info), [
+            m.value for m in at.info
+        ]
+
+    def test_the_export_page_says_it_too(self, rate_change_on_disk):
+        at = _run_app(
+            _app_script("pages_export", rate_change_on_disk, fit=True, model="change")
+        )
+        assert any("multiplier on current premium" in m.value for m in at.info)
+
+    def test_the_variables_page_explains_the_derived_offset(self, rate_change_on_disk):
+        at = _run_app(
+            _app_script(
+                "pages_variables", rate_change_on_disk, fit=False, model="change"
+            )
+        )
+        assert any("log_Premium" in c.value for c in at.caption)
+
+    def test_solving_the_base_rate_writes_the_override(self, rate_change_on_disk):
+        at = _run_app(
+            _app_script("pages_model", rate_change_on_disk, fit=True, model="change")
+        )
+        ratio = at.number_input(key=_wk(at, "tlr_change"))
+        ratio.set_value(0.62).run()
+        [b for b in at.button if b.label == "Solve base rate"][0].click().run()
+        assert not at.exception
+        override = at.session_state["_project"].models["change"].base_rate_override
+        assert override is not None and override > 0
+
+    def test_the_tweedie_power_box_appears_only_for_tweedie(self, rate_change_on_disk):
+        at = _run_app(
+            _app_script("pages_model", rate_change_on_disk, fit=False, model="change")
+        )
+        assert not [i for i in at.number_input if i.key == _wk(at, "tw_change")]
+        at.selectbox(key=_wk(at, "fam_change")).set_value("tweedie").run()
+        box = at.number_input(key=_wk(at, "tw_change"))
+        box.set_value(1.8).run()
+        assert at.session_state["_project"].models["change"].tweedie_power == 1.8
+
+    def test_the_design_grid_carries_a_penalty_weight(self, rate_change_on_disk):
+        at = _run_app(
+            _app_script("pages_design", rate_change_on_disk, fit=False, model="change")
+        )
+        grid = at.session_state[_wk(at, "design_grid")]
+        assert grid is not None  # the editor exists; its rules are unit-tested above
+        assert any("penalty weight" in c.value.lower() for c in at.caption)
