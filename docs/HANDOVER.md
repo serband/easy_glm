@@ -41,8 +41,8 @@ file). They do **not** review code. Never ask them coding questions.
 | D3, D4 | Compare page, HTML report | merged | done, reviewed |
 | A2 | two-stage interactions (mains frozen, Q5) | merged | done, 2 review rounds, approved |
 | D5 | smooth / cap-floor / round / undo / snapshots / rebalance | merged | done, 2 review rounds, approved |
-| E+F | rate-change offset, per-factor penalties, Tweedie/lapse, target loss ratio, CLI, mypy | `piece/e-f` | merged with A2; review round 1 fixed (662 tests); round-2 re-check running |
-| G | scale: bin-index design matrices for 1–5M rows | `piece/g` | built + merged with release-0.4 (622 tests; 5M rows in 2.6 GB); review round 1 running |
+| E+F | rate-change offset, per-factor penalties, Tweedie/lapse, target loss ratio, CLI, mypy | `piece/e-f` | round-2 re-check running; then merge (needs D5 + G merged in: PERSIST_FORMAT → 7) |
+| G | scale: bin-index design matrices for 1–5M rows | merged | done, reviewed, approved (5M rows × 227 columns in 2.6 GB, 21 s) |
 | Breaker #3 | on the merged workbench (Compare, report, tooling) | — | not started |
 | R11 | README + examples release gate | — | not started; written last against the final API |
 
@@ -55,9 +55,8 @@ record every decision taken since it was written).
 
 ## Order of remaining work
 
-1. E+F: round-2 re-check → merge (PERSIST_FORMAT: release has 6, piece/e-f has 6 → 7).
-2. (D5 merged.)
-3. G: review → fixes → merge (it is based on `piece/a2`, so merge A2 first).
+1. E+F: round-2 re-check → merge release-0.4 into piece/e-f (PERSIST_FORMAT: both 6 → 7) → merge.
+2. (D5 and G merged.)
 4. Breaker #3 on the merged workbench; fix findings with tests.
 5. R11: write README examples + `examples/`, `tests/test_readme.py`, run in CI;
    review the README as a first-time user.
