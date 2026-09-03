@@ -5,7 +5,7 @@
 ## Two things the workbench now guarantees
 
 1. **The exploration sample never touches the fit.** The Project page has an *exploration sample* setting that only speeds up the Explore page and the preview charts on the Design and Variables pages. Fits, diagnostics, rate tables, the leakage report, and the knots and levels of every rating factor always use the full data. In 0.3 the sample applied to everything, so a model fitted while exploring on a sample was a model of the sample.
-2. **A fitted model survives a browser refresh and reopening the project.** Each fit is stored next to the project file (a folder ending in `.easyglm-runs`). It is only reused when the model specification, the data file (path, size, last-modified time) and the software versions are all unchanged; otherwise it is discarded and the model is refitted. Manual adjustments and the base-rate override are always re-applied from the project file, which remains the single source of truth. An unsaved project persists nothing (the sidebar says so).
+2. **A fitted model survives a browser refresh and reopening the project.** Each fit is stored next to the project file (a folder ending in `.easyglm-runs`). It is only reused when the model specification, the data file (path, size, last-modified time) and the software versions are all unchanged; otherwise the model is refitted (the old file is kept until the new fit replaces it, so trying a setting never erases the last fit). Manual adjustments and the base-rate override are always re-applied from the project file, which remains the single source of truth. An unsaved project persists nothing (the sidebar says so).
 
 ## Numbers from this run
 
@@ -20,7 +20,7 @@
 | Fit restored after a simulated reload | yes (0.04 s) |
 | Max difference in restored holdout predictions | 0 (identical) |
 | Fit restored after the data file changed | no |
-| Persisted fit files after the data change | 1 |
+| Persisted fit files after the data change | 1 (kept until a new fit replaces it) |
 
 ## What to check yourself
 

@@ -150,7 +150,8 @@ out["files"] = [f.name for f in sorted(S.runs_dir().glob("*.pkl"))] if S.runs_di
         "Each fit is stored next to the project file (a folder ending in "
         "`.easyglm-runs`). It is only reused when the model specification, the "
         "data file (path, size, last-modified time) and the software versions "
-        "are all unchanged; otherwise it is discarded and the model is refitted. "
+        "are all unchanged; otherwise the model is refitted (the old file is kept "
+        "until the new fit replaces it, so trying a setting never erases the last fit). "
         "Manual adjustments and the base-rate override are always re-applied "
         "from the project file, which remains the single source of truth. An "
         "unsaved project persists nothing (the sidebar says so).",
@@ -168,7 +169,7 @@ out["files"] = [f.name for f in sorted(S.runs_dir().glob("*.pkl"))] if S.runs_di
         f"| Fit restored after a simulated reload | {'yes' if b['restored'] else 'no'} ({b['seconds']} s) |",
         f"| Max difference in restored holdout predictions | {'0 (identical)' if b['max_abs_diff'] == 0 else b['max_abs_diff']:} |",
         f"| Fit restored after the data file changed | {'yes' if c['restored'] else 'no'} |",
-        f"| Persisted fit files after the data change | {len(c['files'])} |",
+        f"| Persisted fit files after the data change | {len(c['files'])} (kept until a new fit replaces it) |",
         "",
         "## What to check yourself",
         "",
@@ -189,7 +190,7 @@ out["files"] = [f.name for f in sorted(S.runs_dir().glob("*.pkl"))] if S.runs_di
         and b["restored"]
         and b["max_abs_diff"] == 0
         and not c["restored"]
-        and not c["files"]
+        and len(c["files"]) == 1
     )
     if write:
         DOC.write_text(text)
