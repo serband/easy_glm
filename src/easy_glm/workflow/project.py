@@ -250,12 +250,24 @@ class TableSnapshot:
 
 @dataclass
 class Interaction:
-    """A two-way interaction ``a × b`` on top of the mains ``a`` and ``b``."""
+    """A two-way interaction ``a × b`` on top of the mains ``a`` and ``b``.
+
+    ``alpha`` is the penalty strength of the **second stage** — the fit of the
+    interaction cells on top of the frozen mains. The default ``None`` means
+    "the same alpha as the mains", which is the honest starting point: a cell
+    column costs the same per unit of log adjustment as a main effect that half
+    the exposure shares. Set it only to penalise cells differently from the
+    mains as a whole; to make one interaction shrink harder than another, use
+    ``penalty_weight`` instead, because the second stage is a single fit with a
+    single alpha. When several interactions of one model set ``alpha``, the
+    **largest** is used (the most cautious of the requests).
+    """
 
     a: str
     b: str
     min_cell_exposure: float = 0.005
     penalty_weight: float = 1.0
+    alpha: float | None = None
 
     @property
     def name(self) -> str:
@@ -657,6 +669,11 @@ class Project:
                     )
                 if it.penalty_weight <= 0:
                     problems.append(f"{name}: {it.name} penalty_weight must be > 0")
+                if it.alpha is not None and it.alpha <= 0:
+                    problems.append(
+                        f"{name}: {it.name} alpha must be > 0 (leave it unset to "
+                        "use the mains' alpha)"
+                    )
         if self.champion is not None and self.champion not in self.models:
             problems.append(f"champion {self.champion!r} is not a model")
         return problems

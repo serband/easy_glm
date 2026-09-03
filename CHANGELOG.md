@@ -2,6 +2,86 @@
 
 ## 0.4.0 (unreleased)
 
+### Interactions are fitted on top of frozen main effects (A2)
+- **Adding an interaction no longer moves a single main-effect relativity** (the
+  actuary's answer to Q5). A model with interactions is now fitted in **two
+  stages**: stage 1 is the main-effect model — the same fit, number for number,
+  that the model gets with no interaction at all — and stage 2 fits the
+  interaction cells on top of it, with stage 1's linear predictor (plus any
+  offset column) as its offset and no intercept of its own. The rate tables and
+  the base rate come from stage 1 alone, so they are identical with and without
+  the interaction, and every cell is a **pure adjustment**: 1.00 means "no
+  adjustment" and nothing else. On the French motor set the joint fit used to
+  re-price the youngest `DrivAge` band by −21.1 % and the base rate by 1.5 %
+  when `DrivAge × BonusMalus` was added; both are now 0.00 %
+  (`docs/checks/a-interactions.md`).
+- **What it costs, stated plainly.** The mains can no longer take back part of
+  what a cell is carrying, so the cells are larger and a little lift is given
+  up: on the same data and the same alpha, holdout Gini 0.3083 and 4.84 %
+  deviance explained against the joint fit's 0.3105 / 4.93 % — both still above
+  the 0.3072 / 4.79 % of the model with no interaction. That trade is the
+  point: an interaction you add, change or remove can never re-price a factor
+  you have already signed off.
+- **New: `TwoStageFit` and `fit_two_stage`** (both exported from `easy_glm`). A
+  `TwoStageFit` *is* a `GLMFit` — the same spec (mains then cells), stage 1's
+  coefficients followed by stage 2's, stage 1's intercept — so `rate_tables`,
+  `base_rate`, `to_rate_model`, `coef_table`, the Excel export, `.easyglm`
+  files and the diagnostics need no special case, and
+  `RateModel.predict == exp(eta1 + eta2)` to 1e-10 on nulls in both parents,
+  unseen levels, offsets and piecewise-linear parents. `fit_glm` gained
+  `offset=<array>` and `fit_intercept=` for the second stage.
+- **The exported script writes both stages** — `fit_glm` on
+  `spec.main_effects_spec()`, `eta1 = stage1.linear_predictor(train)`, `fit_glm`
+  on `spec.interactions_spec()` with `offset=eta1, fit_intercept=False`, then
+  `TwoStageFit(stage1, stage2)` — so what runs outside the workbench is what ran
+  inside it, cell adjustments included. Whether there really were two stages is
+  read off the **fit**, not off the design: an interaction whose every cell is
+  below the exposure floor has no columns to fit, so no stage-2 block is written
+  (it would have been a fit on a zero-column design, which does not run). A
+  script exported *before* fitting cannot know that yet — only the data can say
+  which cells clear the floor — so it calls `fit_two_stage`, which decides at
+  run time, and each interaction is now written out with its own cell floor and
+  penalty weight instead of the shared defaults.
+- **`EasyGLM.save` / `load` handle a two-stage fit** (bundle version 3): both
+  glum estimators are written and the pair is rebuilt on load. Before, the
+  bundle held stage 1's estimator against the composed mains+cells spec and the
+  first prediction after loading raised.
+- **The cell penalty rule is unchanged on the product path, and corrected off
+  it.** `P1 = penalty_weight × 0.5 / sd` under glum's standardisation and
+  `penalty_weight × 0.5` without it are the *same* penalty per unit of
+  adjustment, which is what lets stage 2 — where glum refuses to standardise,
+  because there is no intercept — penalise a cell exactly as the joint fit did.
+  Getting there meant changing `penalty_weights`' **unstandardised** branch from
+  `penalty_weight` to `penalty_weight × 0.5`: the two branches used to disagree
+  by a factor of two, and 0.5 is the value R3 specified. Every path the
+  workbench, the exported script and `EasyGLM` take standardises, so no fitted
+  model moves; a caller who passed `scale_predictors=False` to `fit_glm` on a
+  design with cells by hand will find those cells penalised half as hard as
+  before and should halve their `alpha` to reproduce an earlier fit.
+- **The second stage has its own alpha.** It defaults to the mains' alpha (a
+  cell then costs what a main effect that half the exposure shares costs), and
+  cross-validates on its own path when the mains do. `Interaction.alpha`
+  overrides it; per-interaction differences still belong in `penalty_weight`,
+  because the second stage is one fit.
+- The Model page says which model was fitted in two stages, with the alpha of
+  each and how many cells were rated, and shows a regularisation path per stage;
+  when an interaction is present but **no** cell cleared its exposure floor it
+  says that instead, rather than falling silent about a matrix of 1.000s. The
+  Design page offers each interaction's *cells alpha*, and the Rate tables page
+  says the base rate comes from the main-effect fit alone. `run.summary()` and a
+  saved snapshot's metrics carry both alphas.
+- **A cell is a pure adjustment to the mains, but not purely an interaction.**
+  Stage 2 has no intercept — that is what pins the base rate — so any overall
+  re-levelling it wants goes into the cells. On the French motor check that is
+  0.38 % of each adjusted cell, and holdout A/E moves 1.0191 → 1.0223 with the
+  interaction added. Both are now stated in `docs/checks/a-interactions.md` and
+  on the Model page; a base-rate override moves the level back in one number
+  without touching a relativity.
+- **Fits cached in a `*.easyglm-runs` folder by an earlier 0.4 development build
+  are ignored and refitted** (`PERSIST_FORMAT` 4 → 6, see D5 below): such a run
+  holds a joint fit whose main tables include part of the interaction — the same
+  shape, a different meaning.
+
 ### Relativity tooling in the rate-table editor (D5)
 - **A *Tools* panel above the editor**: smooth a curve (moving average over a
   window of bands, or an isotonic fit that will not let it turn back), cap and
@@ -66,8 +146,10 @@
   `workflow.rebalance_override`, `workflow.missing_variables`; and
   `workflow.rate_model_for`, which compiles "this fit plus this list of
   adjustments" into tables — what a snapshot, a restore, a rebalance and a diff
-  all use. `app.state.PERSIST_FORMAT` 4 → 5 (rate-table rows changed shape), so
-  runs cached by an earlier 0.4 build are refitted.
+  all use. `app.state.PERSIST_FORMAT` 4 → 6 (rate-table rows changed shape here,
+  and a model with interactions became a two-stage fit in A2 — both pieces
+  claimed 5 on their own branch, so the merged tree moves on), so runs cached by
+  an earlier 0.4 build are refitted.
 - Tests: `tests/test_d5_tooling.py` (engine unit tests per tool, the exposure
   plumbing from fit to JSON, exactness after a tool, and the page's apply / undo
   / redo / snapshot / diff through AppTest); plain-language page in

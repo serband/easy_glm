@@ -6,7 +6,9 @@ where a table-based scorer and the GLM can quietly disagree.
 
 Invariants
 ----------
-1. ``RateModel.predict(df, exposure_col=None) == fit.predict(df)`` (rtol 1e-10).
+1. ``RateModel.predict(df, exposure_col=None) == fit.predict(df)`` (rtol 1e-10),
+   for a joint fit and for a two-stage one (mains frozen, cells on top), where
+   ``fit.predict`` is ``exp(eta1 + eta2)``.
 2. A JSON round-trip of the RateModel scores identically.
 3. ``RateModel.to_excel`` writes the relativities the scorer uses, including
    manual adjustments. (The 0.3 defect was in the workbench download and the
@@ -20,7 +22,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from easy_glm import DesignSpec, fit_glm, to_rate_model
+from easy_glm import DesignSpec, fit_glm, fit_two_stage, to_rate_model
 from easy_glm.engine import RateModel
 
 RTOL = 1e-10
@@ -154,6 +156,32 @@ CASES = {
         "knots": {"DrivAge": [25, 40, 60], "Density": [500, 1500]},
         "interactions": [("Density", "Region"), ("DrivAge", "VehPower")],
     },
+    # A2: the same designs fitted in two stages (mains frozen, cells on top).
+    # The composed prediction is exp(eta1 + eta2) and the RateModel must still
+    # reproduce it exactly, on nulls in both parents and unseen levels.
+    "two_stage_num_cat": {
+        "predictors": ["DrivAge", "Region"],
+        "categorical": None,
+        "offset": None,
+        "interactions": [("DrivAge", "Region")],
+        "two_stage": True,
+    },
+    "two_stage_with_offset": {
+        "predictors": ["DrivAge", "VehPower", "Region"],
+        "categorical": ["VehPower"],
+        "offset": "logprem",
+        "interactions": [("DrivAge", "Region"), ("VehPower", "Region")],
+        "two_stage": True,
+    },
+    "two_stage_linear_parent": {
+        "predictors": ["DrivAge", "Density", "VehPower", "Region"],
+        "categorical": ["VehPower"],
+        "offset": "logprem",
+        "linear": ["Density"],
+        "knots": {"DrivAge": [25, 40, 60], "Density": [500, 1500]},
+        "interactions": [("Density", "Region"), ("DrivAge", "VehPower")],
+        "two_stage": True,
+    },
 }
 
 
@@ -172,7 +200,8 @@ def fitted(request):
         min_cell_exposure=0.005,
         linear=case.get("linear"),
     )
-    fit = fit_glm(
+    fit_it = fit_two_stage if case.get("two_stage") else fit_glm
+    fit = fit_it(
         train,
         spec,
         "ClaimNb",
@@ -194,7 +223,7 @@ def test_rate_model_reproduces_glm(fitted):
         assert any(c.type == "linear" for c in rm.variables.values())
         assert (score_df["Density"] > 5_000).sum() > 0  # beyond the clamp
         assert (score_df["Density"] < 0).sum() > 0
-    if "interaction" in name or name == "linear_mixed_all":
+    if "interaction" in name or "two_stage" in name or name == "linear_mixed_all":
         # the fit must actually use cells, otherwise the case proves nothing
         assert any(c.type == "interaction" for c in rm.variables.values())
         cells = [

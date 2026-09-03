@@ -22,7 +22,7 @@ from easy_glm.core.design import (
     linear_encoder_from_data,
     quantile_knots,
 )
-from easy_glm.core.fit import GLMFit, fit_glm
+from easy_glm.core.fit import GLMFit, TwoStageFit, fit_glm, fit_two_stage
 from easy_glm.core.tables import rate_tables, to_rate_model
 from easy_glm.engine.rate_model import RateModel
 
@@ -228,7 +228,19 @@ class ModelRun:
 
     @property
     def alpha(self) -> float:
+        """Stage 1's penalty — the one that fitted the main effects."""
         return self.fit.alpha
+
+    @property
+    def alpha_stage2(self) -> float | None:
+        """The penalty the interaction cells were fitted at, or ``None`` when
+        the model has no interactions and so only one stage."""
+        return self.fit.alpha_stage2 if isinstance(self.fit, TwoStageFit) else None
+
+    @property
+    def cells_kept(self) -> int:
+        """Cell columns the second stage fitted (cells with enough exposure)."""
+        return sum(len(e.cells) for e in self.spec.interactions)
 
     def summary(self) -> dict[str, Any]:
         h = self.metrics.get("holdout", {})
@@ -237,6 +249,8 @@ class ModelRun:
             "name": self.name,
             "family": self.fit.family,
             "alpha": self.fit.alpha,
+            "alpha_stage2": self.alpha_stage2,
+            "cells_kept": self.cells_kept,
             "features": len(self.fit.coef),
             "non_zero": int((self.fit.coef != 0).sum()),
             "train_ae": t.get("ae"),
@@ -304,9 +318,43 @@ def apply_adjustments(rm: RateModel, cfg: ModelConfig) -> None:
         rm.create_snapshot(f"{len(cfg.adjustments)} manual adjustment(s)")
 
 
+def stage2_alpha(cfg: ModelConfig) -> float | None:
+    """The penalty strength for the interaction cells, or ``None`` for "the
+    same as the mains".
+
+    The second stage is one fit with one alpha, so when several interactions
+    ask for one the largest (the most cautious) wins; per-interaction
+    differences belong in ``Interaction.penalty_weight``."""
+    asked = [it.alpha for it in cfg.interactions if it.alpha is not None]
+    return max(asked) if asked else None
+
+
+def snapshot_metrics(
+    fit: GLMFit, metrics: dict[str, dict[str, float]]
+) -> dict[str, Any]:
+    """``metrics`` (one entry per data subset) plus a ``model`` entry naming the
+    penalty of each stage, so a saved ``.easyglm`` says how it was fitted."""
+    stage2 = fit.alpha_stage2 if isinstance(fit, TwoStageFit) else None
+    return {
+        **metrics,
+        "model": {
+            "alpha": fit.alpha,
+            "alpha_stage2": stage2,
+            "stages": 2 if stage2 is not None else 1,
+        },
+    }
+
+
 def run_model(project: Project, df: pl.DataFrame, model_name: str) -> ModelRun:
     """Fit ``project.models[model_name]`` on the training rows of the prepared
-    frame ``df`` (must contain the split column) and return a :class:`ModelRun`."""
+    frame ``df`` (must contain the split column) and return a :class:`ModelRun`.
+
+    A model **with interactions is fitted in two stages** (Q5): stage 1 is the
+    main-effect model — bit for bit the fit the same model without the
+    interaction would give — and stage 2 fits the interaction cells on top of
+    it with no intercept and stage 1's linear predictor as the offset. Main
+    rate tables and the base rate therefore never move when an interaction is
+    added, and every cell is a pure adjustment (1.00 = none)."""
     problems = project.validate(model_name)
     if problems:
         raise ValueError("Project is not valid:\n- " + "\n- ".join(problems))
@@ -328,10 +376,7 @@ def run_model(project: Project, df: pl.DataFrame, model_name: str) -> ModelRun:
     kwargs: dict[str, Any] = {}
     if cfg.link:
         kwargs["link"] = cfg.link
-    fit = fit_glm(
-        train,
-        spec,
-        cfg.target,
+    fit_kwargs: dict[str, Any] = dict(
         family=cfg.family,
         weight_col=cfg.weight,
         offset_col=cfg.offset,
@@ -344,6 +389,20 @@ def run_model(project: Project, df: pl.DataFrame, model_name: str) -> ModelRun:
         monotone=monotone_for(project, cfg),
         **kwargs,
     )
+    fit: GLMFit
+    if spec.interactions:
+        # two stages (the actuary's answer to Q5): the mains are fitted exactly
+        # as they would be without the interaction and are then frozen, and the
+        # cells are fitted on top of them as pure adjustments
+        fit = fit_two_stage(
+            train,
+            spec,
+            cfg.target,
+            stage2_alpha=stage2_alpha(cfg),
+            **fit_kwargs,
+        )
+    else:
+        fit = fit_glm(train, spec, cfg.target, **fit_kwargs)
     exposure = exposure_for(project, cfg)
     rm = to_rate_model(
         fit,
@@ -363,7 +422,7 @@ def run_model(project: Project, df: pl.DataFrame, model_name: str) -> ModelRun:
     metrics = model_metrics(
         fit, preds, {k: v for k, v in frames.items() if not v.is_empty()}, cfg
     )
-    rm.set_snapshot_metrics(metrics)
+    rm.set_snapshot_metrics(snapshot_metrics(fit, metrics))
     return ModelRun(
         name=model_name,
         config=project.models[model_name],
@@ -471,6 +530,6 @@ def rebuild_rate_model(project: Project, run: ModelRun, df: pl.DataFrame) -> Mod
     run.rate_model = rm
     run.config = cfg
     run.metrics = model_metrics(run.fit, preds, frames, cfg)
-    rm.set_snapshot_metrics(run.metrics)
+    rm.set_snapshot_metrics(snapshot_metrics(run.fit, run.metrics))
     run.tables = rate_tables(run.fit, base=cfg.base)  # type: ignore[arg-type]
     return run

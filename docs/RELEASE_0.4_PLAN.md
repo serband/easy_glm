@@ -480,7 +480,8 @@ Q1, Q2, Q4, Q6 confirm the defaults. Two answers change the build:
   rate from stage 1 and cell adjustments from stage 2; the exactness invariant
   becomes `RateModel.predict == exp(η₁ + η₂)`. The exported script writes both
   stages. The Model page shows the two stages; the pair search runs on the
-  stage-1 residuals (already the case). The `a-interactions` actuarial check is
+  residuals of the composed prediction (η₁ + η₂), which is the right number
+  for finding the *next* pair to add. The `a-interactions` actuarial check is
   re-run: main tables must now be identical with and without the interaction.
   Cell penalty rule (P1 = penalty_weight·0.5/sd) is re-validated in stage 2.
 Sequencing: B2 and A2 run right after W3 (hardening), before D3/D4.

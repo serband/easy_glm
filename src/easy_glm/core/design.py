@@ -920,6 +920,24 @@ class DesignSpec:
     def interactions(self) -> list[InteractionEncoder]:
         return [e for e in self.encoders.values() if isinstance(e, InteractionEncoder)]
 
+    # -- the two stages of an interaction fit ------------------------------
+    def main_effects_spec(self) -> DesignSpec:
+        """The main effects of this spec on their own — **stage 1** of a
+        two-stage interaction fit (:func:`~easy_glm.core.fit.fit_two_stage`).
+
+        It is exactly the design the same model *without* any interaction would
+        build, which is what lets stage 1 (and therefore every main rate table
+        and the base rate) be identical with and without the interaction. The
+        encoder objects are shared, not copied."""
+        return DesignSpec({v: self.encoders[v] for v in self.main_effects})
+
+    def interactions_spec(self) -> DesignSpec:
+        """The interaction cell columns on their own — **stage 2** of a
+        two-stage fit. The parent encoders are shared with
+        :meth:`main_effects_spec`, so the cell columns are the same columns the
+        joint design would have built, in the same order."""
+        return DesignSpec({e.variable: e for e in self.interactions})
+
     @property
     def features(self) -> list[Feature]:
         return [f for enc in self.encoders.values() for f in enc.features()]

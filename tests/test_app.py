@@ -150,6 +150,78 @@ def test_pages_render_with_an_interaction(page, project_file, tmp_path):
     if page == "pages_export":
         code = "\n".join(c.value for c in at.code)
         assert "InteractionEncoder(" in code
+        # A2: the script an actuary downloads writes both stages
+        assert "spec.main_effects_spec()" in code
+        assert "fit = TwoStageFit(stage1, stage2)" in code
+    if page == "pages_model":
+        # the page says the model was fitted in two stages and names both alphas
+        assert any("Fitted in two stages" in m.value for m in at.info)
+        labels = [m.label for m in at.metric]
+        assert "alpha (mains)" in labels and "alpha (cells)" in labels
+
+
+@pytest.mark.parametrize("page", ["pages_model", "pages_export"])
+def test_pages_with_an_interaction_that_kept_no_cell(page, project_file, tmp_path):
+    """Every cell below the exposure floor means there was no second stage: the
+    Model page must say so rather than fall silent, and the exported script must
+    not contain a stage-2 block it cannot run."""
+    from easy_glm.workflow import Interaction
+
+    p = Project.from_json(project_file)
+    p.models["freq"].interactions = [
+        Interaction("DrivAge", "Region", min_cell_exposure=0.99)
+    ]
+    path = tmp_path / "thin_interaction.json"
+    p.to_json(path)
+    at = AppTest.from_string(_script(page, str(path), fit=True), default_timeout=180)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    if page == "pages_model":
+        assert any("No second stage" in m.value for m in at.info)
+        assert [m.label for m in at.metric].count("alpha (cells)") == 0
+    else:
+        code = "\n".join(c.value for c in at.code)
+        assert "TwoStageFit" not in code and "spec.interactions_spec()" not in code
+
+
+def test_design_page_offers_the_cells_alpha(project_file, tmp_path):
+    """`Interaction.alpha` drives the second stage, so the page that owns
+    interactions has to show it."""
+    from easy_glm.workflow import Interaction
+
+    p = Project.from_json(project_file)
+    p.models["freq"].interactions = [Interaction("DrivAge", "Region", alpha=0.25)]
+    path = tmp_path / "with_alpha.json"
+    p.to_json(path)
+    at = AppTest.from_string(
+        _script("pages_design", str(path), fit=False), default_timeout=180
+    )
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    boxes = [n for n in at.number_input if n.label.startswith("Cells alpha")]
+    assert len(boxes) == 2  # the existing interaction's, and the one being added
+    assert 0.25 in [n.value for n in boxes]
+
+
+@pytest.mark.parametrize("alpha", [12.0, -1.0])
+def test_design_page_survives_an_out_of_range_cells_alpha(
+    project_file, tmp_path, alpha
+):
+    """A hand-edited project file can carry any alpha; the Design page is where
+    it gets fixed, so it must render (validate() reports the bad value)."""
+    from easy_glm.workflow import Interaction
+
+    p = Project.from_json(project_file)
+    p.models["freq"].interactions = [Interaction("DrivAge", "Region", alpha=alpha)]
+    path = tmp_path / "odd_alpha.json"
+    p.to_json(path)
+    at = AppTest.from_string(
+        _script("pages_design", str(path), fit=False), default_timeout=180
+    )
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    boxes = [n for n in at.number_input if n.label.startswith("Cells alpha")]
+    assert alpha in [n.value for n in boxes]
 
 
 def test_main_entry_point_renders(project_file):

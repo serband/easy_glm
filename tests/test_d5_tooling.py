@@ -1070,3 +1070,199 @@ def _train_rows(at) -> pl.DataFrame:
     p = at.session_state["_project"]
     train, _holdout = train_holdout(at.session_state["prepared"][1], p.data.split)
     return train
+
+
+# --------------------------------------------------------------------------
+# A2 merge: the tools on a two-stage interaction fit
+# --------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def interaction_workspace(tmp_path_factory, data):
+    """The same book with a `DrivAge × Region` interaction, so the model is
+    fitted in two stages (mains frozen, cells on top)."""
+    from easy_glm.workflow import Interaction
+
+    folder = tmp_path_factory.mktemp("d5x")
+    path = folder / "policies.parquet"
+    data.write_parquet(path)
+    p = Project.from_json(_project_of(data, folder, path))
+    p.models["freq"].interactions = [Interaction("DrivAge", "Region", 0.01)]
+    project_path = folder / "d5x.easyglm-project.json"
+    p.to_json(project_path)
+    return {"folder": folder, "project": str(project_path), "data": str(path)}
+
+
+def _project_of(data, folder, path) -> str:
+    """The workspace project, written next to ``path`` (shared by the two
+    workspaces so they differ only in the interaction)."""
+    p = Project(name="d5test")
+    p.data.source.type = "parquet"
+    p.data.source.path = str(path)
+    p.data.roles = {
+        "IDpol": "id",
+        "ClaimNb": "target",
+        "Exposure": "weight",
+        "DrivAge": "predictor",
+        "Density": "predictor",
+        "Region": "predictor",
+        "traintest": "split",
+    }
+    p.data.split.mode = "column"
+    p.data.split.column = "traintest"
+    p.design.variables["Density"] = VariableDesign(kind="linear")
+    p.new_model("freq", divide_target_by_weight=True)
+    p.models["freq"].penalty.alpha = 0.002
+    p.models["freq"].penalty.cv = None
+    out = folder / "_base.easyglm-project.json"
+    p.to_json(out)
+    return str(out)
+
+
+class TestTwoStageInteractionModel:
+    """A2 merged into D5: a model with interactions is a `TwoStageFit`, and the
+    tools, undo, rebalance and snapshots must work on it unchanged."""
+
+    def test_the_mains_exposure_survives_the_two_stage_composition(
+        self, interaction_workspace, data
+    ):
+        from easy_glm.core.fit import TwoStageFit
+
+        p = Project.from_json(interaction_workspace["project"])
+        run = run_model(p, data, "freq")
+        assert isinstance(run.fit, TwoStageFit)
+        train_exposure = data.filter(pl.col("traintest") == 1)["Exposure"].sum()
+        for var in ("DrivAge", "Density", "Region"):
+            rows = run.rate_model.variables[var].table
+            assert sum(r.exposure for r in rows) == pytest.approx(train_exposure)
+        # the cells keep their own exposure, from the encoder
+        cells = run.rate_model.variables["DrivAge×Region"].table
+        assert sum(c.exposure for c in cells) == pytest.approx(train_exposure)
+        # so the tools weight by exposure rather than falling back to equal
+        result = tooling.smooth_moving_average(
+            run.rate_model.variables["DrivAge"], "DrivAge"
+        )
+        assert not result.uniform_weights
+
+    def test_a_tool_on_a_parent_keeps_the_composed_prediction_exact(
+        self, interaction_workspace, data
+    ):
+        """`RateModel.predict` after the edit is the two-stage fit's own
+        prediction times the adjustment factor of the band each row falls in."""
+        p = Project.from_json(interaction_workspace["project"])
+        run = run_model(p, data, "freq")
+        cfg = p.models["freq"]
+        fitted_table = run.tables["DrivAge"]
+        rows = run.rate_model.variables["DrivAge"].table
+
+        result = tooling.smooth_moving_average(
+            run.rate_model.variables["DrivAge"], "DrivAge", window=3
+        )
+        for row, fit_value, new in zip(
+            rows, fitted_table["relativity"].to_list(), result.values, strict=True
+        ):
+            if abs(new - row.relativity) > 1e-12 and abs(new - fit_value) > 1e-12:
+                cfg.adjustments.append(Adjustment("DrivAge", row.from_, row.to_, new))
+        assert cfg.adjustments
+        rebuild_rate_model(p, run, data)
+
+        sample = data.head(500)
+        adjusted_table = rate_model_tables(run.rate_model)["DrivAge"]
+        factor = np.array(
+            [
+                _lookup(adjusted_table, "numeric", v)
+                / _lookup(fitted_table, "numeric", v)
+                for v in sample["DrivAge"].to_list()
+            ]
+        )
+        np.testing.assert_allclose(
+            run.rate_model.predict(sample, exposure_col=None),
+            run.fit.predict(sample) * factor,
+            rtol=1e-10,
+        )
+        # the interaction cells are untouched by a tool on one of their parents
+        assert [c.relativity for c in run.rate_model.variables["DrivAge×Region"].table][
+            :5
+        ] == [
+            c.relativity
+            for c in rate_model_for(p, run, []).variables["DrivAge×Region"].table
+        ][
+            :5
+        ]
+
+    def test_rebalance_is_exact_on_a_two_stage_fit(self, interaction_workspace, data):
+        p = Project.from_json(interaction_workspace["project"])
+        run = run_model(p, data, "freq")
+        cfg = p.models["freq"]
+        train = data.filter(pl.col("traintest") == 1)
+        target = expected_claims(run.rate_model, train, cfg)
+
+        capped = tooling.cap_floor(
+            run.rate_model.variables["DrivAge"], "DrivAge", cap=0.9
+        )
+        for row, value in zip(
+            run.rate_model.variables["DrivAge"].table, capped.values, strict=True
+        ):
+            if abs(value - row.relativity) > 1e-12:
+                cfg.adjustments.append(Adjustment("DrivAge", row.from_, row.to_, value))
+        rebuild_rate_model(p, run, data)
+        assert expected_claims(run.rate_model, train, cfg) < target * (1 - 1e-4)
+
+        cfg.base_rate_override = rebalance_override(p, run, data)
+        rebuild_rate_model(p, run, data)
+        assert expected_claims(run.rate_model, train, cfg) == pytest.approx(
+            target, rel=1e-10
+        )
+
+    def test_a_cell_tool_is_refused_and_the_page_edits_cells_in_the_grid(
+        self, interaction_workspace, data
+    ):
+        p = Project.from_json(interaction_workspace["project"])
+        run = run_model(p, data, "freq")
+        with pytest.raises(tooling.ToolingError, match="Edit the cells in the grid"):
+            tooling.smooth_moving_average(
+                run.rate_model.variables["DrivAge×Region"], "DrivAge×Region"
+            )
+
+
+def test_the_page_tools_undo_and_rebalance_on_an_interaction_model(
+    interaction_workspace, data
+):
+    """The whole D5 path through the page on a two-stage fit: apply, undo (bit
+    for bit), rebalance (exact), snapshot."""
+    at = AppTest.from_string(
+        _script(interaction_workspace["project"]), default_timeout=240
+    )
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    sample = data.head(300)
+    before = at.session_state["runs"]["freq"][1].predict(sample)
+    shown = _metric(at, "expected claims (training)")
+    assert shown not in ("no change", "—")
+
+    _button(at, "Apply to the table").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert _adjustments(at)
+    assert not np.array_equal(
+        at.session_state["runs"]["freq"][1].predict(sample), before
+    )
+
+    _button(at, "Rebalance base rate").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    p = at.session_state["_project"]
+    run = at.session_state["runs"]["freq"][1]
+    train = _train_rows(at)
+    target = expected_claims(
+        rate_model_for(p, run, [], base_rate_override=None), train, p.models["freq"]
+    )
+    assert expected_claims(run.rate_model, train, p.models["freq"]) == pytest.approx(
+        target, rel=1e-10
+    )
+
+    # two undos (the rebalance, then the tool) put the model back bit for bit
+    _button(at, "Undo").click().run()
+    _button(at, "Undo").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert not _adjustments(at)
+    assert at.session_state["_project"].models["freq"].base_rate_override is None
+    np.testing.assert_array_equal(
+        at.session_state["runs"]["freq"][1].predict(sample), before
+    )

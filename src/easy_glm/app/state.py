@@ -97,11 +97,18 @@ _SAMPLE_KEYS = ("sample_rows", "sample_seed")
 #: as if its numbers were slopes.
 #: 4 — merge of W4 (per-session .fitting markers, pruning rules) and B2 above;
 #: both bumped 2 → 3 independently, so the merged tree moves on to 4.
-#: 5 — D5: rate-table rows carry the training exposure that fell in them
-#: (``FromToRow.exposure`` / ``BandRow.exposure``, from the new
-#: ``GLMFit.row_exposure``). An older pickle has rows without the attribute at
-#: all, and the relativity tooling weights bands by it.
-PERSIST_FORMAT = 5
+#: 5 — A2: a model with interactions is now fitted in **two stages** and its run
+#: holds a ``TwoStageFit`` (mains frozen, cells fitted on top as adjustments).
+#: A run pickled by an earlier build holds a joint fit whose main tables include
+#: part of the interaction — the same shape, a different meaning — so those runs
+#: are a cache miss and are refitted.
+#: 6 — D5 merged with A2: both pieces claimed 5 while they were on their own
+#: branches, so the merged tree moves on. D5's own reason: rate-table rows carry
+#: the training exposure that fell in them (``FromToRow.exposure`` /
+#: ``BandRow.exposure``, from the new ``GLMFit.row_exposure``) — an older pickle
+#: has rows without the attribute at all, and the relativity tooling weights
+#: bands by it.
+PERSIST_FORMAT = 6
 #: A marker left by *another* session is only removed once it is this old:
 #: younger than this it may belong to a fit that is still running in another
 #: tab, and taking its marker away would cost that tab its own warning.
