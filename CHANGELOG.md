@@ -1,6 +1,44 @@
 # Changelog
 
-## 0.4.0 (unreleased)
+## 0.4.0 (2026-09-03)
+
+### The README is a release gate now (R11)
+- **Every code block on the README runs, checked by a test.** In 0.3 the
+  README examples did not all run against the released package, which cost
+  trust; `tests/test_readme.py` now extracts every fenced ```python block
+  from `README.md`, in order, and executes them in one namespace (so the page
+  reads as a tutorial — later blocks reuse `df`, `spec`, `fit`, `rm`,
+  `project` from earlier ones), plus every `examples/*.py` via `subprocess`.
+  A block that genuinely needs a browser or the workbench server is fenced
+  ```python skip-test``` and capped at a handful, so a block cannot be
+  quietly exempted by mislabelling it. The whole check runs in about 20
+  seconds on the checked-in 50k-row fixture — see
+  [`docs/checks/readme-gate.md`](docs/checks/readme-gate.md)
+  (`scripts/checks/readme_gate.py --write`), regenerated from a real run.
+- **The README was rewritten end to end against the final 0.4 API**, in the
+  order a pricing actuary would work: install, load the checked-in French
+  motor sample, design a model (step by default, a categorical, a linear
+  term, a monotone constraint), fit at a fixed alpha (with cross-validation
+  named as the more careful, slower alternative), read the rate tables, add
+  an interaction (mains frozen, cells as pure adjustments), smooth and cap a
+  factor and rebalance, the exact-scoring invariant and the `.easyglm`
+  round-trip, the Excel export, a book of a few hundred thousand rows on the
+  compact design path, a `Project` file and its exported Python script, lift
+  / Gini / A/E / double-lift diagnostics, a rate-change model with the
+  target-loss-ratio solver, a lapse (binomial) model, the browser workbench,
+  the `easy-glm` command line, and the project-file/script round trip. Every
+  feature the 0.4 CHANGELOG lists above is demonstrated running, not just
+  described.
+- **`examples/` brought up to the final API**: the six existing scripts now
+  read the checked-in fixture instead of downloading the full dataset, and
+  three are new — `rate_change.py`, `lapse_model.py` and `large_book.py`
+  (`--rows`, default 300,000, above the compact-path threshold). Two
+  pre-existing examples were quietly computing a meaningless "per-variable
+  A/E" by summing `ae_by_variable`'s bins back into the overall A/E (the
+  bins partition the same rows, so the sum always reproduces it); both now
+  report the spread of A/E across bins instead, which is what the diagnostic
+  is for.
+- `pyproject.toml` bumped to `0.4.0`.
 
 ### Books of millions of rows fit in memory (G)
 - **A 5-million-row book with a 227-column rating structure now fits and trains
