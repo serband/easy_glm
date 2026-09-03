@@ -21,6 +21,7 @@ from easy_glm.engine.models import (
     CellRow,
     FromToRow,
     ModelMetadata,
+    TableType,
     VariableConfig,
     level_label,
     lumped_label,
@@ -60,16 +61,17 @@ def _bin_rows(fit: GLMFit, variable: str) -> tuple[list[Any], np.ndarray]:
             return float(np.dot(slopes, np.clip(x - starts, 0.0, widths)))
 
         rows: list[Any] = [BandRow(None, edges[0], 1.0, 0.0)]
-        contrib = [0.0]  # below lo: every band is empty
+        band_contrib = [0.0]  # below lo: every band is empty
         for j in range(len(edges) - 1):
             rows.append(BandRow(edges[j], edges[j + 1], 1.0, float(slopes[j])))
-            contrib.append(value_at(edges[j]))
+            band_contrib.append(value_at(edges[j]))
         rows.append(BandRow(edges[-1], None, 1.0, 0.0))
-        contrib.append(value_at(edges[-1]))
+        band_contrib.append(value_at(edges[-1]))
         rows.append(BandRow(None, None, 1.0, 0.0))
-        contrib.append(null_contrib)
+        band_contrib.append(null_contrib)
         _set_exposure(fit, variable, rows)
-        return rows, np.asarray(contrib)
+        return rows, np.asarray(band_contrib)
+    contrib: np.ndarray
     if isinstance(enc, StepEncoder):
         n_knots = len(enc.knots)
         step_coefs = coef[:n_knots]
@@ -118,11 +120,19 @@ def _cell_rows(fit: GLMFit, variable: str) -> tuple[list[CellRow], np.ndarray]:
     return rows, contrib
 
 
-def _check_log_link(fit: GLMFit) -> None:
-    if fit.link != "log":
+#: Links whose linear predictor decomposes into a product of per-variable
+#: factors, which is what a rate table is. ``log`` gives relativities on the
+#: rate; ``logit`` gives them on the **odds** (the scorer turns the odds back
+#: into a probability) — the actuary's answer to Q7.
+MULTIPLICATIVE_LINKS = ("log", "logit")
+
+
+def _check_multiplicative_link(fit: GLMFit) -> None:
+    if fit.link not in MULTIPLICATIVE_LINKS:
         raise NotImplementedError(
-            f"Multiplicative rate tables need a log link; this fit uses "
-            f"{fit.link!r}. Use fit.coef_table() / fit.predict() instead."
+            f"Rate tables need a log link (relativities) or a logit link (odds "
+            f"relativities); this fit uses {fit.link!r}. Use fit.coef_table() / "
+            "fit.predict() instead."
         )
 
 
@@ -141,8 +151,13 @@ def rate_tables(fit: GLMFit, *, base: Base = "modal") -> dict[str, pl.DataFrame]
     ``base="modal"`` puts relativity 1.0 on the most exposed bin of the
     training data (for a linear term: at the lower edge of that band);
     ``"reference"`` uses the lowest bin / reference level / below the clamp.
+
+    With a **logit** link (binomial) every number is an *odds* relativity: it
+    multiplies the odds, not the probability. The tables are otherwise
+    identical, and :func:`to_rate_model` turns the odds back into a probability
+    when scoring.
     """
-    _check_log_link(fit)
+    _check_multiplicative_link(fit)
     out: dict[str, pl.DataFrame] = {}
     for var in fit.spec.variables:
         enc = fit.spec[var]
@@ -225,8 +240,11 @@ def _interaction_table(fit: GLMFit, variable: str) -> pl.DataFrame:
 
 
 def base_rate(fit: GLMFit, *, base: Base = "modal") -> float:
-    """Prediction (per unit weight) for the base risk implied by ``base``."""
-    _check_log_link(fit)
+    """Prediction (per unit weight) for the base risk implied by ``base``.
+
+    With a logit link this is the base risk's **odds**, not its probability, so
+    that multiplying by the odds relativities stays exact."""
+    _check_multiplicative_link(fit)
     lp = fit.intercept
     for var in fit.spec.main_effects:
         _, contrib = _bin_rows(fit, var)
@@ -243,6 +261,7 @@ def to_rate_model(
     exposure_col: str | None = None,
     train_test_col: str | None = None,
     model_type: str | None = None,
+    offset_is_premium: bool = False,
 ) -> RateModel:
     """Compile the GLM into a :class:`RateModel` that reproduces it exactly.
 
@@ -257,8 +276,26 @@ def to_rate_model(
     ``base_rate_override`` to rescale (e.g. for a target loss ratio); the
     relativities are unaffected. ``model_type`` is a label stored in the
     metadata (defaults to the canonical family name).
+
+    ``offset_is_premium`` records that the offset is the log of the premium
+    charged today, so the tables are **multipliers on the current premium**
+    (base rate = the overall rate change, relativities = differential changes).
+    It only changes what the Excel summary, the workbench and the report call
+    the numbers; no number moves.
+
+    A **binomial** (logit) fit compiles to the same multiplicative tables read
+    as *odds* relativities: the base rate is the base risk's odds, the scorer
+    multiplies the odds and then returns ``odds / (1 + odds)``, a probability in
+    (0, 1). Because a probability is not an amount, such a model refuses an
+    exposure column outright rather than quietly multiplying by it.
     """
-    _check_log_link(fit)
+    _check_multiplicative_link(fit)
+    if fit.link == "logit" and exposure_col is not None:
+        raise ValueError(
+            f"A binomial model predicts a probability, which cannot be multiplied "
+            f"by an exposure; drop exposure_col={exposure_col!r} (the weight is "
+            "still used for the fit and for A/E)."
+        )
     variables: dict[str, VariableConfig] = {}
     for var in fit.spec.variables:
         enc = fit.spec[var]
@@ -280,7 +317,7 @@ def to_rate_model(
             x_base = base_row.from_ if base_row.from_ is not None else base_row.to_
             variables[var] = VariableConfig(type="linear", table=rows, x_base=x_base)
             continue
-        kind = "numeric" if isinstance(enc, StepEncoder) else "categorical"
+        kind: TableType = "numeric" if isinstance(enc, StepEncoder) else "categorical"
         variables[var] = VariableConfig(
             type=kind, table=rows, other_label=_other_label(enc)
         )
@@ -295,6 +332,7 @@ def to_rate_model(
         predictor_variables=list(variables),
         offset_col=fit.offset_col,
         offset_is_log=True,
+        offset_is_premium=bool(offset_is_premium) and fit.offset_col is not None,
         link=fit.link,
         divide_target_by_weight=fit.divide_target_by_weight,
     )

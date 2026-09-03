@@ -909,6 +909,10 @@ def render() -> None:
                 ("manual adjustments", str(len(cfg.adjustments)), None),
             ]
         )
+    if run.rate_model.relativity_label != "relativity":
+        # a rate-change or binomial model: say what one number means before the
+        # actuary reads a single row of the table
+        st.info(ui.relativity_note_markdown(run.rate_model))
     variables = list(run.rate_model.variables)
 
     def _display(v: str) -> str:

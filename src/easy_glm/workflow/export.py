@@ -13,8 +13,8 @@ from easy_glm.core.design import (
 )
 from easy_glm.core.fit import TwoStageFit
 
-from .project import ModelConfig, Project
-from .run import ModelRun, stage2_alpha
+from .project import ModelConfig, Project, premium_offset_column
+from .run import ModelRun, exposure_for, stage2_alpha
 
 
 def _lit(value: Any) -> str:
@@ -40,23 +40,32 @@ def _list(values: list[Any], indent: int = 8, width: int = 88) -> str:
     return "[\n" + "\n".join(lines) + "\n" + " " * (indent - 4) + "]"
 
 
+def _penalty_arg(enc) -> str:
+    """``, penalty_weight=...`` when the variable is not penalised like the rest
+    of the design (0 = unpenalised), else nothing."""
+    weight = float(getattr(enc, "penalty_weight", 1.0))
+    return "" if weight == 1.0 else f", penalty_weight={weight!r}"
+
+
 def _spec_code(spec: DesignSpec) -> str:
     parts = []
     inter: list[InteractionEncoder] = []
     for var, enc in spec.encoders.items():
         if isinstance(enc, StepEncoder):
             parts.append(
-                f"    {var!r}: StepEncoder({var!r}, {_list(enc.knots)}, null_indicator={enc.null_indicator}),"
+                f"    {var!r}: StepEncoder({var!r}, {_list(enc.knots)}, "
+                f"null_indicator={enc.null_indicator}{_penalty_arg(enc)}),"
             )
         elif isinstance(enc, CategoricalEncoder):
             parts.append(
-                f"    {var!r}: CategoricalEncoder({var!r}, {_list(enc.levels)}),"
+                f"    {var!r}: CategoricalEncoder({var!r}, {_list(enc.levels)}"
+                f"{_penalty_arg(enc)}),"
             )
         elif isinstance(enc, LinearEncoder):
             parts.append(
                 f"    {var!r}: LinearEncoder({var!r}, {_list(enc.knots)}, "
                 f"clamp=({_lit(enc.lo)}, {_lit(enc.hi)}), "
-                f"null_indicator={enc.null_indicator}),"
+                f"null_indicator={enc.null_indicator}{_penalty_arg(enc)}),"
             )
         elif isinstance(enc, InteractionEncoder):
             inter.append(enc)
@@ -119,6 +128,8 @@ def _fit_code(
         repr(cfg.target),
         f"family={cfg.family!r}",
     ]
+    if cfg.family == "tweedie":
+        args.append(f"tweedie_power={float(cfg.tweedie_power)!r}")
     if cfg.link:
         args.append(f"link={cfg.link!r}")
     if cfg.weight:
@@ -278,6 +289,16 @@ def to_script(
         lines.append(f"df = df.with_columns(({der.expr}).alias({der.name!r}))")
     for f in d.filters:
         lines.append(f"df = df.filter({f})")
+    if (premium := project.current_premium) is not None:
+        # exactly what workflow.prep.add_premium_offset does, written out so the
+        # rate-change setup is visible rather than implied by a role
+        lines += [
+            f"# {premium} is the premium charged today; its log is the model's",
+            "# offset, so the base rate is the overall rate change and every",
+            "# relativity is a multiplier on the current premium",
+            f"df = df.with_columns(pl.col({premium!r}).cast(pl.Float64).log()"
+            f".alias({premium_offset_column(premium)!r}))",
+        ]
 
     split = d.split
     lines += [
@@ -302,6 +323,7 @@ def to_script(
     ignored = project.exploration.get("leakage", {}).get("ignored", [])
     if ignored:
         lines.append(f"# excluded after the leakage review: {', '.join(ignored)}")
+    alpha: float | None
     if run is not None:
         lines.append(_spec_code(run.spec))
         alpha = run.fit.alpha
@@ -345,6 +367,17 @@ def to_script(
                 else []
             ),
             *(
+                [f"    penalty_weight={pweights!r},"]
+                if (
+                    pweights := {
+                        v: float(vd.penalty_weight)
+                        for v, vd in project.design.variables.items()
+                        if float(vd.penalty_weight) != 1.0 and v in cfg.predictors
+                    }
+                )
+                else []
+            ),
+            *(
                 [f"    clamp={clamps!r},"]
                 if (
                     clamps := {
@@ -370,7 +403,7 @@ def to_script(
                 f"penalty_weight={it.penalty_weight!r},",
                 "))",
             ]
-        alpha = cfg.penalty.alpha if cfg.penalty.alpha is not None else None
+        alpha = cfg.penalty.alpha
         # stage 2 follows stage 1 unless an interaction asked for its own alpha
         # None here means "follow the mains", which is fit_two_stage's own default
         alpha2 = stage2_alpha(cfg) if derive_stages else None
@@ -410,7 +443,7 @@ def to_script(
         lines.append(_fit_code(cfg, alpha, monotone, chose_by_cv))
     lines += ["print(fit)", "print(fit.coef_table(drop_zero=True))"]
 
-    exposure = project.exposure or (cfg.weight if cfg.divide_target_by_weight else None)
+    exposure = exposure_for(project, cfg)
     lines += [
         "",
         "# --------------------------------------------------- 5. rate tables & scorer",
@@ -421,6 +454,12 @@ def to_script(
         f"    exposure_col={exposure!r},",
         f"    train_test_col={split.column!r},",
         f"    model_type={cfg.family!r},",
+        *(
+            ["    offset_is_premium=True,  # tables are multipliers on the premium"]
+            if project.current_premium
+            and cfg.offset == premium_offset_column(project.current_premium)
+            else []
+        ),
         ")",
     ]
     if cfg.adjustments:

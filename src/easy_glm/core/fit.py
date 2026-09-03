@@ -54,13 +54,26 @@ _FAMILY_ALIASES: dict[str, str] = {
 Direction = str  # "increasing" | "decreasing"
 
 
-def resolve_family(family: Any) -> tuple[Any, str, str]:
+#: Tweedie power used when none is given: between 1 (Poisson) and 2 (Gamma),
+#: the usual choice for a pure-premium model on data with many zero claims.
+DEFAULT_TWEEDIE_POWER = 1.5
+
+
+def resolve_family(
+    family: Any, tweedie_power: float | None = None
+) -> tuple[Any, str, str]:
     """Return ``(glum_family, canonical_name, default_link)``.
 
     Strings are case-insensitive (``"Poisson"``, ``"gaussian"``, ``"tweedie"``
-    = Tweedie with power 1.5). glum distribution objects pass through. Every
-    family defaults to the log link except binomial (logit), because rate
+    = Tweedie with power ``tweedie_power``, default
+    :data:`DEFAULT_TWEEDIE_POWER`). glum distribution objects pass through.
+    Every family defaults to the log link except binomial (logit), because rate
     tables are multiplicative.
+
+    ``tweedie_power`` must lie strictly between 1 and 2 — the range where the
+    distribution is a compound Poisson-Gamma, i.e. a mass of zeros plus positive
+    claim amounts. Passing it for another family is an error rather than a
+    silent no-op.
     """
     if isinstance(family, str):
         key = family.strip().lower()
@@ -70,12 +83,38 @@ def resolve_family(family: Any) -> tuple[Any, str, str]:
                 f"{sorted(_FAMILY_ALIASES)} or a glum distribution object."
             )
         name = _FAMILY_ALIASES[key]
-        fam: Any = TweedieDistribution(1.5) if name == "tweedie" else name
+        if name == "tweedie":
+            fam: Any = TweedieDistribution(check_tweedie_power(tweedie_power))
+        else:
+            if tweedie_power is not None:
+                raise ValueError(
+                    f"tweedie_power is only meaningful for the tweedie family, "
+                    f"not {family!r}"
+                )
+            fam = name
     else:
+        if tweedie_power is not None:
+            raise ValueError(
+                "tweedie_power cannot be combined with a glum distribution "
+                "object; build the distribution with the power you want"
+            )
         fam = family
         name = type(family).__name__.replace("Distribution", "").lower()
     link = "logit" if name == "binomial" else "log"
     return fam, name, link
+
+
+def check_tweedie_power(power: float | None) -> float:
+    """``power`` as a float, defaulted and checked to be strictly in (1, 2)."""
+    if power is None:
+        return DEFAULT_TWEEDIE_POWER
+    value = float(power)
+    if not 1.0 < value < 2.0:
+        raise ValueError(
+            f"tweedie_power must be strictly between 1 and 2 (1 is Poisson, 2 is "
+            f"Gamma; insurance pure premium usually sits near 1.5), got {power!r}"
+        )
+    return value
 
 
 def monotone_bounds(
@@ -186,7 +225,9 @@ class GLMFit:
 
     def coef_table(self, *, drop_zero: bool = False) -> pl.DataFrame:
         """One row per coefficient with structured feature metadata."""
-        rows = [("(intercept)", None, "intercept", None, None, self.intercept)]
+        rows: list[tuple[str, str | None, str, float | None, str | None, float]] = [
+            ("(intercept)", None, "intercept", None, None, self.intercept)
+        ]
         for f, c in zip(self.spec.features, self.coef, strict=True):
             rows.append((f.name, f.variable, f.kind, f.knot, f.level, float(c)))
         out = pl.DataFrame(
@@ -399,8 +440,8 @@ def penalty_weights(
     *,
     scale_predictors: bool,
 ) -> np.ndarray | None:
-    """Per-column L1 weights (glum ``P1``) for piecewise-linear bands and
-    interaction cells.
+    """Per-column L1 weights (glum ``P1``) for piecewise-linear bands,
+    interaction cells and any variable given its own ``penalty_weight``.
 
     Both need one for the same reason: with ``scale_predictors=True`` glum
     penalises the *standardised* coefficient ``alpha * P1_j * |beta_j| * sd_j``,
@@ -452,6 +493,18 @@ def penalty_weights(
     (:func:`fit_two_stage`) penalise cells exactly as a joint fit did: glum
     refuses to standardise without an intercept, and stage 2 has no intercept.
 
+    **Per-variable weights.** Every encoder carries a ``penalty_weight``
+    (``VariableDesign.penalty_weight`` on the Design page,
+    ``Interaction.penalty_weight`` for cells). It is applied last and
+    **multiplies** whatever rule the term's columns got above — so ``2.0``
+    shrinks a factor twice as hard as the rest of the design and ``0.0`` leaves
+    it unpenalised: every level of a categorical stays in the model, which is
+    what an actuary means by "do not let the lasso thin out my territory table".
+    For an interaction that multiplication *is* the ``penalty_weight`` in the
+    cell rule above — one loop, so mains and cells obey the same sentence. Only
+    the L1 penalty is weighted; with ``l1_ratio < 1`` glum's ridge part still
+    applies to every column.
+
     The columns themselves are never rescaled, so ``beta_j`` stays band ``j``'s
     slope and the rate table reads it off the coefficients unchanged.
 
@@ -462,11 +515,14 @@ def penalty_weights(
     noise (they sum the same numbers in a different order), which is why the
     two paths' fitted coefficients agree to 1e-10 rather than exactly.
 
-    Returns ``None`` when the spec has neither linear terms nor interactions
-    (glum's default applies).
+    Returns ``None`` when the spec has no linear terms, no interactions and no
+    variable with a non-default penalty weight (glum's default applies).
     """
     linears = [(v, e) for v, e in spec.encoders.items() if isinstance(e, LinearEncoder)]
-    if not linears and not spec.interactions:
+    weighted = [
+        (v, e) for v, e in spec.encoders.items() if float(e.penalty_weight) != 1.0
+    ]
+    if not linears and not spec.interactions and not weighted:
         return None
     p1 = np.ones(spec.n_features)
     w = np.ones(design.shape[0]) if weights is None else np.asarray(weights, float)
@@ -505,12 +561,14 @@ def penalty_weights(
             p1[idx] = 0.5 / _sd(idx, widths)
         else:
             p1[idx] = widths * enc.n_bands / (enc.hi - enc.lo)
-    for enc in spec.interactions:
-        sl = slices[enc.variable]
-        if scale_predictors:
-            p1[sl] = enc.penalty_weight * 0.5 / _sd(sl)
-        else:
-            p1[sl] = enc.penalty_weight * 0.5
+    for cells in spec.interactions:
+        sl = slices[cells.variable]
+        # 0.5 either way: glum multiplies a standardised column's P1 by its sd,
+        # so 0.5/sd times sd is the 0.5 the unstandardised branch sets directly
+        p1[sl] = 0.5 / _sd(sl) if scale_predictors else 0.5
+    # applied last, so one rule covers a main effect and an interaction alike
+    for var, encoder in weighted:
+        p1[slices[var]] *= float(encoder.penalty_weight)
     return p1
 
 
@@ -652,6 +710,7 @@ def fit_glm(
     target: str,
     *,
     family: Any = "poisson",
+    tweedie_power: float | None = None,
     weight_col: str | None = None,
     offset_col: str | None = None,
     divide_target_by_weight: bool = False,
@@ -681,8 +740,11 @@ def fit_glm(
         Response column.
     family : str or glum distribution
         ``"poisson"``, ``"gamma"``, ``"gaussian"``, ``"binomial"``,
-        ``"tweedie"`` (power 1.5) or e.g. ``TweedieDistribution(1.7)``. The link
+        ``"tweedie"`` or e.g. ``TweedieDistribution(1.7)``. The link
         is log (logit for binomial) unless ``link=`` is passed in ``glum_kwargs``.
+    tweedie_power : float, optional
+        Power of the Tweedie distribution, strictly between 1 and 2 (default
+        1.5). Only for ``family="tweedie"``.
     weight_col, offset_col : str, optional
         Sample weights (exposure or premium) and an offset already on the
         linear-predictor scale (e.g. ``log(exposure)``).
@@ -761,7 +823,7 @@ def fit_glm(
             "refit with that alpha)."
         )
 
-    fam, family_name, default_link = resolve_family(family)
+    fam, family_name, default_link = resolve_family(family, tweedie_power)
     link = glum_kwargs.pop("link", default_link)
 
     y = data[target].cast(pl.Float64).to_numpy()

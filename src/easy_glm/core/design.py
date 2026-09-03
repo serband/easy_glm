@@ -128,11 +128,33 @@ def row_label(row: tuple[Any, Any]) -> str:
     return f"[{lo}, {hi})"
 
 
+def _check_penalty_weight(enc: Any) -> None:
+    """A penalty weight must be a finite number ``>= 0`` (0 = unpenalised)."""
+    value = float(enc.penalty_weight)
+    if not np.isfinite(value) or value < 0:
+        raise ValueError(
+            f"{type(enc).__name__}({enc.variable!r}) penalty_weight must be a "
+            f"finite number >= 0 (0 = unpenalised), got {enc.penalty_weight!r}"
+        )
+    enc.penalty_weight = value
+
+
 class Encoder(ABC):
-    """Turns one raw column (or two, for interactions) into design columns."""
+    """Turns one raw column (or two, for interactions) into design columns.
+
+    Every encoder carries a ``penalty_weight``: how hard this variable's columns
+    are penalised relative to the rest of the design (glum's ``P1``; see
+    :func:`easy_glm.core.fit.penalty_weights`). 1.0 is the default, a larger
+    number shrinks the variable harder, and **0 leaves it unpenalised** — the
+    usual reason being a categorical main effect (e.g. territory) an actuary
+    wants kept in full while the lasso thins everything else. It multiplies the
+    per-column rules that already exist (band rises, interaction cells), never
+    replaces them.
+    """
 
     kind: ClassVar[str]
     variable: str
+    penalty_weight: float = 1.0
 
     @abstractmethod
     def features(self) -> list[Feature]: ...
@@ -223,8 +245,10 @@ class StepEncoder(Encoder):
     variable: str
     knots: list[float]
     null_indicator: bool = True
+    penalty_weight: float = 1.0
 
     def __post_init__(self) -> None:
+        _check_penalty_weight(self)
         knots = sorted({float(k) for k in self.knots})
         if not knots:
             raise ValueError(f"StepEncoder({self.variable!r}) needs at least one knot")
@@ -284,6 +308,7 @@ class StepEncoder(Encoder):
             "variable": self.variable,
             "knots": list(self.knots),
             "null_indicator": self.null_indicator,
+            "penalty_weight": self.penalty_weight,
         }
 
 
@@ -307,8 +332,10 @@ class CategoricalEncoder(Encoder):
     variable: str
     levels: list[str]
     other_label: str = DEFAULT_OTHER_LABEL
+    penalty_weight: float = 1.0
 
     def __post_init__(self) -> None:
+        _check_penalty_weight(self)
         levels = [str(lvl) for lvl in self.levels]
         if not levels:
             raise ValueError(
@@ -371,6 +398,7 @@ class CategoricalEncoder(Encoder):
             "variable": self.variable,
             "levels": list(self.levels),
             "other_label": self.other_label,
+            "penalty_weight": self.penalty_weight,
         }
 
 
@@ -427,8 +455,10 @@ class LinearEncoder(Encoder):
     knots: list[float]
     clamp: tuple[float, float]
     null_indicator: bool = True
+    penalty_weight: float = 1.0
 
     def __post_init__(self) -> None:
+        _check_penalty_weight(self)
         if len(self.clamp) != 2:
             raise ValueError(f"LinearEncoder({self.variable!r}) clamp must be (lo, hi)")
         lo, hi = (float(v) for v in self.clamp)
@@ -561,6 +591,7 @@ class LinearEncoder(Encoder):
             "knots": list(self.knots),
             "clamp": [self.lo, self.hi],
             "null_indicator": self.null_indicator,
+            "penalty_weight": self.penalty_weight,
         }
 
 
@@ -877,6 +908,7 @@ def linear_encoder_from_data(
     n_bins: int = 20,
     clamp: tuple[float, float] | None = None,
     null_indicator: bool = True,
+    penalty_weight: float = 1.0,
 ) -> LinearEncoder:
     """A :class:`LinearEncoder` clamped to the training range (or ``clamp``),
     with ``knots`` (default: quantile knots) restricted to the open range.
@@ -890,7 +922,9 @@ def linear_encoder_from_data(
     if x.is_empty():
         raise ValueError(f"Cannot build a linear term for {variable!r}: all null")
     if clamp is None:
-        lo, hi = round_range_outward(float(x.min()), float(x.max()))
+        # min()/max() of a non-empty Float64 series are floats; polars types them
+        # as "any scalar", so the cast is spelled out for the type checker too
+        lo, hi = round_range_outward(float(x.min()), float(x.max()))  # type: ignore[arg-type]
     else:
         lo, hi = (float(clamp[0]), float(clamp[1]))
     if not lo < hi:
@@ -900,7 +934,13 @@ def linear_encoder_from_data(
         )
     ks = list(knots) if knots is not None else quantile_knots(series, n_bins)
     ks = [float(k) for k in ks if lo < float(k) < hi]
-    return LinearEncoder(variable, ks, (lo, hi), null_indicator=null_indicator)
+    return LinearEncoder(
+        variable,
+        ks,
+        (lo, hi),
+        null_indicator=null_indicator,
+        penalty_weight=penalty_weight,
+    )
 
 
 @dataclass
@@ -932,6 +972,7 @@ class DesignSpec:
         interaction_penalty_weight: float = 1.0,
         linear: list[str] | None = None,
         clamp: dict[str, tuple[float, float]] | None = None,
+        penalty_weight: dict[str, float] | None = None,
     ) -> DesignSpec:
         """Infer an encoder per predictor from (training) data.
 
@@ -944,9 +985,13 @@ class DesignSpec:
         keeping levels with at least ``min_level_share`` of the (optionally
         ``weight_col``-weighted) rows. ``interactions`` adds ``A × B`` terms
         (both must be predictors) whose kept cells are decided from the same data.
+        ``penalty_weight`` sets a variable's own L1 weight (1.0 = as the rest of
+        the design, 0 = unpenalised; see
+        :func:`easy_glm.core.fit.penalty_weights`).
         """
         knots = knots or {}
-        categorical = set(categorical or [])
+        pweight = penalty_weight or {}
+        categorical_vars = set(categorical or [])
         linear_vars = set(linear or [])
         clamp = clamp or {}
         weights = data[weight_col] if weight_col else None
@@ -955,7 +1000,7 @@ class DesignSpec:
             if var not in data.columns:
                 raise KeyError(f"Predictor {var!r} not found in data")
             s = data[var]
-            is_numeric = s.dtype in NUMERIC_DTYPES and var not in categorical
+            is_numeric = s.dtype in NUMERIC_DTYPES and var not in categorical_vars
             if var in linear_vars and not is_numeric:
                 raise ValueError(f"{var!r} is not numeric; it cannot be a linear term")
             if is_numeric and var in linear_vars:
@@ -966,6 +1011,7 @@ class DesignSpec:
                     n_bins=n_bins,
                     clamp=clamp.get(var),
                     null_indicator=null_indicator,
+                    penalty_weight=float(pweight.get(var, 1.0)),
                 )
             elif is_numeric:
                 ks = list(knots[var]) if var in knots else quantile_knots(s, n_bins)
@@ -974,7 +1020,12 @@ class DesignSpec:
                         f"Cannot derive knots for {var!r}: it has fewer than two "
                         "distinct non-null values. Drop it or pass knots=... ."
                     )
-                encoders[var] = StepEncoder(var, ks, null_indicator=null_indicator)
+                encoders[var] = StepEncoder(
+                    var,
+                    ks,
+                    null_indicator=null_indicator,
+                    penalty_weight=float(pweight.get(var, 1.0)),
+                )
             else:
                 levels = frequent_levels(
                     s, min_share=min_level_share, max_levels=max_levels, weights=weights
@@ -984,7 +1035,12 @@ class DesignSpec:
                 other = DEFAULT_OTHER_LABEL
                 while other in levels:  # a real level called "Other" (e.g. a recode)
                     other += " (lumped)"
-                encoders[var] = CategoricalEncoder(var, levels, other_label=other)
+                encoders[var] = CategoricalEncoder(
+                    var,
+                    levels,
+                    other_label=other,
+                    penalty_weight=float(pweight.get(var, 1.0)),
+                )
         spec = cls(encoders)
         for a, b in interactions or []:
             for parent in (a, b):

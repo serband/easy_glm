@@ -48,7 +48,9 @@ def band_expr(series_name: str, knots: list[float]) -> pl.Expr:
     knots = [float(k) for k in knots]
     labels = band_labels(knots)
     col = pl.col(series_name).cast(pl.Float64)
-    expr = pl.when(col.is_null() | col.is_nan()).then(pl.lit(NULL_LABEL))
+    # `when(...).then(...)` returns a chainable builder whose type changes as
+    # branches are added; Any keeps the loop readable
+    expr: Any = pl.when(col.is_null() | col.is_nan()).then(pl.lit(NULL_LABEL))
     expr = expr.when(col < knots[0]).then(pl.lit(labels[0]))
     for i in range(1, len(knots)):
         expr = expr.when(col < knots[i]).then(pl.lit(labels[i]))
@@ -175,7 +177,11 @@ def single_factor_strength(
     min_level_share: float = 0.002,
 ) -> float | None:
     """Share of the null deviance explained by a one-variable ridge GLM
-    (``1 - deviance / null_deviance``). ``None`` if the variable cannot be encoded."""
+    (``1 - deviance / null_deviance``). ``None`` if the variable cannot be
+    encoded, or if the model has no target yet."""
+    target = cfg.target
+    if not target:
+        return None
     try:
         spec = DesignSpec.from_data(
             train,
@@ -192,7 +198,7 @@ def single_factor_strength(
             fit = fit_glm(
                 train,
                 spec,
-                cfg.target,
+                target,
                 family=cfg.family,
                 weight_col=cfg.weight,
                 offset_col=cfg.offset,
@@ -203,7 +209,7 @@ def single_factor_strength(
             )
         except Exception:  # noqa: BLE001 - a failing single-factor fit is not fatal
             return None
-    y = train[cfg.target].cast(pl.Float64).to_numpy()
+    y = train[target].cast(pl.Float64).to_numpy()
     w = train[cfg.weight].cast(pl.Float64).to_numpy() if cfg.weight else None
     if cfg.divide_target_by_weight and w is not None:
         y = y / w

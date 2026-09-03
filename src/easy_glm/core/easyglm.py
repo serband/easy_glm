@@ -10,7 +10,7 @@ import polars as pl
 
 from easy_glm.engine.rate_model import RateModel
 
-from .design import DesignSpec, StepEncoder
+from .design import CategoricalEncoder, DesignSpec, StepEncoder
 from .fit import GLMFit, TwoStageFit, fit_glm
 from .split import TRAIN_FLAG, validate_train_test_column
 from .tables import rate_tables, to_rate_model
@@ -181,7 +181,11 @@ class EasyGLM:
     def blueprint(self) -> dict[str, list]:
         """Legacy view of the spec: knots for numeric, levels for categorical."""
         return {
-            var: list(enc.knots) if isinstance(enc, StepEncoder) else list(enc.levels)
+            var: (
+                list(enc.knots)
+                if isinstance(enc, StepEncoder)
+                else list(enc.levels) if isinstance(enc, CategoricalEncoder) else []
+            )
             for var, enc in self.spec.encoders.items()
         }
 
@@ -205,8 +209,11 @@ class EasyGLM:
         path.mkdir(parents=True, exist_ok=True)
         self.spec.to_json(path / "spec.json")
         joblib.dump(self.glm.model, str(path / "glm_model.joblib"))
-        two_stage = isinstance(self.glm, TwoStageFit)
-        if two_stage:
+        # narrowed in the `isinstance` itself, not through a bool, so a type
+        # checker can see that `.stage2` exists here
+        two_stage = False
+        if isinstance(self.glm, TwoStageFit):
+            two_stage = True
             joblib.dump(self.glm.stage2.model, str(path / "glm_model_stage2.joblib"))
         self.rate_model.to_json(str(path / "rate_model.json"))
         tables_dir = path / "rate_tables"

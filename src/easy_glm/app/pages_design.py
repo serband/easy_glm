@@ -115,6 +115,7 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
                     else p.design.defaults.min_level_share
                 ),
                 "monotone": vd.monotone or "none",
+                "penalty": float(vd.penalty_weight),
                 "inferred": "step" if numeric else "categorical",
             }
         )
@@ -148,6 +149,18 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
             "monotone": st.column_config.SelectboxColumn(
                 "monotone", options=MONO_OPTIONS, required=True
             ),
+            "penalty": st.column_config.NumberColumn(
+                "penalty weight",
+                min_value=0.0,
+                max_value=100.0,
+                step=0.25,
+                format="%.2f",
+                help="How hard the lasso shrinks this factor relative to the "
+                "rest of the design. 1 = like everything else · 2 = twice as "
+                "hard · 0 = not penalised at all, so every band or level is "
+                "kept (use it for a factor you have decided to charge for, "
+                "such as a territory table).",
+            ),
         },
         key=S.widget_key("design_grid"),
     )
@@ -178,6 +191,7 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
             levels=vd.levels,
             clamp=vd.clamp,  # detail-panel fields the grid does not show
             monotone=None if r["monotone"] == "none" else r["monotone"],
+            penalty_weight=max(0.0, float(r["penalty"])),
         )
         if r["knots"] == "custom" and not isinstance(new.knots, list):
             new.knots = []  # to be filled in the detail panel
@@ -807,7 +821,9 @@ def render() -> None:
         "the data insists), **continuous** (one straight line, no knots) and **categorical** (each value a level). "
         "Categoricals become one-hot with the most frequent level as reference and an **Other** bucket. "
         "Monotone constraints bound the step increments or the band slopes; they are available for every numeric "
-        "kind, not for categoricals."
+        "kind, not for categoricals. "
+        "**Penalty weight** scales how hard the lasso shrinks one factor: 1 = like the rest of the design, "
+        "2 = twice as hard, **0 = unpenalised**, so every band or level of that factor is kept."
     )
     _grid(train, predictors)
     total = 0

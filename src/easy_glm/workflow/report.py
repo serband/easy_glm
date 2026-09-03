@@ -186,13 +186,13 @@ def _metrics_table(runs: dict[str, ModelRun], names: list[str]) -> str:
         if subset in runs[name].metrics
     ]
     head = "".join(f'<th class="num">{_esc(n)} · {s}</th>' for n, s in cols)
-    body = []
+    body: list[str] = []
     for label, key, digits in _METRIC_ROWS:
-        cells = "".join(
+        row = "".join(
             f'<td class="num">{_esc(_num(runs[n].metrics[s].get(key), digits))}</td>'
             for n, s in cols
         )
-        body.append(f"<tr><th>{_esc(label)}</th>{cells}</tr>")
+        body.append(f"<tr><th>{_esc(label)}</th>{row}</tr>")
     extra = [
         ("alpha", lambda r: _num(r.alpha, 6)),
         ("non-zero terms", lambda r: f"{int((r.fit.coef != 0).sum()):,}"),
@@ -270,14 +270,21 @@ def _summary_section(
             f"{int((run.fit.coef != 0).sum()):,} of {len(run.fit.coef):,}",
         ),
         ("base rate", _num(run.rate_model.base_rate, 6)),
+        ("each table entry is", run.rate_model.relativity_label),
         ("manual adjustments", f"{len(cfg.adjustments)}"),
     ]
+    note = (
+        f'<p class="muted">{_esc(run.rate_model.relativity_note)}</p>'
+        if run.rate_model.relativity_label != "relativity"
+        else ""
+    )
     return (
         '<section id="summary"><h2>1. Summary</h2>'
         '<div class="cols">'
         f"<div><h3>Data</h3>{_pairs_table(data_pairs)}</div>"
         f"<div><h3>Model</h3>{_pairs_table(model_pairs)}</div>"
         "</div>"
+        f"{note}"
         "<h3>Metrics</h3>"
         '<p class="muted">A/E is actual over expected on totals — 1.00 means the '
         "model charges exactly what happened. Gini is normalised (1.00 = the best "
@@ -345,7 +352,9 @@ def _ae_chart(
     table = ae_by_variable(
         frame, var, scored.actual, scored.expected, scored.weight, knots=knots
     )
-    lines = [
+    # a fourth element (dashed) is optional: _svg.category_chart reads it when
+    # a challenger line is present
+    lines: list[tuple] = [
         ("actual", table["actual_rate"].to_list(), _svg.BLUE),
         ("expected", table["expected_rate"].to_list(), _svg.ORANGE),
     ]
@@ -390,7 +399,9 @@ def _variable_sections(
         if cfg.type == "interaction":
             continue
         enc = run.spec[var] if var in run.spec.encoders else None
-        knots = enc.band_edges() if hasattr(enc, "band_edges") else None
+        knots = (
+            enc.band_edges() if enc is not None and hasattr(enc, "band_edges") else None
+        )
         blocks = [
             f'<section class="variable" id="var-{_slug(var)}">',
             f'<h3>{_esc(var)} <span class="tag">{_esc(cfg.type)}</span></h3>',
@@ -463,6 +474,8 @@ def _interaction_sections(
     knots, levels = _knots_and_levels(run)
     for var in names:
         cfg = run.rate_model.variables[var]
+        if cfg.parents is None:  # an interaction always records its two parents
+            continue
         a, b = cfg.parents
         rows_a, rows_b, rel, exp = interaction_matrices(run.rate_model, var)
         out.append(f'<section class="variable" id="var-{_slug(var)}">')

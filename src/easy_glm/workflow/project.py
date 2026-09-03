@@ -84,10 +84,46 @@ def validate_model_name(name: str, existing: Iterable[str] = ()) -> str | None:
     return None
 
 
+def safe_filename(name: str, fallback: str = "model") -> str:
+    """A file-name-safe version of a model / project name (never a path).
+
+    Model names are already refused if they cannot be file names
+    (:func:`validate_model_name`); project names are free text, so anything a
+    file system would object to becomes ``_`` and the result is capped at 80
+    characters. Used by every download button and by the command line."""
+    cleaned = re.sub(r"[^\w.\- ]+", "_", str(name)).strip(" ._")
+    return cleaned[:80] if re.search(r"\w", cleaned) else fallback
+
+
 PROJECT_VERSION = 2  # 1 = easy_glm 0.3 files (loaded and migrated)
 
-ROLES = ("target", "weight", "exposure", "offset", "split", "id", "predictor", "ignore")
-SINGLE_ROLES = ("target", "weight", "exposure", "offset", "split")
+ROLES = (
+    "target",
+    "weight",
+    "exposure",
+    "offset",
+    "current_premium",
+    "split",
+    "id",
+    "predictor",
+    "ignore",
+)
+SINGLE_ROLES = ("target", "weight", "exposure", "offset", "current_premium", "split")
+
+#: Prefix of the column :mod:`easy_glm.workflow.prep` derives from the column
+#: with role ``current_premium``: ``log(premium)``, the offset of a rate-change
+#: model. Deriving it (rather than letting ``offset`` mean "take the log of
+#: this") keeps one rule everywhere — an offset column is *always* already on
+#: the linear-predictor scale — and puts the derivation in the exported script
+#: as a line of polars anyone can read.
+PREMIUM_OFFSET_PREFIX = "log_"
+
+
+def premium_offset_column(premium: str) -> str:
+    """Name of the derived ``log(current premium)`` column for ``premium``."""
+    return f"{PREMIUM_OFFSET_PREFIX}{premium}"
+
+
 SOURCE_TYPES = ("parquet", "csv", "sas7bdat", "xlsx", "ipc")
 FAMILIES = ("poisson", "gamma", "tweedie", "gaussian", "binomial", "inverse_gaussian")
 
@@ -185,6 +221,11 @@ class VariableDesign:
     max_levels: int | None = None
     levels: list[str] | None = None  # explicit levels, first = reference
     monotone: str | None = None  # "increasing" | "decreasing"
+    #: how hard the lasso shrinks this variable relative to the rest of the
+    #: design: 1.0 = as everything else, 2.0 = twice as hard, **0 = not
+    #: penalised at all** (every band or level is kept). See
+    #: :func:`easy_glm.core.fit.penalty_weights`.
+    penalty_weight: float = 1.0
 
 
 @dataclass
@@ -277,6 +318,10 @@ class Interaction:
 @dataclass
 class ModelConfig:
     family: str = "poisson"
+    #: only for ``family="tweedie"``: the power of the compound Poisson-Gamma,
+    #: strictly between 1 (Poisson) and 2 (Gamma). 1.5 is the usual starting
+    #: point for a pure-premium model.
+    tweedie_power: float = 1.5
     link: str | None = None
     target: str | None = None
     weight: str | None = None
@@ -399,6 +444,28 @@ class Project:
         return self.column_with_role("offset")
 
     @property
+    def current_premium(self) -> str | None:
+        """Column holding the premium charged today (role ``current_premium``).
+
+        Its log is derived by :func:`easy_glm.workflow.prep.apply_variables` as
+        :func:`premium_offset_column` and used as the model offset, which is the
+        standard rate-review setup: the model then fits the *change* from
+        today's premium, so the base rate is the overall rate change and every
+        relativity is a multiplier on the current premium.
+        """
+        return self.column_with_role("current_premium")
+
+    @property
+    def offset_column(self) -> str | None:
+        """The offset a new model should use: an explicit ``offset`` role if
+        there is one, else ``log(current premium)`` when a current-premium
+        column is set."""
+        if self.offset:
+            return self.offset
+        premium = self.current_premium
+        return premium_offset_column(premium) if premium else None
+
+    @property
     def split_column(self) -> str:
         return self.data.split.column
 
@@ -430,7 +497,7 @@ class Project:
         cfg = ModelConfig(
             target=self.target,
             weight=self.weight,
-            offset=self.offset,
+            offset=self.offset_column,
             predictors=list(self.predictors),
         )
         for k, v in overrides.items():
@@ -465,7 +532,12 @@ class Project:
         ]
         for derived in self.data.derived:
             derived.expr = rename_in_expression(derived.expr, old, new)
-        for store in (self.data.roles, self.data.types, self.data.recodes):
+        stores: tuple[dict[str, Any], ...] = (
+            self.data.roles,
+            self.data.types,
+            self.data.recodes,
+        )
+        for store in stores:
             if old in store:
                 store[new] = store.pop(old)
         if old in self.design.variables:
@@ -476,6 +548,13 @@ class Project:
         for key in ("ignored", "acknowledged"):
             lst = leak.get(key, [])
             leak[key] = [new if v == old else v for v in lst]
+        # a renamed current-premium column renames the log column derived from
+        # it, so every model offsetting on that derivation has to follow
+        premium_offset = (
+            (premium_offset_column(old), premium_offset_column(new))
+            if self.data.roles.get(new) == "current_premium"
+            else None
+        )
         touched: list[str] = []
         for name, cfg in self.models.items():
             hit = False
@@ -483,6 +562,9 @@ class Project:
                 if getattr(cfg, attr) == old:
                     setattr(cfg, attr, new)
                     hit = True
+            if premium_offset is not None and cfg.offset == premium_offset[0]:
+                cfg.offset = premium_offset[1]
+                hit = True
             if old in cfg.predictors:
                 cfg.predictors = [new if v == old else v for v in cfg.predictors]
                 hit = True
@@ -512,7 +594,19 @@ class Project:
         """Set a role and keep every model consistent; returns plain-language
         notices (a predictor that left a model, an interaction dropped ...)."""
         notices: list[str] = []
+        was_premium = self.data.roles.get(column) == "current_premium"
         self.set_role(column, role)
+        if was_premium and role != "current_premium":
+            # the derived log(premium) column is gone with the role; a model
+            # still offsetting on it would fail at the next fit
+            gone = premium_offset_column(column)
+            for name, cfg in self.models.items():
+                if cfg.offset == gone:
+                    cfg.offset = None
+                    notices.append(
+                        f"Model {name} no longer offsets on {gone!r}: {column} is "
+                        f"not the current premium any more"
+                    )
         if role == "predictor":
             return notices
         for name, cfg in self.models.items():
@@ -538,7 +632,7 @@ class Project:
         prepared data): roles, split column and every model's references."""
         have = set(columns)
         problems: list[str] = []
-        for role in ("target", "weight", "exposure", "offset"):
+        for role in ("target", "weight", "exposure", "offset", "current_premium"):
             col = self.column_with_role(role)
             if col is not None and col not in have:
                 problems.append(f"{role} column {col!r} is not in the data")
@@ -604,6 +698,15 @@ class Project:
                 len(vd.clamp) != 2 or not float(vd.clamp[0]) < float(vd.clamp[1])
             ):
                 problems.append(f"design[{var!r}].clamp must be [lo, hi] with lo < hi)")
+            if not (
+                isinstance(vd.penalty_weight, int | float)
+                and float(vd.penalty_weight) >= 0
+                and float(vd.penalty_weight) < float("inf")
+            ):
+                problems.append(
+                    f"design[{var!r}].penalty_weight must be a number >= 0 "
+                    "(0 = unpenalised)"
+                )
             if isinstance(vd.knots, str) and vd.knots not in ("quantile", "integer"):
                 problems.append(
                     f"design[{var!r}].knots must be 'quantile', 'integer' or a list"
@@ -616,6 +719,11 @@ class Project:
                 continue
             if cfg.family not in FAMILIES:
                 problems.append(f"{name}: unknown family {cfg.family!r}")
+            if cfg.family == "tweedie" and not 1.0 < float(cfg.tweedie_power) < 2.0:
+                problems.append(
+                    f"{name}: tweedie_power must be strictly between 1 and 2 "
+                    f"(1 = Poisson, 2 = Gamma), got {cfg.tweedie_power!r}"
+                )
             if not cfg.target:
                 problems.append(f"{name}: no target column")
             if cfg.divide_target_by_weight and not cfg.weight:

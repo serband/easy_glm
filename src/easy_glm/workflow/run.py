@@ -27,9 +27,16 @@ from easy_glm.core.fit import GLMFit, TwoStageFit, fit_glm, fit_two_stage
 from easy_glm.core.tables import rate_tables, to_rate_model
 from easy_glm.engine.rate_model import RateModel
 
-from .diagnostics import expected_claims, model_metrics
+from .diagnostics import expected_claims, model_metrics, totals
 from .prep import train_holdout
-from .project import Adjustment, Interaction, ModelConfig, Project, VariableDesign
+from .project import (
+    Adjustment,
+    Interaction,
+    ModelConfig,
+    Project,
+    VariableDesign,
+    premium_offset_column,
+)
 
 #: sentinel for "keep the model config's own base-rate override"
 _KEEP: Any = object()
@@ -44,7 +51,7 @@ def integer_knots(series: pl.Series, max_knots: int) -> list[float] | None:
     s = series.drop_nulls().cast(pl.Float64)
     if s.is_empty():
         return None
-    lo, hi = math.floor(s.min()), math.floor(s.max())
+    lo, hi = math.floor(float(s.min())), math.floor(float(s.max()))  # type: ignore[arg-type]
     if hi - lo > max_knots or hi <= lo:
         return None
     return [float(k) for k in range(lo + 1, hi + 1)]
@@ -72,6 +79,7 @@ def encoder_for(
     d = project.design.defaults
     numeric = series.dtype in NUMERIC_DTYPES
     kind = vd.kind or ("step" if numeric else "categorical")
+    pw = float(vd.penalty_weight)
     if kind in ("step", "linear", "continuous"):
         if not numeric:
             raise ValueError(f"{variable!r} is not numeric; cannot use a {kind} design")
@@ -87,6 +95,7 @@ def encoder_for(
                 n_bins=n_bins,
                 clamp=clamp,
                 null_indicator=null_ind,
+                penalty_weight=pw,
             )
         if isinstance(vd.knots, list | tuple):
             knots: list[float] | None = [float(k) for k in vd.knots]
@@ -104,12 +113,13 @@ def encoder_for(
                 n_bins=n_bins,
                 clamp=clamp,
                 null_indicator=null_ind,
+                penalty_weight=pw,
             )
         if not knots:
             raise UnusableColumnError(
                 f"Cannot derive knots for {variable!r} (constant or all-null on train)"
             )
-        return StepEncoder(variable, knots, null_indicator=null_ind)
+        return StepEncoder(variable, knots, null_indicator=null_ind, penalty_weight=pw)
     share = vd.min_level_share if vd.min_level_share is not None else d.min_level_share
     levels = vd.levels or frequent_levels(
         series, min_share=share, max_levels=vd.max_levels, weights=weights
@@ -124,7 +134,12 @@ def encoder_for(
             f"training rows; {series.n_unique()} distinct values). Lower the share "
             "on the Design page or treat the column differently"
         )
-    return CategoricalEncoder(variable, levels, other_label=other_label_for(levels))
+    return CategoricalEncoder(
+        variable,
+        levels,
+        other_label=other_label_for(levels),
+        penalty_weight=pw,
+    )
 
 
 def other_label_for(levels: list[str]) -> str:
@@ -373,6 +388,8 @@ def run_model(
     if problems:
         raise ValueError("Project is not valid:\n- " + "\n- ".join(problems))
     cfg = project.models[model_name]
+    if not cfg.target:  # validate() already said so; this keeps the type honest
+        raise ValueError(f"{model_name}: no target column")
     train, holdout = train_holdout(df, project.data.split)
     if train.is_empty():
         raise ValueError("No training rows after the split")
@@ -390,6 +407,10 @@ def run_model(
     kwargs: dict[str, Any] = {}
     if cfg.link:
         kwargs["link"] = cfg.link
+    if cfg.family == "tweedie":
+        # both stages need the same distribution, and fit_two_stage passes its
+        # kwargs to each, so this belongs with the rest of the fit arguments
+        kwargs["tweedie_power"] = float(cfg.tweedie_power)
     fit_kwargs: dict[str, Any] = dict(
         family=cfg.family,
         weight_col=cfg.weight,
@@ -417,7 +438,7 @@ def run_model(
             **fit_kwargs,
         )
     else:
-        fit = fit_glm(train, spec, cfg.target, **fit_kwargs)
+        fit = fit_glm(train, spec, cfg.target, **fit_kwargs)  # target checked above
     exposure = exposure_for(project, cfg)
     rm = to_rate_model(
         fit,
@@ -426,6 +447,7 @@ def run_model(
         exposure_col=exposure,
         train_test_col=project.data.split.column,
         model_type=cfg.family,
+        offset_is_premium=offset_is_premium(project, cfg),
     )
     apply_adjustments(rm, cfg)
     frames = {"train": train, "holdout": holdout}
@@ -453,8 +475,19 @@ def run_model(
     )
 
 
+def link_for(cfg: ModelConfig) -> str:
+    """The link this model will be fitted with: its own if it names one, else
+    the family default (logit for binomial, log for everything else)."""
+    return cfg.link or ("logit" if cfg.family == "binomial" else "log")
+
+
 def exposure_for(project: Project, cfg: ModelConfig) -> str | None:
-    """Column the RateModel multiplies by when scoring."""
+    """Column the RateModel multiplies by when scoring.
+
+    A logit model predicts a **probability**, which is not an amount, so it
+    never gets one — the weight still drives the fit and the A/E."""
+    if link_for(cfg) == "logit":
+        return None
     return project.exposure or (cfg.weight if cfg.divide_target_by_weight else None)
 
 
@@ -529,12 +562,119 @@ def rebalance_override(
     return float(run.rate_model.base_rate * target / current)
 
 
+def offset_is_premium(project: Project, cfg: ModelConfig) -> bool:
+    """True when this model offsets on the log of the project's current-premium
+    column, i.e. it is a rate-change model whose tables read as multipliers on
+    the premium charged today (Q6)."""
+    premium = project.current_premium
+    return premium is not None and cfg.offset == premium_offset_column(premium)
+
+
+def solve_base_rate(
+    run: ModelRun,
+    df: pl.DataFrame,
+    target_ratio: float,
+    *,
+    weight: str | None = None,
+    against: str | None = None,
+) -> float:
+    """Base rate that puts the model's **actual ÷ expected at ``target_ratio``**.
+
+    That one sentence covers both things an actuary uses this for, because in a
+    rate review the model's prediction *is* the price:
+
+    * **Rate change (the model offsets on the current premium).** Its
+      predictions are premiums, the actual is the loss, so actual ÷ expected is
+      the **loss ratio** the book would be written at. Ask for 0.65 and the base
+      rate becomes the **overall rate change** — exactly what Q6 says the base
+      rate of a rate-change model means — while every relativity, i.e. every
+      differential change, stays where it was.
+    * **Re-balancing an ordinary model.** Ask for 1.00 and total expected equals
+      total actual: overall A/E is exactly 1, the usual tidy-up after
+      hand-editing relativities. 1.05 loads the model 5 % (A/E 1.05 means the
+      expected is 5 % *below* the actual).
+
+    The base rate multiplies every prediction, so this is closed form — one pass
+    over ``df``, no search::
+
+        new base rate = current base rate x sum(against)
+                                          / (target_ratio x sum(expected))
+
+    *expected* is the run's own prediction per row on the same scale as its A/E
+    (per-unit prediction times the exposure or weight the model was fitted with
+    — :func:`easy_glm.workflow.totals`), computed with whatever base rate the
+    run currently carries. That last point is what makes an existing
+    ``base_rate_override`` harmless: the ratio moves in exact proportion to it,
+    so solving after an override, or solving twice, gives the same number.
+
+    ``against`` is the total the model is measured against — the model's target
+    column (the actual losses or claims) by default. ``weight`` overrides the
+    column that turns per-unit predictions into row totals; leave it out to use
+    the model's own convention. Rows are used as given, so pass the frame the
+    balance should hold on (the training rows, the whole book, one segment).
+
+    Binomial models are refused: a probability is not proportional to the base
+    rate, so no closed form exists.
+    """
+    if run.rate_model.metadata.link != "log":
+        raise ValueError(
+            "solve_base_rate needs a multiplicative (log-link) model: with the "
+            f"{run.rate_model.metadata.link!r} link the prediction is not "
+            "proportional to the base rate, so scaling it would not scale the "
+            "total."
+        )
+    ratio = float(target_ratio)
+    if not np.isfinite(ratio) or ratio <= 0:
+        raise ValueError(
+            f"target_ratio must be a positive number, got {target_ratio!r}"
+        )
+    if df.is_empty():
+        raise ValueError("No rows to balance the base rate on")
+    cfg = run.config
+    actual, expected, _ = totals(df, cfg, run.predict(df))
+    if weight is not None:
+        if weight not in df.columns:
+            raise KeyError(f"Weight column {weight!r} is not in the data")
+        expected = run.predict(df) * df[weight].cast(pl.Float64).to_numpy()
+    if against is None:
+        target_total = float(np.sum(actual))
+        what = f"the model's target ({cfg.target})"
+    else:
+        if against not in df.columns:
+            raise KeyError(f"Column {against!r} is not in the data")
+        target_total = float(df[against].cast(pl.Float64).sum())
+        what = against
+    expected_total = float(np.sum(expected))
+    if not np.isfinite(expected_total) or expected_total <= 0:
+        raise ValueError(
+            "The model's expected total on these rows is not a positive number, "
+            "so there is no base rate that hits the target"
+        )
+    if not np.isfinite(target_total) or target_total <= 0:
+        raise ValueError(
+            f"The total of {what} on these rows is not a positive number, so "
+            "there is no base rate that hits the target"
+        )
+    return float(run.rate_model.base_rate) * target_total / (ratio * expected_total)
+
+
 def rebuild_rate_model(project: Project, run: ModelRun, df: pl.DataFrame) -> ModelRun:
     """Recompile the run's RateModel from its fit (no refit) — used after the
     manual adjustments or base-rate override of its model config change —
     and refresh tables and metrics in place."""
     cfg = project.models[run.name]
     rm = rate_model_for(project, run)
+
+    rm = to_rate_model(
+        run.fit,
+        base=cfg.base,  # type: ignore[arg-type]
+        base_rate_override=cfg.base_rate_override,
+        exposure_col=exposure_for(project, cfg),
+        train_test_col=project.data.split.column,
+        model_type=cfg.family,
+        offset_is_premium=offset_is_premium(project, cfg),
+    )
+    apply_adjustments(rm, cfg)
     train, holdout = train_holdout(df, project.data.split)
     frames = {
         k: v

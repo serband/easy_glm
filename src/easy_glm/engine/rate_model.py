@@ -27,6 +27,8 @@ from .models import (
     ModelMetadata,
     Snapshot,
     VariableConfig,
+    relativity_label,
+    relativity_note,
 )
 
 _UNSET = object()
@@ -278,6 +280,20 @@ class RateModel:
         self._pending_changes: list[Change] = []
         self.column_mapping = column_mapping or {}
 
+    # -- what one number in these tables means ---------------------------
+    @property
+    def relativity_label(self) -> str:
+        """Short name for one number of these tables: ``"relativity"``,
+        ``"odds relativity"`` (logit link) or ``"multiplier on current premium"``
+        (the offset is the log of today's premium)."""
+        return relativity_label(self.metadata)
+
+    @property
+    def relativity_note(self) -> str:
+        """One sentence saying how to read these tables (see
+        :attr:`relativity_label`)."""
+        return relativity_note(self.metadata)
+
     @classmethod
     def from_rate_tables(
         cls,
@@ -291,6 +307,7 @@ class RateModel:
         train_test_col: str | None = None,
         offset_col: str | None = None,
         offset_is_log: bool = True,
+        offset_is_premium: bool = False,
         link: str = "log",
         divide_target_by_weight: bool | None = None,
         predictor_variables: list[str] | None = None,
@@ -364,6 +381,7 @@ class RateModel:
             predictor_variables=list(variables),
             offset_col=offset_col,
             offset_is_log=offset_is_log,
+            offset_is_premium=offset_is_premium,
             link=link,
             divide_target_by_weight=divide_target_by_weight,
         )
@@ -669,12 +687,28 @@ class RateModel:
             result *= rel
 
         result = self._apply_offset(result, data)
+        result = self._response(result)
         result = self._apply_exposure(result, data, exposure_col)
 
         return result
 
+    def _response(self, product: np.ndarray) -> np.ndarray:
+        """Turn the product of the base rate and the relativities into the
+        prediction the model makes.
+
+        With the log link the product *is* the prediction. With the **logit**
+        link (a binomial model) the tables are odds relativities, so the product
+        is the odds and the prediction is ``odds / (1 + odds)`` — a probability
+        strictly between 0 and 1, exactly what the GLM predicts.
+        """
+        if self.metadata.link != "logit":
+            return product
+        return product / (1.0 + product)
+
     def _apply_offset(self, result: np.ndarray, data: pl.DataFrame) -> np.ndarray:
-        """Multiply by ``exp(offset)`` (or the raw column) when the fit used an offset."""
+        """Multiply by ``exp(offset)`` (or the raw column) when the fit used an
+        offset. It applies on the linear-predictor scale, so for a logit model
+        it multiplies the **odds**, before they become a probability."""
         name = self.metadata.offset_col
         if not name:
             return result
@@ -699,6 +733,14 @@ class RateModel:
         )
         if exposure_name is None:
             return result
+        if self.metadata.link == "logit":
+            # a probability is not an amount: multiplying it by exposure would
+            # produce a number between 0 and the exposure that means nothing
+            raise ValueError(
+                f"This model predicts a probability (logit link), which cannot be "
+                f"multiplied by an exposure column ({exposure_name!r}). Score it "
+                "with exposure_col=None and multiply outside if you need counts."
+            )
         if exposure_name not in data.columns:
             warnings.warn(
                 f"Exposure column '{exposure_name}' not found in data "
@@ -1026,7 +1068,9 @@ class RateModel:
         )
 
         summary: dict[str, Any] = {
-            "tables": "current relativities (manual adjustments included)",
+            "tables": f"current {self.relativity_label} per band "
+            "(manual adjustments included)",
+            "how to read them": self.relativity_note,
             "base_rate": self.base_rate,
             "model_type": self.metadata.model_type,
             "link": self.metadata.link,

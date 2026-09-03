@@ -206,11 +206,11 @@ An Emblem-style GUI over the same engine. Ten pages, one project file:
 | Page | What you do |
 |------|-------------|
 | Project & data | open/save a project, point at parquet / csv / sas7bdat / xlsx, optional sample |
-| Variables | roles (target, weight, exposure, offset, split, id, predictor, ignore), renames, type overrides, **level recodes**, derived columns (polars expressions), row filters |
+| Variables | roles (target, weight, exposure, offset, **current premium**, split, id, predictor, ignore), renames, type overrides, **level recodes**, derived columns (polars expressions), row filters |
 | Explore | exposure & observed rate by band; **leakage report** (single-factor deviance explained, target proxies, identifier-like columns, post-outcome names) with one-click ignore / acknowledge |
 | Split | indicator column or seeded random split; train/holdout balance |
-| Design | per-predictor kind (**step** by default · **linear** piecewise curve · **continuous** one straight line · **categorical**), knots (quantile / integer / custom), clamp range, null column, level share, monotone direction; exposure + rate preview per bin |
-| Model | family, target/weight/offset, penalty (fixed alpha or CV), predictors; fit; coefficients kept; regularisation path |
+| Design | per-predictor kind (**step** by default · **linear** piecewise curve · **continuous** one straight line · **categorical**), knots (quantile / integer / custom), clamp range, null column, level share, monotone direction, **penalty weight** (0 = unpenalised); exposure + rate preview per bin |
+| Model | family (incl. **Tweedie power** and binomial), target/weight/offset, penalty (fixed alpha or CV), predictors, **target loss ratio**; fit; coefficients kept; regularisation path |
 | Diagnostics | A/E by any variable (in or out of the model, champion vs challenger), lift & Gini, double lift vs a challenger or a premium column, residual factor search |
 | Compare | two fitted models side by side: metrics on train and holdout, A/E with both expected lines, lift, double lift, **which relativities differ**, make champion |
 | Rate tables | relativities with A/E (challenger overlaid) and training exposure per band, inline edits saved as adjustments (no refit), **tools** (smooth in log space — moving average or isotonic — cap/floor, round), **undo/redo**, named **snapshots** with a diff between any two, Excel / `.easyglm` download |
@@ -234,6 +234,73 @@ holdout, interaction heatmaps, lift and Gini, the comparison section, every coef
 and the reproducing Python script — a few hundred kB (350–400 kB for the French
 motor set), nothing fetched from the internet when it is opened, so it can be
 emailed or attached to a filing (`workflow.to_report_html`).
+
+---
+
+## 5. Rate change: fit the move from today's premium
+
+The standard rate review does not price from scratch — it prices the **change**
+from the premium you charge today. Put `log(current premium)` in the offset and
+every relativity becomes a *multiplier on that premium*: 1.00 means "this band
+moves with the base risk and no more", 1.20 means "20 % more than that".
+
+```python
+from easy_glm import DesignSpec, fit_glm, to_rate_model
+
+# the premium your book charges today (here: a stand-in built from exposure)
+df = df.with_columns((pl.col("Exposure") * 180.0).alias("CurrentPremium"))
+df = df.with_columns(pl.col("CurrentPremium").log().alias("log_CurrentPremium"))
+train_df = df.filter(pl.col("traintest") == 1)
+
+spec = DesignSpec.from_data(train_df, predictors, weight_col="Exposure")
+fit = fit_glm(
+    train_df, spec, "ClaimNb", family="poisson",
+    offset_col="log_CurrentPremium",           # the offset carries the premium
+    alpha=0.001,
+)
+rm = to_rate_model(fit, offset_is_premium=True)   # label the tables accordingly
+print(rm.relativity_label)   # "multiplier on current premium"
+print(rm.base_rate)          # the change for the base risk
+```
+
+In the **workbench** this is one setting: give the premium column the role
+**current premium** on the Variables page. `log_<premium>` is derived for you,
+every new model offsets on it, and the Rate tables, Export and Excel pages say
+what the numbers mean. The Model page then has a **Target loss ratio** box:
+type the loss ratio you want the book written at and the base rate that gets
+there is solved in closed form — the relativities do not move
+(`workflow.solve_base_rate`). Worked through end to end, with the numbers, in
+[`docs/checks/e-f-extras-cli.md`](docs/checks/e-f-extras-cli.md).
+
+Two more knobs that belong to the same page:
+
+* **Penalty weight** per factor (Design page, or
+  `DesignSpec.from_data(..., penalty_weight={"Region": 0.0})`): 1 is normal,
+  2 shrinks a factor twice as hard, **0 leaves it unpenalised** so every level
+  survives the lasso.
+* **Tweedie power** (Model page, or `fit_glm(..., family="tweedie",
+  tweedie_power=1.7)`) and **binomial** models, whose tables are *odds*
+  relativities and whose scorer returns probabilities.
+
+---
+
+## 6. Command line
+
+Everything the workbench does to a project, without a browser:
+
+```bash
+easy-glm run project.json --out artefacts/   # fit; write scorer, Excel, script, report
+easy-glm export project.json --script        # or --report / --excel (combinable)
+easy-glm validate project.json               # exit 1 and list the problems
+easy-glm workbench project.json              # open it in the browser
+```
+
+`run` prints the fit summary (rows, alpha, base rate, A/E, Gini, deviance
+explained) and writes four files: the `.easyglm` scorer, the Excel rate tables,
+a runnable Python script and the self-contained HTML report. Every command fits
+afresh from the data the project points at, so the script it writes has every
+knot, level and the resolved alpha in it. Problems are messages with a non-zero
+exit code, never a traceback, so a scheduled job can tell success from failure.
 
 ---
 

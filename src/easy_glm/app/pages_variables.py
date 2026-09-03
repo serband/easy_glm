@@ -17,7 +17,7 @@ import streamlit as st
 
 from easy_glm.core.design import NUMERIC_DTYPES
 from easy_glm.workflow import Derived, Project, Recode, apply_variables, eval_expr
-from easy_glm.workflow.project import ROLES
+from easy_glm.workflow.project import ROLES, premium_offset_column
 
 from . import state as S
 from . import ui
@@ -116,6 +116,10 @@ def apply_roles_grid(
                 old_role = p.data.roles.pop(final)
                 if old_role == "predictor":
                     notices.extend(("warning", n) for n in _drop_from_models(p, final))
+                elif old_role == "current_premium":
+                    notices.extend(
+                        ("warning", n) for n in _drop_premium_offset(p, final)
+                    )
                 changed = True
         elif p.data.roles.get(final) != role:
             notices.extend(("warning", n) for n in p.apply_role_change(final, role))
@@ -129,6 +133,21 @@ def apply_roles_grid(
             p.data.types[final] = kind
             changed = True
     return changed, notices
+
+
+def _drop_premium_offset(p: Project, column: str) -> list[str]:
+    """The derived ``log(premium)`` column goes with the role, so a model still
+    offsetting on it would fail at the next fit."""
+    gone = premium_offset_column(column)
+    notes: list[str] = []
+    for name, cfg in p.models.items():
+        if cfg.offset == gone:
+            cfg.offset = None
+            notes.append(
+                f"Model {name} no longer offsets on {gone!r}: {column} is not the "
+                "current premium any more"
+            )
+    return notes
 
 
 def _drop_from_models(p: Project, column: str) -> list[str]:
@@ -217,7 +236,7 @@ def _roles_grid(raw: pl.DataFrame) -> None:
     roles = p.data.roles
     summary = " · ".join(
         f"**{r}**: {', '.join(p.columns_with_role(r)) or '—'}"
-        for r in ("target", "weight", "exposure", "offset", "split")
+        for r in ("target", "weight", "exposure", "offset", "current_premium", "split")
     )
     st.caption(
         summary
@@ -225,6 +244,13 @@ def _roles_grid(raw: pl.DataFrame) -> None:
     )
     if roles and p.target is None:
         st.warning("No target assigned yet.")
+    if (premium := p.current_premium) is not None:
+        st.caption(
+            f"Rate change: `{premium_offset_column(premium)}` = log({premium}) is "
+            "derived for you and pre-filled as the offset of new models, so a model "
+            "fits the **change** from today's premium. Filter out rows with a "
+            "premium of zero or less first."
+        )
 
 
 def _recodes(raw: pl.DataFrame) -> None:

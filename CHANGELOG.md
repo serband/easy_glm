@@ -149,7 +149,7 @@
   on the Model page; a base-rate override moves the level back in one number
   without touching a relativity.
 - **Fits cached in a `*.easyglm-runs` folder by an earlier 0.4 development build
-  are ignored and refitted** (`PERSIST_FORMAT` 4 → 6, see D5 below): such a run
+  are ignored and refitted** (`PERSIST_FORMAT` 4 → 7, see D5 and E/F below): such a run
   holds a joint fit whose main tables include part of the interaction — the same
   shape, a different meaning.
 
@@ -217,14 +217,92 @@
   `workflow.rebalance_override`, `workflow.missing_variables`; and
   `workflow.rate_model_for`, which compiles "this fit plus this list of
   adjustments" into tables — what a snapshot, a restore, a rebalance and a diff
-  all use. `app.state.PERSIST_FORMAT` 4 → 6 (rate-table rows changed shape here,
-  and a model with interactions became a two-stage fit in A2 — both pieces
-  claimed 5 on their own branch, so the merged tree moves on), so runs cached by
-  an earlier 0.4 build are refitted.
+  all use. `app.state.PERSIST_FORMAT` moves on (rate-table rows changed shape here, and
+  a model with interactions became a two-stage fit in A2), so runs cached by an
+  earlier 0.4 build are refitted.
 - Tests: `tests/test_d5_tooling.py` (engine unit tests per tool, the exposure
   plumbing from fit to JSON, exactness after a tool, and the page's apply / undo
   / redo / snapshot / diff through AppTest); plain-language page in
   `docs/checks/d5-tooling.md` (`scripts/checks/d5_tooling.py --write`).
+
+### Rate reviews, modelling extras and a command line (E / F)
+- **Fit the change from the premium you charge today.** Give a column the role
+  **current premium** on the Variables page and easy_glm derives `log_<premium>`
+  and pre-fills it as the offset of every new model. The rate tables are then
+  **multipliers on the current premium** — the base rate carries the level, each
+  relativity is a differential change — and the Rate tables page, the Export
+  page and the Excel `Summary` sheet all say so, so a multiplier cannot be
+  misread as a rate. The derivation is written into the exported Python script
+  as a line of polars rather than left implicit in a role. Rows whose premium
+  has no logarithm (zero, negative, missing) are refused by name and count, with
+  the row filter to add; the filter runs first, so `pl.col('Premium') > 0` is the
+  fix and not a trap. Renaming the premium column carries every model's offset
+  with it; taking the role away clears them with a notice.
+- **A target loss ratio, solved.** `workflow.solve_base_rate(run, df, ratio)` and
+  a box on the Model page set the base rate so that total actual ÷ total expected
+  equals the number you type. For a rate-change model that ratio *is* the loss
+  ratio the book would be written at; for an ordinary model 1.00 rebalances it
+  (overall A/E exactly 1). Closed form — one pass over the rows, no search — and
+  it reads the model's *current* base rate, so an existing override cancels out
+  and solving twice gives the same answer. The relativities never move. Binomial
+  models are refused: a probability is not proportional to the base rate.
+- **A penalty weight per factor.** `VariableDesign.penalty_weight` (a column on
+  the Design page, `DesignSpec.from_data(penalty_weight={...})`) multiplies the
+  per-column rules `core/fit.py::penalty_weights` already applies: 2 shrinks a
+  factor twice as hard as the rest of the design and **0 leaves it unpenalised**,
+  so every level of a territory table you have committed to survives the lasso.
+  On the check's book a heavy penalty leaves 8 of 20 regions; at weight 0 all 20
+  stay. It weights the L1 penalty only.
+- **Tweedie power on the Model page.** `ModelConfig.tweedie_power` /
+  `fit_glm(tweedie_power=...)`, strictly between 1 and 2, default 1.5, saved with
+  the model and written into the exported script. Passing it for another family
+  is an error rather than a silent no-op.
+- **Binomial models have rate tables now.** `log` and `logit` are both
+  multiplicative links: a lapse or conversion model compiles to the same tables
+  read as **odds relativities** (labelled that way on every page and in Excel),
+  its base rate is the base risk's odds, and the scorer converts back, returning
+  a probability that matches the GLM to 1e-16. Because a probability is not an
+  amount, such a model **refuses** to be multiplied by exposure — in
+  `to_rate_model`, in `RateModel.predict`, and in the workbench, which never
+  hands it an exposure column. `rate_tables` on a binomial fit used to raise;
+  a genuinely non-multiplicative link (identity) still does.
+- **`easy-glm` on the command line.** `easy-glm run project.json [--model NAME]
+  [--out DIR]` fits and writes all four artefacts — the `.easyglm` scorer, the
+  Excel rate tables, the runnable Python script and the self-contained HTML
+  report — then prints rows, alpha, base rate and train/holdout A/E, Gini and
+  deviance explained. `easy-glm export --script | --report | --excel` writes any
+  subset, `easy-glm validate` checks a project *and its data* without fitting,
+  and `easy-glm workbench` opens the browser tool. Every artefact command fits
+  afresh, which is what makes the exported script self-contained. Nothing ever
+  prints a traceback: problems are messages with exit code 1, so a scheduled job
+  can tell success from failure. This closes the CLI half of D4.
+- **`mypy` on `core` and `workflow`** is a CI step (`--ignore-missing-imports`).
+  It found 30 problems; all are fixed rather than silenced except two
+  `type: ignore` on polars scalars. Three mattered: a model with no target
+  reached `diagnostics.unit_values` / `totals` and failed inside polars instead
+  of saying so; `single_factor_strength` and `run_model` passed a possibly-`None`
+  target to `fit_glm`; and `EasyGLM.blueprint` asked every encoder for `.levels`,
+  which a piecewise-linear term does not have.
+- `app.state.PERSIST_FORMAT` is **7** at the end of 0.4: encoders, `ModelMetadata`
+  and `ModelConfig` each gained a field here, rate-table rows gained exposure in
+  D5, and A2 made interaction models two-stage fits; each piece bumped the number
+  on its own branch and the merged tree moved on past all of them. Any run
+  pickled by an earlier 0.4 build is a cache miss, never a half-built object;
+  the comment in `app/state.py` lists every reason.
+- **A rate change and an interaction together.** A model that offsets on the
+  current premium *and* has an interaction is fitted in two stages like any
+  other: the base rate and main tables come from stage 1, the cells from stage 2,
+  the RateModel applies the premium offset on top, and `RateModel.predict`
+  reproduces the GLM to 1e-10. The main tables are identical with and without
+  the interaction, offset and all; `solve_base_rate` works unchanged (the
+  prediction is still proportional to the base rate); and the two-stage exported
+  script carries the premium derivation, the offset column, the
+  `offset_is_premium` label and the Tweedie power in **both** stages.
+- Tests: `tests/test_e_f_extras_cli.py` (83) — including the offset identity of
+  plan §R6/S1 measured at 5.6e-12 (Poisson, `scale_predictors=False`, alpha
+  × Σ premium ÷ n) with the Gamma case recorded as *not* matching, and the CLI
+  driven end to end through `subprocess`. Plain-language replay:
+  `docs/checks/e-f-extras-cli.md` (`scripts/checks/e_f_extras_cli.py --write`).
 
 ### The persisted-run folder is shared state (W4) — the second breaker session
 - **No tab may throw away another tab's fit.** Fits live in
@@ -385,11 +463,6 @@
   library would cost, and means the file contains no JavaScript and so cannot
   produce a browser error. A challenger the report cannot score on these rows
   is explained in the comparison section's place, never silently dropped.
-- **Known limitation.** D4 asks for the report "from the Export page *and the
-  CLI*". Only the Export page (and `workflow.to_report_html` for scripts) ships
-  here — there is no `easy-glm` console script yet, so the CLI half of D4 lands
-  with workstream F (`easy-glm run project.json`) and must not be forgotten when
-  0.4.0 is cut.
 - Tests: `tests/test_d3_d4_compare_report.py` (the diff on hand-made
   differences, the report's self-containment / one section per predictor /
   compare-section-only-with-a-challenger / size / headless render, and the pages

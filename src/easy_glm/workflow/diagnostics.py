@@ -33,9 +33,17 @@ from .project import ModelConfig
 # --------------------------------------------------------------------------
 # scale helpers
 # --------------------------------------------------------------------------
+def target_column(cfg: ModelConfig) -> str:
+    """The model's target column, or a message: every scale helper below needs
+    one, and a project with no target reaches them through the workbench."""
+    if not cfg.target:
+        raise ValueError("This model has no target column yet")
+    return cfg.target
+
+
 def unit_values(df: pl.DataFrame, cfg: ModelConfig) -> tuple[np.ndarray, np.ndarray]:
     """``(y_per_unit, weight)`` as the GLM saw them."""
-    y = df[cfg.target].cast(pl.Float64).to_numpy()
+    y = df[target_column(cfg)].cast(pl.Float64).to_numpy()
     w = df[cfg.weight].cast(pl.Float64).to_numpy() if cfg.weight else np.ones(df.height)
     if cfg.divide_target_by_weight:
         y = y / w
@@ -46,7 +54,7 @@ def totals(
     df: pl.DataFrame, cfg: ModelConfig, pred_unit: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """``(actual_total, expected_total, weight)`` for ``df`` given per-unit predictions."""
-    y = df[cfg.target].cast(pl.Float64).to_numpy()
+    y = df[target_column(cfg)].cast(pl.Float64).to_numpy()
     pred_unit = np.asarray(pred_unit, dtype=float)
     if cfg.weight:
         w = df[cfg.weight].cast(pl.Float64).to_numpy()
