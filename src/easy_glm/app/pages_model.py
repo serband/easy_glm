@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import polars as pl
 import streamlit as st
 
 from easy_glm.core.design import NUMERIC_DTYPES
@@ -387,9 +388,26 @@ def _fit_and_results(name: str) -> None:
         )
 
     s = run.summary()
+    two_stage = s["alpha_stage2"] is not None
     ui.metric_row(
         [
-            ("alpha", ui.fmt(s["alpha"], digits=5), "penalty strength used"),
+            (
+                "alpha (mains)" if two_stage else "alpha",
+                ui.fmt(s["alpha"], digits=5),
+                "penalty strength used to fit the main effects",
+            ),
+            *(
+                [
+                    (
+                        "alpha (cells)",
+                        ui.fmt(s["alpha_stage2"], digits=5),
+                        "penalty strength of the second stage, which fits the "
+                        "interaction cells on top of the frozen mains",
+                    )
+                ]
+                if two_stage
+                else []
+            ),
             ("non-zero / features", f"{s['non_zero']} / {s['features']}", None),
             ("train A/E", ui.fmt(s["train_ae"]), None),
             ("holdout A/E", ui.fmt(s["holdout_ae"]), None),
@@ -405,6 +423,17 @@ def _fit_and_results(name: str) -> None:
             ),
         ]
     )
+    if two_stage:
+        st.info(
+            f"**Fitted in two stages.** Stage 1 fitted the {len(run.spec.main_effects)} "
+            f"main effects at alpha {ui.fmt(s['alpha'], digits=5)} — exactly the fit "
+            "this model would get with no interaction — and those tables and the base "
+            "rate are now frozen. Stage 2 fitted "
+            + ", ".join(f"**{e.variable}**" for e in run.spec.interactions)
+            + f" on top of them at alpha {ui.fmt(s['alpha_stage2'], digits=5)}: "
+            f"{s['cells_kept']} cell(s) had enough exposure to be rated on their own, "
+            "and each is an adjustment to the mains (1.00 = none)."
+        )
     tab1, tab2, tab3 = st.tabs(
         ["Coefficients kept", "Regularisation path", "All coefficients"]
     )
@@ -412,13 +441,25 @@ def _fit_and_results(name: str) -> None:
         ui.polars_table(run.fit.coef_table(drop_zero=True))
     with tab2:
         path = alpha_path(run.fit)
-        if path.height > 1:
-            st.plotly_chart(C.alpha_path_chart(path), width="stretch")
-        else:
-            st.caption(
-                "Fixed alpha — switch the penalty to cross-validated to see the path."
-            )
-        ui.polars_table(path)
+        for stage in path["stage"].unique().sort().to_list():
+            sub = path.filter(pl.col("stage") == stage)
+            if two_stage:
+                st.caption(
+                    f"**Stage {stage}** — "
+                    + ("main effects" if stage == 1 else "interaction cells")
+                )
+            if sub.height > 1:
+                st.plotly_chart(
+                    C.alpha_path_chart(sub),
+                    width="stretch",
+                    key=S.widget_key(f"alpha_path_{name}_{stage}"),
+                )
+            else:
+                st.caption(
+                    "Fixed alpha — switch the penalty to cross-validated to see "
+                    "the path."
+                )
+            ui.polars_table(sub)
     with tab3:
         ui.polars_table(run.fit.coef_table())
     st.caption(

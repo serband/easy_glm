@@ -295,7 +295,9 @@ def render() -> None:
                     "base rate",
                     ui.fmt(run.rate_model.base_rate, digits=6),
                     "prediction for the base risk: relativity 1.0 on every main "
-                    "effect; interaction cells are adjustments on top (1.00 = none)",
+                    "effect. It comes from the main-effect fit alone (stage 1), so "
+                    "it and the main tables are the same with and without an "
+                    "interaction; cells are adjustments on top (1.00 = none)",
                 ),
                 ("variables", str(len(run.rate_model.variables) - n_inter), None),
                 ("interactions", str(n_inter), None),
