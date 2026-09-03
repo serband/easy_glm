@@ -321,3 +321,192 @@ records 0.3091 / 4.88 %.
   1e-10-wide band (N2); a design with such a band still fits, tables to 3.3e-16 and reads back.
   A fully flattened term (a `decreasing` constraint on a rising curve) round-trips through
   Excel and `from_rate_tables` with `x_base` intact and edits correctly.
+
+---
+
+## 7. Re-check (commits `4d920f8`, `3e3c1dc` — `git diff 7efdd51..HEAD`) — 2026-09-03
+
+### Final verdict: **Approved.**
+
+The blocking item is fixed exactly as asked and every should-fix and nit is
+addressed, several of them more thoroughly than the review asked. One
+documentation number does not reproduce (§7.3) and one framing is incomplete;
+neither blocks — nothing is wrong, lost or unsafe, and the actuary document is
+unusually candid about the trade the new penalty makes.
+
+### 7.1 Blocking — fixed
+
+**B2-1 — fixed and proved.** `PERSIST_FORMAT` is 3, with the reason recorded on
+the constant, in the module docstring, in `AGENTS.md` (the rule
+`docs/reviews/w1-state.md` S4 asked for, now written down with this piece as the
+worked example, and widened to "shape **or the meaning**"), and in the CHANGELOG.
+I re-ran the original scenario end to end — old `src/` at `f0508e8` fits and
+persists, today's build opens the same project on the same data file:
+
+```
+key the old build wrote            : 75f27f4192d7a751
+key today                          : ec83b0c9405e8a85     -> cache MISS
+key today with PERSIST_FORMAT = 2  : 75f27f4192d7a751     (the bump is the only cause)
+S.get_run("freq")                  : None, no exception
+pickle after the miss              : still on disk (a foreign key never deletes a fit)
+```
+
+The two migrations that must keep working still do: the old build's `.easyglm`
+scores **bit-identically** (max relative difference `0.0` on 3,000 holdout rows)
+and its project JSON loads with `validate() == []`. Two tests were added —
+`test_persist_format_was_bumped_for_the_b2_basis_change` (pins `>= 3`) and
+`test_a_run_persisted_under_the_previous_format_is_a_cache_miss`, which also
+asserts the file survives and that the test is meaningful (the same pickle *is*
+loaded when the constant is put back to 2).
+
+### 7.2 Should-fix — done
+
+- **S1 (penalty per unit of rise) — done, and the arithmetic is exactly right.**
+  `interaction_penalty_weights` became `penalty_weights` and now weights band
+  columns too. I re-derived the identity independently on the check's own
+  `BonusMalus` design: cost of one unit of rise = `P1_j · sd_j / w_j` is
+  **0.5 for all nine bands** (max/min ratio 1.0000000000000013), and
+  `P1_j / w_j` is constant in the unstandardised branch (ratio 1.000000000000000)
+  with `mean(P1) = 1.0` exactly. `P1` is 1 on every non-band column, including
+  `is null`. The 89× → 30× at `BonusMalus` 230 reproduces, the holdout barely
+  moves (Gini 0.3106 → 0.3103, deviance explained 4.97 % → 4.94 %), and the
+  check document now explains the mechanism to the owner in plain words and
+  keeps it next to Q10. `test_band_penalty_is_equal_per_unit_of_rise` re-derives
+  the identity rather than restating the implementation. **Caveat in §7.3.**
+- **S2 (base point of a `continuous` term) — done.** `_continuous_base_row`
+  picks the clamp nearer the exposure-weighted median. Verified both ways on
+  Beta-skewed books: skewed low (median 17.2 of 0–81.6) → base row 1,
+  `x_base = 0.0`; skewed high (median 82.7 of 19.6–100) → base row 2,
+  `x_base = 100.0` on the open `≥ hi` row. In both cases
+  `base_rate(fit) == fit.predict(base risk)` exactly, the `is_base` flag lands on
+  the right row (the `excel.py` change that lets it sit on an open row), and
+  `x_base` survives `from_rate_tables` (`0.0`/`5.6e-16`), Excel (`4.4e-16`) and
+  JSON. The doc's claim that the choice only rescales the base rate holds: the
+  50/10 and 90/10 relativity ratios are unchanged. Recorded against Q2 in the
+  questions file.
+- **S3 — done.** `test_continuous_exported_scripts_rebuild_the_model` executes
+  both scripts. I re-ran mine: with a run `rc=0`, rebuilt model **1.8e-15**;
+  without a run `rc=0`, four-row table, **1.3e-15**; the monotone direction is
+  carried in both.
+- **S4 — done.** The curve bound is 0.25 → **0.18**; measured over six seeds of
+  the shipped book 0.084–0.130. The planted shape was changed rather than the
+  tolerance loosened, which was the right call — see §7.3.
+- **S5** — plan-file edit, left to the coordinator as agreed.
+- **S6 — done.** `encoder_for` short-circuits `continuous` before deriving knots.
+- **S7 — done.** The CHANGELOG now reads "from Gini 0.3072 / 4.79 % (the step
+  design) to 0.3103 / 4.94 % … The hinge basis earlier in this release reached
+  0.3091 / 4.88 %". All three numbers check out.
+
+### Nits — done
+
+N1 (`new.kind`, not `vd.kind`), N2 (bands narrower than a billionth of the clamp
+range are refused with a message naming them, plus a test), N4 (the check script
+now reproduces `docs/checks/b-linear.md` **byte for byte**, trailing newline
+included) and N5 (the interaction caveat is in `monotone_bounds`, `AGENTS.md`,
+the check document's guarantees **and** a new test) are all done. N3 stands as
+recorded: with the stated interpreter streamlit is 1.57.0.
+
+### 7.3 New should-fix (not blocking)
+
+**S8. The recorded cost of the new penalty on end-of-range slopes is roughly
+half the real one, and the standardised branch does not "only redistribute".**
+
+Two related places where the evidence written down is more favourable than the
+measurement:
+
+1. `tests/test_recovery.py::planted_linear` says: "with the slope at the ends
+   and the flat stretch in the middle, the penalty that flattens the middle costs
+   the end slopes 7-13 % of their size". I could not reproduce that at any
+   plausible setting. Running the *previous* planted shape (rise 3e-4 / flat /
+   fall −1.5e-4) under the new penalty, four seeds each:
+
+   ```
+   n=120k alpha=0.03 : first segment 0.758-0.766, last 0.800-0.817  -> 18-24 % lost
+   n=120k alpha=0.02 : 0.782-0.790, 0.822-0.839                     -> 16-22 %
+   n=120k alpha=0.01 : 0.849-0.885, 0.872-0.899                     -> 10-15 %
+   n=150k alpha=0.03 : 0.759-0.764, 0.793-0.813                     -> 19-24 %
+   ```
+
+   At the test's own `ALPHA = 0.03` it is **18–24 %**, not 7–13 %. The
+   conclusion the docstring draws is right — the old shape would now fail the
+   10 % assertion outright (0.76), so re-shaping the planted book was the honest
+   move rather than loosening the tolerance — but the number a future reader will
+   trust is out by about a factor of two. Re-measure it and say at which alpha.
+   For contrast, the shipped shape (flat / rise / flat) recovers the rise at
+   **0.958–0.975** over six seeds with all nine flat bands exactly 0, exactly six
+   sloped bands non-zero, every slope ≥ 0 and `slope == beta` bit for bit — the
+   test itself is strong.
+
+2. `penalty_weights`' "It only redistributes: the weights average to 1 over the
+   term's bands, so the overall strength of `alpha` on the term is unchanged" is
+   correct where it sits (the unstandardised paragraph — I measured `mean = 1.0`
+   exactly) but there is no corresponding statement for the **default**
+   standardised path, where it is false: every band is penalised `P1_j` times
+   harder than before, so nothing is ever penalised *less* and the term's total
+   penalty rises. Measured: `BonusMalus` bands 1.06–2.26× with the top band
+   **25.5×** (mean 4.09); a `continuous` `Density` term **3.6×**; a `continuous`
+   `BonusMalus` term **6.3×**. That multiplier is why the check document's
+   continuous `Density` column collapsed to exactly flat — the document says
+   "the trend it could buy was too small to pay for itself under a penalty that
+   charges per unit of rise", which is true but reads as a property of the data
+   rather than a 3.6× increase in what that term pays. One sentence in the
+   docstring ("under standardisation the equalisation is levelled *up*, to the
+   most expensive band; the term's total penalty rises") and one in the check
+   document's penalty paragraph would close it.
+
+   Relatedly, "the first and last bands … are penalised hardest" in the same
+   docstring is loose: by construction they pay the *same* per unit of rise.
+   What is true is the second half of the sentence — a rise there buys the least
+   deviance improvement (the first band is nearly a shift of the whole curve),
+   so those slopes are shrunk hardest. My end-band measurements above are that
+   effect: 96 % recovery in the middle against 76–82 % at the ends.
+
+   The owner-facing consequence is worth one plain sentence in
+   `docs/checks/b-linear.md` next to the tail paragraph: the same rule that pulls
+   the thin tail in from 89× to 30× also shrinks a genuine slope sitting in the
+   first or last band by about a fifth. The document currently gives the owner
+   only the favourable half of the trade.
+
+### 7.4 New nit
+
+**N6.** `_continuous_base_row` compares the weighted median with the midpoint,
+so for a roughly symmetric factor the 1.00 point flips between the two clamps on
+sampling noise: on my uniform-mileage book (median ≈ 15,000, midpoint 15,000) it
+landed on `hi`, putting 1.00 at the top of the range. Harmless — I confirmed the
+relativity ratios and the exactness invariant are unaffected — but a deterministic
+tie-break toward `lo` would stop the base point moving between two resamples of
+the same book.
+
+### 7.5 What I re-ran on `3e3c1dc`
+
+- **Full suite 454 passed** (182 s); `ruff check .` clean; `black --check .` 87
+  files unchanged; `git diff f0508e8..HEAD -- tests/test_golden.py tests/fixtures`
+  still **empty**.
+- **`PERSIST_FORMAT` scenario** rebuilt from the `f0508e8` source tree and
+  re-run through an AppTest — numbers in §7.1.
+- **P1 arithmetic** re-derived independently on the check's `BonusMalus` design,
+  both `scale_predictors` settings — numbers in §7.2/§7.3.
+- **Exactness re-run under the new penalty** (the basis is unchanged but every
+  fitted number moved): `max |table slope − fit.coef| = 0.0` with
+  `scale_predictors` True and False; table vs coefficients **1.1e-16**;
+  40-value adversarial frame **1.55e-15**; holdout and Int64 **1.89e-15**; flat
+  outside the clamp `0.0e+00` on both sides including `±inf`;
+  `base_rate == predict(base risk)` to 4e-16.
+- **Monotone re-run**: bounds still land on exactly the seven band columns and
+  nothing else; `decreasing` on a rising planted book gives all ten slopes
+  exactly 0.0 and a table of 1.0000; `increasing` reproduces the free fit.
+- **`continuous` re-run**: four-row table, spec JSON identical, rate model vs GLM
+  6.7e-16, `from_rate_tables` 4.4e-16, Excel 6.7e-16, node edit rule intact on
+  the single band (no jump at either clamp for all four row kinds), both exported
+  scripts executed (`rc=0`, 1.8e-15 / 1.3e-15), Design-page selector still
+  switches to `continuous` and keeps the monotone constraint.
+- **Recovery**: shipped shape over six seeds and the previous shape at three
+  alphas and two book sizes — numbers in §7.3.
+- **`docs/checks/b-linear.md`**: regenerated by `scripts/checks/b_linear.py`
+  without `--write` and **identical byte for byte**, including the 30×, the
+  collapsed continuous `Density` column and the 96× continuous `BonusMalus`
+  aside.
+- **Edge cases**: a band column with zero spread (a knot below the data minimum)
+  gets `P1 = 1` from the `sd > 0` fallback and therefore no standardised penalty
+  at all — glum still returned slope 0 for it and the exactness invariant held
+  (4.4e-16), so it is theoretical, and it behaved the same before this piece.
