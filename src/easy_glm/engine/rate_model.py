@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import warnings
+from collections.abc import Sequence
 from dataclasses import asdict, fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,6 +64,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
             "to": row.to_,
             "relativity": row.relativity,
             "slope": row.slope,
+            "exposure": row.exposure,
         }
     if isinstance(row, CellRow):
         return {
@@ -73,13 +75,22 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
             "relativity": row.relativity,
             "exposure": row.exposure,
         }
-    return {"from": row.from_, "to": row.to_, "relativity": row.relativity}
+    return {
+        "from": row.from_,
+        "to": row.to_,
+        "relativity": row.relativity,
+        "exposure": row.exposure,
+    }
 
 
 def _row_from_dict(r: dict[str, Any]) -> Any:
     if "slope" in r:
         return BandRow(
-            r["from"], r["to"], r["relativity"], float(r.get("slope") or 0.0)
+            r["from"],
+            r["to"],
+            r["relativity"],
+            float(r.get("slope") or 0.0),
+            float(r.get("exposure", 0.0) or 0.0),
         )
     if "from_a" in r:
         return CellRow(
@@ -90,7 +101,12 @@ def _row_from_dict(r: dict[str, Any]) -> Any:
             r["relativity"],
             float(r.get("exposure", 0.0) or 0.0),
         )
-    return FromToRow(from_=r["from"], to_=r["to"], relativity=r["relativity"])
+    return FromToRow(
+        from_=r["from"],
+        to_=r["to"],
+        relativity=r["relativity"],
+        exposure=float(r.get("exposure", 0.0) or 0.0),
+    )
 
 
 def _rows_from_list(rows: list[dict[str, Any]]) -> list[Any]:
@@ -173,6 +189,21 @@ def _validate_linear_rows(name: str, rows: list[Any]) -> list[int]:
             "(the curve is flat outside the clamp range)"
         )
     return band_idx + null_idx
+
+
+def derive_slopes(bands: list[BandRow], which: Sequence[int] | None = None) -> None:
+    """Set each sloped band's ``slope`` from its own start value and the next
+    band's, in place. ``bands`` is a linear table's non-null rows in curve order
+    (``(None, lo)`` first, ``(hi, None)`` last), as :func:`_validate_linear_rows`
+    returns them; ``which`` limits the work to those band positions.
+
+    The node values are the truth and the slopes follow from them, so a curve
+    built this way is continuous by construction — at the clamp points too. The
+    two open end bands keep slope 0 (the curve is flat outside the clamp range).
+    """
+    for i in range(1, len(bands) - 1) if which is None else which:
+        b, nxt = bands[i], bands[i + 1]
+        b.slope = (np.log(nxt.relativity) - np.log(b.relativity)) / (b.to_ - b.from_)
 
 
 def _coerce_edge(value: Any, parent: VariableConfig) -> Any:
@@ -354,8 +385,12 @@ class RateModel:
         missing = {"from", "to", "relativity"} - set(table.columns)
         if missing:
             raise ValueError(f"Table for {name!r} lacks columns {sorted(missing)}")
-        triples = list(table.select("from", "to", "relativity").iter_rows())
-        if any(rel is None for _, _, rel in triples):
+        if "exposure" in table.columns:
+            table = table.with_columns(pl.col("exposure").fill_null(0.0))
+        else:
+            table = table.with_columns(pl.lit(0.0).alias("exposure"))
+        triples = list(table.select("from", "to", "relativity", "exposure").iter_rows())
+        if any(rel is None for _, _, rel, _ in triples):
             raise ValueError(f"Table for {name!r} has a null relativity")
         null_rows = [t for t in triples if t[0] is None and t[1] is None]
         if len(null_rows) > 1:
@@ -371,7 +406,7 @@ class RateModel:
             numeric_dtype
             and bool(body)
             and all(
-                lo is not None and hi is not None and lo == hi for lo, hi, _ in body
+                lo is not None and hi is not None and lo == hi for lo, hi, _, _ in body
             )
         )
         numeric = numeric_dtype and not coded_categorical
@@ -387,8 +422,9 @@ class RateModel:
                     None if lo is None else float(lo),
                     None if hi is None else float(hi),
                     float(rel),
+                    float(expo),
                 )
-                for lo, hi, rel in body
+                for lo, hi, rel, expo in body
             ]
             if not bands:
                 raise ValueError(f"Numeric table for {name!r} has no bands")
@@ -412,13 +448,19 @@ class RateModel:
                         "tile the line with no gaps or overlaps"
                     )
             rows = bands + [
-                FromToRow(None, None, float(rel)) for _, _, rel in null_rows
+                FromToRow(None, None, float(rel), float(expo))
+                for _, _, rel, expo in null_rows
             ]
             return VariableConfig(type="numeric", table=rows)
 
         rows = [
-            FromToRow(_level(lo), _level(hi if hi is not None else lo), float(rel))
-            for lo, hi, rel in body
+            FromToRow(
+                _level(lo),
+                _level(hi if hi is not None else lo),
+                float(rel),
+                float(expo),
+            )
+            for lo, hi, rel, expo in body
         ]
         if any(r.from_ != r.to_ for r in rows):
             raise ValueError(
@@ -432,7 +474,9 @@ class RateModel:
                 f"Table for {name!r} lists level(s) {dupes} more than once"
             )
         if null_rows:
-            rows.append(FromToRow(None, None, float(null_rows[0][2])))
+            rows.append(
+                FromToRow(None, None, float(null_rows[0][2]), float(null_rows[0][3]))
+            )
         else:
             warnings.warn(
                 f"Table for {name!r} has no Other row (from and to both empty); "
@@ -450,7 +494,12 @@ class RateModel:
                 f"Linear table for {name!r} lacks columns {sorted(missing)}"
             )
         has_base = "is_base" in table.columns
-        cols = ["from", "to", "relativity", "slope"] + (["is_base"] if has_base else [])
+        has_exposure = "exposure" in table.columns
+        cols = (
+            ["from", "to", "relativity", "slope"]
+            + (["is_base"] if has_base else [])
+            + (["exposure"] if has_exposure else [])
+        )
         rows: list[BandRow] = []
         given_slopes: list[float | None] = []
         base_flags: list[bool] = []
@@ -469,6 +518,7 @@ class RateModel:
                     None if hi is None else float(hi),
                     float(rel),
                     0.0,
+                    float(rec[-1] or 0.0) if has_exposure else 0.0,
                 )
             )
             given_slopes.append(None if slope is None else float(slope))
@@ -492,11 +542,7 @@ class RateModel:
             )
         bands[0].relativity = v_first
         # slopes come from the nodes: continuity is then by construction
-        for i in range(1, len(bands) - 1):
-            b, nxt = bands[i], bands[i + 1]
-            b.slope = (np.log(nxt.relativity) - np.log(b.relativity)) / (
-                b.to_ - b.from_
-            )
+        derive_slopes(bands)
         for i, b in zip(order, (rows[i] for i in order), strict=True):
             given = given_slopes[i]
             if given is None or _is_null_row(b) or b.from_ is None or b.to_ is None:
@@ -775,10 +821,7 @@ class RateModel:
                 pos = 1
 
             def _rederive(i: int) -> None:  # slope of sloped band i from its nodes
-                b, nxt = bands[i], bands[i + 1]
-                b.slope = (np.log(nxt.relativity) - np.log(b.relativity)) / (
-                    b.to_ - b.from_
-                )
+                derive_slopes(bands, [i])
 
             if pos < len(bands) - 1:  # a sloped band: its own slope
                 _rederive(pos)

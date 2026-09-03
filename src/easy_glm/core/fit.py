@@ -134,6 +134,11 @@ class GLMFit:
     #: index (into the variable's table rows) of the most exposed bin/level in
     #: the training data; used as the default base risk for rate tables.
     modal_bins: dict[str, int] = field(default_factory=dict)
+    #: training exposure (sum of weights, or row count without a weight column)
+    #: per rate-table row of each main effect — see :func:`row_exposures`; it
+    #: travels into the tables and the RateModel, where the relativity tooling
+    #: weights each band by it.
+    row_exposure: dict[str, np.ndarray] = field(default_factory=dict)
     n_train_rows: int = 0
 
     # -- coefficients -----------------------------------------------------
@@ -266,13 +271,43 @@ def _continuous_base_row(enc: LinearEncoder, x: np.ndarray, w: np.ndarray) -> in
     return 2 if median > cut else 1
 
 
-def _modal_bins(
+def row_exposures(
     spec: DesignSpec, data: pl.DataFrame, weights: np.ndarray | None
+) -> dict[str, np.ndarray]:
+    """Training exposure per rate-table row, per main effect.
+
+    ``out[var][i]`` is the sum of the weights (row counts when the fit has no
+    weight column) of the training rows that fall in row ``i`` of ``var``'s rate
+    table, using the encoders' shared ``row_index`` rule — the null / Other row
+    included. Interactions carry their own cell exposure
+    (``InteractionEncoder.exposure``) and are skipped here.
+
+    It is the same count :func:`_modal_bins` takes its argmax of, kept on the
+    fit so the rate tables can carry it: the relativity tooling weights a band
+    by it, and it is what tells "no data" apart from "no effect" when a
+    relativity reads 1.00.
+    """
+    w = np.ones(data.height) if weights is None else np.asarray(weights, dtype=float)
+    out: dict[str, np.ndarray] = {}
+    for var, enc in spec.encoders.items():
+        if isinstance(enc, InteractionEncoder):
+            continue
+        idx = enc.row_index(data[var])
+        out[var] = np.bincount(idx, weights=w, minlength=enc.n_rows).astype(float)
+    return out
+
+
+def _modal_bins(
+    spec: DesignSpec,
+    data: pl.DataFrame,
+    weights: np.ndarray | None,
+    exposures: dict[str, np.ndarray] | None = None,
 ) -> dict[str, int]:
     """Index of the most exposed table row per main effect (see ``rate_tables``).
     Uses the encoders' shared ``row_index`` rule; interactions have no base row.
     One-band linear terms follow :func:`_continuous_base_row`."""
     w = np.ones(data.height) if weights is None else np.asarray(weights, dtype=float)
+    exposures = row_exposures(spec, data, weights) if exposures is None else exposures
     out: dict[str, int] = {}
     for var, enc in spec.encoders.items():
         if isinstance(enc, InteractionEncoder):
@@ -281,8 +316,7 @@ def _modal_bins(
             x = data[var].cast(pl.Float64).to_numpy()
             out[var] = _continuous_base_row(enc, x, w)
             continue
-        idx = enc.row_index(data[var])
-        counts = np.bincount(idx, weights=w, minlength=enc.n_rows)
+        counts = exposures[var].copy()
         if isinstance(enc, LinearEncoder) and len(counts) > 1:
             # the base of a linear term is a point on the curve (x_base), so the
             # null row is never the base even when it carries the most exposure
@@ -506,6 +540,7 @@ def fit_glm(
 
     model.fit(design, y, sample_weight=sw, offset=offset)
 
+    exposures = row_exposures(spec, data, sw)
     return GLMFit(
         spec=spec,
         model=model,
@@ -516,6 +551,7 @@ def fit_glm(
         offset_col=offset_col,
         divide_target_by_weight=divide_target_by_weight,
         monotone=monotone,
-        modal_bins=_modal_bins(spec, data, sw),
+        modal_bins=_modal_bins(spec, data, sw, exposures),
+        row_exposure=exposures,
         n_train_rows=data.height,
     )
