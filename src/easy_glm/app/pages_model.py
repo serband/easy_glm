@@ -118,13 +118,15 @@ def _config(name: str) -> None:
             index=list(FAMILIES).index(cfg.family) if cfg.family in FAMILIES else 0,
             key=S.widget_key(f"fam_{name}"),
         )
-        power = float(cfg.tweedie_power)
+        power, power_problem = ui.repair_number(cfg.tweedie_power, 1.5, "tweedie_power")
+        if power_problem:
+            ui.flash("warning", power_problem)
         if family == "tweedie":
             power = float(
                 ui.number_in_range(
                     c1,
                     "Tweedie power",
-                    value=float(cfg.tweedie_power),
+                    value=power,
                     lo=1.001,
                     hi=1.999,
                     step=0.05,
@@ -209,7 +211,12 @@ def _config(name: str) -> None:
             st.caption(
                 "Interactions (edit on the Design page): "
                 + ", ".join(
-                    f"**{it.name}** (min cell {it.min_cell_exposure:.2%})"
+                    (
+                        f"**{it.name}** (min cell {mce:.2%})"
+                        if (mce := ui.safe_float(it.min_cell_exposure, None))
+                        is not None
+                        else f"**{it.name}** (min cell {it.min_cell_exposure!r})"
+                    )
                     for it in cfg.interactions
                 )
                 + (
@@ -227,10 +234,13 @@ def _config(name: str) -> None:
             key=S.widget_key(f"pmode_{name}"),
             horizontal=True,
         )
+        alpha_value, alpha_problem = ui.repair_number(cfg.penalty.alpha, 0.001, "alpha")
+        if alpha_problem:
+            ui.flash("warning", alpha_problem)
         alpha = ui.number_in_range(
             c2,
             "alpha",
-            value=float(cfg.penalty.alpha or 0.001),
+            value=alpha_value or 0.001,
             lo=0.0,
             hi=10.0,
             what="alpha",
@@ -238,27 +248,38 @@ def _config(name: str) -> None:
             key=S.widget_key(f"alpha_{name}"),
             disabled=mode != "fixed",
         )
+        cv_value, cv_problem = ui.repair_number(cfg.penalty.cv, 5, "cv", integer=True)
+        if cv_problem:
+            ui.flash("warning", cv_problem)
         cv = c3.number_input(
             "CV folds",
             2,
             10,
-            int(cfg.penalty.cv or 5),
+            min(10, max(2, int(cv_value) or 5)),
             key=S.widget_key(f"cv_{name}"),
             disabled=mode != "cross-validated",
         )
+        n_alphas_value, n_alphas_problem = ui.repair_number(
+            cfg.penalty.n_alphas, 20, "n_alphas", integer=True
+        )
+        if n_alphas_problem:
+            ui.flash("warning", n_alphas_problem)
         n_alphas = c4.number_input(
             "alphas on path",
             3,
             100,
-            int(cfg.penalty.n_alphas),
+            min(100, max(3, int(n_alphas_value))),
             key=S.widget_key(f"nalpha_{name}"),
             disabled=mode != "cross-validated",
         )
+        l1_value, l1_problem = ui.repair_number(cfg.penalty.l1_ratio, 1.0, "l1_ratio")
+        if l1_problem:
+            ui.flash("warning", l1_problem)
         l1 = c5.slider(
             "l1_ratio (1 = lasso)",
             0.0,
             1.0,
-            float(cfg.penalty.l1_ratio),
+            min(1.0, max(0.0, l1_value)),
             0.05,
             key=S.widget_key(f"l1_{name}"),
         )
@@ -270,10 +291,15 @@ def _config(name: str) -> None:
             horizontal=True,
             key=S.widget_key(f"base_{name}"),
         )
+        bro_value, bro_problem = ui.repair_number(
+            cfg.base_rate_override, 0.0, "base_rate_override"
+        )
+        if bro_problem:
+            ui.flash("warning", bro_problem)
         bro = ui.number_in_range(
             c2,
             "Base rate override (0 = exact)",
-            value=float(cfg.base_rate_override or 0.0),
+            value=bro_value or 0.0,
             lo=0.0,
             what="The base rate override",
             format="%.6f",

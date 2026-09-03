@@ -378,16 +378,17 @@ def _linear_detail(
         key=S.widget_key(f"lin_defaultclamp_{var}"),
     )
     c1, c2, c3 = st.columns([1, 1, 2])
+    has_clamp = isinstance(vd.clamp, (list, tuple)) and len(vd.clamp) == 2
     lo = c1.number_input(
         "Clamp lo",
-        value=float(vd.clamp[0]) if vd.clamp else rlo,
+        value=ui.safe_float(vd.clamp[0], rlo) if has_clamp else rlo,
         key=S.widget_key(f"lin_lo_{var}"),
         disabled=use_default,
         format="%g",
     )
     hi = c2.number_input(
         "Clamp hi",
-        value=float(vd.clamp[1]) if vd.clamp else rhi,
+        value=ui.safe_float(vd.clamp[1], rhi) if has_clamp else rhi,
         key=S.widget_key(f"lin_hi_{var}"),
         disabled=use_default,
         format="%g",
@@ -611,13 +612,29 @@ def _interactions(train: pl.DataFrame) -> None:
         for i, it in enumerate(list(cfg.interactions)):
             c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 2, 1])
             c1.markdown(f"**{it.name}**")
-            c2.caption(f"min cell exposure {it.min_cell_exposure:.2%}")
-            c3.caption(f"penalty weight {it.penalty_weight:g}")
+            # A hand-edited project may carry any of these as the wrong type
+            # (validate() reports it); render the raw value rather than crash
+            # the page the user needs in order to fix it.
+            c2.caption(
+                f"min cell exposure {it.min_cell_exposure:.2%}"
+                if ui.safe_float(it.min_cell_exposure, None) is not None
+                else f"min cell exposure {it.min_cell_exposure!r} (invalid)"
+            )
+            c3.caption(
+                f"penalty weight {it.penalty_weight:g}"
+                if ui.safe_float(it.penalty_weight, None) is not None
+                else f"penalty weight {it.penalty_weight!r} (invalid)"
+            )
             # A hand-edited project may carry an alpha outside the widget's
             # usual range; Streamlit raises if the value is out of bounds, so
             # widen the bounds to the stored value rather than crash the page
-            # the user needs in order to fix it (validate() reports it).
-            current_alpha = float(it.alpha or 0.0)
+            # the user needs in order to fix it (validate() reports it). A
+            # value that is not a number at all (text, NaN) is reported here,
+            # the way the Split page's seed box reports a bad seed, rather
+            # than silently saved over on the very next autosave.
+            current_alpha, alpha_problem = ui.repair_number(it.alpha, 0.0, "alpha")
+            if alpha_problem:
+                ui.flash("warning", f"{it.name}: {alpha_problem}")
             new_alpha = c4.number_input(
                 "Cells alpha (0 = as mains)",
                 min(0.0, current_alpha),

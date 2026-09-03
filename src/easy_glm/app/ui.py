@@ -66,6 +66,69 @@ def show_flash() -> None:
         )(text)
 
 
+def safe_float(value: Any, default: float) -> float:
+    """``float(value)``, or ``default`` when ``value`` is not a finite number.
+
+    A hand-edited project file can put anything in a numeric field (``"abc"``,
+    a list, ``NaN``). Every page that reads such a field straight into a
+    widget's ``value=`` (an ``alpha``, a ``tweedie_power``, a base-rate
+    override, a clamp bound) used to crash on ``float(...)`` before the user
+    ever saw the message ``Project.validate`` names the problem with — this is
+    the fallback that lets the page render so that message can be shown.
+    """
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    return result if math.isfinite(result) else default
+
+
+def safe_int(value: Any, default: int) -> int:
+    """``int(value)``, or ``default`` when ``value`` cannot be one — the
+    integer counterpart of :func:`safe_float` (a hand-edited ``cv`` or
+    ``n_alphas`` typed as text or a list must not crash the page it would be
+    reported as a problem on)."""
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def repair_number(
+    value: Any, default: float, label: str, *, integer: bool = False
+) -> tuple[float, str | None]:
+    """``(value or default, message)`` for a numeric project field that a
+    page both displays *and* writes straight back to the project once the
+    page has finished rendering (``pages_model._config``'s "did anything
+    change" reconciliation, the Design page's interaction ``alpha`` box).
+
+    ``safe_float``/``safe_int`` alone stop the crash, but the page would then
+    silently save the fallback over whatever the file held next time it
+    autosaves — the same shape of problem the seed box on the Split page
+    already solves (``pages_split._seed_value``): say what was wrong and what
+    replaced it, the way that box does, instead of rewriting the file with no
+    trace of the original value. ``None`` is never a problem here — several of
+    these fields (``base_rate_override``, ``penalty.alpha``, an interaction's
+    ``alpha``) use it as "not set", and the caller's own ``default`` is the
+    right value to show in that case.
+    """
+    if value is None:
+        return default, None
+    usable = (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+    fixed = safe_int(value, int(default)) if integer else safe_float(value, default)
+    if usable:
+        return fixed, None
+    return (
+        fixed,
+        f"{label} in the project file ({value!r}) is not a usable number; "
+        f"using {fixed:g} instead.",
+    )
+
+
 def number_in_range(
     container: Any,
     label: str,
