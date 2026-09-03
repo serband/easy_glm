@@ -764,3 +764,237 @@ def test_five_million_rows_fit_inside_three_gigabytes():
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "5,000,000" in completed.stdout
+
+
+# --------------------------------------------------------------------------
+# 8. everything piece A2 settled, on the compact path
+# --------------------------------------------------------------------------
+def two_stage_spec(data: pl.DataFrame) -> DesignSpec:
+    """Mains plus one interaction, small enough to fit four times in a test."""
+    return DesignSpec.from_data(
+        data,
+        ["DrivAge", "VehAge", "BonusMalus", "Region", "VehGas"],
+        knots={
+            "DrivAge": quantile_knots(data["DrivAge"], 8),
+            "VehAge": quantile_knots(data["VehAge"], 6),
+            "BonusMalus": quantile_knots(data["BonusMalus"], 6),
+        },
+        min_level_share=0.01,
+        interactions=[("DrivAge", "Region")],
+        min_cell_exposure=0.004,
+    )
+
+
+class TestTwoStageBehaviourOnTheCompactPath:
+    """Piece A2's final behaviour was settled against the dense matrix. Each of
+    its three load-bearing routes — an offset passed as an array, an
+    :class:`EasyGLM` bundle holding both stages, and the exported script — is
+    re-checked here with the fit forced through the ``SplitMatrix``."""
+
+    FIT_KW = {
+        "family": "poisson",
+        "weight_col": "Exposure",
+        "divide_target_by_weight": True,
+    }
+
+    def test_an_offset_array_reaches_both_stages(self, book):
+        """A2 folds an ``offset=`` array into ``eta1`` by hand, because
+        ``linear_predictor`` adds neither form of offset. That hand-folding runs
+        on whatever the design is, so it has to be re-checked here: if the
+        compact path ever changed what ``linear_predictor`` returns, stage 2
+        would silently absorb the whole offset."""
+        frame = book.with_columns(
+            pl.Series("logprem", np.log(np.linspace(150.0, 900.0, book.height)))
+        )
+        spec = two_stage_spec(frame)
+        array = frame["logprem"].to_numpy()
+        by_column = fit_two_stage(
+            frame,
+            spec,
+            "ClaimNb",
+            alpha=0.001,
+            offset_col="logprem",
+            sparse=True,
+            **self.FIT_KW,
+        )
+        by_array = fit_two_stage(
+            frame,
+            spec,
+            "ClaimNb",
+            alpha=0.001,
+            offset=array,
+            sparse=True,
+            **self.FIT_KW,
+        )
+        np.testing.assert_allclose(
+            by_array.stage1.coef, by_column.stage1.coef, rtol=1e-10, atol=1e-12
+        )
+        np.testing.assert_allclose(
+            by_array.stage2.coef, by_column.stage2.coef, rtol=1e-10, atol=1e-12
+        )
+        assert by_array.offset_col is None and by_column.offset_col == "logprem"
+        # and the array route itself is the same model on either representation
+        dense = fit_two_stage(
+            frame,
+            spec,
+            "ClaimNb",
+            alpha=0.001,
+            offset=array,
+            sparse=False,
+            **self.FIT_KW,
+        )
+        score = scoring_frame(frame)
+        offset = scoring_frame(frame)["logprem"].to_numpy()
+        np.testing.assert_allclose(
+            by_array.predict(score, offset=offset),
+            dense.predict(score, offset=offset),
+            rtol=PRED_RTOL,
+            atol=0,
+        )
+        assert np.array_equal(by_array.coef == 0, dense.coef == 0)
+
+    def test_easyglm_saves_and_loads_a_compact_two_stage_fit(self, book, tmp_path):
+        """The v3 bundle writes both glum estimators and rebuilds the pair. The
+        fit it was rebuilt from was made on the compact design; the rebuilt one
+        must score identically, and it scores from the codes either way."""
+        from easy_glm import EasyGLM, TwoStageFit, rate_tables
+
+        spec = two_stage_spec(book)
+        fit = fit_two_stage(
+            book, spec, "ClaimNb", alpha=0.001, sparse=True, **self.FIT_KW
+        )
+        assert isinstance(fit, TwoStageFit)
+        bundle = EasyGLM(
+            fit, to_rate_model(fit, exposure_col="Exposure"), rate_tables(fit)
+        )
+        bundle.save(tmp_path / "compact_two_stage")
+        assert (tmp_path / "compact_two_stage" / "glm_model_stage2.joblib").exists()
+
+        loaded = EasyGLM.load(tmp_path / "compact_two_stage")
+        assert isinstance(loaded.glm, TwoStageFit)
+        np.testing.assert_array_equal(loaded.glm.coef, fit.coef)
+        score = scoring_frame(book)
+        np.testing.assert_array_equal(
+            loaded.predict(score).to_numpy(), bundle.predict(score).to_numpy()
+        )
+        np.testing.assert_allclose(
+            loaded.rate_model.predict(score, exposure_col=None),
+            loaded.glm.predict(score),
+            rtol=1e-10,
+            atol=0,
+        )
+
+    def test_the_exported_script_reproduces_a_compact_run(
+        self, book, tmp_path, monkeypatch
+    ):
+        """The workbench run goes through the ``SplitMatrix``; the script it
+        exports does not say ``sparse=`` at all, so it takes whatever the row
+        count gives it — the dense matrix, at 50,000 rows. The script is only
+        honest if the two agree, so this runs it and compares.
+
+        It also pins the A2 decision that the script's stages come from
+        ``isinstance(run.fit, TwoStageFit)``: a run fitted the compact way is
+        still a ``TwoStageFit`` and must still export two stages."""
+        import easy_glm.core.design as design_module
+        from easy_glm.core.fit import TwoStageFit
+        from easy_glm.workflow import (
+            Interaction,
+            Project,
+            prepare,
+            run_model,
+            to_script,
+        )
+
+        # force every build in this test through the compact path
+        monkeypatch.setattr(design_module, "SPARSE_ROW_THRESHOLD", 1_000)
+        built_sparse: list[int] = []
+        original = DesignSpec.build_sparse
+        monkeypatch.setattr(
+            DesignSpec,
+            "build_sparse",
+            lambda self, data: (built_sparse.append(data.height), original(self, data))[
+                1
+            ],
+        )
+
+        project = Project(name="scale")
+        project.data.source.type = "parquet"
+        project.data.source.path = str(FIXTURE)
+        project.data.roles = {
+            "ClaimNb": "target",
+            "Exposure": "weight",
+            "IDpol": "id",
+            "DrivAge": "predictor",
+            "BonusMalus": "predictor",
+            "Region": "predictor",
+            "VehGas": "predictor",
+        }
+        project.data.split.mode = "random"
+        project.data.split.column = "traintest"
+        project.data.split.fraction = 0.7
+        project.data.split.seed = 3
+        project.new_model(
+            "freq",
+            family="poisson",
+            divide_target_by_weight=True,
+            predictors=["DrivAge", "BonusMalus", "Region", "VehGas"],
+        )
+        project.models["freq"].penalty.alpha = 0.002
+        project.models["freq"].penalty.cv = None
+        project.models["freq"].interactions = [
+            Interaction("DrivAge", "Region", min_cell_exposure=0.01)
+        ]
+
+        data = prepare(project)
+        run = run_model(project, data, "freq")
+        assert built_sparse, "the run did not go through the compact design"
+        assert isinstance(run.fit, TwoStageFit)
+
+        source = to_script(project, "freq", run=run, output_prefix="compact_v1")
+        assert "fit = TwoStageFit(stage1, stage2)" in source
+        assert "sparse" not in source  # the script takes the row-count default
+        script = tmp_path / "rebuild.py"
+        script.write_text(source)
+        completed = subprocess.run(
+            [sys.executable, str(script)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        assert completed.returncode == 0, completed.stderr[-2000:]
+
+        from easy_glm.engine import RateModel
+
+        rebuilt = RateModel.from_json(tmp_path / "compact_v1.easyglm")
+        holdout = data.filter(pl.col("traintest") == 0)
+        np.testing.assert_allclose(
+            rebuilt.predict(holdout, exposure_col=None),
+            run.predict(holdout),
+            rtol=PRED_RTOL,
+            atol=0,
+        )
+
+    def test_stage_one_p1_does_not_reach_the_cells(self, book):
+        """A2 stopped stage 1's ``P1`` (one weight per main-effect column) from
+        being forwarded to stage 2, whose design has different columns
+        altogether. The compact path computes ``P1`` from the matrix's own
+        column statistics rather than from numpy, so the same question is worth
+        asking again: stage 2's cells must be penalised by the cell rule, not by
+        whatever the caller asked for on the mains."""
+        spec = two_stage_spec(book)
+        mains = spec.main_effects_spec()
+        heavy = np.full(mains.n_features, 50.0)  # crush the mains
+        with_p1 = fit_two_stage(
+            book, spec, "ClaimNb", alpha=0.001, sparse=True, P1=heavy, **self.FIT_KW
+        )
+        plain = fit_two_stage(
+            book, spec, "ClaimNb", alpha=0.001, sparse=True, **self.FIT_KW
+        )
+        # stage 1 really was penalised harder ...
+        assert int((with_p1.stage1.coef != 0).sum()) < int(
+            (plain.stage1.coef != 0).sum()
+        )
+        # ... and stage 2 still ran on its own columns, unpenalised by that P1
+        assert with_p1.stage2.spec.n_features == plain.stage2.spec.n_features
+        assert (with_p1.stage2.coef != 0).sum() > 0

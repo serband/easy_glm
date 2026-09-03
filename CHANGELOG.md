@@ -65,6 +65,13 @@
   persisted `GLMFit` still holds the same glum model and the same coefficients,
   and reading it back under the new scoring gives the same predictions to
   1e-15.
+- **The two-stage fit works the same on the compact design.** An `offset=`
+  array still reaches stage 2 (it is folded into stage 1's linear predictor by
+  hand, and the compact path did not change what that returns), an `EasyGLM`
+  bundle saved from a compactly fitted `TwoStageFit` reloads and scores
+  identically, stage 1's `P1` still does not reach the cells, and the exported
+  script — which carries no `sparse=` and therefore takes the row-count default
+  — reproduces a run that was fitted through the `SplitMatrix` to 1e-10.
 
 ### Interactions are fitted on top of frozen main effects (A2)
 - **Adding an interaction no longer moves a single main-effect relativity** (the
