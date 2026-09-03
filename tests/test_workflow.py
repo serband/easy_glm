@@ -413,6 +413,80 @@ class TestRun:
             "DrivAge×Region"
         }
 
+    def test_run_model_fits_interactions_in_two_stages(self, project):
+        """A2 / Q5: with an interaction the run holds a two-stage fit; the main
+        tables and the base rate are the ones the same model without the
+        interaction produces, and the cells are adjustments on top."""
+        import copy
+
+        from easy_glm.core.fit import TwoStageFit
+        from easy_glm.workflow.project import ModelConfig
+
+        df = prepare(project)
+        run = run_model(project, df, "freq")
+        assert isinstance(run.fit, TwoStageFit)
+        assert run.alpha_stage2 == pytest.approx(run.alpha)  # no override set
+        assert run.cells_kept == len(run.spec["DrivAge×Region"].cells) > 0
+
+        cfg = project.models["freq"]
+        without = ModelConfig(**{**copy.deepcopy(cfg.__dict__), "interactions": []})
+        project.models["no_inter"] = without
+        plain = run_model(project, df, "no_inter")
+        assert plain.alpha_stage2 is None
+        # 1e-13 is glum's own run-to-run noise (two identical fits differ by
+        # about 1e-15 on a relativity), not a modelling difference: the joint
+        # fit used to move these tables by several per cent
+        for var in plain.spec.main_effects:
+            np.testing.assert_allclose(
+                run.tables[var]["relativity"].to_numpy(),
+                plain.tables[var]["relativity"].to_numpy(),
+                rtol=1e-13,
+            )
+        assert run.rate_model.base_rate == pytest.approx(
+            plain.rate_model.base_rate, rel=1e-13
+        )
+        # both alphas are on the record
+        model_metrics_entry = run.rate_model.snapshots[-1].metrics["model"]
+        assert model_metrics_entry["stages"] == 2
+        assert model_metrics_entry["alpha_stage2"] == run.alpha_stage2
+        assert plain.rate_model.snapshots[-1].metrics["model"]["stages"] == 1
+        assert run.summary()["cells_kept"] == run.cells_kept
+
+    def test_interaction_alpha_overrides_the_second_stage(self, project):
+        df = prepare(project)
+        cfg = project.models["freq"]
+        base = run_model(project, df, "freq")
+        cfg.interactions[0].alpha = 0.5
+        assert project.validate("freq") == []
+        harder = run_model(project, df, "freq")
+        assert harder.alpha_stage2 == pytest.approx(0.5)
+        assert harder.alpha == pytest.approx(base.alpha)  # the mains do not move
+        np.testing.assert_allclose(
+            harder.fit.stage1.coef, base.fit.stage1.coef, rtol=1e-12
+        )
+        assert np.abs(harder.fit.stage2.coef).max() < np.abs(base.fit.stage2.coef).max()
+        cfg.interactions[0].alpha = -1.0
+        assert any("alpha must be > 0" in m for m in project.validate("freq"))
+
+    def test_rebuild_rate_model_keeps_the_two_stages(self, project):
+        from easy_glm.workflow import Adjustment, rebuild_rate_model
+
+        df = prepare(project)
+        run = run_model(project, df, "freq")
+        holdout = df.filter(pl.col("traintest") == 0)
+        before = run.predict(holdout)
+        project.models["freq"].adjustments.append(
+            Adjustment("VehGas", "Diesel", "Diesel", 1.5)
+        )
+        again = rebuild_rate_model(project, run, df)
+        assert again.fit is run.fit  # no refit
+        diesel = holdout["VehGas"].to_numpy() == "Diesel"
+        np.testing.assert_allclose(again.predict(holdout)[~diesel], before[~diesel])
+        np.testing.assert_allclose(
+            again.predict(holdout)[diesel], before[diesel] * 1.5, rtol=1e-10
+        )
+        assert again.rate_model.snapshots[-1].metrics["model"]["stages"] == 2
+
     def test_run_model_applies_adjustments(self, project):
         from easy_glm.workflow import Adjustment
 
@@ -437,8 +511,15 @@ class TestRun:
         df = prepare(project)
         run = run_model(project, df, "freq")
         path = alpha_path(run.fit)
-        assert path.height == 4 and path["selected"].sum() == 1
-        assert path["cv_deviance"].null_count() == 0
+        # the model has an interaction, so there are two stages and two paths
+        assert path["stage"].unique().sort().to_list() == [1, 2]
+        for stage in (1, 2):
+            sub = path.filter(pl.col("stage") == stage)
+            assert sub.height == 4 and sub["selected"].sum() == 1
+            assert sub["cv_deviance"].null_count() == 0
+        # stage 2 cross-validates on its own path over its own columns
+        assert run.alpha_stage2 is not None
+        assert run.summary()["alpha_stage2"] == run.alpha_stage2
 
     def test_run_model_rejects_invalid(self, project):
         project.models["freq"].predictors = []
@@ -498,7 +579,10 @@ class TestDiagnostics:
     def test_alpha_path_fixed_alpha(self, project):
         run = run_model(project, prepare(project), "freq")
         path = alpha_path(run.fit)
-        assert path.height == 1 and path["alpha"][0] == pytest.approx(0.002)
+        # one row per stage: the mains' fixed alpha, and the cells' (the same,
+        # since no interaction of this model asks for its own)
+        assert path.height == 2 and path["stage"].to_list() == [1, 2]
+        assert path["alpha"].to_list() == pytest.approx([0.002, 0.002])
 
 
 # --------------------------------------------------------------------------
@@ -508,6 +592,8 @@ class TestExport:
     def test_script_without_run_mentions_from_data(self, project):
         src = to_script(project, "freq")
         assert "DesignSpec.from_data" in src and "fit_glm(" in src
+        # the two stages are written even when the design is derived at run time
+        assert "spec.main_effects_spec()" in src and "spec.interactions_spec()" in src
         assert (
             "replace_strict" in src
             and "Exp_Q" in src
@@ -550,6 +636,13 @@ class TestExport:
         assert "rm.update_relativity('Region', 'R2', 'R2', 0.9)" in src
         assert "spec.add_interaction(InteractionEncoder(" in src
         assert "from_b=" in src and "1.25" in src
+        # A2: both stages are written out, and the RateModel is built from the pair
+        assert "stage1 = fit_glm(\n    train,\n    spec.main_effects_spec()," in src
+        assert "eta1 = stage1.linear_predictor(train)" in src
+        assert "stage2 = fit_glm(\n    train,\n    spec.interactions_spec()," in src
+        assert "offset=eta1" in src and "fit_intercept=False" in src
+        assert "fit = TwoStageFit(stage1, stage2)" in src
+        assert "to_rate_model(\n    fit," in src
         assert "excluded after the leakage review: Leak, IDpol" in src
         script = tmp_path / "rebuild.py"
         script.write_text(src)

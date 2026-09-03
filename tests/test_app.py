@@ -149,6 +149,14 @@ def test_pages_render_with_an_interaction(page, project_file, tmp_path):
     if page == "pages_export":
         code = "\n".join(c.value for c in at.code)
         assert "InteractionEncoder(" in code
+        # A2: the script an actuary downloads writes both stages
+        assert "spec.main_effects_spec()" in code
+        assert "fit = TwoStageFit(stage1, stage2)" in code
+    if page == "pages_model":
+        # the page says the model was fitted in two stages and names both alphas
+        assert any("Fitted in two stages" in m.value for m in at.info)
+        labels = [m.label for m in at.metric]
+        assert "alpha (mains)" in labels and "alpha (cells)" in labels
 
 
 def test_main_entry_point_renders(project_file):
