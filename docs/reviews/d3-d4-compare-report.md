@@ -348,3 +348,179 @@ and none of them blocks the merge. My reading of each:
    I would keep it as the default. Note that the answer also settles S4: the same
    "evaluate both curves at common points" machinery is what would let a
    step-vs-linear factor be compared properly instead of matched by label.
+
+---
+
+# Re-check (2026-09-03)
+
+*Six further commits, `git diff 1a8219f..HEAD` = 20 files, +1245 / −274. Only
+the new diff was re-read; every number below was re-measured on it.*
+
+## Final verdict
+
+**Approve — merge.** The blocking item is resolved and all nine should-fixes are
+done, several of them better than I asked. `git diff f0508e8..HEAD -- src/easy_glm/core`
+is still empty. Three chart nits (N12–N14) remain open by choice; none of them
+blocks, and none of them is in the owner's path.
+
+## B1 — resolved
+
+The check document now describes the models the script actually builds:
+
+> Two frequency models on the same six factors, both treating Density as a
+> straight line in log space (**the band design belongs to the project, so every
+> model shares it**); `freq_v2` adds a DrivAge × VehPower interaction, which is
+> the only structural difference between them.
+
+and the *only in* bullet now names the interaction rather than Density. I fitted
+the script's exact project again and confirmed the diff it describes: 26 rows,
+`(base rate)` 1, `DrivAge` 15, `Region` 3, `VehPower` 6, `DrivAge×VehPower`
+`only_in_b` 1 — no Density row, exactly as the corrected prose now says.
+
+The document's new worked example is arithmetically right, which I checked
+against the fixture rather than taking on trust:
+
+| doc says | measured |
+|---|---|
+| overall level +2.4 % | `base_rate_change(freq_v1, freq_v2)` = **+2.4498 %** (base rate 0.052996 → 0.054294) |
+| largest band move −8.9 %, DrivAge `[28.0, 30.0)` | **−8.94 %** (0.5883 → 0.5357, `log_diff` −0.0936) |
+| premium falls about 6.7 % | **−6.71 %** |
+
+`scripts/checks/d3_d4_compare_report.py` (no `--write`) reproduces
+`docs/checks/d3-d4-compare-report.md` byte for byte apart from `print`'s trailing
+newline. The two screenshots I complained about were re-anchored:
+`d3_compare_metrics.png` now shows the whole metrics table including the holdout
+columns, and `d3_compare_diff.png` now frames the tolerance box, the new level
+headline and the table together.
+
+## The common-grid rewrite — the substantive change, and it is right
+
+The builder went further than S4 and replaced label-matching for **numeric and
+piecewise-linear** factors with a comparison on the union of both models' band
+edges (`_curve` / `_common_grid` / `_value_at` / `_grid_point`). This pre-empts
+open question 4, so I checked it on its merits rather than only for regressions.
+
+It is a clear improvement, and the headline case is the proof:
+
+* **Moved knot.** Shifting one DrivAge knot from 28.0 to 28.5 used to give four
+  uninformative `band_only_in_*` rows. It now gives **one** row, `[28.0, 28.5)`,
+  `log_diff` −0.0447 — precisely the ages that would be charged differently.
+* **Two models with genuinely different knot counts** (9 vs 21 DrivAge bands):
+  **20** common-grid rows, all `changed`, top row `< 21.0` at +0.307. Under the
+  old rule that would have been ~30 rows saying only "these do not line up".
+* **Correctness of the interval-start rule.** Exact for step-vs-step (flat inside
+  an interval) and — less obviously — exact for linear-vs-linear: the grid uses
+  the union of both models' knots, and continuity makes each interval's end the
+  next interval's start, so agreeing at every grid point means agreeing at both
+  endpoints of every interval, and two exponentials that agree at both endpoints
+  are identical on it.
+* **The one approximation, and it is disclosed.** For a *mixed* pair the step is
+  flat while the linear slopes, so reading the start can understate the
+  difference inside the interval. The ceiling is one band's drift of the linear
+  curve; on this fixture's Density that is **+55.1 %** on the widest band
+  (`[7313, 27000)`, 1.1502 → 1.5424), median 0.00065. Every such row is now
+  labelled `kind = "numeric → linear"` so it cannot be mistaken for a
+  like-for-like comparison, and rewritten question 4 asks the owner exactly this
+  ("read each interval at its **start** … or the exposure-weighted average?").
+  That is the honest handling. *One sentence for the next pass:* say it in the
+  bullet too, not only in the question — a reader who skips the questions should
+  still know a `numeric → linear` row is the value at the band start.
+
+## Every relativity_diff case re-run
+
+| case | result |
+|---|---|
+| identical runs (A vs A, B vs B) | **0 rows** each; the eight documented columns survive on an empty frame |
+| single categorical adjustment ×1.25 | **1 row**, `Region / R2`, `log_diff` 0.22314355131420976 = log(1.25) |
+| single numeric step band ×1.25 | **1 row**, `DrivAge [28.0, 31.0)`, same `log_diff` |
+| single linear node ×1.30 | **1 row**, `Density [16.63, 25.56)`, `log_diff` 0.26236426446749106 |
+| moved knot (28.0 → 28.5) | **1 row**, `[28.0, 28.5)`, −0.0447 (was 2 + 2 `band_only`) |
+| step vs linear, same factor | **21 rows**, `kind` = `numeric → linear`; reversed run reads `linear → numeric` |
+| both relativities 0.0 | **0 rows** — S5 fixed |
+| both relativities −1.5 | **0 rows** (identical values are never a change, sign irrelevant) |
+| 1.42 → 0.0 | **1 row**, `log_diff` null, sorted last — a real crossing is still listed |
+| symmetry, A vs B | 24 vs 24 rows, every status swapped, every `log_diff` negated |
+| symmetry, step vs linear | 47 vs 47, symmetric |
+| symmetry, moved knot | 1 vs 1, symmetric |
+| tolerance `|d| == tol` | **0 rows** (strict `>`); `tol = 0.0099` → 1; negative tol `abs()`-ed → 0; `tol = 0` on identical runs → 0 |
+| `base_rate_change` | +10 % → 0.10000000000000009; reversed −9.09 % (a ratio−1 is correctly asymmetric, not a bug); zero base rate → `None`, and the diff still emits the `(base rate)` row with a null `log_diff` |
+
+## The other should-fixes
+
+* **S2** — a challenger that cannot be scored now gets its own section under the
+  same `#compare` anchor, so the TOC link still resolves: *"This report names
+  freq_b as the challenger, but it could not be scored here: the prepared data no
+  longer has the columns it needs (Density). Its metrics in section 1 are the
+  ones recorded when it was fitted; there is no double lift and no relativity
+  comparison in this file."* Exactly the fix asked for.
+* **S3** — the challenger's line is dashed (`stroke-dasharray="7 4"`) in the chart
+  *and* in the legend swatch. I re-rendered the Density block: the champion's
+  orange line now shows through the green dashes on both A/E charts.
+* **S4/S5** — see above.
+* **S6** — **25 of 25** `svg[role="img"]` now carry a `<title>` first child; the
+  browser reports **0** unnamed. Names are specific ("DrivAge: actual vs expected
+  by band (holdout)"), so the PDF outline is usable too.
+* **S7** — done as recommended: `metric | freq_a · train | freq_b · train |
+  freq_a · holdout | freq_b · holdout`, with the model facts split into their own
+  table below. The fixture screenshot now makes the real story readable at a
+  glance — freq_v2 wins on train Gini (0.3523 vs 0.3352) and *loses* on holdout
+  (0.2883 vs 0.2916).
+* **S8** — README and CHANGELOG now say "350–400 kB"; measured 346 kB and 386 kB.
+* **S9** — CHANGELOG now records that the CLI half of D4 lands with F.
+* **S10** — AGENTS.md now states which lane proves the browser criterion. Verified:
+  in the Playwright venv `tests/test_d3_d4_compare_report.py` runs **38 passed,
+  12 skipped** (the skips are the AppTest classes) — the headless-browser test
+  runs and passes there, and the static half (no `<script>`, no external
+  `src`/`href`) is now asserted on every run in every venv.
+* **N11** (empty labels), **N15** (`set_challenger(None)` no longer wipes the
+  choice while fits are stale) and **N16** (the premium-multiplies sentence) also
+  fixed.
+
+## Missing tests — closed
+
+All seven are now covered; the file went from 29 to **50** tests. New:
+`test_the_diff_is_symmetric`, `test_a_step_and_a_linear_term_are_compared_on_a_common_grid`,
+`test_one_edited_linear_band_is_exactly_one_row`, `test_the_tolerance_boundary_is_strict`,
+`test_two_identical_relativities_are_never_a_change`, `test_base_rate_change_is_the_overall_level`,
+`test_a_challenger_that_cannot_be_scored_is_explained`, `test_the_metrics_table_is_exactly_the_runs_metrics`,
+`test_it_carries_no_javascript_at_all`, `test_every_chart_has_an_accessible_name`,
+`test_the_challengers_line_is_dashed`, plus a whole `TestSvg` class (ticks,
+degenerate charts, escaping, dashes, heatmap naming). `test_moved_bands_are_only_in_rows_not_false_changes`
+was correctly *replaced* by `test_a_moved_knot_is_compared_on_the_common_grid`
+rather than deleted.
+
+## Still open (nits, by choice — not blocking)
+
+* **N12** — `curve_chart` still has no log x-axis (the Rate tables page switches
+  to one at `hi / lo > 100`), and `report._relativity_chart`'s interpolation loop
+  still duplicates `charts.py::linear_curve_chart`'s `_polyline`.
+* **N13** — the numeric relativity chart still joins "Other / Unknown" onto the
+  end of the age curve, while the A/E chart beneath it omits that band, so the
+  two x-axes in one block do not line up.
+* **N14** — lift and double-lift still draw equal-height exposure bars over
+  equal-exposure bins.
+* One sentence recommended above, so a `numeric → linear` row's number is
+  explained in the bullet and not only in question 4.
+
+## Re-run, with numbers
+
+| Check | Before | Now |
+|---|---|---|
+| Full suite, Streamlit 1.57 | 472 passed, 1 skipped, 177 s | **493 passed, 1 skipped, 173.22 s** |
+| App tests, Streamlit 1.63.0 | 94 passed, 1 skipped | **115 passed, 1 skipped, 11.89 s** |
+| `test_d3_d4_compare_report.py` in the Playwright venv | — | **38 passed, 12 skipped** (browser test runs here) |
+| e2e, documented command | 3 passed, 104 s | **3 passed, 105.54 s** |
+| `ruff check .` / `black --check .` | clean | **clean** / 93 files unchanged |
+| `git diff f0508e8..HEAD -- src/easy_glm/core` | empty | **empty** |
+| Golden + fixtures since `1a8219f` | — | **untouched** |
+| Check script vs committed markdown | identical | **identical** (trailing newline only) |
+| Report size (French motor) | 345 / 383 kB | **346 / 386 kB**; build 0.09 s / 0.14 s |
+| Report self-containment | 0 scripts, 0 external | **0 `<script>`, 0 external `src`/`href`** |
+| Headless Chromium, both reports | 0 errors | **0 problems, 1 request, 7 `section.variable`, 0 unnamed `role="img"`, TOC all resolve, no h-overflow** |
+| Appendix script in a subprocess | rc 0 | **rc 0**, `holdout A/E: 1.011592477159294` |
+| Compare page metrics vs `run.metrics` | 32 cells exact | **32 metric cells + 12 fact cells exact** |
+| Level headline on the page | — | present, `+2.0%` on the test fixture, matching `base_rate_change` |
+| CSV download | present | **present** |
+| Project isolation | no leak | **no leak** — token changes, `S.challenger()` → `None`, zero leftover widget keys |
+| Challenger deleted while selected (3 models) | graceful | **graceful**, no exception, selector falls back |
+| Reviewer AppTest probes | 7 | **9 passed** (1.57), rewritten for the new metrics shape |
