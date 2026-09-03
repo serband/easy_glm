@@ -2,6 +2,70 @@
 
 ## 0.4.0 (unreleased)
 
+### Books of millions of rows fit in memory (G)
+- **A 5-million-row book with a 227-column rating structure now fits and trains
+  in 2.6 GB and 21 seconds** on a 24 GB laptop; 1M rows takes 0.8 GB and four
+  seconds. In 0.3 the design matrix was written out in full — one float64
+  column per band per row — which is 9 GB of design alone at 5M rows, and the
+  machine could not do it (`docs/checks/g-scale.md`,
+  `scripts/bench_scale.py`).
+- **How.** A banded factor's columns are completely described by one number per
+  row — which band the row is in — so that is what is stored: a new
+  `core/stepmatrix.py` holds a `StepMatrix` tabmat block of `int32` bin indices
+  and computes everything the solver asks for (matrix-vector products, the
+  gradient, the Hessian, cross-products with the other blocks) straight from
+  them with a cumulative-sum trick. Categorical factors become tabmat
+  `CategoricalMatrix` blocks and an interaction becomes **one** categorical
+  block over its kept-cell code, with "no kept cell" as the dropped category —
+  four bytes a row however many cells it has, instead of the dense
+  `rows x cells` block piece A built. `DesignSpec.build(data, sparse=)` returns
+  the resulting `SplitMatrix`; **memory now grows with the number of factors,
+  not the number of bands**.
+- **The design bytes are arithmetic you can check**: `n x (4 per banded factor
+  + 4 per categorical + 4 per interaction + 8 per missing-value indicator + 8
+  per piecewise-linear band)`, asserted against the real matrix on every
+  benchmark run (`DesignSpec.expected_design_bytes`). Piecewise-linear bands
+  stay dense on purpose — their columns are real-valued, so a band index does
+  not determine them — and the formula says what that costs.
+- **No number moved.** float64 everywhere (`P1`, bounds, weights and the offset
+  are cast); the compact and dense fits give the same non-zero set and
+  predictions agreeing to 1e-10 — measured 3e-14 on the French motor fixture,
+  with the same cross-validated alpha — across fixed-alpha, cross-validated,
+  monotone, two-stage, piecewise-linear and continuous designs and on a 300k
+  synthetic book (`tests/test_scale.py`). The compact form switches itself on
+  at **200,000 rows**; the 50k golden fit is below that and still fitted on the
+  dense matrix, which the test asserts explicitly.
+- **Scoring never builds a design matrix.** `GLMFit.predict` and
+  `linear_predictor` now add up one rate-table lookup per factor in 500,000-row
+  chunks — the same arithmetic `RateModel` does, so the exactness invariant
+  holds by construction rather than by coincidence — instead of calling glum on
+  a freshly built matrix. Diagnostics on a big book therefore never materialise
+  a second copy of the design.
+- **New: `fit_glm(..., aggregate=True)`** fits one row per *distinct design
+  row* with the summed weight and the weighted mean target. Exact for every
+  family easy_glm offers (identical coefficients to 1e-12, tested for Poisson,
+  Gamma and Tweedie with weights and with an offset in the grouping key), and
+  **off by default**: it pays only on a coarse design, collapsing the 50k
+  fixture by just 5 %. Refused together with `cv=`, because folds have to be
+  assigned to rows.
+- **New: `fit_glm(..., progress=callable)`** reports the stage and the elapsed
+  time about once a second from a background thread, and the Model page shows
+  it under the Fit button ("Stage 1, main effects — Fitting 1,000,000 rows x
+  197 columns — 12s"). It is elapsed time rather than a percentage because glum
+  exposes no per-alpha or per-fold hook; a callback that raises can never fail
+  a fit.
+- **glum is pinned to `3.4.*`.** Its input validation only passes through
+  tabmat's own block types, so `install_glum_shim()` wraps one private function
+  with a single branch that lets a `StepMatrix` through unchanged (documented
+  in `core/stepmatrix.py`; the upstream fix is a one-line `isinstance` check).
+  A test fits a two-block matrix through that path so the day glum changes it
+  is the day the build goes red, not the day a 5M-row design is silently
+  densified.
+- Nothing pickled changed shape or meaning, so `PERSIST_FORMAT` stays at 5: a
+  persisted `GLMFit` still holds the same glum model and the same coefficients,
+  and reading it back under the new scoring gives the same predictions to
+  1e-15.
+
 ### Interactions are fitted on top of frozen main effects (A2)
 - **Adding an interaction no longer moves a single main-effect relativity** (the
   actuary's answer to Q5). A model with interactions is now fitted in **two
