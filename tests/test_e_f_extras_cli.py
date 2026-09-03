@@ -274,8 +274,10 @@ class TestOffsetIdentity:
 
     def test_gamma_is_not_expected_to_match(self, book):
         """Only the Poisson deviance is invariant under the swap, so the same
-        two fits on a Gamma target are genuinely different models. Recorded so
-        nobody reads the Poisson test as a general law."""
+        two fits on a **Gamma** target — and equally on a Tweedie one, whose
+        deviance is not a scaled Poisson deviance either — are genuinely
+        different models. Recorded so nobody reads the Poisson test as a general
+        law and "fixes" this one by loosening a tolerance."""
         spec = self._spec(book)
         cost = book.with_columns(
             (pl.col("ClaimNb").clip(lower_bound=0.1) * 400.0).alias("Cost")
