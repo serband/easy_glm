@@ -76,12 +76,21 @@ def render() -> None:
         )
         c3, c4 = st.columns([1, 3])
         sample = c3.number_input(
-            "Work on a sample (rows, 0 = all)",
+            "Exploration sample (rows, 0 = all)",
             min_value=0,
             value=int(p.data.sample_rows or 0),
             step=10000,
-            help="Speeds up every step while you iterate. Fits use the sample too — set to 0 before the final fit.",
+            help=(
+                "Rows used by the Explore page and the Design / Variables previews so "
+                "large books stay interactive. Fits, diagnostics, rate tables and the "
+                "leakage report always use the full data; changing this never "
+                "invalidates a fit."
+            ),
+            key="sample_rows",
         )
+        if (int(sample) or None) != p.data.sample_rows:
+            p.data.sample_rows = int(sample) or None
+            S.touch()
         up = c4.file_uploader(
             "…or upload a data file",
             type=["parquet", "csv", "sas7bdat", "xlsx"],
@@ -95,7 +104,6 @@ def render() -> None:
         if st.button("Load data", type="primary"):
             p.data.source.path = src_path
             p.data.source.type = src_type
-            p.data.sample_rows = int(sample) or None
             S.touch()
             try:
                 S.raw_frame(force=True)
@@ -116,7 +124,15 @@ def render() -> None:
                 ("Rows", f"{raw.height:,}", None),
                 ("Columns", str(raw.width), None),
                 ("Memory", f"{mem:,.0f} MB", None),
-                ("Sample", "yes" if p.data.sample_rows else "full data", None),
+                (
+                    "Exploration sample",
+                    (
+                        f"{p.data.sample_rows:,} rows"
+                        if S.is_sampled()
+                        else "off (full data)"
+                    ),
+                    "Explore / preview charts only; fits use every row",
+                ),
             ]
         )
         tab1, tab2 = st.tabs(["First rows", "Columns"])

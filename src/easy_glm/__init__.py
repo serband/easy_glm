@@ -23,6 +23,14 @@ scorer (``.easyglm`` export, relativity editor) and reproduces the GLM exactly.
    rate read off the coefficients.
 """
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
+try:
+    __version__ = _pkg_version("easy_glm")
+except PackageNotFoundError:  # pragma: no cover - source checkout without metadata
+    __version__ = "0.0.0"
+
 from .core import (
     CategoricalEncoder,
     DesignSpec,

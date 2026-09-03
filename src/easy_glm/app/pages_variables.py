@@ -140,8 +140,15 @@ def _roles_grid(raw: pl.DataFrame) -> None:
 
 def _recodes(raw: pl.DataFrame) -> None:
     p = S.project()
+    sample = S.raw_sample()
+    if sample is None:
+        return
+    if S.is_sampled():
+        st.caption(
+            f"Level counts from the exploration sample ({sample.height:,} rows)."
+        )
     after_rename = apply_variables(
-        raw, _data_without(p, "recodes", "derived", "filters", "types")
+        sample, _data_without(p, "recodes", "derived", "filters", "types")
     )
     cat_cols = [
         c
@@ -263,7 +270,7 @@ def _derived(raw: pl.DataFrame) -> None:
     b1, b2 = st.columns([1, 1])
     if b1.button("Preview", key="derived_preview") and name and expr:
         try:
-            base = apply_variables(raw.head(2000), p.data)
+            base = apply_variables((S.raw_sample() or raw).head(2000), p.data)
             prev = base.with_columns(eval_expr(expr).alias(name)).select(name)
             st.write(
                 prev.describe()

@@ -153,7 +153,7 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
         st.rerun()
 
 
-def _detail(train: pl.DataFrame, predictors: list[str]) -> None:
+def _detail(train: pl.DataFrame, preview: pl.DataFrame, predictors: list[str]) -> None:
     p = S.project()
     st.subheader("Variable detail")
     c1, c2 = st.columns([2, 1])
@@ -218,7 +218,7 @@ def _detail(train: pl.DataFrame, predictors: list[str]) -> None:
                 S.touch()
                 st.rerun()
         u = univariate(
-            train,
+            preview,
             var,
             target=p.target,
             weight=p.weight,
@@ -281,7 +281,7 @@ def _detail(train: pl.DataFrame, predictors: list[str]) -> None:
                     S.touch()
                     st.rerun()
         u = univariate(
-            train,
+            preview,
             var,
             target=p.target,
             weight=p.weight,
@@ -318,7 +318,7 @@ def _detail(train: pl.DataFrame, predictors: list[str]) -> None:
             S.touch()
             st.rerun()
         u = univariate(
-            train,
+            preview,
             var,
             target=p.target,
             weight=p.weight,
@@ -344,11 +344,17 @@ def render() -> None:
     if not predictors:
         st.info("Assign **predictor** roles on the Variables page first.")
         return
-    train = (
-        df.filter(pl.col(p.data.split.column) == 1)
-        if p.data.split.column in df.columns
-        else df
-    )
+    train = S.train_frame()  # knots and levels always come from the full training rows
+    preview = (
+        S.train_sample()
+    )  # exposure / rate previews may use the exploration sample
+    if train is None or preview is None:
+        return
+    if S.is_sampled():
+        st.caption(
+            f"Knots and levels are derived from all {train.height:,} training rows; "
+            f"the preview charts use the exploration sample ({preview.height:,} rows)."
+        )
     _defaults()
     st.caption(
         "Numeric predictors become step functions (one 0/1 column per knot, penalised increments → automatic banding); "
@@ -367,4 +373,4 @@ def render() -> None:
     st.caption(
         f"Design matrix: **{total}** columns across {len(predictors)} predictors on {train.height:,} training rows."
     )
-    _detail(train, predictors)
+    _detail(train, preview, predictors)

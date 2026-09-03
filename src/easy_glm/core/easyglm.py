@@ -274,6 +274,7 @@ class EasyGLM:
             "model_type": self.rate_model.metadata.model_type,
             "target": self.rate_model.metadata.target,
             "weight_col": self.rate_model.metadata.weight_col,
+            "offset_col": self.glm.offset_col,
             "train_test_col": self.rate_model.metadata.train_test_col,
             "predictors": self.predictors,
             "base_rate": self.rate_model.base_rate,

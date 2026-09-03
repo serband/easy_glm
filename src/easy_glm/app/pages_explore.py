@@ -14,6 +14,11 @@ from . import ui
 
 def _univariate(df: pl.DataFrame) -> None:
     p = S.project()
+    if S.is_sampled():
+        st.caption(
+            f"Charts use the exploration sample of {df.height:,} rows "
+            "(Project page); fits and diagnostics use the full data."
+        )
     cfg = p.models.get(p.champion) if p.champion else None
     divide = cfg.divide_target_by_weight if cfg else bool(p.weight)
     reserved = {p.target, p.weight, p.offset, p.data.split.column} - {None}
@@ -163,7 +168,9 @@ def render() -> None:
         return
     tab1, tab2 = st.tabs(["Univariate", "Leakage report"])
     with tab1:
-        _univariate(df)
+        sample = S.sample_frame()
+        if sample is not None:
+            _univariate(sample)
     with tab2:
         if ui.require_target() is not None:
-            _leakage(df)
+            _leakage(df)  # full training rows; the report samples internally

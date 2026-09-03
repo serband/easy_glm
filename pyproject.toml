@@ -94,3 +94,4 @@ ignore = ["E501"]
 [tool.ruff.lint.per-file-ignores]
 # Streamlit pages: short module aliases (S = state, C = charts) and plotly's dict() idiom
 "src/easy_glm/app/*" = ["N812", "C408"]
+"tests/test_app_state.py" = ["N812"]  # `state as S` mirrors the app modules

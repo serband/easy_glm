@@ -127,5 +127,6 @@ with st.sidebar:
         p.to_json(path)
         st.session_state.project_path = path
         st.toast(f"Saved {path}")
+    st.caption(S.persistence_note())
 
 nav.run()
