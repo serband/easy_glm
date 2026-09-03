@@ -35,6 +35,7 @@ from . import _svg
 from .diagnostics import (
     ae_by_pair,
     ae_by_variable,
+    base_rate_change,
     describe_diff,
     double_lift,
     gini,
@@ -311,6 +312,7 @@ def _relativity_chart(run: ModelRun, var: str, table: pl.DataFrame) -> str:
                 [("relativity", xs, ys, _svg.BLUE)],
                 x_title=var,
                 marks=marks,
+                title=f"{var}: fitted relativity curve",
             )
     labels = table["label"].to_list()
     lines = [("relativity", table["relativity"].to_list(), _svg.BLUE)]
@@ -322,7 +324,12 @@ def _relativity_chart(run: ModelRun, var: str, table: pl.DataFrame) -> str:
         ):
             lines.insert(0, ("fitted (before adjustments)", fitted, _svg.GREY))
     return _svg.category_chart(
-        labels, bars=None, lines=lines, right_title="relativity", hline=1.0
+        labels,
+        bars=None,
+        lines=lines,
+        right_title="relativity",
+        hline=1.0,
+        title=f"{var}: fitted relativities by band",
     )
 
 
@@ -333,6 +340,7 @@ def _ae_chart(
     knots: list[float] | None,
     challenger: np.ndarray | None,
     challenger_name: str,
+    subset: str = "",
 ) -> str:
     table = ae_by_variable(
         frame, var, scored.actual, scored.expected, scored.weight, knots=knots
@@ -350,6 +358,7 @@ def _ae_chart(
                 f"expected ({challenger_name})",
                 other["expected_rate"].to_list(),
                 _svg.GREEN,
+                True,  # dashed, so it never hides the champion's line
             )
         )
     return _svg.category_chart(
@@ -357,6 +366,7 @@ def _ae_chart(
         bars=table["exposure"].to_list(),
         lines=lines,
         right_title="rate",
+        title=f"{var}: actual vs expected by band ({subset})",
     )
 
 
@@ -399,6 +409,7 @@ def _variable_sections(
                     knots,
                     (challenger_pred or {}).get(label),
                     challenger_name,
+                    label,
                 )
             )
         blocks.append("<h4>Rate table</h4>")
@@ -465,6 +476,7 @@ def _interaction_sections(
                 row_name=a,
                 col_name=b,
                 hover={"training exposure": exp},
+                title=f"{var}: cell relativities",
             )
         )
         for label, scored in subsets.items():
@@ -492,6 +504,7 @@ def _interaction_sections(
                     row_name=a,
                     col_name=b,
                     hover=m["hover"],
+                    title=f"{var}: actual / expected by cell ({label})",
                 )
             )
         out.append("<h4>Cells that carry an adjustment</h4>")
@@ -544,6 +557,7 @@ def _lift_section(subsets: dict[str, _Scored], number: int) -> str:
                     ("expected", table["expected_rate"].to_list(), _svg.ORANGE),
                 ],
                 right_title="rate",
+                title=f"Lift ({label}): actual and expected by predicted-rate bin",
             )
         )
         out.append(_table(table))
@@ -585,24 +599,70 @@ def _compare_section(
                 bars=table["exposure"].to_list(),
                 lines=[
                     (f"A/E {champion}", table["ae_a"].to_list(), _svg.BLUE),
-                    (f"A/E {challenger}", table["ae_b"].to_list(), _svg.ORANGE),
+                    (f"A/E {challenger}", table["ae_b"].to_list(), _svg.ORANGE, True),
                 ],
                 right_title="A/E",
                 hline=1.0,
                 right_from_zero=False,
+                title=f"Double lift ({label}): {champion} against {challenger}",
             )
         )
     out.append("<h3>Relativities that differ</h3>")
+    out.append(_level_headline(runs[champion], runs[challenger], challenger))
     out.append(
         '<p class="muted">One row per band whose relativity moved by more than '
         f"{DEFAULT_DIFF_TOL:.0%} (|log ratio| &gt; {DEFAULT_DIFF_TOL:g}). "
         "<code>log_diff</code> is log(challenger / champion): +0.10 means "
-        f"<em>{_esc(challenger)}</em> charges about 10 % more for that band. "
-        "Bands or variables only one model has are listed too.</p>"
+        f"<em>{_esc(challenger)}</em> charges about 10 % more for that band "
+        "<em>on top of</em> the overall level above — a band's premium change "
+        "is its relativity change multiplied by that level change, so the two "
+        "must be read together. Numeric factors are compared on the union of "
+        "both models' band edges, so a moved knot (or the same factor banded in "
+        "one model and a straight line in the other, where <code>kind</code> "
+        "reads <em>numeric → linear</em>) is still compared like for like; "
+        "levels and interaction cells are matched by name. Bands or variables "
+        "only one model has are listed too.</p>"
     )
     out.append(_table(diff, max_rows=300))
     out.append("</section>")
     return "".join(out)
+
+
+def _level_headline(run_a: ModelRun, run_b: ModelRun, challenger: str) -> str:
+    """The overall level change on its own, above the band-by-band table: a
+    band's premium change is its relativity change times this one."""
+    change = base_rate_change(run_a, run_b)
+    if change is None:
+        return ""
+    direction = "no change" if abs(change) < 5e-5 else f"{change:+.1%}"
+    return (
+        f'<p class="headline">Overall level (base rate): <strong>{direction}'
+        f"</strong> — every risk pays that much more or less with "
+        f"<em>{_esc(challenger)}</em> before its own bands move.</p>"
+    )
+
+
+def _no_comparison_section(
+    other: ModelRun, challenger: str, df: pl.DataFrame, number: int
+) -> str:
+    """Stand in for the comparison when the challenger cannot be scored on
+    these rows — a named challenger and no comparison would read as a bug."""
+    missing = [c for c in other.spec.required_columns if c not in df.columns]
+    why = (
+        "the prepared data no longer has the columns it needs ("
+        + ", ".join(missing)
+        + ")"
+        if missing
+        else "there are no rows to score it on"
+    )
+    return (
+        f'<section id="compare"><h2>{number}. No comparison with '
+        f"{_esc(challenger)}</h2>"
+        f'<p class="headline">This report names <strong>{_esc(challenger)}</strong> '
+        f"as the challenger, but it could not be scored here: {_esc(why)}. Its "
+        "metrics in section 1 are the ones recorded when it was fitted; there is "
+        "no double lift and no relativity comparison in this file.</p></section>"
+    )
 
 
 def _appendix(project: Project, champion: str, run: ModelRun, number: int) -> str:
@@ -640,6 +700,8 @@ h4 { font-size: 14px; margin: 18px 0 4px; color: #5b6570;
   text-transform: uppercase; letter-spacing: .04em; }
 p { margin: 8px 0; }
 .muted { color: #5b6570; font-size: 13.5px; max-width: 78ch; }
+.headline { background: #eef3f8; border-left: 3px solid #1f5f99; padding: 8px 12px;
+  margin: 10px 0; max-width: 78ch; }
 .sub { color: #5b6570; margin: 0 0 18px; }
 section.variable { background: #fff; border: 1px solid #e2e7ec; border-radius: 8px;
   padding: 14px 18px 20px; margin: 18px 0; }
@@ -742,6 +804,11 @@ def to_report_html(
             )
         )
         number += 1
+    elif challenger:
+        # the challenger is named in the subtitle and has a metrics column, so
+        # the missing comparison must be explained rather than silently absent
+        body.append(_no_comparison_section(runs[challenger], challenger, df, number))
+        number += 1
     body.append(_appendix(project, champion, run, number))
 
     toc = [
@@ -749,11 +816,7 @@ def to_report_html(
         ("#variables", "Rating factors"),
         *([("#interactions", "Interactions")] if inter else []),
         ("#lift", "Lift and Gini"),
-        *(
-            [("#compare", f"{champion} vs {challenger}")]
-            if challenger and challenger_pred
-            else []
-        ),
+        *([("#compare", f"{champion} vs {challenger}")] if challenger else []),
         ("#appendix", "Appendix"),
     ]
     nav = "".join(f'<a href="{href}">{_esc(text)}</a>' for href, text in toc)

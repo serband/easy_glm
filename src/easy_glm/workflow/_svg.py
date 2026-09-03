@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from html import escape
+from typing import Any
 
 BLUE = "#1f5f99"
 ORANGE = "#e07b39"
@@ -110,15 +111,21 @@ class _Axis:
 # --------------------------------------------------------------------------
 # building blocks
 # --------------------------------------------------------------------------
-def _legend(entries: list[tuple[str, str, bool]], x: float, y: float) -> str:
-    """``[(name, colour, is_line)]`` as swatches on one row."""
+def _dash(rest: list[Any]) -> str:
+    """``stroke-dasharray`` for a line whose optional ``dashed`` flag was
+    passed as a fourth (fifth for a curve) tuple element."""
+    return ' stroke-dasharray="7 4"' if rest and rest[0] else ""
+
+
+def _legend(entries: list[tuple[str, str, bool, str]], x: float, y: float) -> str:
+    """``[(name, colour, is_line, dash)]`` as swatches on one row."""
     out: list[str] = []
     cur = x
-    for name, colour, is_line in entries:
+    for name, colour, is_line, dash in entries:
         if is_line:
             out.append(
                 f'<line x1="{cur:.1f}" y1="{y:.1f}" x2="{cur + 16:.1f}" '
-                f'y2="{y:.1f}" stroke="{colour}" stroke-width="2.5"/>'
+                f'y2="{y:.1f}" stroke="{colour}" stroke-width="2.5"{dash}/>'
             )
         else:
             out.append(
@@ -185,11 +192,16 @@ def _x_labels(labels: list[str], centres: list[float], y: float) -> str:
     return "".join(out)
 
 
-def _frame(width: int, height: int, body: str) -> str:
+def _frame(width: int, height: int, body: str, title: str = "") -> str:
+    """The ``<svg>`` wrapper. ``title`` becomes the chart's accessible name (a
+    ``<title>`` first child, which is what ``role="img"`` is announced as), so
+    a screen reader and a PDF bookmark say which variable and which chart this
+    is instead of "image"."""
+    label = f"<title>{escape(title)}</title>" if title else ""
     return (
         f'<svg class="chart" viewBox="0 0 {width} {height}" width="100%" '
         f'height="{height}" role="img" xmlns="http://www.w3.org/2000/svg">'
-        f"{body}</svg>"
+        f"{label}{body}</svg>"
     )
 
 
@@ -201,30 +213,37 @@ def category_chart(
     *,
     bars: Sequence[Number] | None = None,
     bar_name: str = "exposure",
-    lines: Sequence[tuple[str, Sequence[Number], str]] = (),
+    lines: Sequence[tuple] = (),
     left_title: str = "exposure",
     right_title: str = "rate",
     hline: float | None = None,
     right_from_zero: bool = True,
+    title: str = "",
     width: int = 900,
     height: int = 340,
 ) -> str:
     """Bars on a left axis and lines on a right axis over categorical bands.
 
     Used for A/E by variable (exposure bars, actual / expected lines), lift and
-    double lift. ``lines`` is ``[(name, values, colour)]``. Hovering a band
-    shows every value of that band.
+    double lift. ``lines`` is ``[(name, values, colour)]``, optionally with a
+    fourth element ``dashed``: the challenger's line is dashed so it never
+    hides the champion's where the two agree, exactly as the workbench draws
+    it. Hovering a band shows every value of that band; ``title`` names the
+    chart for a screen reader.
     """
     labels = [str(x) for x in labels]
-    n = max(len(labels), 1)
+    if not labels:  # nothing to draw: an empty frame beats a broken chart
+        return _frame(width, height, "", title)
+    n = len(labels)
     ml, mr, mt, mb = 66, 66, 28, 96
     x0, x1 = ml, width - mr
     y0, y1 = height - mb, mt
     bw = (x1 - x0) / n
     centres = [x0 + (i + 0.5) * bw for i in range(n)]
 
+    drawn = [(name, vals, colour, _dash(rest)) for name, vals, colour, *rest in lines]
     left = _Axis(bars or [0.0], y0, y1, from_zero=True)
-    right_values = [v for _n, vals, _c in lines for v in vals]
+    right_values = [v for _n, vals, _c, _d in drawn for v in vals]
     right = _Axis(
         right_values or [0.0, 1.0],
         y0,
@@ -262,7 +281,7 @@ def category_chart(
                 f'<line x1="{x0:.1f}" y1="{hy:.1f}" x2="{x1:.1f}" y2="{hy:.1f}" '
                 f'stroke="{AXIS}" stroke-width="1" stroke-dasharray="4 3"/>'
             )
-    for _name, values, colour in lines:
+    for _name, values, colour, dash in drawn:
         pts = [
             (cx, right.px(v))
             for cx, v in zip(centres, values, strict=False)
@@ -273,7 +292,7 @@ def category_chart(
         path = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
         out.append(
             f'<polyline points="{path}" fill="none" stroke="{colour}" '
-            f'stroke-width="2.5" stroke-linejoin="round"/>'
+            f'stroke-width="2.5" stroke-linejoin="round"{dash}/>'
         )
         for x, y in pts:
             out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3" fill="{colour}"/>')
@@ -282,7 +301,7 @@ def category_chart(
         parts = [labels[i] if i < len(labels) else ""]
         if bars is not None and i < len(bars):
             parts.append(f"{bar_name}: {fmt(bars[i])}")
-        for name, values, _c in lines:
+        for name, values, _c, _d in drawn:
             if i < len(values):
                 parts.append(f"{name}: {fmt(values[i], 4)}")
         out.append(
@@ -291,34 +310,39 @@ def category_chart(
             f"<title>{escape(chr(10).join(parts))}</title></rect>"
         )
     out.append(_x_labels(labels, centres, y0 + 14))
-    entries: list[tuple[str, str, bool]] = []
+    entries: list[tuple[str, str, bool, str]] = []
     if bars is not None:
-        entries.append((bar_name, GREY, False))
-    entries += [(name, colour, True) for name, _v, colour in lines]
+        entries.append((bar_name, GREY, False, ""))
+    entries += [(name, colour, True, dash) for name, _v, colour, dash in drawn]
     out.append(_legend(entries, x0, 14))
-    return _frame(width, height, "".join(out))
+    return _frame(width, height, "".join(out), title)
 
 
 def curve_chart(
-    series: Sequence[tuple[str, Sequence[float], Sequence[float], str]],
+    series: Sequence[tuple],
     *,
     x_title: str = "value",
     y_title: str = "relativity",
     hline: float | None = 1.0,
     marks: Sequence[tuple[float, str]] = (),
+    title: str = "",
     width: int = 900,
     height: int = 340,
 ) -> str:
     """Continuous curves on a numeric x axis (piecewise-linear relativities).
 
-    ``series`` is ``[(name, xs, ys, colour)]``; ``marks`` draws labelled
-    vertical lines (the clamp points, the base point).
+    ``series`` is ``[(name, xs, ys, colour)]``, optionally with a fifth element
+    ``dashed``; ``marks`` draws labelled vertical lines (the clamp points, the
+    base point); ``title`` names the chart for a screen reader.
     """
     ml, mr, mt, mb = 66, 30, 28, 56
     x0, x1 = ml, width - mr
     y0, y1 = height - mb, mt
-    xs_all = [x for _n, xs, _y, _c in series for x in xs]
-    ys_all = [y for _n, _x, ys, _c in series for y in ys]
+    drawn = [
+        (name, xs, ys, colour, _dash(rest)) for name, xs, ys, colour, *rest in series
+    ]
+    xs_all = [x for _n, xs, _y, _c, _d in drawn for x in xs]
+    ys_all = [y for _n, _x, ys, _c, _d in drawn for y in ys]
     xa = _Axis(xs_all or [0.0, 1.0], x0, x1, include=[m[0] for m in marks])
     ya = _Axis(
         ys_all or [0.0, 1.0],
@@ -361,7 +385,7 @@ def curve_chart(
             f'stroke="{GREEN}" stroke-width="1" stroke-dasharray="5 4"/>'
             f'<text x="{x + 4:.1f}" y="{y1 + 12:.1f}" class="ax">{escape(label)}</text>'
         )
-    for name, xs, ys, colour in series:
+    for name, xs, ys, colour, dash in drawn:
         pts = [
             (xa.px(x), ya.px(y))
             for x, y in zip(xs, ys, strict=False)
@@ -372,13 +396,17 @@ def curve_chart(
         path = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
         out.append(
             f'<polyline points="{path}" fill="none" stroke="{colour}" '
-            f'stroke-width="2.5" stroke-linejoin="round">'
+            f'stroke-width="2.5" stroke-linejoin="round"{dash}>'
             f"<title>{escape(name)}</title></polyline>"
         )
     out.append(
-        _legend([(name, colour, True) for name, _x, _y, colour in series], x0, 14)
+        _legend(
+            [(name, colour, True, dash) for name, _x, _y, colour, dash in drawn],
+            x0,
+            14,
+        )
     )
-    return _frame(width, height, "".join(out))
+    return _frame(width, height, "".join(out), title)
 
 
 def _ratio_colour(value: float | None) -> str:
@@ -402,6 +430,7 @@ def heatmap(
     row_name: str = "",
     col_name: str = "",
     hover: dict[str, Sequence[Sequence[float | None]]] | None = None,
+    title: str = "",
     width: int = 900,
 ) -> str:
     """Matrix of multiplicative values (relativities, A/E) centred on 1.00.
@@ -463,4 +492,4 @@ def heatmap(
             f'<text x="{key_x + k * 24 + 11:.1f}" y="{height - 4:.1f}" '
             f'text-anchor="middle" class="lg">{ratio:g}</text>'
         )
-    return _frame(width, height, "".join(out))
+    return _frame(width, height, "".join(out), title)
