@@ -29,6 +29,21 @@ holds pickles: trusted local content, like derived-column expressions. The
 pickle stores the fitted run; adjustments and the base-rate override are
 re-applied from the *current* project when it is loaded, so the project file
 stays the truth.
+
+The folder is **shared mutable state**: every browser tab with the project open
+writes into it. Three rules keep one tab from throwing away another's work
+(``docs/checks/w4-runs-folder.md``):
+
+* while the conflict notice is up, this tab may fit but may not write to or
+  delete from the folder (:func:`runs_write_paused`);
+* a file is deleted only when this tab is in step with the project file on disk
+  (:func:`runs_delete_paused`);
+* "latest run per model" never removes the run of the project *as saved on
+  disk*, nor of this session's current spec (:func:`_prune_runs`).
+
+A fit writes a ``.fitting`` marker before it starts and removes it once the run
+is saved, so a fit interrupted by a page reload is reported by the next session
+instead of vanishing (:func:`interrupted_fits`).
 """
 
 from __future__ import annotations
@@ -66,7 +81,11 @@ _SAMPLE_KEYS = ("sample_rows", "sample_seed")
 #: Bump whenever the shape of a pickled class (ModelRun, GLMFit, RateModel,
 #: DesignSpec, ...) changes, so older pickles are treated as cache misses even
 #: in a development checkout where the installed version number does not move.
-PERSIST_FORMAT = 2
+PERSIST_FORMAT = 3
+#: Written next to a run before the fit starts and removed once it is saved;
+#: one left behind means the fit never finished (the browser was reloaded, the
+#: app was stopped), which the next session reports instead of saying nothing.
+MARKER_SUFFIX = ".fitting"
 #: Project-page widgets whose keyed value must not leak into another project.
 # session-state keys that belong to the app itself; everything else is widget
 # state (or a page's scratch result) and is dropped when another project is
@@ -229,16 +248,50 @@ def file_changed_on_disk() -> bool:
     return seen is not None and now is not None and now != seen
 
 
-def _clear_autosave_errors() -> bool:
-    """Drop the "Autosave failed" entries after a successful save (the banner
-    would otherwise keep saying "edits are not being saved" once they are
-    again). True when something was actually dropped."""
+# --------------------------------------------------------------------------
+# who may touch the shared runs folder
+# --------------------------------------------------------------------------
+def runs_write_paused() -> bool:
+    """True while the conflict notice is up. The runs folder is shared by every
+    tab that has the project open, and the conflict notice means this tab's
+    project is not the one on disk: it may still fit (the result is shown and
+    kept in this tab) but it may not write into the folder."""
+    return bool(st.session_state.get("conflict"))
+
+
+def runs_delete_paused() -> bool:
+    """True when this tab may not remove anything from the runs folder: while
+    the conflict notice is up, and whenever the project file has changed on
+    disk since this tab last read or wrote it. Writing a fit only ever adds a
+    file; deleting one can destroy another session's work, so deleting needs
+    this tab to be in step with the file on disk."""
+    return runs_write_paused() or file_changed_on_disk()
+
+
+def _drop_errors(prefix: str) -> bool:
+    """Drop the persistent error entries that start with ``prefix`` once the
+    thing they complain about works again (the strip at the top of every page
+    would otherwise keep saying "not saved" while everything is being saved).
+    True when something was actually dropped."""
     errors = st.session_state.get("errors", [])
-    kept = [e for e in errors if not e.startswith("Autosave")]
+    kept = [e for e in errors if not e.startswith(prefix)]
     if len(kept) == len(errors):
         return False
     st.session_state.errors = kept
     return True
+
+
+def _clear_autosave_errors() -> bool:
+    """Drop the "Autosave failed" entries after a successful save."""
+    return _drop_errors("Autosave")
+
+
+def _flash_once(kind: str, text: str) -> None:
+    """Queue a notice for the top of the next run, at most once per run
+    (``ui.flash`` lives in the page layer, which imports this module)."""
+    notices = st.session_state.setdefault("_flash", [])
+    if (kind, text) not in notices:
+        notices.append((kind, text))
 
 
 def _write_project(path: str) -> bool:
@@ -265,8 +318,15 @@ def save_project(path: str, *, force: bool = False) -> str | None:
             f"{path} was changed by another session; reload it or overwrite it "
             "using the notice at the top of the page"
         )
+    parent = Path(path).parent
+    if not parent.exists():
+        # a typo in the path used to create a folder tree and move the project
+        # into it; saving creates the file, never the folders around it
+        return (
+            f"Could not save the project to {path}: the folder {parent} does not "
+            "exist. Create it first, or choose a folder that does."
+        )
     try:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
         project().to_json(path)
     except (OSError, TypeError, ValueError) as exc:
         # the project keeps autosaving to the previous file
@@ -535,11 +595,71 @@ def _run_files(folder: Path, model: str) -> list[Path]:
     )
 
 
+def _file_key(path: Path, model: str) -> str:
+    """The run key encoded in a persisted file name."""
+    return path.stem[len(_model_tag(model)) + 1 :]
+
+
+def _saved_project() -> Project | None:
+    """The project exactly as it is *on disk* right now, or None when there is
+    no file (or it cannot be read). Every prune consults it, so no tab ever
+    deletes the fit that belongs to the saved project."""
+    path = st.session_state.get("project_path")
+    if not path:
+        return None
+    try:
+        return Project.from_json(path)
+    except Exception:  # noqa: BLE001 - an unreadable file is simply no reference
+        return None
+
+
+def _prune_runs(folder: Path, model: str, key: str) -> None:
+    """Enforce "latest run per model", but never at the expense of a fit
+    somebody else may need: a file is removed only when its key matches
+    *neither* this session's current spec (or the run just written) *nor* the
+    project as saved on disk, and only while this tab is in step with that file
+    (:func:`runs_delete_paused`). Files of models that no longer exist — in
+    this session's project *and* in the saved one — go at the same time."""
+    if runs_delete_paused():
+        return
+    p = project()
+    saved = _saved_project()
+    keep = {key}
+    for proj in (p, saved):
+        if proj is not None and model in proj.models:
+            try:
+                keep.add(run_key(proj, model))
+            except Exception:  # noqa: BLE001 - an odd spec keeps nothing extra
+                pass
+    for old in _run_files(folder, model):
+        if _file_key(old, model) not in keep:
+            _remove_run_file(old)
+    live = {_model_tag(m) for m in p.models}
+    if saved is not None:
+        live |= {_model_tag(m) for m in saved.models}
+    for f in folder.glob("*.pkl"):
+        tag = f.name.split("-", 1)[0]
+        if len(tag) == 10 and tag not in live:
+            _remove_run_file(f)
+    for sidecar in folder.glob("*.json"):  # a sidecar whose pickle is gone
+        if not sidecar.with_suffix(".pkl").exists():
+            _remove_run_file(sidecar.with_suffix(".pkl"))
+
+
 def persist_run(model: str, run: ModelRun, key: str | None = None) -> Path | None:
     """Pickle ``run`` for ``model`` (latest run per model only). Returns the
-    file written, or None for an unsaved project."""
+    file written, or None for an unsaved project — and None, with a notice,
+    while the conflict notice pauses writing to the folder."""
     folder = runs_dir()
     if folder is None:
+        return None
+    if runs_write_paused():
+        _flash_once(
+            "warning",
+            f"The fit of {model!r} is shown in this tab only: the project file was "
+            "changed by another browser tab, so nothing is written next to it until "
+            "you reload or overwrite it using the notice at the top of the page.",
+        )
         return None
     p = project()
     key = key or run_key(p, model)
@@ -569,27 +689,18 @@ def persist_run(model: str, run: ModelRun, key: str | None = None) -> Path | Non
         }
         target.with_suffix(".json").write_text(json.dumps(sidecar, indent=2))
         # "latest run per model" is enforced here, on a successful save only
-        for old in _run_files(folder, model):
-            if old != target:
-                _remove_run_file(old)
-        _remove_orphans(folder, p)
+        _prune_runs(folder, model, key)
+        _drop_errors("Could not persist")  # saving works again; drop the banner
         return target
     except OSError as exc:  # pragma: no cover - surfaced in the UI
         st.session_state.errors.append(f"Could not persist the fit: {exc}")
         return None
 
 
-def _remove_orphans(folder: Path, p: Project) -> None:
-    """Drop persisted files of models that no longer exist in the project."""
-    live = {_model_tag(m) for m in p.models}
-    for f in folder.glob("*.pkl"):
-        tag = f.name.split("-", 1)[0]
-        if len(tag) == 10 and tag not in live:
-            _remove_run_file(f)
-
-
 def _remove_run_file(path: Path) -> None:
-    for f in (path, path.with_suffix(".json")):
+    """Remove a persisted run and everything that belongs to it: the pickle,
+    its sidecar and any leftover "fit in progress" marker."""
+    for f in (path, path.with_suffix(".json"), path.with_suffix(MARKER_SUFFIX)):
         try:
             f.unlink()
         except FileNotFoundError:
@@ -612,6 +723,7 @@ def _design_matches(p: Project, model: str, run: ModelRun) -> bool:
             cfg.predictors,
             weight_col=cfg.weight,
             interactions=cfg.interactions,
+            dropped=[],  # same rule as the fit: constant columns are skipped
         )
     except Exception:  # noqa: BLE001 - any failure means "do not trust the file"
         return False
@@ -637,6 +749,9 @@ def load_persisted_run(model: str) -> ModelRun | None:
         return None
     target = run_file(folder, model, run_key(p, model))
     if not target.exists():
+        # a sidecar whose pickle was deleted by hand is litter, not a fit
+        if target.with_suffix(".json").exists() and not runs_delete_paused():
+            _remove_run_file(target)
         return None
     try:
         with target.open("rb") as fh:
@@ -646,7 +761,8 @@ def load_persisted_run(model: str) -> ModelRun | None:
         if not isinstance(run, ModelRun) or run.name != model:
             raise ValueError("not a persisted run for this model")
     except Exception:  # noqa: BLE001 - a corrupt or foreign pickle: drop it
-        _remove_run_file(target)
+        if not runs_delete_paused():
+            _remove_run_file(target)
         return None
     df = prepared_frame()
     if df is None:
@@ -655,7 +771,8 @@ def load_persisted_run(model: str) -> ModelRun | None:
         # stays on disk for when the data comes back
         return None
     if not _design_matches(p, model, run):
-        _remove_run_file(target)
+        if not runs_delete_paused():
+            _remove_run_file(target)
         return None
     # the project is the truth for adjustments / base-rate override; an entry
     # the model refuses is dropped with a message, like everywhere else
@@ -667,7 +784,8 @@ def load_persisted_run(model: str) -> ModelRun | None:
         except AdjustmentError as exc:
             _drop_refused_adjustment(cfg, exc)
         except Exception:  # noqa: BLE001 - shape mismatch etc.: cache miss
-            _remove_run_file(target)
+            if not runs_delete_paused():
+                _remove_run_file(target)
             return None
     st.session_state.runs[model] = (model_hash(p, model), run)
     return run
@@ -693,13 +811,25 @@ def get_run(model: str) -> ModelRun | None:
     return load_persisted_run(model)
 
 
-def remove_model_runs(model: str) -> None:
-    """Forget a deleted model's fit in the session and on disk."""
+def remove_model_runs(model: str) -> str | None:
+    """Forget a deleted model's fit in the session and on disk. Returns a
+    sentence when the files on disk had to be kept: this tab's project is not
+    the one saved next to them, so deleting would throw away work another
+    session can still see."""
     st.session_state.runs.pop(model, None)
     folder = runs_dir()
-    if folder is not None and folder.exists():
-        for f in _run_files(folder, model):
-            _remove_run_file(f)
+    if folder is None or not folder.exists():
+        return None
+    if runs_delete_paused():
+        return (
+            f"Model {model!r} was removed from this tab only: the project file was "
+            "changed by another browser tab, so nothing on disk is changed — the "
+            "project file and the saved fit are both kept — until you reload or "
+            "overwrite it using the notice at the top of the page."
+        )
+    for f in _run_files(folder, model):
+        _remove_run_file(f)
+    return None
 
 
 def stale_run(model: str) -> ModelRun | None:
@@ -708,20 +838,97 @@ def stale_run(model: str) -> ModelRun | None:
     return cached[1] if cached is not None else None
 
 
+def _mark_fit_started(model: str) -> None:
+    """Leave a marker next to where the fit will be saved. It is removed when
+    the run is saved, so one left behind means the fit never got there."""
+    folder = runs_dir()
+    if folder is None or runs_write_paused():
+        return
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        marker = run_file(folder, model, run_key(project(), model)).with_suffix(
+            MARKER_SUFFIX
+        )
+        marker.write_text(
+            json.dumps(
+                {
+                    "model": model,
+                    "started_at": datetime.now(timezone.utc).isoformat(
+                        timespec="seconds"
+                    ),
+                    "pid": os.getpid(),
+                }
+            )
+        )
+    except OSError:  # the fit itself must not fail because of a marker
+        pass
+
+
+def _clear_fit_markers(model: str) -> None:
+    folder = runs_dir()
+    if folder is None or not folder.exists():
+        return
+    for marker in folder.glob(f"{_model_tag(model)}-*{MARKER_SUFFIX}"):
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+
+
+def interrupted_fits() -> list[str]:
+    """Models whose fit was started but never saved (the page was reloaded or
+    the app was stopped part-way). Each is reported once; the marker is then
+    cleared, so the notice does not follow the user around for ever.
+
+    A fit *running right now* in another tab is indistinguishable from an
+    interrupted one seen from here. The caller draws the notice once per
+    session, so the worst case is one wrong sentence in a tab that was opened
+    while another tab was fitting (and that other tab losing its own notice if
+    it is then interrupted)."""
+    folder = runs_dir()
+    if folder is None or not folder.exists():
+        return []
+    out: list[str] = []
+    for marker in sorted(folder.glob(f"*{MARKER_SUFFIX}")):
+        if marker.with_suffix(".pkl").exists():
+            model = None  # the fit did finish and was saved: stale marker
+        else:
+            try:
+                model = json.loads(marker.read_text()).get("model")
+            except (OSError, ValueError):
+                model = None
+            if model:
+                out.append(str(model))
+        try:
+            marker.unlink()
+        except OSError:  # pragma: no cover
+            pass
+    return out
+
+
 def fit_model(model: str) -> ModelRun:
     p = project()
     df = prepared_frame()
     if df is None:
         raise ValueError("Load data first (Project page).")
-    with st.spinner(f"Fitting {model} ..."):
-        while True:
-            try:
-                run = run_model(p, df, model)
-                break
-            except AdjustmentError as exc:
-                _drop_refused_adjustment(p.models[model], exc)
+    _mark_fit_started(model)
+    try:
+        with st.spinner(f"Fitting {model} ..."):
+            while True:
+                try:
+                    run = run_model(p, df, model)
+                    break
+                except AdjustmentError as exc:
+                    _drop_refused_adjustment(p.models[model], exc)
+    except Exception:
+        # a fit that failed is not a fit that was interrupted; Streamlit's own
+        # stop / rerun signals derive from BaseException, so they pass through
+        # here and leave the marker behind, which is exactly the point
+        _clear_fit_markers(model)
+        raise
     st.session_state.runs[model] = (model_hash(p, model), run)
     persist_run(model, run)
+    _clear_fit_markers(model)
     return run
 
 
@@ -792,10 +999,16 @@ def status() -> dict[str, bool]:
         raw is not None and p.data.split.column in raw[1].columns
     )
     loaded = bool(p.data.source.path) and raw is not None
+    prepared = st.session_state.get("prepared")
+    # a frame with no rows is not "prepared": nothing can be fitted from it
+    empty = prepared is not None and prepared[1].is_empty()
     return {
         "data": loaded,
         "roles": p.target is not None and bool(p.predictors),
-        "split": loaded and split_ok and not st.session_state.get("prep_error"),
+        "split": loaded
+        and split_ok
+        and not empty
+        and not st.session_state.get("prep_error"),
         "model": bool(p.models),
         "fitted": any(get_run(m) is not None for m in p.models),
     }

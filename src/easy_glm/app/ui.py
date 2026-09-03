@@ -54,6 +54,51 @@ def show_flash() -> None:
         )(text)
 
 
+def number_in_range(
+    container: Any,
+    label: str,
+    *,
+    value: Any,
+    key: str,
+    what: str,
+    lo: float | None = None,
+    hi: float | None = None,
+    **kwargs: Any,
+) -> Any:
+    """A number box that can never show a number the project does not hold.
+
+    ``st.number_input``'s ``min_value`` / ``max_value`` are enforced in the
+    browser only: a pasted or typed out-of-range value stays on screen while
+    the server quietly keeps the previous one, so the page ends up naming a
+    number the fit did not use. This widget takes whatever is typed, and when
+    it falls outside ``lo``–``hi`` it says so, puts the stored value back in the
+    box and redraws the page.
+    """
+    # a correction from the previous run has to be applied before the widget
+    # exists — Streamlit refuses to set a widget's key afterwards. Dropping the
+    # key (rather than assigning to it) makes the box fall back to ``value``,
+    # which is the number the project holds, and keeps the log clean.
+    repair = f"_repair_{key}"
+    if st.session_state.pop(repair, False):
+        st.session_state.pop(key, None)
+    typed = container.number_input(label, value=value, key=key, **kwargs)
+    if typed is None or ((lo is None or typed >= lo) and (hi is None or typed <= hi)):
+        return typed
+    if lo is not None and hi is not None:
+        allowed = f"between {lo:g} and {hi:g}"
+    elif lo is not None:
+        allowed = f"{lo:g} or more"
+    else:
+        allowed = f"{hi:g} or less"
+    st.session_state[repair] = True
+    flash(
+        "error",
+        f"{what} must be {allowed}: {typed:g} was not used, and the box is back "
+        f"to {value:g}.",
+    )
+    st.rerun()
+
+
 def guarded(fn: Callable[[], T], what: str, *, default: T | None = None) -> T | None:
     """Run ``fn``; on any exception show a clear message naming ``what`` and
     return ``default``. The pipeline error boundary for every page: a bad
@@ -94,9 +139,24 @@ def conflict_notice() -> None:
             st.rerun()
 
 
+def interrupted_fit_notice() -> None:
+    """Once per session: name any fit that was started and never saved (the
+    page was reloaded, or the app stopped, part-way through)."""
+    if st.session_state.get("interrupted_checked"):
+        return
+    st.session_state["interrupted_checked"] = True
+    for model in S.interrupted_fits():
+        st.warning(
+            f"A fit of **{model}** was interrupted — the page was reloaded (or the "
+            "app stopped) before it finished, so nothing was saved and the model is "
+            "not fitted. Fit it again on the **Model** page."
+        )
+
+
 def status_bar() -> None:
     show_flash()
     show_errors()
+    interrupted_fit_notice()
     conflict_notice()
     s = S.status()
     steps = [
