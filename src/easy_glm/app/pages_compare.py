@@ -14,6 +14,7 @@ import streamlit as st
 from easy_glm.workflow import (
     ModelRun,
     ae_by_variable,
+    base_rate_change,
     describe_diff,
     double_lift,
     gini,
@@ -46,51 +47,67 @@ def _fmt(value, spec: str) -> str:
         return "—"
 
 
-#: the two label columns of the side-by-side table; a model called one of these
-#: gets a suffix so its column is still its own
-_LABEL_COLUMNS = ("rows used", "metric")
+#: the label column of the side-by-side tables; a model called this gets a
+#: suffix so its own column is still distinguishable
+_LABEL_COLUMN = "metric"
 
 
-def _column_for(name: str) -> str:
-    return f"{name} (model)" if name in _LABEL_COLUMNS else name
+def _column_for(name: str, subset: str = "") -> str:
+    """Column header of one model (optionally one subset of the rows). Two
+    numbers a reader compares end up next to each other on the same line."""
+    label = f"{name} · {subset}" if subset else name
+    return f"{label} (model)" if label == _LABEL_COLUMN else label
+
+
+def _facts(run: ModelRun) -> dict[str, str]:
+    """What a model *is*, as opposed to how it scored."""
+    return {
+        "alpha": f"{run.alpha:.6f}",
+        "non-zero terms": f"{int((run.fit.coef != 0).sum()):,} of "
+        f"{len(run.fit.coef):,}",
+        "interactions": ", ".join(f"{i.a} × {i.b}" for i in run.config.interactions)
+        or "none",
+        "linear terms": ", ".join(
+            v for v, c in run.rate_model.variables.items() if c.type == "linear"
+        )
+        or "none",
+        "manual adjustments": str(len(run.config.adjustments)),
+        "base rate": f"{run.rate_model.base_rate:.6f}",
+    }
 
 
 def _metrics_table(a: ModelRun, b: ModelRun) -> pl.DataFrame:
-    """Metric per row, one column per model and subset, plus the model facts."""
-    col_a, col_b = _column_for(a.name), _column_for(b.name)
-    rows: list[dict[str, str]] = []
-    for subset in ("train", "holdout"):
-        for label, key, spec in _ROWS:
-            rows.append(
-                {
-                    "rows used": subset,
-                    "metric": label,
-                    col_a: _fmt(a.metrics.get(subset, {}).get(key), spec),
-                    col_b: _fmt(b.metrics.get(subset, {}).get(key), spec),
-                }
-            )
-
-    def _facts(run: ModelRun) -> dict[str, str]:
-        return {
-            "alpha": f"{run.alpha:.6f}",
-            "non-zero terms": f"{int((run.fit.coef != 0).sum()):,} of "
-            f"{len(run.fit.coef):,}",
-            "interactions": ", ".join(f"{i.a} × {i.b}" for i in run.config.interactions)
-            or "none",
-            "linear terms": ", ".join(
-                v for v, c in run.rate_model.variables.items() if c.type == "linear"
-            )
-            or "none",
-            "manual adjustments": str(len(run.config.adjustments)),
-            "base rate": f"{run.rate_model.base_rate:.6f}",
+    """One row per metric, one column per **model and subset** — the four
+    numbers a reader compares are on one line."""
+    columns = [(run, subset) for subset in ("train", "holdout") for run in (a, b)]
+    rows = [
+        {
+            _LABEL_COLUMN: label,
+            **{
+                _column_for(run.name, subset): _fmt(
+                    run.metrics.get(subset, {}).get(key), spec
+                )
+                for run, subset in columns
+            },
         }
-
-    fa, fb = _facts(a), _facts(b)
-    for key in fa:
-        rows.append(
-            {"rows used": "model", "metric": key, col_a: fa[key], col_b: fb[key]}
-        )
+        for label, key, spec in _ROWS
+    ]
     return pl.DataFrame(rows)
+
+
+def _facts_table(a: ModelRun, b: ModelRun) -> pl.DataFrame:
+    """One row per model fact, one column per model."""
+    fa, fb = _facts(a), _facts(b)
+    return pl.DataFrame(
+        [
+            {
+                _LABEL_COLUMN: key,
+                _column_for(a.name): fa[key],
+                _column_for(b.name): fb[key],
+            }
+            for key in fa
+        ]
+    )
 
 
 def _subset(df: pl.DataFrame, which: str) -> pl.DataFrame:
@@ -192,6 +209,8 @@ def render() -> None:
         "of the null deviance it removes."
     )
     ui.polars_table(_metrics_table(run_a, run_b))
+    st.caption("What the two models **are**:")
+    ui.polars_table(_facts_table(run_a, run_b))
     _snapshot_metrics(run_a, run_b)
 
     which = st.radio(
@@ -300,12 +319,24 @@ def render() -> None:
             "the differences that would move a premium.",
         )
         diff = relativity_diff(run_a, run_b, tol)
+        level = base_rate_change(run_a, run_b)
+        if level is not None:
+            st.info(
+                f"**Overall level (base rate): "
+                f"{'no change' if abs(level) < 5e-5 else f'{level:+.1%}'}** — every "
+                f"risk pays that much more or less with **{name_b}** before its own "
+                "bands move. A band's premium change is its relativity change "
+                "multiplied by this one, so read the two together."
+            )
         st.caption(
             f"**{diff.height}** row(s). `log_diff` is log({name_b} / {name_a}): "
-            f"+0.10 means {name_b} charges about 10 % more for that band. Bands "
-            "are matched by their rate-table label, so a model whose knots or "
-            "levels moved shows *band only in …* rows rather than false changes; "
-            "a variable only one model has is listed once."
+            f"+0.10 means {name_b} charges about 10 % more for that band, on top "
+            "of the overall level above. Numeric factors are compared on the "
+            "**union of both models' band edges**, so a moved knot — or the same "
+            "factor banded in one model and a straight line in the other "
+            "(`kind` then reads *numeric → linear*) — is still compared like for "
+            "like. Levels and interaction cells are matched by name, and a "
+            "variable only one model has is listed once."
         )
         if diff.is_empty():
             st.success(

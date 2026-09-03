@@ -146,8 +146,10 @@ with st.sidebar:
             "the default challenger of the Compare page.",
         )
         S.set_challenger(None if choice == "(none)" else choice)
-    else:
-        S.set_challenger(None)
+    # when fewer than two models are fitted the selector is not drawn; the
+    # stored choice is left alone (editing the design stales the fits for a
+    # moment, and the challenger must survive the refit). `S.challenger()`
+    # ignores a name that is no longer a model of the project.
     if st.button("Save project", width="stretch"):
         path = st.session_state.project_path or S.default_project_path(p)
         err = S.save_project(path)
