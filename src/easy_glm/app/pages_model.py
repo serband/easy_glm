@@ -57,8 +57,11 @@ def _model_picker() -> str | None:
             p.champion = next(iter(p.models), None)
         st.session_state.model_current = next(iter(p.models), None)
         st.session_state["model_pending"] = True
-        S.touch()
+        # queued *before* the save: touch() reruns the moment it finds the file
+        # changed on disk, and this sentence — "nothing was written" — is
+        # exactly the one the user needs in that case
         ui.flash("warning" if kept else "info", kept or f"Model {sel!r} deleted")
+        S.touch()
         st.rerun()
     if not names:
         st.info(

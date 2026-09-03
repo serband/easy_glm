@@ -224,17 +224,22 @@ def _knots_outside_the_data(var: str, knots: list[float], series: pl.Series) -> 
     if s.is_empty():
         return
     lo, hi = float(s.min()), float(s.max())
-    above = [k for k in knots if k > hi]
-    below = [k for k in knots if k <= lo]
-    for bad, where, edge in ((above, "above", hi), (below, "at or below", lo)):
-        if bad:
-            ui.flash(
-                "warning",
-                f"{var}: knot(s) {', '.join(f'{k:g}' for k in bad)} are {where} the "
-                f"training {'largest' if where == 'above' else 'smallest'} value "
-                f"({edge:g}); the bin they open has no training rows, so its "
-                "relativity comes only from the penalty. Saved anyway.",
-            )
+    for bad, where, edge in (
+        ([k for k in knots if k > hi], "above the largest", hi),
+        ([k for k in knots if k <= lo], "at or below the smallest", lo),
+    ):
+        if not bad:
+            continue
+        many = len(bad) > 1
+        ui.flash(
+            "warning",
+            f"{var}: {'knots' if many else 'knot'} "
+            + ", ".join(f"{k:g}" for k in bad)
+            + f" {'are' if many else 'is'} {where} training value ({edge:g}); "
+            + ("the bins they open have" if many else "the bin it opens has")
+            + " no training rows, so the relativity there comes only from the "
+            "penalty. Saved anyway.",
+        )
 
 
 def _step_detail(

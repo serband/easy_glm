@@ -186,7 +186,7 @@ def _random_mode(raw: pl.DataFrame) -> bool:
         what="The seed",
         step=1,
         key=S.widget_key("split_seed"),
-        help="0 – 10000",
+        help="A whole number, 0 – 10000 (anything after the decimal point is dropped)",
     )
     name = c3.text_input(
         "Split column name",

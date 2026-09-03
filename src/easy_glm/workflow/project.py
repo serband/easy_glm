@@ -7,13 +7,16 @@ executes it; :mod:`easy_glm.workflow.export` renders it as a Python script.
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 import re
 import warnings
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from easy_glm.engine.models import INTERACTION_SEP
 
@@ -704,8 +707,23 @@ class Project:
         return raw
 
     def to_json(self, path: str | Path) -> Path:
+        """Write the project as JSON. The bytes go to a unique temporary file
+        next to ``path`` and are then renamed over it, so a reader (another
+        browser tab, the conflict check, a backup) never sees a half-written
+        file, and two writers never interleave."""
         path = Path(path)
-        path.write_text(json.dumps(self.to_dict(), indent=2, default=str))
+        if path.exists() and not os.access(path, os.W_OK):
+            # the rename below would sail past a read-only file (the *folder*
+            # is what os.replace needs); a file the user protected must still
+            # refuse the write, and say so the way an ordinary write would
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid4().hex[:8]}.tmp")
+        try:
+            tmp.write_text(json.dumps(self.to_dict(), indent=2, default=str))
+            os.replace(tmp, path)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
         return path
 
     @classmethod

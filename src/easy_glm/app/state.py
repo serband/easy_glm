@@ -54,6 +54,7 @@ import os
 import pickle
 import re
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,6 +83,10 @@ _SAMPLE_KEYS = ("sample_rows", "sample_seed")
 #: DesignSpec, ...) changes, so older pickles are treated as cache misses even
 #: in a development checkout where the installed version number does not move.
 PERSIST_FORMAT = 3
+#: A marker left by *another* session is only removed once it is this old:
+#: younger than this it may belong to a fit that is still running in another
+#: tab, and taking its marker away would cost that tab its own warning.
+MARKER_GRACE_SECONDS = 300
 #: Written next to a run before the fit starts and removed once it is saved;
 #: one left behind means the fit never finished (the browser was reloaded, the
 #: app was stopped), which the next session reports instead of saying nothing.
@@ -259,13 +264,26 @@ def runs_write_paused() -> bool:
     return bool(st.session_state.get("conflict"))
 
 
+def _project_file_missing() -> bool:
+    """True when the project file this tab was reading has gone from disk. It
+    is not "changed" (:func:`file_changed_on_disk` needs a file to compare),
+    but this tab is just as much out of step with it: nothing on disk says
+    which fits belong to the saved project, so nothing may be deleted until
+    autosave has written the file again."""
+    path = st.session_state.get("project_path")
+    if not path or st.session_state.get("project_stamp") is None:
+        return False
+    return not Path(path).exists()
+
+
 def runs_delete_paused() -> bool:
     """True when this tab may not remove anything from the runs folder: while
-    the conflict notice is up, and whenever the project file has changed on
-    disk since this tab last read or wrote it. Writing a fit only ever adds a
-    file; deleting one can destroy another session's work, so deleting needs
-    this tab to be in step with the file on disk."""
-    return runs_write_paused() or file_changed_on_disk()
+    the conflict notice is up, whenever the project file has changed on disk
+    since this tab last read or wrote it, and while that file is missing.
+    Writing a fit only ever adds a file; deleting one can destroy another
+    session's work, so deleting needs this tab to be in step with the file on
+    disk."""
+    return runs_write_paused() or file_changed_on_disk() or _project_file_missing()
 
 
 def _drop_errors(prefix: str) -> bool:
@@ -698,9 +716,10 @@ def persist_run(model: str, run: ModelRun, key: str | None = None) -> Path | Non
 
 
 def _remove_run_file(path: Path) -> None:
-    """Remove a persisted run and everything that belongs to it: the pickle,
-    its sidecar and any leftover "fit in progress" marker."""
-    for f in (path, path.with_suffix(".json"), path.with_suffix(MARKER_SUFFIX)):
+    """Remove a persisted run and its sidecar. Markers are *not* touched here:
+    they carry the session that wrote them and only that session (or
+    :func:`interrupted_fits`, once they are old) may remove them."""
+    for f in (path, path.with_suffix(".json")):
         try:
             f.unlink()
         except FileNotFoundError:
@@ -838,7 +857,36 @@ def stale_run(model: str) -> ModelRun | None:
     return cached[1] if cached is not None else None
 
 
-def _mark_fit_started(model: str) -> None:
+def _session_id() -> str:
+    """Identity of this browser session. It goes into the marker's file name so
+    a tab can tell its own "fit in progress" marker from another tab's."""
+    init_state()
+    sid = st.session_state.get("_session_id")
+    if not sid:
+        sid = uuid.uuid4().hex[:8]
+        st.session_state["_session_id"] = sid
+    return str(sid)
+
+
+def _marker_file(folder: Path, model: str, key: str) -> Path:
+    """Where this session's marker for ``model``/``key`` lives. The session id
+    is part of the name so no tab can mistake another tab's live marker for
+    its own leftovers."""
+    return folder / f"{_model_tag(model)}-{key}-{_session_id()}{MARKER_SUFFIX}"
+
+
+def _marker_parts(marker: Path) -> tuple[str, str] | None:
+    """``(stem of the run file this marker belongs to, session id)``, or None
+    when the name is not one of ours."""
+    stem = marker.name[: -len(MARKER_SUFFIX)]
+    tag, _, rest = stem.partition("-")
+    key, _, session = rest.rpartition("-")
+    if len(tag) != 10 or not key or not session:
+        return None
+    return f"{tag}-{key}", session
+
+
+def _mark_fit_started(model: str, key: str) -> None:
     """Leave a marker next to where the fit will be saved. It is removed when
     the run is saved, so one left behind means the fit never got there."""
     folder = runs_dir()
@@ -846,13 +894,12 @@ def _mark_fit_started(model: str) -> None:
         return
     try:
         folder.mkdir(parents=True, exist_ok=True)
-        marker = run_file(folder, model, run_key(project(), model)).with_suffix(
-            MARKER_SUFFIX
-        )
-        marker.write_text(
+        _marker_file(folder, model, key).write_text(
             json.dumps(
                 {
                     "model": model,
+                    "key": key,
+                    "session": _session_id(),
                     "started_at": datetime.now(timezone.utc).isoformat(
                         timespec="seconds"
                     ),
@@ -864,45 +911,58 @@ def _mark_fit_started(model: str) -> None:
         pass
 
 
-def _clear_fit_markers(model: str) -> None:
+def _clear_fit_marker(model: str, key: str) -> None:
+    """Remove the marker this session wrote for this fit — never another
+    tab's, and never anything at all from a paused tab (which wrote none)."""
     folder = runs_dir()
-    if folder is None or not folder.exists():
+    if folder is None or runs_write_paused() or not folder.exists():
         return
-    for marker in folder.glob(f"{_model_tag(model)}-*{MARKER_SUFFIX}"):
-        try:
-            marker.unlink()
-        except OSError:
-            pass
+    try:
+        _marker_file(folder, model, key).unlink()
+    except OSError:
+        pass
 
 
 def interrupted_fits() -> list[str]:
-    """Models whose fit was started but never saved (the page was reloaded or
-    the app was stopped part-way). Each is reported once; the marker is then
-    cleared, so the notice does not follow the user around for ever.
+    """Models whose fit was started and whose result never arrived: the page
+    was reloaded, or the app was stopped, part-way through.
 
-    A fit *running right now* in another tab is indistinguishable from an
-    interrupted one seen from here. The caller draws the notice once per
-    session, so the worst case is one wrong sentence in a tab that was opened
-    while another tab was fitting (and that other tab losing its own notice if
-    it is then interrupted)."""
+    A fit *running right now* in another tab looks exactly the same from here,
+    so such a fit may be reported as interrupted (said in
+    ``docs/checks/w4-runs-folder.md``; the notice is drawn once per session).
+    That is why a marker is only *removed* when it is safe to remove: when its
+    result is on disk, when this session wrote it, or when it is older than
+    :data:`MARKER_GRACE_SECONDS` — a younger one from another session may
+    belong to a fit still running, which would lose its own warning. Nothing is
+    removed at all while :func:`runs_delete_paused`.
+    """
     folder = runs_dir()
     if folder is None or not folder.exists():
         return []
+    live = set(project().models)
+    mine = _session_id()
+    may_delete = not runs_delete_paused()
+    now = time.time()
     out: list[str] = []
     for marker in sorted(folder.glob(f"*{MARKER_SUFFIX}")):
-        if marker.with_suffix(".pkl").exists():
-            model = None  # the fit did finish and was saved: stale marker
-        else:
-            try:
-                model = json.loads(marker.read_text()).get("model")
-            except (OSError, ValueError):
-                model = None
-            if model:
-                out.append(str(model))
+        parts = _marker_parts(marker)
+        if parts is None:
+            continue
+        run_stem, session = parts
+        finished = (folder / f"{run_stem}.pkl").exists()
         try:
-            marker.unlink()
-        except OSError:  # pragma: no cover
-            pass
+            info = json.loads(marker.read_text())
+            age = now - marker.stat().st_mtime
+        except (OSError, ValueError):
+            continue
+        model = info.get("model")
+        if not finished and model in live:
+            out.append(str(model))
+        if may_delete and (finished or session == mine or age >= MARKER_GRACE_SECONDS):
+            try:
+                marker.unlink()
+            except OSError:  # pragma: no cover
+                pass
     return out
 
 
@@ -911,7 +971,8 @@ def fit_model(model: str) -> ModelRun:
     df = prepared_frame()
     if df is None:
         raise ValueError("Load data first (Project page).")
-    _mark_fit_started(model)
+    key = run_key(p, model)
+    _mark_fit_started(model, key)
     try:
         with st.spinner(f"Fitting {model} ..."):
             while True:
@@ -924,11 +985,11 @@ def fit_model(model: str) -> ModelRun:
         # a fit that failed is not a fit that was interrupted; Streamlit's own
         # stop / rerun signals derive from BaseException, so they pass through
         # here and leave the marker behind, which is exactly the point
-        _clear_fit_markers(model)
+        _clear_fit_marker(model, key)
         raise
     st.session_state.runs[model] = (model_hash(p, model), run)
     persist_run(model, run)
-    _clear_fit_markers(model)
+    _clear_fit_marker(model, key)
     return run
 
 
