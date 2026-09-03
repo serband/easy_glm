@@ -23,6 +23,7 @@ from easy_glm.engine.models import (
     ModelMetadata,
     VariableConfig,
     level_label,
+    lumped_label,
 )
 from easy_glm.engine.rate_model import RateModel
 
@@ -137,10 +138,11 @@ def rate_tables(fit: GLMFit, *, base: Base = "modal") -> dict[str, pl.DataFrame]
         b = fit.modal_bins.get(var, 0) if base == "modal" else 0
         rel_lp = contrib - contrib[b]
         edge_dtype = _edge_dtype(enc)
+        other = _other_label(enc)
         columns: dict[str, Any] = {
             "from": pl.Series([r.from_ for r in rows], dtype=edge_dtype),
             "to": pl.Series([r.to_ for r in rows], dtype=edge_dtype),
-            "label": [level_label(r) for r in rows],
+            "label": [level_label(r, other) for r in rows],
             "coef": rel_lp,
             "relativity": np.exp(rel_lp),
             "is_base": [i == b for i in range(len(rows))],
@@ -161,6 +163,14 @@ def rate_tables(fit: GLMFit, *, base: Base = "modal") -> dict[str, pl.DataFrame]
             columns["relativity_to"] = np.exp(rel_lp + slopes * width)
         out[var] = pl.DataFrame(columns)
     return out
+
+
+def _other_label(enc) -> str | None:
+    """The lumped-bucket name to print for ``enc``: the encoder's own when a
+    real level forced it away from the default, else None ("Other / Unknown")."""
+    return (
+        lumped_label(enc.other_label) if isinstance(enc, CategoricalEncoder) else None
+    )
 
 
 def _edge_dtype(enc) -> Any:
@@ -255,7 +265,9 @@ def to_rate_model(
             variables[var] = VariableConfig(type="linear", table=rows, x_base=x_base)
             continue
         kind = "numeric" if isinstance(enc, StepEncoder) else "categorical"
-        variables[var] = VariableConfig(type=kind, table=rows)
+        variables[var] = VariableConfig(
+            type=kind, table=rows, other_label=_other_label(enc)
+        )
     RateModel._precompute_variables(variables)
 
     metadata = ModelMetadata(

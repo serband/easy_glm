@@ -33,35 +33,40 @@ def apply_row_edits(
     edited: list[float],
     *,
     require_positive: bool,
+    other_label: str | None = None,
 ) -> tuple[bool, list[str]]:
     """Turn edited row values into adjustments on ``cfg``.
 
     For each row whose edited value differs from the current one, any existing
     adjustment on that row is replaced; a value equal to the fitted one removes
     the adjustment instead of recording it. Returns ``(changed, errors)`` —
-    errors are human-readable and the offending rows are left untouched."""
+    errors are human-readable and the offending rows are left untouched.
+    ``other_label`` names the catch-all row as the table does (see
+    :func:`easy_glm.engine.models.level_label`)."""
     changed = False
     errors: list[str] = []
     for row, fit_val, new in zip(rows, fitted, edited, strict=True):
         try:
             new = float(new)
         except (TypeError, ValueError):
-            errors.append(f"{level_label(row)!r}: not a number; change not saved")
+            errors.append(
+                f"{level_label(row, other_label)!r}: not a number; change not saved"
+            )
             continue
         if new != new:  # NaN (an emptied cell)
-            errors.append(f"{level_label(row)!r}: empty; change not saved")
+            errors.append(f"{level_label(row, other_label)!r}: empty; change not saved")
             continue
         if abs(new - row.relativity) <= TOL:
             continue
         if require_positive and not _positive(new):
             errors.append(
-                f"{level_label(row)!r}: relativities must be above 0 (was {new:g}); "
+                f"{level_label(row, other_label)!r}: relativities must be above 0 (was {new:g}); "
                 "change not saved"
             )
             continue
         if new < 0:
             errors.append(
-                f"{level_label(row)!r}: a negative relativity is not meaningful "
+                f"{level_label(row, other_label)!r}: a negative relativity is not meaningful "
                 f"(was {new:g}); change not saved"
             )
             continue
@@ -87,8 +92,12 @@ def cell_grid(rm: RateModel, var: str) -> dict[str, Any]:
     (first snapshot, or current when absent), ``exposure``."""
     cfg = rm.variables[var]
     a, b = cfg.parents
-    rows_a = [level_label(r) for r in rm.variables[a].table]
-    rows_b = [level_label(r) for r in rm.variables[b].table]
+    rows_a = [
+        level_label(r, rm.variables[a].other_label) for r in rm.variables[a].table
+    ]
+    rows_b = [
+        level_label(r, rm.variables[b].other_label) for r in rm.variables[b].table
+    ]
     ka = {(r.from_, r.to_): i for i, r in enumerate(rm.variables[a].table)}
     kb = {(r.from_, r.to_): i for i, r in enumerate(rm.variables[b].table)}
     n_a, n_b = len(rows_a), len(rows_b)

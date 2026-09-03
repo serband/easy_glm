@@ -65,7 +65,7 @@ def compute_actual_expected(
 
     config = rm.variables[variable]
     rows = config.table
-    level_edges = level_labels(rows)
+    level_edges = level_labels(rows, config.other_label)
 
     results: dict[str, list[dict]] = {}
     for subset_name, subset in subsets.items():

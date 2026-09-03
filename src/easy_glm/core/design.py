@@ -42,7 +42,11 @@ from typing import Any, ClassVar, Literal
 import numpy as np
 import polars as pl
 
-from easy_glm.engine.models import INTERACTION_SEP, NULL_LABEL
+from easy_glm.engine.models import (
+    DEFAULT_OTHER_LABEL,
+    INTERACTION_SEP,
+    NULL_LABEL,
+)
 
 NUMERIC_DTYPES = (
     pl.Int8,
@@ -231,7 +235,7 @@ class CategoricalEncoder(Encoder):
 
     variable: str
     levels: list[str]
-    other_label: str = "Other"
+    other_label: str = DEFAULT_OTHER_LABEL
 
     def __post_init__(self) -> None:
         levels = [str(lvl) for lvl in self.levels]
@@ -820,7 +824,7 @@ class DesignSpec:
                 )
                 if not levels:
                     raise ValueError(f"Cannot derive levels for {var!r}: all null.")
-                other = "Other"
+                other = DEFAULT_OTHER_LABEL
                 while other in levels:  # a real level called "Other" (e.g. a recode)
                     other += " (lumped)"
                 encoders[var] = CategoricalEncoder(var, levels, other_label=other)

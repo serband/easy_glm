@@ -230,7 +230,9 @@ User edits relativity in table
 - A browser reload starts a new Streamlit session: the project (spec) survives via the
   autosaved JSON; fitted runs are restored from `<project>.easyglm-runs/` when
   `run_key` (spec hash + data file identity + library versions) matches, else refitted.
-  `load_persisted_run` treats any failure as a cache miss and deletes the file;
+  `load_persisted_run` treats any failure as a cache miss, and deletes the file only
+  when the pickle is corrupt or its design no longer matches *readable* data — data
+  that cannot be read right now is a miss that keeps the fit;
   adjustments/base-rate override are re-applied from the project on load.
 - Navigation between pages must be client-side (sidebar links) to keep session state;
   Playwright drivers should click sidebar links rather than `goto` page URLs.
@@ -238,11 +240,14 @@ User edits relativity in table
   `state.prepared_frame()` stores a failing step in `prep_error` and returns None,
   `state.save_project` / `state.touch` return or record errors instead of raising.
   `open_project_file` validates before replacing the open project.
-- Multi-tab rule: `state.touch()` compares the file's mtime with the one this session
-  last read/wrote; a mismatch sets `conflict`, pauses autosave and shows
+- Multi-tab rule: `state.touch()` compares the file's stamp (`_file_stamp`: mtime_ns,
+  size and a sha1 of the bytes — mtime alone is too coarse on NFS/SMB/FAT) with the one
+  this session last read/wrote; a mismatch sets `conflict`, pauses autosave and shows
   `ui.conflict_notice()` (reload = `set_project` from disk, overwrite = forced save).
+  A successful save (autosave included) drops the "Autosave failed" banner.
 - Rename rule: column renames go through `Project.rename_column` (roles, types,
-  recodes, design, split, every model reference); role changes through
+  recodes, design, split, row filters and derived expressions — `pl.col('old')`
+  references only — and every model reference); role changes through
   `Project.apply_role_change`; `Project.missing_columns` / `validate(columns=...)` refuse
   a model that references a column the prepared data lacks — never re-point a selector
   (`index=None` + an error). Model names go through `validate_model_name`; downloads use
@@ -250,8 +255,12 @@ User edits relativity in table
 - `state.set_project` bumps `project_token` and drops every session-state key that is
   not app state (`_APP_STATE_KEYS`) or `_`-prefixed, so widgets never carry the previous
   project's values; project-page text boxes use `state.widget_key(name)`.
-- Break-it findings left open after W3 (cosmetic): 15, 23, 28, 32, 35, 38 in
-  `docs/reviews/w2-breakage.md`.
+- Break-it findings left open after W3 (cosmetic): 15, 23, 28, 35, 38 in
+  `docs/reviews/w2-breakage.md` (32 fixed in the W3 follow-ups).
+- Rate-table labels: the catch-all row prints `NULL_LABEL` ("Other / Unknown") unless
+  the categorical encoder had to rename its bucket (a real level called `Other`), in
+  which case `VariableConfig.other_label` carries the encoder's name through
+  `level_label` to the tables, the Excel workbook and the Rate tables page.
 
 ### Golden numbers
 

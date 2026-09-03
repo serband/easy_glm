@@ -55,6 +55,7 @@ def _main_effect(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
     fitted = run.tables[var]
     working = rate_model_tables(rm)[var]
     rows = rm.variables[var].table
+    other = rm.variables[var].other_label
     kind = rm.variables[var].type
     is_linear = kind == "linear"
 
@@ -111,7 +112,7 @@ def _main_effect(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
             )
             grid = pd.DataFrame(
                 {
-                    "band": [level_label(r) for r in rows],
+                    "band": [level_label(r, other) for r in rows],
                     "fitted": fitted["relativity"].to_list(),
                     "working": [r.relativity for r in rows],
                     "at band end": working["relativity_to"].to_list(),
@@ -138,7 +139,7 @@ def _main_effect(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
             )
             grid = pd.DataFrame(
                 {
-                    "bin": [level_label(r) for r in rows],
+                    "bin": [level_label(r, other) for r in rows],
                     "fitted": fitted["relativity"].to_list(),
                     "working": [r.relativity for r in rows],
                 }
@@ -164,6 +165,7 @@ def _main_effect(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
             fitted["relativity"].to_list(),
             edited["working"].tolist(),
             require_positive=is_linear,
+            other_label=other,
         )
         _apply(run.name, changed, errors)
     return working

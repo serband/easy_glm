@@ -58,8 +58,9 @@ def apply_roles_grid(
     the user. Rules: a rename that would collide with another column's final
     name is refused; an emptied "rename to" cell undoes the rename (and its
     role follows the column back); a rename carries roles, types, recodes,
-    design and every model reference; a role change keeps models consistent
-    (a predictor leaving a model is reported, never silently).
+    design, row filters, derived formulas and every model reference; a role
+    change keeps models consistent (a predictor leaving a model is reported,
+    never silently).
     """
     notices: list[tuple[str, str]] = []
     changed = False
@@ -87,6 +88,7 @@ def apply_roles_grid(
                     p.data.renames.pop(raw_name, None)
                 else:
                     p.data.renames[raw_name] = wanted
+                expressions = p.expressions_using(current)
                 touched = p.rename_column(current, wanted)
                 finals[raw_name] = wanted
                 changed = True
@@ -96,6 +98,15 @@ def apply_roles_grid(
                             "info",
                             f"{current!r} renamed to {wanted!r} in model(s): "
                             + ", ".join(touched),
+                        )
+                    )
+                if expressions:
+                    notices.append(
+                        (
+                            "info",
+                            f"{current!r} renamed to {wanted!r} in "
+                            f"{len(expressions)} row filter / derived formula(s): "
+                            + "; ".join(expressions),
                         )
                     )
         final = finals[raw_name]

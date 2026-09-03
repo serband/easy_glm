@@ -415,7 +415,7 @@ out["conflict"] = st.session_state.get("conflict")
         _script(
             "pages_model",
             str(project),
-            prelude=f"st.session_state.project_path = {str(ro)!r}; st.session_state.project_mtime = None",
+            prelude=f"st.session_state.project_path = {str(ro)!r}; st.session_state.project_stamp = None",
         )
     )
     at2.text_input(key=wk(at2, "notes_freq")).set_value("x").run()
@@ -481,7 +481,12 @@ out["conflict"] = st.session_state.get("conflict")
         "**A model may only use columns that exist.** Renaming a column in the roles grid "
         "renames it everywhere it is used (role, type, recode, design, split, every "
         "model's target / weight / offset / predictors / constraints / interactions / "
-        "adjustments). Changing a column's role tells you which models are affected. If a "
+        "adjustments). It follows the column into your row filters and derived-column "
+        "formulas too: a filter written as `pl.col('Exposure') > 0.02` becomes "
+        "`pl.col('exposure_years') > 0.02`, and the page tells you which formulas were "
+        "rewritten (only that column reference is touched — the rest of the formula is "
+        "left exactly as you typed it). Changing a column's role tells you which models "
+        "are affected. If a "
         "column a model needs is missing from the data (a new file, a removed derived "
         "column), the model is not silently re-pointed at another column: the Model page "
         "shows which column is missing, its selector is left blank, Fit is disabled and "
@@ -502,10 +507,11 @@ out["conflict"] = st.session_state.get("conflict")
         "Items 15 (a role change now lists the models it touched, but still applies "
         "immediately), 23 (roles are still keyed by the final column name; renames now "
         "propagate correctly), 28 (a fit interrupted by a page refresh is discarded "
-        "without a message), 32 (the Seed field can display an out-of-range value), 35 "
-        "(the 'pick two different variables' message shows in every Diagnostics tab) and "
-        "38 (a constant column blocks the fit instead of being skipped) are cosmetic and "
-        "left for a later piece.",
+        "without a message), 35 (the 'pick two different variables' message shows in "
+        "every Diagnostics tab) and 38 (a constant column blocks the fit instead of "
+        "being skipped) are cosmetic and left for a later piece. Item 32 is fixed: the "
+        "Seed box now always shows the seed the project holds, so the page can no longer "
+        "name a seed the split did not come from.",
         "",
     ]
     text = "\n".join(lines)

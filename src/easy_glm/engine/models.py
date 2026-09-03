@@ -11,6 +11,10 @@ INTERACTION_SEP = "×"
 #: label of the null (numeric) / Other (categorical) rate-table row, used by the
 #: tables, the Excel export and every diagnostic so they are joinable by label
 NULL_LABEL = "Other / Unknown"
+#: default name of a categorical encoder's catch-all bucket; when a real level
+#: is called that, the encoder uses another name (``"Other (lumped)"``) and the
+#: rate tables print *that* name instead of :data:`NULL_LABEL`
+DEFAULT_OTHER_LABEL = "Other"
 
 
 @dataclass
@@ -107,6 +111,10 @@ class VariableConfig:
     cell_matrix: np.ndarray | None = None
     #: categorical only (precomputed): level -> row index, in table order
     level_index: dict[str, int] | None = None
+    #: categorical only: the encoder's name for the catch-all row when it is not
+    #: the default one (``"Other (lumped)"`` when a real level is called
+    #: "Other"); ``None`` prints the usual "Other / Unknown"
+    other_label: str | None = None
     #: linear only (precomputed): per non-null row, the slope of log relativity
     #: and the x the row's relativity refers to
     slopes: np.ndarray | None = None
@@ -148,9 +156,19 @@ class SessionState:
     actual_formula: str = "sum_weighted"
 
 
-def _edge_label(lo: Any, hi: Any) -> str:
+def lumped_label(other_label: str | None) -> str | None:
+    """The name to print on the catch-all row of a categorical table: the
+    encoder's own ``other_label`` when it is not the default one (a real level
+    is called "Other", so the bucket is "Other (lumped)"), else ``None``, which
+    means the usual :data:`NULL_LABEL`."""
+    if other_label is None or other_label == DEFAULT_OTHER_LABEL:
+        return None
+    return other_label
+
+
+def _edge_label(lo: Any, hi: Any, null_label: str = NULL_LABEL) -> str:
     if lo is None and hi is None:
-        return NULL_LABEL
+        return null_label
     if lo is None:
         return f"< {hi}"
     if hi is None:
@@ -160,7 +178,10 @@ def _edge_label(lo: Any, hi: Any) -> str:
     return f"[{lo}, {hi})"
 
 
-def level_label(row: FromToRow | BandRow | CellRow) -> str:
+def level_label(
+    row: FromToRow | BandRow | CellRow,
+    other_label: str | tuple[str | None, str | None] | None = None,
+) -> str:
     """Human-readable label for a ``FromToRow`` bin, a ``BandRow`` band or a
     ``CellRow`` cell.
 
@@ -168,18 +189,32 @@ def level_label(row: FromToRow | BandRow | CellRow) -> str:
 
         < 18    (from_=None,  to_=18)
         ≥ 38    (from_=38,    to_=None)
-        Other   (from_=None,  to_=None)
+        Other / Unknown  (from_=None, to_=None)
         North   (from_="North", to_="North")
         [18, 23) (from_=18, to_=23, unequal)
         [18, 23) | North   (a CellRow)
+
+    ``other_label`` renames that catch-all row to the categorical encoder's own
+    lumped-bucket name (see :func:`lumped_label`); for a ``CellRow`` pass a
+    ``(label_a, label_b)`` pair, one per parent.
     """
     if isinstance(row, CellRow):
-        return (
-            f"{_edge_label(row.from_a, row.to_a)} | {_edge_label(row.from_b, row.to_b)}"
+        la, lb = (
+            other_label
+            if isinstance(other_label, tuple)
+            else (other_label, other_label)
         )
-    return _edge_label(row.from_, row.to_)
+        return (
+            f"{_edge_label(row.from_a, row.to_a, la or NULL_LABEL)} | "
+            f"{_edge_label(row.from_b, row.to_b, lb or NULL_LABEL)}"
+        )
+    label = other_label if isinstance(other_label, str) else None
+    return _edge_label(row.from_, row.to_, label or NULL_LABEL)
 
 
-def level_labels(rows: list[FromToRow | BandRow | CellRow]) -> list[str]:
-    """Convenience: ``[level_label(r) for r in rows]``."""
-    return [level_label(r) for r in rows]
+def level_labels(
+    rows: list[FromToRow | BandRow | CellRow],
+    other_label: str | tuple[str | None, str | None] | None = None,
+) -> list[str]:
+    """Convenience: ``[level_label(r, other_label) for r in rows]``."""
+    return [level_label(r, other_label) for r in rows]

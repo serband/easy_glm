@@ -21,12 +21,14 @@ Fitted runs are **persisted** next to the project file
 (``<project>.easyglm-runs/<model-tag>-<key>.pkl``) so a browser reload or
 reopening the project restores them instead of refitting. The key combines the
 sample-free spec hash, the identity of the data file (path, size, mtime), the
-library versions and :data:`PERSIST_FORMAT`; a file that cannot be loaded is
-removed, a file whose key merely differs is left alone until a newer run of the
-same model is saved. The folder holds pickles: trusted local content, like
-derived-column expressions. The pickle stores the fitted run; adjustments and
-the base-rate override are re-applied from the *current* project when it is
-loaded, so the project file stays the truth.
+library versions and :data:`PERSIST_FORMAT`; a file that cannot be loaded (a
+corrupt pickle, a design that no longer matches *readable* data) is removed, a
+file whose key merely differs — or whose data file cannot be read at this
+moment — is left alone until a newer run of the same model is saved. The folder
+holds pickles: trusted local content, like derived-column expressions. The
+pickle stores the fitted run; adjustments and the base-rate override are
+re-applied from the *current* project when it is loaded, so the project file
+stays the truth.
 """
 
 from __future__ import annotations
@@ -64,7 +66,7 @@ _SAMPLE_KEYS = ("sample_rows", "sample_seed")
 #: Bump whenever the shape of a pickled class (ModelRun, GLMFit, RateModel,
 #: DesignSpec, ...) changes, so older pickles are treated as cache misses even
 #: in a development checkout where the installed version number does not move.
-PERSIST_FORMAT = 1
+PERSIST_FORMAT = 2
 #: Project-page widgets whose keyed value must not leak into another project.
 # session-state keys that belong to the app itself; everything else is widget
 # state (or a page's scratch result) and is dropped when another project is
@@ -74,7 +76,7 @@ _APP_STATE_KEYS = frozenset(
         "project",
         "project_path",
         "project_token",
-        "project_mtime",
+        "project_stamp",
         "conflict",
         "prep_error",
         "raw",
@@ -151,8 +153,8 @@ def init_state() -> None:
     ss.setdefault("project_path", None)
     ss.setdefault("project_token", uuid.uuid4().hex[:8])
     ss.setdefault(
-        "project_mtime", None
-    )  # mtime_ns of the file as last read/written here
+        "project_stamp", None
+    )  # identity of the file as last read/written here
     ss.setdefault("conflict", None)  # path whose on-disk copy changed under us
     ss.setdefault("prep_error", None)
     ss.setdefault("raw", None)  # (hash, DataFrame) — full source frame
@@ -177,7 +179,7 @@ def set_project(p: Project, path: str | None = None) -> None:
     init_state()
     st.session_state.project = p
     st.session_state.project_path = path
-    st.session_state.project_mtime = _file_mtime(path)
+    st.session_state.project_stamp = _file_stamp(path)
     st.session_state.conflict = None
     st.session_state.prep_error = None
     st.session_state.load_error = None
@@ -201,13 +203,19 @@ def widget_key(name: str) -> str:
     return f"{name}_{st.session_state.project_token}"
 
 
-def _file_mtime(path: str | None) -> int | None:
+def _file_stamp(path: str | None) -> tuple[int, int, str] | None:
+    """Identity of the project file: modification time, size and a hash of the
+    bytes. The timestamp alone is not enough — NFS, SMB and FAT round it to a
+    second or two, so a second write inside the same tick would look unchanged
+    (project files are a few kB; hashing them costs nothing)."""
     if not path:
         return None
     try:
-        return os.stat(path).st_mtime_ns
+        info = os.stat(path)
+        digest = hashlib.sha1(Path(path).read_bytes()).hexdigest()
     except OSError:
         return None
+    return (info.st_mtime_ns, info.st_size, digest)
 
 
 def file_changed_on_disk() -> bool:
@@ -216,14 +224,29 @@ def file_changed_on_disk() -> bool:
     path = st.session_state.get("project_path")
     if not path:
         return False
-    seen = st.session_state.get("project_mtime")
-    now = _file_mtime(path)
+    seen = st.session_state.get("project_stamp")
+    now = _file_stamp(path)
     return seen is not None and now is not None and now != seen
 
 
-def _write_project(path: str) -> None:
+def _clear_autosave_errors() -> bool:
+    """Drop the "Autosave failed" entries after a successful save (the banner
+    would otherwise keep saying "edits are not being saved" once they are
+    again). True when something was actually dropped."""
+    errors = st.session_state.get("errors", [])
+    kept = [e for e in errors if not e.startswith("Autosave")]
+    if len(kept) == len(errors):
+        return False
+    st.session_state.errors = kept
+    return True
+
+
+def _write_project(path: str) -> bool:
+    """Write the project and record the file's identity. True when a stale
+    autosave error was cleared (the caller redraws the page without it)."""
     project().to_json(path)
-    st.session_state.project_mtime = _file_mtime(path)
+    st.session_state.project_stamp = _file_stamp(path)
+    return _clear_autosave_errors()
 
 
 def save_project(path: str, *, force: bool = False) -> str | None:
@@ -249,11 +272,9 @@ def save_project(path: str, *, force: bool = False) -> str | None:
         # the project keeps autosaving to the previous file
         return f"Could not save the project to {path}: {exc}"
     st.session_state.project_path = path
-    st.session_state.project_mtime = _file_mtime(path)
+    st.session_state.project_stamp = _file_stamp(path)
     st.session_state.conflict = None
-    st.session_state.errors = [
-        e for e in st.session_state.get("errors", []) if not e.startswith("Autosave")
-    ]
+    _clear_autosave_errors()
     return None
 
 
@@ -287,7 +308,7 @@ def touch() -> None:
         # show the notice straight away (it is drawn at the top of the page)
         st.rerun()
     try:
-        _write_project(path)
+        recovered = _write_project(path)
     except Exception as exc:  # noqa: BLE001 - surfaced in the UI on every page
         msg = f"Autosave failed: {exc}"
         errors = st.session_state.setdefault("errors", [])
@@ -295,6 +316,11 @@ def touch() -> None:
             errors.append(msg)
             # the error strip is drawn at the top of the page, before the
             # widget that triggered this save: redraw so it shows straight away
+            st.rerun()
+    else:
+        if recovered:
+            # autosave works again; the strip at the top of this page still
+            # shows the old failure, so redraw without it
             st.rerun()
 
 
@@ -598,7 +624,10 @@ def load_persisted_run(model: str) -> ModelRun | None:
 
     Reading never deletes a file whose key merely differs (a transient spec
     edit must not erase the last fit); only a file that cannot be loaded is
-    removed. Stale files go when a newer run is saved (:func:`persist_run`).
+    removed, and only while the data file *can* be read: a data file that is
+    momentarily unreadable (a share that blips, a permission change) is a cache
+    miss, never a reason to throw the fit away. Stale files go when a newer run
+    is saved (:func:`persist_run`).
     """
     folder = runs_dir()
     if folder is None or not folder.exists():
@@ -616,12 +645,16 @@ def load_persisted_run(model: str) -> ModelRun | None:
             )  # noqa: S301 - trusted local folder (module docstring)
         if not isinstance(run, ModelRun) or run.name != model:
             raise ValueError("not a persisted run for this model")
-        if not _design_matches(p, model, run):
-            raise ValueError("design no longer matches")
-        df = prepared_frame()
-        if df is None:
-            raise ValueError("data not available")
-    except Exception:  # noqa: BLE001 - any problem is a cache miss
+    except Exception:  # noqa: BLE001 - a corrupt or foreign pickle: drop it
+        _remove_run_file(target)
+        return None
+    df = prepared_frame()
+    if df is None:
+        # the data cannot be read *now* (unreadable file, a failing data step):
+        # nothing can be verified, so this is a plain cache miss and the fit
+        # stays on disk for when the data comes back
+        return None
+    if not _design_matches(p, model, run):
         _remove_run_file(target)
         return None
     # the project is the truth for adjustments / base-rate override; an entry

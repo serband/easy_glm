@@ -131,7 +131,7 @@ def _project_section(p: Project) -> None:
             else:
                 # the uploaded copy lives in a temp folder: do not autosave there
                 st.session_state.project_path = None
-                st.session_state.project_mtime = None
+                st.session_state.project_stamp = None
                 ui.flash(
                     "warning",
                     "Project loaded from an upload; choose a project file path and "

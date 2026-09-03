@@ -1036,6 +1036,11 @@ class RateModel:
                         if config.type == "linear" and config.x_base is not None
                         else {}
                     ),
+                    **(
+                        {"other_label": config.other_label}
+                        if config.type == "categorical" and config.other_label
+                        else {}
+                    ),
                     "table": [_row_to_dict(row) for row in config.table],
                 }
                 for name, config in self.variables.items()
@@ -1102,6 +1107,7 @@ class RateModel:
                 table=table,
                 parents=tuple(parents) if parents else None,
                 x_base=vdata.get("x_base"),
+                other_label=vdata.get("other_label"),
             )
 
         cls._precompute_variables(variables)

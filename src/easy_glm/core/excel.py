@@ -76,7 +76,7 @@ def rate_model_tables(rm: RateModel) -> dict[str, pl.DataFrame]:
         columns: dict[str, Any] = {
             "from": pl.Series(froms, dtype=dtype),
             "to": pl.Series(tos, dtype=dtype),
-            "label": [level_label(r) for r in cfg.table],
+            "label": [level_label(r, cfg.other_label) for r in cfg.table],
         }
         # The first snapshot holds the fitted (pre-adjustment) relativities.
         base = rm.snapshots[0].relativities.get(var) if rm.snapshots else None
@@ -114,12 +114,13 @@ def _interaction_frame(rm: RateModel, var: str, cfg) -> pl.DataFrame:
     dt_a = pl.Float64 if rm.variables[a].type in ("numeric", "linear") else pl.Utf8
     dt_b = pl.Float64 if rm.variables[b].type in ("numeric", "linear") else pl.Utf8
     rows: list[CellRow] = cfg.table
+    others = (rm.variables[a].other_label, rm.variables[b].other_label)
     columns: dict[str, Any] = {
         "from_a": pl.Series([r.from_a for r in rows], dtype=dt_a),
         "to_a": pl.Series([r.to_a for r in rows], dtype=dt_a),
         "from_b": pl.Series([r.from_b for r in rows], dtype=dt_b),
         "to_b": pl.Series([r.to_b for r in rows], dtype=dt_b),
-        "label": [level_label(r) for r in rows],
+        "label": [level_label(r, others) for r in rows],
         "exposure": pl.Series([float(r.exposure) for r in rows], dtype=pl.Float64),
     }
     base = rm.snapshots[0].relativities.get(var) if rm.snapshots else None
@@ -140,8 +141,12 @@ def interaction_matrices(
     interaction, in the parents' table order."""
     cfg = rm.variables[var]
     a, b = cfg.parents
-    rows_a = [level_label(r) for r in rm.variables[a].table]
-    rows_b = [level_label(r) for r in rm.variables[b].table]
+    rows_a = [
+        level_label(r, rm.variables[a].other_label) for r in rm.variables[a].table
+    ]
+    rows_b = [
+        level_label(r, rm.variables[b].other_label) for r in rm.variables[b].table
+    ]
     ka = {(r.from_, r.to_): i for i, r in enumerate(rm.variables[a].table)}
     kb = {(r.from_, r.to_): i for i, r in enumerate(rm.variables[b].table)}
     rel = [[1.0] * len(rows_b) for _ in rows_a]

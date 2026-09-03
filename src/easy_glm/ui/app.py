@@ -521,7 +521,7 @@ for i, row in enumerate(config_b.table):
     rows_data.append(
         {
             "id": i,
-            "label": level_label(row),
+            "label": level_label(row, config_b.other_label),
             "original": row.relativity,
             "revised": config_w.table[i].relativity,
         }

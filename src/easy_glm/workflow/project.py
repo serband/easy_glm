@@ -8,6 +8,7 @@ executes it; :mod:`easy_glm.workflow.export` renders it as a Python script.
 from __future__ import annotations
 
 import json
+import re
 import warnings
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, fields
@@ -15,6 +16,26 @@ from pathlib import Path
 from typing import Any
 
 from easy_glm.engine.models import INTERACTION_SEP
+
+
+def _col_pattern(column: str) -> re.Pattern[str]:
+    """Matches ``pl.col('column')`` / ``pl.col("column")`` — that reference and
+    nothing else (never a name that merely contains ``column``, never a string
+    literal that happens to spell it)."""
+    return re.compile(
+        r"""pl\.col\(\s*(?P<q>['"])""" + re.escape(column) + r"""(?P=q)\s*\)"""
+    )
+
+
+def rename_in_expression(expr: str, old: str, new: str) -> str:
+    """``expr`` with every ``pl.col('old')`` rewritten to ``pl.col('new')``.
+
+    Only the column reference is touched: text, other columns and any name that
+    merely contains ``old`` are left exactly as they are.
+    """
+    quote = '"' if "'" in new else "'"
+    return _col_pattern(old).sub(f"pl.col({quote}{new}{quote})", expr)
+
 
 #: Characters a model name may not contain (names become file and sheet names).
 _MODEL_NAME_BAD = set('/\\:*?"<>|') | {chr(c) for c in range(32)}
@@ -299,13 +320,30 @@ class Project:
         return cfg
 
     # -- consistent edits ------------------------------------------------
+    def expressions_using(self, column: str) -> list[str]:
+        """Row filters and derived-column formulas that reference ``column``
+        as ``pl.col('column')`` — what a rename has to follow into."""
+        pattern = _col_pattern(column)
+        return [
+            expr
+            for expr in [*self.data.filters, *(d.expr for d in self.data.derived)]
+            if pattern.search(expr)
+        ]
+
     def rename_column(self, old: str, new: str) -> list[str]:
         """Rename a (post-rename) column everywhere it is referenced: roles,
-        types, recodes, design, split, exploration lists and every model
-        (target / weight / offset, predictors, monotone, interactions,
-        adjustments). Returns the models that were updated."""
+        types, recodes, design, split, exploration lists, row filters and
+        derived-column formulas (``pl.col('old')`` only, nothing else in the
+        expression) and every model (target / weight / offset, predictors,
+        monotone, interactions, adjustments). Returns the models that were
+        updated."""
         if old == new:
             return []
+        self.data.filters = [
+            rename_in_expression(f, old, new) for f in self.data.filters
+        ]
+        for derived in self.data.derived:
+            derived.expr = rename_in_expression(derived.expr, old, new)
         for store in (self.data.roles, self.data.types, self.data.recodes):
             if old in store:
                 store[new] = store.pop(old)

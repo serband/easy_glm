@@ -64,6 +64,47 @@ def _column_mode(raw: pl.DataFrame) -> bool:
     return changed
 
 
+#: seeds outside this range cannot be shown in a number box (JavaScript loses
+#: whole numbers beyond it), so the box shows a placeholder and says so
+_MAX_SHOWN_SEED = 2**53 - 1
+
+
+def _seed_value(seed: object) -> tuple[int, str | None, bool]:
+    """``(value to show, message, repair)`` for the seed box.
+
+    The box shows the seed the project actually holds whenever it can, so the
+    page never claims the split came from a seed it did not. A seed that is not
+    a whole number is repaired to 42 (nothing could have been split with it);
+    one that is merely unusual is shown and left alone.
+    """
+    try:
+        value = int(seed)
+    except (TypeError, ValueError):
+        return (
+            42,
+            f"The seed in the project file ({seed!r}) is not a whole number; "
+            "the split now uses 42.",
+            True,
+        )
+    if abs(value) > _MAX_SHOWN_SEED:
+        return (
+            10_000,
+            f"The seed in the project file ({value}) is too large to show here; "
+            "the split still uses it. Type a seed between 0 and 10000 to "
+            "replace it.",
+            False,
+        )
+    if not 0 <= value <= 10_000:
+        return (
+            value,
+            f"The seed in the project file ({value}) is outside the usual "
+            "0–10000 range; the split still uses it. Type a seed between 0 and "
+            "10000 to change it.",
+            False,
+        )
+    return value, None, False
+
+
 def _random_mode(raw: pl.DataFrame) -> bool:
     p = S.project()
     sp = p.data.split
@@ -77,11 +118,17 @@ def _random_mode(raw: pl.DataFrame) -> bool:
     frac = c1.slider(
         "Training fraction", 0.5, 0.95, frac_value, 0.05, key=S.widget_key("split_frac")
     )
+    shown_seed, seed_problem, repair_seed = _seed_value(sp.seed)
+    if seed_problem:
+        st.warning(seed_problem)
+    # the box shows the seed the project holds — the range widens for a value
+    # from outside it (a hand-edited file) rather than showing another number
+    # (or raising), so the page never names a seed the split did not use
     seed = c2.number_input(
         "Seed",
-        0,
-        10_000,
-        int(sp.seed),
+        min(0, shown_seed),
+        max(10_000, shown_seed),
+        shown_seed,
         key=S.widget_key("split_seed"),
         help="0 – 10000",
     )
@@ -105,9 +152,14 @@ def _random_mode(raw: pl.DataFrame) -> bool:
             f"The split column name {name!r} is also a data column; the random "
             "split would overwrite it. Choose another name."
         )
-    changed = False
-    if (float(frac), int(seed), name) != (sp.fraction, sp.seed, sp.column):
-        sp.fraction, sp.seed, sp.column = float(frac), int(seed), name
+    changed = repair_seed
+    if repair_seed:
+        sp.seed = shown_seed
+    elif int(seed) != shown_seed:  # the user typed a new seed
+        sp.seed = int(seed)
+        changed = True
+    if (float(frac), name) != (sp.fraction, sp.column):
+        sp.fraction, sp.column = float(frac), name
         changed = True
     return changed
 
