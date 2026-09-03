@@ -239,9 +239,19 @@ User edits relativity in table
   leakage, knots/levels) and `sample_frame()` / `raw_sample()` (exploration only:
   Explore page, Design/Variables previews). `data_hash`/`model_hash` exclude the
   sample settings; `sample_hash` keys the sample.
+- **Bump `app.state.PERSIST_FORMAT` whenever the shape *or the meaning* of anything
+  pickled changes** (`ModelRun`, `GLMFit`, `RateModel`, `DesignSpec`, what their
+  coefficients mean). A change of meaning that leaves the shape alone is the dangerous
+  one: the pickle unpickles cleanly, `_design_matches` compares the new feature names
+  against themselves and passes, and the cached fit is silently re-read under the new
+  rules. Worked example: piece **B2** turned a `LinearEncoder`'s coefficients from
+  change-of-slope (hinge) numbers into per-band slopes without touching a single pickled
+  field — `PERSIST_FORMAT` 2 → 3 is what makes those runs a cache miss. The installed
+  version number is not a substitute: it does not move in a development checkout.
 - A browser reload starts a new Streamlit session: the project (spec) survives via the
   autosaved JSON; fitted runs are restored from `<project>.easyglm-runs/` when
-  `run_key` (spec hash + data file identity + library versions) matches, else refitted.
+  `run_key` (spec hash + data file identity + library versions + `PERSIST_FORMAT`)
+  matches, else refitted.
   `load_persisted_run` treats any failure as a cache miss, and deletes the file only
   when the pickle is corrupt or its design no longer matches *readable* data — data
   that cannot be read right now is a miss that keeps the fit;

@@ -21,7 +21,8 @@ Fitted runs are **persisted** next to the project file
 (``<project>.easyglm-runs/<model-tag>-<key>.pkl``) so a browser reload or
 reopening the project restores them instead of refitting. The key combines the
 sample-free spec hash, the identity of the data file (path, size, mtime), the
-library versions and :data:`PERSIST_FORMAT`; a file that cannot be loaded (a
+library versions and :data:`PERSIST_FORMAT` (bumped whenever the shape *or the
+meaning* of anything pickled changes); a file that cannot be loaded (a
 corrupt pickle, a design that no longer matches *readable* data) is removed, a
 file whose key merely differs — or whose data file cannot be read at this
 moment — is left alone until a newer run of the same model is saved. The folder
@@ -63,10 +64,17 @@ from easy_glm.workflow import (
 PROJECT_SUFFIX = ".easyglm-project.json"
 RUNS_SUFFIX = ".easyglm-runs"
 _SAMPLE_KEYS = ("sample_rows", "sample_seed")
-#: Bump whenever the shape of a pickled class (ModelRun, GLMFit, RateModel,
-#: DesignSpec, ...) changes, so older pickles are treated as cache misses even
-#: in a development checkout where the installed version number does not move.
-PERSIST_FORMAT = 2
+#: Bump whenever the shape **or the meaning** of anything pickled (ModelRun,
+#: GLMFit, RateModel, DesignSpec, their coefficients, ...) changes, so older
+#: pickles are treated as cache misses even in a development checkout where the
+#: installed version number does not move. A change of meaning that leaves the
+#: shape alone is the dangerous case: it unpickles cleanly and is then read
+#: wrongly.
+#: 3 — B2: a ``LinearEncoder``'s coefficients became per-band slopes instead of
+#: hinge (change-of-slope) coefficients. Nothing about the pickle's shape moved,
+#: so a run cached by an earlier 0.4 development build would have been re-read
+#: as if its numbers were slopes.
+PERSIST_FORMAT = 3
 #: Project-page widgets whose keyed value must not leak into another project.
 # session-state keys that belong to the app itself; everything else is widget
 # state (or a page's scratch result) and is dropped when another project is

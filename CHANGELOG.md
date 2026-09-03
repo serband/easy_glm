@@ -28,6 +28,12 @@
   rate-table type, the editor, the Excel sheet and the exported script. The
   Design page now offers *auto · step · linear · continuous · categorical* with
   a line of help each. Numeric variables still default to **step** (Q9).
+- **Fits cached in a `*.easyglm-runs` folder by an earlier 0.4 development build
+  are ignored and refitted** (`PERSIST_FORMAT` 2 → 3). The basis change altered
+  what a `LinearEncoder`'s coefficients *mean* without changing anything about
+  the pickle's shape, so such a run would have loaded cleanly and been re-read as
+  if its numbers were band slopes. `.easyglm` scorers and project files are
+  unaffected and need no migration.
 - Planted-truth tests (`tests/test_recovery.py`) now plant a sloped / **flat** /
   sloped mileage curve and assert that every band inside the flat stretch has a
   slope of exactly zero while the sloped stretches are recovered within 10 %,
