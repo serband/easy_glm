@@ -259,3 +259,73 @@ numpy 2.4.5, streamlit 1.57.0).
 - **Version string.** `easy_glm.__version__` is read from package metadata, not hard-coded.
   With stale metadata the key under-invalidates in a dev checkout (S4); with correct metadata
   it behaves as designed. It never over-invalidates.
+
+## 8. Re-check (commits `a9eb142`…`aa924da`, `git diff e74adec..aa924da`) — 2026-09-03
+
+### Final verdict: **Approved.**
+
+Both blocking items and all five should-fix items are addressed in the diff, each with a
+test that would have caught the original finding. I re-ran my own probes against `aa924da`
+rather than only the builder's tests.
+
+### Blocking items
+
+- **B1 (Derived-column Preview) — fixed.** `pages_variables.py:273` now reads
+  `sample = S.raw_sample(); base = apply_variables((raw if sample is None else sample).head(2000), p.data)`.
+  Re-run of my AppTest: with a 60-row sample and with no sample, clicking Preview raises no
+  exception, shows no error box, and the dataframe count grows from 2 to 3 (the preview table).
+  Guarded by `TestReviewFollowUps::test_derived_preview_works_with_and_without_a_sample`.
+- **B2 (`freq` / `freq-2` collision) — fixed.** File names are now
+  `<sha1(model)[:10]>-<key>.pkl` (`_model_tag`, `run_file`), and `_run_files` accepts only
+  `<tag>-<16 hex>.pkl`. Re-run: `freq` and `freq-2` fitted → two files; refit `freq` → still
+  two files; new session restores both. A model named `f*` (glob metacharacter) persists as a
+  third file and all three restore. Deleting `freq-2` and `f*` from the project and refitting
+  `freq` removes their orphans (`_remove_orphans`), leaving one file. The existing two-model
+  test now uses `freq-2` and also asserts no `.tmp` file is left behind.
+
+### Should-fix items
+
+- **S1 (sample widget carried into the next project) — fixed.** `set_project` pops
+  `sample_rows`, `src_path`, `proj_name`, `proj_path` from session state. Re-run of the
+  A-then-B sequence: B shows `sample_rows=None` in memory and on disk; a user then setting 100
+  on B takes effect (100 in memory and on disk). Guarded by
+  `test_sample_widget_does_not_leak_into_another_project`.
+- **S2 (stale file deleted on read) — fixed.** `load_persisted_run` no longer deletes any file
+  whose key merely differs; "latest per model" is enforced in `persist_run` after a successful
+  save. Re-run: fit, new session, set alpha 0.01 → `get_run` None, `status()["fitted"]`
+  False, the file is still there; revert to 0.002 → restored from disk. Refit with the new
+  alpha → exactly one file, the old one gone. A corrupt pickle is still removed (folder empty
+  afterwards). The check script and `docs/checks/w1-state.md` were updated accordingly ("1
+  (kept until a new fit replaces it)" after the data change) and the document explains the
+  rule in one plain sentence. Guarded by
+  `test_transient_spec_edit_does_not_erase_the_persisted_fit`.
+- **S3 (shared temp-file name) — fixed.** Temp name is
+  `<target>.<pid>.<uuid8>.tmp`, `os.replace`, and a `finally` that unlinks a leftover temp
+  file. No `.tmp` files remain after any of my runs.
+- **S4 (stale version in the key) — fixed as asked.** `PERSIST_FORMAT = 1` is in `run_key`
+  and the sidecar, with a comment saying when to bump it; AGENTS/CHANGELOG mention the
+  rule. The `pyproject.toml` version (0.3.0) and the stale editable-install metadata (0.2.2)
+  are unchanged — release-process items, not this piece.
+- **S5 (refused adjustment on load) — fixed.** `load_persisted_run` now runs
+  `rebuild_rate_model` in the same `AdjustmentError → _drop_refused_adjustment` loop as
+  `refresh_adjustments`; any other failure is still a cache miss. Guarded by
+  `test_refused_adjustment_is_dropped_on_load_not_refitted` (the bad entry is dropped, the
+  good one kept, the file remains, no refit).
+
+### Nits
+
+Not addressed (as expected for nits): the Explore "Rows" label, README wording, the stale
+`project_snapshot`, `_versions()` caching, numpy ints as strings in `to_json`, and the
+orphan `…-runs` folder after "Save as". None affects a number.
+
+### What I re-ran on `aa924da`
+
+- Full suite: **361 passed** in 168 s (my run; the coordinator's independent run on `aa924da` also reports 361 passed). `ruff check`: all checks passed; `black --check`: 69 files
+  unchanged. Only `docs/reviews/w1-state.md` differs from the branch after my runs.
+- `scripts/checks/w1_state.py`: CHECK PASSED, output equal to the committed
+  `docs/checks/w1-state.md` (50,000 policies, sample 10,000, train 34,887 = fit train rows,
+  A/E 0.9935 · Gini 0.3316, restored in 0.05 s, max diff 0, not restored after the data change,
+  1 file kept).
+- The four scenarios above via AppTest (Preview click ×2, `freq`/`freq-2`/`f*` persistence
+  and orphan removal, A-then-B sample widget with a subsequent user edit, edit/revert/refit
+  with file inspection), plus the corrupt-pickle removal.
