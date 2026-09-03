@@ -40,6 +40,9 @@ dependencies = [
 
 
 [tool.pytest.ini_options]
+# Only tests/ is a test suite; docs/spikes holds throwaway scripts that pytest
+# would otherwise collect (and that break as the library moves on).
+testpaths = ["tests"]
 # The 5M-row memory benchmark is marked slow and is *not* run by `pytest -q`;
 # run it on its own with `pytest -m slow`, which overrides this filter.
 addopts = "-m 'not slow'"
