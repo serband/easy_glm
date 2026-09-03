@@ -795,6 +795,40 @@ class TestCliValidate:
         assert proc.returncode == 1
         assert "Nonexistent" in proc.stderr
 
+    @pytest.mark.parametrize(
+        "edit",
+        [
+            lambda raw: raw["models"]["freq"]["penalty"].__setitem__("alpha", "abc"),
+            lambda raw: (
+                raw["models"]["freq"].__setitem__("family", "tweedie"),
+                raw["models"]["freq"].__setitem__("tweedie_power", "abc"),
+            ),
+            lambda raw: raw["data"]["split"].__setitem__("fraction", "abc")
+            or raw["data"]["split"].__setitem__("mode", "random"),
+            lambda raw: raw["design"].__setitem__(
+                "variables", {"DrivAge": {"clamp": ["abc", 10]}}
+            ),
+        ],
+        ids=["alpha", "tweedie_power", "split_fraction", "clamp"],
+    )
+    def test_a_hand_edited_non_numeric_field_is_a_problem_not_a_traceback(
+        self, cli_project, tmp_path, edit
+    ):
+        """Breaker #3: a project.json hand-edited with e.g. ``"alpha": "abc"``
+        used to crash ``Project.validate`` with a raw ``TypeError``/``ValueError``
+        — every comparison there assumed a number. ``cli.py`` only catches
+        ``CliError``/``ProjectFileError``/``OSError``, so that exception reached
+        the user as a traceback on stderr instead of the one-line problem the
+        docstring promises."""
+        raw = json.loads(cli_project.read_text())
+        edit(raw)
+        bad = tmp_path / "bad_field.json"
+        bad.write_text(json.dumps(raw))
+        proc = cli("validate", str(bad))
+        assert proc.returncode == 1
+        assert "Traceback" not in proc.stderr
+        assert proc.stderr.strip()  # a message, not silence
+
 
 class TestCliRun:
     def test_it_writes_every_artefact_and_prints_a_summary(self, cli_project, tmp_path):
