@@ -391,3 +391,123 @@ needed to be.
 | Other end-to-end checks | recode default `Other` + `Area` predictor fits and exports (finding 22); a real level `Other` with lumping active | fit succeeds, `other_label = "Other (lumped)"`, but the table row reads `Other / Unknown` (S5) |
 
 I changed no file except this review, and `git status --short` is clean apart from it.
+
+## 11. Re-check of the W3 follow-ups (`d15b272`, `e3d7eca`) — 2026-09-03
+
+*Scope: `git diff 064980d..e3d7eca` (21 files, +677 / −97). I re-ran the three scenarios
+that produced the findings — S1's banner, S3's same-timestamp rewrite, S4's `chmod 000` —
+plus S2, S5 and item 32, under AppTest and twice against a live server on port 8641.*
+
+**Verdict: accepted. All five should-fix items and item 32 are fixed, and I could not
+reproduce any of the original failures. No blocking items and no regressions.**
+
+### The five items, re-verified
+
+**S1 — the "Autosave failed" banner.** `_write_project` now returns whether it dropped the
+stale entries and `touch()` reruns the page when it did, so the strip at the top redraws
+without them. Live browser: `chmod 444` → the page banner **and** the sidebar note appear;
+`chmod 644` → the next edit reaches the file (`after chmod back`), the page banner is gone,
+the sidebar note is gone, and further edits keep saving. AppTest agrees, and
+`session_state["errors"]` holds no `Autosave` entry afterwards. *(My earlier AppTest run
+appeared to swallow the first edit after the recovery; that is an AppTest artefact of a run
+that ends in `st.rerun()` — in the browser no edit is lost, which is why the live leg was
+the one that mattered.)*
+
+**S3 — conflict detection.** `_file_stamp` now returns `(mtime_ns, size, sha1-of-bytes)` and
+`project_mtime` became `project_stamp` everywhere (the check script too). I re-ran the exact
+attack that broke the old check: another writer changes the file, then `os.utime` puts the
+timestamp back. It is now caught — the notice appears, autosave pauses, and the other
+session's text is still on disk. I also tried the harder case (same timestamp **and** same
+byte count, different content): also caught. The ordinary flows are unchanged — conflict →
+*Reload* → autosave resumes → the other tab conflicts → *Overwrite* → autosave resumes.
+
+**S4 — the persisted fit.** `load_persisted_run` now deletes only for a corrupt or foreign
+pickle, or a design that no longer matches *readable* data; an unreadable data file is a
+plain cache miss. Live browser, the realistic form: fit, `chmod 000` the parquet, **reload
+the browser** (a fresh session, so the frame really has to be read again) — the page says
+"Could not load …", six other pages render with no traceback, and the `.pkl` is still there;
+`chmod 644` and reload, and the model is "Fitted and up to date" again with no refit. AppTest
+confirms the fit file's own mtime is unchanged (it was not even rewritten), and that a
+genuinely corrupt pickle is still removed.
+
+**S2 — renames follow the column into expressions.** `rename_in_expression` rewrites
+`pl.col('old')` / `pl.col("old")` and nothing else. I checked the boundaries: `ExposureBand`
+and the string literal `pl.lit('Exposure')` are left alone, every occurrence inside one
+formula is rewritten, and renaming back restores the original text. Through the roles grid,
+the filter and the derived formula are both rewritten, the page says which ones
+(*"…renamed to 'exposure_years' in 2 row filter / derived formula(s): …"*), and `prepare`
+runs afterwards. This is the more ambitious of the two options I offered and it is done
+carefully; the break-it e2e now drives it through the real canvas grid.
+
+**S5 — the lumped-bucket label.** `VariableConfig.other_label` carries the encoder's name
+through `level_label` to `rate_tables`, `rate_model_tables`, the Excel workbook, the Rate
+tables grid, the relativity editor and the charts, and survives a `.easyglm` round trip. With
+a real level called `Other`: the table now reads `Other`, `A`, `B`, **`Other (lumped)`**.
+Crucially the default is untouched — `lumped_label` returns `None` for `"Other"`, so an
+ordinary variable still prints `Other / Unknown` and `VariableConfig.other_label` stays
+`None`, which keeps existing scorer files byte-identical and keeps the label joinable with
+`workflow.diagnostics`. That was the one regression risk in this fix and it was avoided.
+
+**Item 32 — the seed.** `_seed_value` widens the box's range rather than showing a different
+number, so the page can no longer name a seed the split did not use: 7 shows as 7 with no
+warning; 99999999999 and −5 are shown with "the split still uses it"; a value beyond 2⁵³ says
+it is too large to display; a non-numeric seed is repaired to 42 with a message. Confirmed in
+the browser (the Seed box reads `7`) and under AppTest.
+
+### Still open (unchanged, all nits)
+
+Nits 1–8 of §4 were not in scope and remain: the sticky `confirm_new_project` flag, the
+button label that lags a rerun, `mkdir(parents=True)` on a typo'd save path, Windows device
+names passing `validate_model_name`, `Could not persist the fit: …` still being append-only
+(the autosave half of that nit is now fixed), the "No fitted model yet" wording on
+missing-column pages, the generator artefacts in the actuary page ("(yes)", "changed=False",
+"path shown: None", `['DrivAge', 'Region']`), and boolean columns being excluded from the
+target/weight selectors. Two new ones, both minor:
+
+9. **A rename target containing both quote characters produces an unparseable formula.**
+   `rename_in_expression` picks its quote as `'"' if "'" in new else "'"`, so renaming a
+   column to the breaker's `a'b"c` while a filter references it yields
+   `pl.col("a'b"c") > 0`. The consequence is contained — `eval_expr` raises `ValueError:
+   … unterminated string literal`, which becomes the ordinary "The data steps fail: …"
+   message on every page, no traceback, and editing the filter fixes it. Cheapest fix:
+   refuse a rename target containing `'` or `"`, or emit the name with `repr()`.
+10. **The interaction long table still uses the old label.** `core/tables.py:199`
+    (`_interaction_table`) calls `level_label(r)` without the parents' labels, while
+    `excel._interaction_frame` passes them. Measured on an `Area × VehGas` interaction whose
+    `Area` has a real `Other` level: `run.tables[...]` gives `Other / Unknown | P` where
+    `rate_model_tables(...)` gives `Other (lumped) | P`. Nothing user-facing joins the two
+    today (the Rate tables page draws its labels from `cell_grid`, and the Excel uses the
+    corrected path), so this is consistency housekeeping — but it is the one place the S5
+    change was not carried through. One line:
+    `level_label(r, (_other_label(enc.a), _other_label(enc.b)))`.
+
+### The missing tests of §9 are all covered
+
+`test_project_token_is_stable_while_you_stay_in_one_project`, `test_s1_…clears_once_saving_
+works_again`, `test_s2_rename_follows_into_filters_and_derived_expressions`,
+`test_s2_the_roles_grid_says_which_formulas_it_rewrote`, `test_s3_conflict_check_compares_
+content_not_only_the_timestamp`, `test_s4_an_unreadable_data_file_keeps_the_persisted_fit`,
+`test_s5_…`, `test_item_32_…`; `_helpers.edit_grid_cell` gained a `column` argument (it clicks
+the row's first cell and walks right with the arrow keys, which is the only way into a canvas
+grid), and `tests/e2e/test_breakit.py` now renames `Exposure` in the real roles grid — proving
+the filter rewrite end to end — and drives the *Overwrite* branch with its autosave
+resumption. I checked the new tests are not vacuous: the S3 case asserts the forced mtime
+*and* size are equal before acting, and the S4 case asserts the fit file's own mtime is
+unchanged.
+
+### What I re-ran for this re-check
+
+| What | Result |
+|---|---|
+| Full suite, repo venv (1.57), `pytest -q -p no:randomly` | **440 passed**, 17 warnings, 173.8 s (was 431) |
+| Four app suites on the Streamlit 1.63 venv | **123 passed**, 17.3 s (was 114) |
+| `ruff check .` / `black --check .` (the commands `AGENTS.md` documents) | All checks passed / 87 files unchanged |
+| Golden | `tests/test_golden.py` (where the recorded numbers live) and `tests/fixtures/` are not among the 21 changed files; the golden tests pass inside the 440 |
+| Persona + break-it e2e, `EASY_GLM_E2E=1 EASY_GLM_SERVER_PYTHON=.venv/bin/python <playwright venv>/bin/python -m pytest -q -p no:randomly tests/e2e` | **3 passed**, 96.6 s (was 86.1 s — the new grid rename and Overwrite branch); every server fixture's no-traceback assertion passed |
+| `python scripts/checks/w3_hardening.py` | Reproduces `docs/checks/w3-hardening.md` exactly (bar the trailing newline from `print`); `git status --short` clean afterwards |
+| My re-check probes (AppTest): S1 recovery, S3 forced-same-mtime and same-mtime-plus-same-size, S3 conflict/Reload/Overwrite/resume, S4 unreadable data and corrupt pickle, S2 expression boundaries and the roles grid, S5 lumped and default labels plus the `.easyglm` round trip, item 32 | **12 passed** |
+| Live server leg 1 (port 8641): S1 banner, S3 forced-same-mtime, S4, seed, a nine-page sweep | 26 of 28 checks passed; both failures were my own harness (a wrong `get_by_label` locator for the seed box, and a check that assumed a frame cached in the session would be re-read) — re-done correctly in leg 2 |
+| Live server leg 2 (port 8641): the seed box read from `stNumberInput`, S4 across a **browser reload** with the data unreadable, a six-page sweep | **15 of 15** |
+| Both live server logs | **0 tracebacks** |
+
+Port 8641 released; the only file I changed is this review.
