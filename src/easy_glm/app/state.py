@@ -21,7 +21,8 @@ Fitted runs are **persisted** next to the project file
 (``<project>.easyglm-runs/<model-tag>-<key>.pkl``) so a browser reload or
 reopening the project restores them instead of refitting. The key combines the
 sample-free spec hash, the identity of the data file (path, size, mtime), the
-library versions and :data:`PERSIST_FORMAT`; a file that cannot be loaded (a
+library versions and :data:`PERSIST_FORMAT` (bumped whenever the shape *or the
+meaning* of anything pickled changes); a file that cannot be loaded (a
 corrupt pickle, a design that no longer matches *readable* data) is removed, a
 file whose key merely differs — or whose data file cannot be read at this
 moment — is left alone until a newer run of the same model is saved. The folder
@@ -79,10 +80,19 @@ from easy_glm.workflow import (
 PROJECT_SUFFIX = ".easyglm-project.json"
 RUNS_SUFFIX = ".easyglm-runs"
 _SAMPLE_KEYS = ("sample_rows", "sample_seed")
-#: Bump whenever the shape of a pickled class (ModelRun, GLMFit, RateModel,
-#: DesignSpec, ...) changes, so older pickles are treated as cache misses even
-#: in a development checkout where the installed version number does not move.
-PERSIST_FORMAT = 3
+#: Bump whenever the shape **or the meaning** of anything pickled (ModelRun,
+#: GLMFit, RateModel, DesignSpec, their coefficients, ...) changes, so older
+#: pickles are treated as cache misses even in a development checkout where the
+#: installed version number does not move. A change of meaning that leaves the
+#: shape alone is the dangerous case: it unpickles cleanly and is then read
+#: wrongly.
+#: 3 — B2: a ``LinearEncoder``'s coefficients became per-band slopes instead of
+#: hinge (change-of-slope) coefficients. Nothing about the pickle's shape moved,
+#: so a run cached by an earlier 0.4 development build would have been re-read
+#: as if its numbers were slopes.
+#: 4 — merge of W4 (per-session .fitting markers, pruning rules) and B2 above;
+#: both bumped 2 → 3 independently, so the merged tree moves on to 4.
+PERSIST_FORMAT = 4
 #: A marker left by *another* session is only removed once it is this old:
 #: younger than this it may belong to a fit that is still running in another
 #: tab, and taking its marker away would cost that tab its own warning.

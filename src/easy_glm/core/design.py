@@ -18,10 +18,14 @@ Four encoders exist:
 * :class:`CategoricalEncoder` -- one column per kept level except the
   reference (the most frequent level), plus an ``Other`` column for lumped,
   unseen and null values.
-* :class:`LinearEncoder` -- AGLM-style "L-dummies": hinge columns
-  ``max(x - k, 0)`` at the lower clamp and every knot, so the fitted effect is a
-  continuous piecewise-linear curve (on the log scale) with data-driven bends,
-  exactly flat outside the training range.
+* :class:`LinearEncoder` -- piecewise-linear ("L-dummy") columns, one per
+  *band* between consecutive knots: ``clip(x - k_j, 0, k_{j+1} - k_j)``, the
+  amount of ``x`` that falls inside band ``j``. Each coefficient is therefore
+  the *slope inside that band*, and with an L1 penalty the lasso sets slopes to
+  exactly zero -- the curve is flat wherever the data does not insist on a
+  slope. The curve is continuous by construction and exactly flat outside the
+  training range. A term with no interior knots (``kind="continuous"`` on the
+  Design page) is one band: a single slope on the raw clamped value.
 * :class:`InteractionEncoder` -- a two-way interaction ``A × B`` on top of the
   two mains: one 0/1 column per *kept cell* of the parents' rate-table rows,
   so each coefficient is one cell's multiplicative adjustment.
@@ -61,7 +65,7 @@ NUMERIC_DTYPES = (
     pl.Float64,
 )
 
-FeatureKind = Literal["step", "hinge", "null", "level", "other", "cell"]
+FeatureKind = Literal["step", "band", "null", "level", "other", "cell"]
 
 
 @dataclass(frozen=True)
@@ -298,27 +302,33 @@ class CategoricalEncoder(Encoder):
         }
 
 
-def _hinge_name(variable: str, knot: float) -> str:
-    k = format_knot(knot)
-    return (
-        f"max({variable}+{k[1:]},0)" if k.startswith("-") else f"max({variable}-{k},0)"
-    )
+def _band_name(variable: str, lo: float, hi: float) -> str:
+    """Name of the per-band column: the amount of ``variable`` inside the band."""
+    return f"{variable} in [{format_knot(lo)}, {format_knot(hi)})"
 
 
 @dataclass
 class LinearEncoder(Encoder):
     """Piecewise-linear (L-dummy) encoding of a numeric variable.
 
-    ``x`` is first clipped to ``clamp = (lo, hi)`` and then expanded into hinge
-    columns ``max(x_clipped - k, 0)`` at ``lo`` **and** at every interior knot.
-    The fitted effect is therefore a continuous piecewise-linear curve on the
-    linear-predictor scale whose slope can change at each knot, is fitted in the
-    first band too (the hinge at ``lo``), and is exactly flat outside
-    ``[lo, hi]`` — beyond the training range the relativity stays at its value at
-    the nearer clamp. With an L1 penalty each coefficient is a *change of slope*,
-    so the lasso keeps few bends. Nulls get all-zero hinge columns (the value at
-    ``lo``) plus, by default, an ``is null`` column so they can carry their own
-    effect.
+    ``x`` is first clipped to ``clamp = (lo, hi)`` and then expanded into one
+    column per **band** between consecutive edges ``[lo, k1, ..., km, hi]``:
+    ``clip(x_clipped - k_j, 0, k_{j+1} - k_j)``, i.e. how much of ``x`` falls
+    inside band ``j``. Coefficient ``beta_j`` is therefore the *slope inside
+    band j* on the linear-predictor scale, and with an L1 penalty the lasso
+    drives slopes to exactly zero: the curve is **flat unless the data insists
+    on a slope** (the actuary's answer to Q3), not merely free of bends. The
+    curve is continuous by construction (the bands tile ``[lo, hi]`` and each
+    column is capped at its band width) and exactly flat outside ``[lo, hi]`` —
+    beyond the training range the relativity stays at its value at the nearer
+    clamp. A monotone constraint is a sign bound on these coefficients
+    (see :func:`easy_glm.core.fit.monotone_bounds`).
+
+    Nulls get all-zero band columns (the value at ``lo``) plus, by default, an
+    ``is null`` column so they can carry their own effect.
+
+    With no interior knots there is a single band ``[lo, hi]``: one slope on the
+    raw clamped value — what the Design page offers as ``kind="continuous"``.
 
     Rate-table rows (:meth:`rows`): ``(None, lo)`` flat, one band per pair of
     consecutive edges ``[lo, k1, ..., km, hi]`` (log-linear inside), ``(hi, None)``
@@ -330,9 +340,11 @@ class LinearEncoder(Encoder):
         Column name.
     knots : list[float]
         Interior knots, strictly inside ``(lo, hi)``; the slope may change there.
+        Empty = one band, a single slope ("continuous").
     clamp : (lo, hi)
-        Range the raw value is clipped to before the hinges; the curve is flat
-        outside it. ``DesignSpec.from_data`` uses the training minimum/maximum.
+        Range the raw value is clipped to before the band columns; the curve is
+        flat outside it. ``DesignSpec.from_data`` uses the training
+        minimum/maximum.
     null_indicator : bool
         Add a ``1{x is null}`` column.
     """
@@ -363,6 +375,21 @@ class LinearEncoder(Encoder):
                 f"LinearEncoder({self.variable!r}) knots {bad} must lie strictly "
                 f"inside the clamp range ({lo}, {hi})"
             )
+        # a band narrower than a billionth of the range is not a band: its slope
+        # is unidentifiable, its column name collides with its neighbour's and
+        # ``from_rate_tables`` would read the table back with an infinite slope
+        edges = [lo, *knots, hi]
+        thin = [
+            (edges[i], edges[i + 1])
+            for i in range(len(edges) - 1)
+            if edges[i + 1] - edges[i] < (hi - lo) * 1e-9
+        ]
+        if thin:
+            raise ValueError(
+                f"LinearEncoder({self.variable!r}) knots are too close together: "
+                f"band(s) {thin} are narrower than a billionth of the clamp range "
+                f"({lo}, {hi}); drop or move the knot"
+            )
         self.knots = knots
         self.clamp = (lo, hi)
 
@@ -374,20 +401,34 @@ class LinearEncoder(Encoder):
     def hi(self) -> float:
         return self.clamp[1]
 
-    @property
-    def hinges(self) -> list[float]:
-        """Knots of the hinge columns: ``lo`` then the interior knots."""
-        return [self.lo, *self.knots]
-
     def band_edges(self) -> list[float]:
         """``[lo, k1, ..., km, hi]`` — the edges of the sloped bands. Passing them
         to ``ae_by_variable(knots=...)`` gives labels identical to the table's."""
         return [self.lo, *self.knots, self.hi]
 
+    def band_starts(self) -> list[float]:
+        """Lower edge of each band — the knot each slope column starts from."""
+        return [self.lo, *self.knots]
+
+    def band_widths(self) -> list[float]:
+        """Width of each band; the column for band ``j`` is capped at it."""
+        edges = self.band_edges()
+        return [edges[i + 1] - edges[i] for i in range(len(edges) - 1)]
+
+    @property
+    def n_bands(self) -> int:
+        return len(self.knots) + 1
+
     def features(self) -> list[Feature]:
+        edges = self.band_edges()
         out = [
-            Feature(_hinge_name(self.variable, k), self.variable, "hinge", knot=k)
-            for k in self.hinges
+            Feature(
+                _band_name(self.variable, edges[i], edges[i + 1]),
+                self.variable,
+                "band",
+                knot=edges[i],
+            )
+            for i in range(len(edges) - 1)
         ]
         if self.null_indicator:
             out.append(Feature(f"{self.variable} is null", self.variable, "null"))
@@ -410,9 +451,11 @@ class LinearEncoder(Encoder):
         x = series.cast(pl.Float64).to_numpy()
         nan = np.isnan(x)
         xc = np.clip(np.where(nan, self.lo, x), self.lo, self.hi)
-        hinges = np.asarray(self.hinges)
-        cols = np.maximum(xc[:, None] - hinges[None, :], 0.0)
-        cols[nan, :] = 0.0  # nulls: the value at lo (all hinges zero)
+        starts = np.asarray(self.band_starts())
+        widths = np.asarray(self.band_widths())
+        # amount of x inside each band: 0 below it, its width above it
+        cols = np.clip(xc[:, None] - starts[None, :], 0.0, widths[None, :])
+        cols[nan, :] = 0.0  # nulls: the value at lo (all bands empty)
         if self.null_indicator:
             cols = np.hstack([cols, nan[:, None].astype(np.float64)])
         return cols

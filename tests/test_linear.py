@@ -1,10 +1,13 @@
-"""Piecewise-linear (L-dummy) terms — piece B.
+"""Piecewise-linear (L-dummy) terms — pieces B and B2.
 
-Contract (docs/RELEASE_0.4_PLAN.md §R2): ``LinearEncoder`` clips ``x`` to
-``[lo, hi]``, has a hinge at ``lo`` and at every interior knot, is exactly flat
-outside the clamp, treats nulls as the value at ``lo`` times a null factor,
-and its rate table is log-linear inside each band with relativity 1.00 at
-``x_base``; monotone constraints are refused.
+Contract (docs/RELEASE_0.4_PLAN.md §R2 as revised by R10/Q3): ``LinearEncoder``
+clips ``x`` to ``[lo, hi]`` and has one column per band, ``clip(x - k_j, 0,
+width_j)``, so each coefficient is the *slope inside that band* and the lasso
+zeroes slopes (flat sections). The term is exactly flat outside the clamp,
+treats nulls as the value at ``lo`` times a null factor, and its rate table is
+log-linear inside each band with relativity 1.00 at ``x_base``. Monotone
+constraints are sign bounds on the band slopes and are available for linear
+terms. ``kind="continuous"`` is the same encoder with no interior knots.
 """
 
 from __future__ import annotations
@@ -123,8 +126,16 @@ def _probe(enc: LinearEncoder) -> pl.DataFrame:
 class TestLinearEncoder:
     def test_features_rows_and_clamp(self):
         enc = LinearEncoder("x", [7.0, 3.0], (1.0, 9.0))
-        assert enc.knots == [3.0, 7.0] and enc.hinges == [1.0, 3.0, 7.0]
-        assert [f.kind for f in enc.features()] == ["hinge", "hinge", "hinge", "null"]
+        assert enc.knots == [3.0, 7.0]
+        assert enc.band_starts() == [1.0, 3.0, 7.0]
+        assert enc.band_widths() == [2.0, 4.0, 2.0] and enc.n_bands == 3
+        assert [f.kind for f in enc.features()] == ["band", "band", "band", "null"]
+        assert [f.name for f in enc.features()] == [
+            "x in [1, 3)",
+            "x in [3, 7)",
+            "x in [7, 9)",
+            "x is null",
+        ]
         assert enc.rows() == [
             (None, 1.0),
             (1.0, 3.0),
@@ -135,7 +146,55 @@ class TestLinearEncoder:
         ]
         assert enc.band_edges() == [1.0, 3.0, 7.0, 9.0]
 
+    def test_band_penalty_is_equal_per_unit_of_rise(self, book):
+        """B2 review S1: a band's fitted number is a slope, so without a weight a
+        wide band that few rows reach buys its *rise* far more cheaply than the
+        body of the curve. ``penalty_weights`` equalises the cost per unit of
+        rise; the columns are untouched, so the coefficient stays the slope."""
+        from easy_glm.core.fit import penalty_weights
+
+        # a skewed factor: a dense body and a wide tail few rows reach, the
+        # shape that produced the 89x bonus-malus relativity the review measured
+        rng = np.random.default_rng(4)
+        x = np.clip(rng.gamma(2.0, 900.0, 20_000), 0.0, 30_000.0)
+        skew = pl.DataFrame(
+            {"X": x, "Exposure": rng.uniform(0.2, 1.0, x.size), "ClaimNb": 0.0}
+        )
+        spec = DesignSpec.from_data(
+            skew,
+            ["X"],
+            linear=["X"],
+            knots={"X": [2_000.0, 5_000.0]},
+            clamp={"X": (0.0, 30_000.0)},
+        )
+        enc = spec["X"]
+        design = spec.build(skew)
+        w = skew["Exposure"].to_numpy()
+        p1 = penalty_weights(spec, design, w, scale_predictors=True)
+        assert p1 is not None
+        bands = p1[: enc.n_bands]
+        assert p1[enc.n_bands] == 1.0  # the "is null" column is never weighted
+        # the wide 5,000-30,000 tail is penalised hardest, by a wide margin
+        assert bands.argmax() == enc.n_bands - 1
+        assert bands[-1] > 5 * bands[0]
+        # cost of one unit of rise = P1 * sd(column) / width: equal everywhere
+        widths = np.asarray(enc.band_widths())
+        ww = w / w.sum()
+        cols = design[:, : enc.n_bands]
+        sd = np.sqrt(ww @ (cols**2) - (ww @ cols) ** 2)
+        cost = bands * sd / widths
+        np.testing.assert_allclose(cost, cost[0], rtol=1e-12)
+        # without standardisation the same equality needs widths, not 1/sd
+        raw = penalty_weights(spec, design, w, scale_predictors=False)
+        np.testing.assert_allclose(
+            raw[: enc.n_bands] / widths, raw[0] / widths[0], rtol=1e-12
+        )
+        assert raw[: enc.n_bands].mean() == pytest.approx(1.0)
+
     def test_validation(self):
+        with pytest.raises(ValueError, match="too close together"):
+            LinearEncoder("x", [3.0, 3.0 + 1e-12], (1.0, 9.0))
+        assert LinearEncoder("x", [3.0, 3.0], (1.0, 9.0)).knots == [3.0]  # deduped
         with pytest.raises(ValueError, match="strictly inside"):
             LinearEncoder("x", [1.0], (1.0, 9.0))
         with pytest.raises(ValueError, match="lo < hi"):
@@ -145,17 +204,33 @@ class TestLinearEncoder:
         with pytest.raises(ValueError, match="clamp must be"):
             LinearEncoder("x", [], (1.0,))  # type: ignore[arg-type]
 
-    def test_transform_is_clipped_finite_and_null_aware(self):
+    def test_transform_is_the_amount_of_x_inside_each_band(self):
+        """Each column is how much of ``x`` falls in that band: 0 below it, the
+        band width once ``x`` is past it. Coefficient = slope within the band."""
         enc = LinearEncoder("x", [3.0, 7.0], (1.0, 9.0))
         s = pl.Series([-5.0, 1.0, 2.0, None, 3.0, 8.5, 9.0, 12.0])
         mat = enc.transform(s)
         assert np.isfinite(mat).all()
         np.testing.assert_array_equal(mat[0], mat[1])  # below lo == at lo
         np.testing.assert_array_equal(mat[6], mat[7])  # above hi == at hi
-        np.testing.assert_array_equal(mat[3], [0, 0, 0, 1])  # null: hinges 0, flag 1
-        np.testing.assert_allclose(mat[5], [7.5, 5.5, 1.5, 0])
+        np.testing.assert_array_equal(mat[3], [0, 0, 0, 1])  # null: bands 0, flag 1
+        np.testing.assert_allclose(mat[1], [0.0, 0.0, 0.0, 0])  # at lo: nothing yet
+        np.testing.assert_allclose(mat[2], [1.0, 0.0, 0.0, 0])  # 1 unit into band 1
+        np.testing.assert_allclose(mat[4], [2.0, 0.0, 0.0, 0])  # band 1 full at x = 3
+        np.testing.assert_allclose(mat[5], [2.0, 4.0, 1.5, 0])  # 8.5: 1.5 into band 3
+        # every column is capped at its band width, so the row sum is x - lo
+        np.testing.assert_allclose(mat[5, :3].sum(), 8.5 - 1.0)
         idx = enc.row_index(s)
         np.testing.assert_array_equal(idx, [0, 1, 1, 5, 2, 3, 4, 4])
+
+    def test_one_band_when_there_are_no_knots(self):
+        """``kind="continuous"``: a single slope on the raw clamped value."""
+        enc = LinearEncoder("x", [], (0.0, 10.0))
+        assert enc.n_bands == 1 and enc.band_edges() == [0.0, 10.0]
+        assert [f.name for f in enc.features()] == ["x in [0, 10)", "x is null"]
+        mat = enc.transform(pl.Series([-1.0, 0.0, 2.5, 10.0, 99.0, None]))
+        np.testing.assert_allclose(mat[:, 0], [0.0, 0.0, 2.5, 10.0, 10.0, 0.0])
+        assert enc.rows() == [(None, 0.0), (0.0, 10.0), (10.0, None), (None, None)]
 
     def test_from_data_rounds_clamp_outward_and_drops_outside_knots(self, book):
         enc = linear_encoder_from_data(
@@ -183,15 +258,14 @@ class TestLinearEncoder:
 # fit: slopes, continuity, monotone
 # --------------------------------------------------------------------------
 class TestFit:
-    def test_slopes_are_cumulative_hinge_coefficients(self, fitted, spec):
+    def test_band_slopes_are_the_coefficients_themselves(self, fitted, spec):
         fit, rm = fitted
         enc = spec["Mileage"]
-        coef = fit.coef[fit.spec.slices()["Mileage"]][: len(enc.hinges)]
+        coef = fit.coef[fit.spec.slices()["Mileage"]][: enc.n_bands]
         tab = rate_tables(fit)["Mileage"]
         sloped = tab.filter(pl.col("from").is_not_null() & pl.col("to").is_not_null())
-        np.testing.assert_allclose(
-            sloped["slope"].to_numpy(), np.cumsum(coef), atol=1e-15
-        )
+        # the basis penalises slopes, so beta_j *is* the slope of band j
+        np.testing.assert_allclose(sloped["slope"].to_numpy(), coef, atol=1e-15)
         # flat end rows and the null row have slope 0
         assert (
             tab.filter(pl.col("from").is_null() | pl.col("to").is_null())["slope"] == 0
@@ -259,23 +333,40 @@ class TestFit:
             engine_row_index(values, rm.variables["Mileage"]),
         )
 
-    def test_monotone_on_linear_raises(self, spec, book):
-        with pytest.raises(ValueError, match="piecewise-linear"):
-            monotone_bounds(spec, {"Mileage": "increasing"})
-        with pytest.raises(ValueError, match="piecewise-linear"):
-            fit_glm(
-                book.head(2000),
-                spec,
-                "ClaimNb",
-                alpha=0.01,
-                monotone={"Mileage": "increasing"},
-                **FIT,
-            )
+    def test_monotone_bounds_the_band_slopes_of_a_linear_term(self, spec, book):
+        """A monotone constraint on a linear term is a sign bound on every band
+        slope — not on the *change* of slope, so the curve is monotone without
+        being forced convex. The null column is never bounded."""
+        enc = spec["Mileage"]
+        sl = spec.slices()["Mileage"]
+        lower, upper = monotone_bounds(spec, {"Mileage": "increasing"})
+        assert np.all(lower[sl][: enc.n_bands] == 0.0)
+        assert np.all(np.isinf(upper[sl]))
+        assert lower[sl][enc.n_bands] == -np.inf  # the "is null" column
+        lower, upper = monotone_bounds(spec, {"Mileage": "decreasing"})
+        assert np.all(upper[sl][: enc.n_bands] == 0.0)
+        assert np.all(np.isinf(lower[sl]))
+        assert upper[sl][enc.n_bands] == np.inf
+        # and it reaches the fit: an increasing constraint gives no negative slope
+        fit = fit_glm(
+            book.head(4000),
+            spec,
+            "ClaimNb",
+            alpha=0.0005,
+            monotone={"Mileage": "increasing"},
+            **FIT,
+        )
+        tab = rate_tables(fit)["Mileage"]
+        assert (tab["slope"] >= -1e-14).all()
+        rel = tab.filter(pl.col("from").is_not_null() & pl.col("to").is_not_null())
+        assert (rel["relativity_to"].to_numpy() >= rel["relativity"].to_numpy()).all()
         # step variables in the same spec are still fine
         lower, upper = monotone_bounds(spec, {"DrivAge": "decreasing"})
         assert np.all(
             upper[spec.slices()["DrivAge"]][: len(spec["DrivAge"].knots)] == 0
         )
+        with pytest.raises(ValueError, match="categorical"):
+            monotone_bounds(spec, {"Region": "increasing"})
 
 
 # --------------------------------------------------------------------------
@@ -759,22 +850,263 @@ class TestWorkflow:
         p.models["freq"].penalty.cv = None
         return p
 
-    def test_validate_rejects_monotone_on_linear(self, project):
+    def test_validate_accepts_monotone_on_linear_and_checks_the_clamp(self, project):
         from easy_glm.workflow import VariableDesign
 
         assert project.validate() == []
         project.design.variables["Mileage"] = VariableDesign(
-            kind="linear", monotone="increasing"
+            kind="linear", knots=[8_000.0], monotone="increasing"
         )
-        assert any("piecewise-linear" in p for p in project.validate())
-        project.design.variables["Mileage"] = VariableDesign(kind="linear")
-        project.models["freq"].monotone = {"Mileage": "increasing"}
-        assert any("piecewise-linear" in p for p in project.validate("freq"))
+        assert project.validate() == []  # B2: allowed, as a bound on the slopes
+        project.models["freq"].monotone = {"Mileage": "decreasing"}
+        assert project.validate("freq") == []
         project.models["freq"].monotone = {}
+        project.design.variables["Mileage"] = VariableDesign(
+            kind="continuous", monotone="increasing"
+        )
+        assert project.validate() == []
+        project.design.variables["Mileage"] = VariableDesign(kind="wobbly")
+        assert any("kind must be" in p for p in project.validate())
         project.design.variables["Mileage"] = VariableDesign(
             kind="linear", clamp=[5.0, 1.0]
         )
         assert any("clamp" in p for p in project.validate())
+
+    def test_continuous_kind_is_a_one_band_linear_term(self, project, book):
+        from easy_glm.workflow import (
+            VariableDesign,
+            build_design,
+            prepare,
+            run_model,
+            to_script,
+        )
+
+        project.design.variables["Mileage"] = VariableDesign(kind="continuous")
+        df = prepare(project)
+        train = df.filter(pl.col("traintest") == 1)
+        spec = build_design(project, train, ["Mileage"], weight_col="Exposure")
+        enc = spec["Mileage"]
+        assert isinstance(enc, LinearEncoder)
+        assert enc.knots == [] and enc.n_bands == 1
+        # the quantile knots that a "linear" term would have used are ignored
+        assert enc.n_features == 2  # one slope + the null column
+        run = run_model(project, df, "freq")
+        cfg = run.rate_model.variables["Mileage"]
+        assert cfg.type == "linear"  # same table type, editor and Excel sheet
+        assert len(cfg.table) == 4  # < lo, the single band, >= hi, null
+        hold = df.filter(pl.col("traintest") == 0)
+        np.testing.assert_allclose(
+            run.rate_model.predict(hold, exposure_col=None),
+            run.fit.predict(hold),
+            rtol=1e-10,
+        )
+        # the exported script round-trips the one-band design both ways
+        src = to_script(project, "freq", run=run, output_prefix="cont_v1")
+        assert "LinearEncoder('Mileage', [], clamp=(" in src
+        no_run = to_script(project, "freq")
+        assert "linear=['Mileage']" in no_run and "knots={'Mileage': []}" in no_run
+
+    def test_continuous_exported_scripts_rebuild_the_model(self, project, tmp_path):
+        """Both scripts are *executed*, with a run (explicit encoders) and
+        without one (``from_data(linear=..., knots={var: []})``); each must
+        rebuild a four-row Mileage table that scores like the workbench."""
+        from easy_glm.workflow import VariableDesign, prepare, run_model, to_script
+
+        project.design.variables["Mileage"] = VariableDesign(
+            kind="continuous", monotone="increasing"
+        )
+        df = prepare(project)
+        run = run_model(project, df, "freq")
+        hold = df.filter(pl.col("traintest") == 0)
+        for tag, src in (
+            ("with_run", to_script(project, "freq", run=run, output_prefix="cont_run")),
+            ("no_run", to_script(project, "freq", output_prefix="cont_norun")),
+        ):
+            assert "monotone={" in src and "'Mileage': 'increasing'" in src, tag
+            script = tmp_path / f"rebuild_{tag}.py"
+            script.write_text(src)
+            proc = subprocess.run(
+                [sys.executable, str(script)],
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            assert proc.returncode == 0, (tag, proc.stderr[-2000:])
+            prefix = "cont_run" if tag == "with_run" else "cont_norun"
+            rebuilt = RateModel.from_json(tmp_path / f"{prefix}.easyglm")
+            table = rebuilt.variables["Mileage"].table
+            assert len(table) == 4, tag  # still one band
+            assert all(r.slope >= 0 for r in table), tag  # constraint reproduced
+            if tag == "with_run":  # the no-run script re-derives its own clamp
+                np.testing.assert_allclose(
+                    rebuilt.predict(hold, exposure_col=None),
+                    run.predict(hold),
+                    rtol=1e-10,
+                )
+
+    def test_continuous_table_survives_excel_and_from_rate_tables(self, project):
+        """A one-band table is the shape most likely to fall through the cracks
+        of the linear reader (two flat rows, one band, the null row)."""
+        from easy_glm.workflow import VariableDesign, prepare, run_model
+
+        project.design.variables["Mileage"] = VariableDesign(kind="continuous")
+        df = prepare(project)
+        run = run_model(project, df, "freq")
+        rm = run.rate_model
+        sheets = rate_model_tables(rm)
+        assert set(sheets["Mileage"].columns) >= {"slope", "relativity_to", "is_base"}
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # no "missing null row" style warnings
+            back = RateModel.from_rate_tables(sheets, base_rate=rm.base_rate)
+        assert back.variables["Mileage"].x_base == rm.variables["Mileage"].x_base
+        hold = df.filter(pl.col("traintest") == 0)
+        np.testing.assert_allclose(
+            back.predict(hold, exposure_col=None),
+            rm.predict(hold, exposure_col=None),
+            rtol=1e-12,
+        )
+
+    def test_base_point_of_a_one_band_term_follows_the_exposure(self, book):
+        """Q2 for a continuous term: with a single band the 1.00 point is the
+        lower clamp unless the business is plainly top heavy — the
+        exposure-weighted median past 60% of the range. The threshold is off
+        centre so a factor sitting near the middle cannot flip between the two
+        clamps on sampling noise (review N6)."""
+        from easy_glm.core.fit import CONTINUOUS_BASE_AT_HI, weighted_median
+
+        assert CONTINUOUS_BASE_AT_HI == 0.6
+
+        low = book.with_columns((pl.col("Mileage") * 0.2).alias("Mileage"))
+        high = book.with_columns((30_000.0 - pl.col("Mileage") * 0.2).alias("Mileage"))
+        seen = []
+        for frame in (low, high):
+            spec = DesignSpec.from_data(
+                frame,
+                ["Mileage"],
+                linear=["Mileage"],
+                knots={"Mileage": []},
+                clamp={"Mileage": (0.0, 30_000.0)},
+            )
+            fit = fit_glm(frame, spec, "ClaimNb", alpha=0.0005, **FIT)
+            rm = to_rate_model(fit)
+            cfg = rm.variables["Mileage"]
+            tab = rate_tables(fit)["Mileage"]
+            base = tab.filter(pl.col("is_base"))
+            assert base.height == 1
+            assert base["relativity"][0] == pytest.approx(1.0)
+            assert cfg.x_base == base["from"][0]
+            seen.append(cfg.x_base)
+        assert seen == [0.0, 30_000.0]
+        # the rule itself: the weighted median against 60% of the range
+        med = weighted_median(high["Mileage"].to_numpy(), high["Exposure"].to_numpy())
+        assert med > CONTINUOUS_BASE_AT_HI * 30_000.0
+        assert weighted_median(np.array([np.nan, np.nan]), np.ones(2)) != med
+
+        # a factor whose median sits just past the *middle* stays at the lower
+        # clamp: no flip on the noise that moves a median a few per cent
+        for centre in (0.50, 0.55, 0.59):
+            mid = book.with_columns(
+                (pl.col("Mileage") * 0.2 + (centre - 0.1) * 30_000.0).alias("Mileage")
+            )
+            spec = DesignSpec.from_data(
+                mid,
+                ["Mileage"],
+                linear=["Mileage"],
+                knots={"Mileage": []},
+                clamp={"Mileage": (0.0, 30_000.0)},
+            )
+            fit = fit_glm(mid, spec, "ClaimNb", alpha=0.0005, **FIT)
+            kept = mid.drop_nulls("Mileage")
+            med = weighted_median(
+                kept["Mileage"].to_numpy(), kept["Exposure"].to_numpy()
+            )
+            assert 0.45 < med / 30_000.0 < 0.60, med
+            assert to_rate_model(fit).variables["Mileage"].x_base == 0.0
+
+    def test_a_flattened_term_keeps_its_base_point_and_edits_as_nodes(self, book, spec):
+        """A monotone constraint in the wrong direction leaves every slope 0 and
+        every relativity 1.0000, so there is no unique 1.0 row to recover the
+        base from — the ``is_base`` column has to carry it. That table is a
+        reachable workbench state, so pin it."""
+        fit = fit_glm(
+            book.head(9000),
+            spec,
+            "ClaimNb",
+            alpha=0.02,
+            monotone={"Mileage": "decreasing"},
+            **FIT,
+        )
+        tab = rate_tables(fit)["Mileage"]
+        assert (tab["slope"] == 0.0).all()
+        np.testing.assert_allclose(tab["relativity"].to_numpy()[:-1], 1.0)
+        rm = to_rate_model(fit)
+        x_base = rm.variables["Mileage"].x_base
+        assert x_base is not None
+        back = RateModel.from_rate_tables(rate_model_tables(rm), base_rate=rm.base_rate)
+        assert back.variables["Mileage"].x_base == x_base
+        # and an edit on one of the flat bands still moves exactly two slopes
+        edited = rm.clone()
+        rows = edited.variables["Mileage"].table
+        before = [(r.relativity, r.slope) for r in rows]
+        target = rows[3]
+        edited.update_relativity("Mileage", target.from_, target.to_, 1.2)
+        after = edited.variables["Mileage"].table
+        moved = [i for i, r in enumerate(after) if r.slope != before[i][1]]
+        assert moved == [2, 3]
+        eps = np.nextafter(float(target.from_), -np.inf)
+        probe = pl.DataFrame(
+            {
+                "Mileage": [eps, float(target.from_)],
+                "DrivAge": [40.0, 40.0],
+                "Region": ["R1", "R1"],
+                "Exposure": [1.0, 1.0],
+            }
+        )
+        p = edited.predict(probe, exposure_col=None)
+        assert p[0] == pytest.approx(p[1], rel=1e-12)
+
+    def test_monotone_on_a_linear_interaction_parent_binds_only_the_main(self, book):
+        """The bound is on the factor's own band slopes; an interaction cell on
+        top of it is not constrained (true for step terms too). Recorded so the
+        behaviour is a decision, not an accident."""
+        spec = DesignSpec.from_data(
+            book.head(9000),
+            ["Mileage", "Region"],
+            linear=["Mileage"],
+            knots={"Mileage": [8_000.0, 20_000.0]},
+            min_level_share=0.02,
+            interactions=[("Mileage", "Region")],
+            min_cell_exposure=0.0,
+        )
+        lower, upper = monotone_bounds(spec, {"Mileage": "increasing"})
+        sl = spec.slices()["Mileage"]
+        enc = spec["Mileage"]
+        assert np.all(lower[sl][: enc.n_bands] == 0.0)
+        cells = spec.slices()["Mileage×Region"]
+        assert np.all(np.isinf(lower[cells])) and np.all(np.isinf(upper[cells]))
+        fit = fit_glm(
+            book.head(9000),
+            spec,
+            "ClaimNb",
+            alpha=0.0005,
+            monotone={"Mileage": "increasing"},
+            **FIT,
+        )
+        assert (rate_tables(fit)["Mileage"]["slope"] >= -1e-14).all()
+
+    def test_monotone_on_a_continuous_term_runs_end_to_end(self, project):
+        from easy_glm.workflow import VariableDesign, prepare, run_model
+
+        project.design.variables["Mileage"] = VariableDesign(
+            kind="continuous", monotone="increasing"
+        )
+        assert project.validate() == []
+        df = prepare(project)
+        run = run_model(project, df, "freq")
+        assert run.fit.monotone["Mileage"] == "increasing"
+        slopes = run.tables["Mileage"]["slope"].to_numpy()
+        assert (slopes >= -1e-14).all()
 
     def test_build_design_clamp_and_integer_knots(self, project, book):
         from easy_glm.workflow import VariableDesign, build_design, prepare

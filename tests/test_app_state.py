@@ -535,6 +535,37 @@ out["after"] = len(list(S.runs_dir().glob("*.pkl")))
         monkeypatch.setattr(S, "PERSIST_FORMAT", 99)
         assert S.run_key(p, "freq") != k0
 
+    def test_persist_format_was_bumped_for_the_b2_basis_change(self):
+        """B2 changed the *meaning* of a LinearEncoder's coefficients (hinge
+        change-of-slope → per-band slope) without changing the pickle's shape,
+        so an older run unpickles cleanly and is then read wrongly. The bump is
+        the only thing that turns it into a cache miss; pin it."""
+        assert S.PERSIST_FORMAT >= 3
+
+    def test_a_run_persisted_under_the_previous_format_is_a_cache_miss(self, workspace):
+        """... and the file is left alone (a foreign key is never a reason to
+        throw a fit away)."""
+        body = """
+run = S.fit_model("freq")
+for f in S.runs_dir().glob("*.pkl"):
+    f.unlink()
+S.PERSIST_FORMAT = 2            # as an earlier 0.4 development build wrote it
+S.persist_run("freq", run)
+written = sorted(f.name for f in S.runs_dir().glob("*.pkl"))
+S.PERSIST_FORMAT = 3            # today's build reads the same folder
+st.session_state.runs = {}
+out["loaded_under_3"] = S.load_persisted_run("freq") is not None
+out["kept"] = sorted(f.name for f in S.runs_dir().glob("*.pkl")) == written
+S.PERSIST_FORMAT = 2            # the pickle itself is fine, only its key differs
+out["loaded_under_2"] = S.load_persisted_run("freq") is not None
+S.PERSIST_FORMAT = 3
+"""
+        at = _run(_script(workspace["project"], body))
+        o = at.session_state["out"]
+        assert o["loaded_under_3"] is False, "a pre-B2 fit was reused"
+        assert o["kept"], "a run with a foreign key must not be deleted"
+        assert o["loaded_under_2"] is True, "the test itself must be meaningful"
+
 
 def test_easyglm_summary_exposes_offset(workspace):
     from easy_glm import EasyGLM

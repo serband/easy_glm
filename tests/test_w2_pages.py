@@ -162,19 +162,42 @@ class TestDesignPage:
         its = at.session_state["_project"].models["freq"].interactions
         assert any({i.a, i.b} == {"BonusMalus", "Density"} for i in its)
 
-    def test_kind_selector_switches_to_linear_and_drops_monotone(self, workspace):
+    def test_kind_selector_switches_to_linear_and_keeps_monotone(self, workspace):
+        """B2: a monotone constraint is a bound on the band slopes, so it
+        survives the switch to a piecewise-linear design instead of being
+        dropped with a warning."""
         prelude = 'S.project().design.variables["DrivAge"] = __import__("easy_glm.workflow", fromlist=["VariableDesign"]).VariableDesign(monotone="decreasing")'
         at = _run(
             _script("pages_design", workspace["project"], fit=False, prelude=prelude)
         )
         at.selectbox(key=wk(at, "design_detail_var")).set_value("DrivAge").run()
         at.selectbox(key=wk(at, "kind_DrivAge")).set_value("linear").run()
-        assert not at.exception
+        assert not at.exception and not _errors(at)
         vd = at.session_state["_project"].design.variables["DrivAge"]
-        assert vd.kind == "linear" and vd.monotone is None
-        assert any("Monotone constraint" in w.value for w in at.warning)
+        assert vd.kind == "linear" and vd.monotone == "decreasing"
+        assert not any("Monotone constraint" in w.value for w in at.warning)
         # the linear editor is now shown with the rounding rule
         assert any("rounded outward" in m.value for m in at.markdown)
+
+    def test_kind_selector_offers_continuous_with_one_line_help(self, workspace):
+        at = _run(_script("pages_design", workspace["project"], fit=False))
+        at.selectbox(key=wk(at, "design_detail_var")).set_value("Density").run()
+        kind = at.selectbox(key=wk(at, "kind_Density"))
+        assert kind.options == ["auto", "step", "linear", "continuous", "categorical"]
+        for word in ("step —", "linear —", "continuous —", "categorical —"):
+            assert word in kind.help
+        kind.set_value("continuous").run()
+        assert not at.exception and not _errors(at)
+        vd = at.session_state["_project"].design.variables["Density"]
+        assert vd.kind == "continuous"
+        # the continuous editor has no knot controls and says what it does
+        assert any("one straight line" in m.value for m in at.markdown)
+        assert not [r for r in at.radio if r.key == wk(at, "lin_strategy_Density")]
+        [b for b in at.button if b.label == "Apply continuous design"][0].click().run()
+        assert not at.exception and not _errors(at)
+        assert at.session_state["_project"].design.variables["Density"].kind == (
+            "continuous"
+        )
 
     def test_linear_editor_apply_custom_knots_and_clamp(self, workspace):
         at = _run(_script("pages_design", workspace["project"], fit=False))
@@ -210,16 +233,36 @@ class TestDesignPage:
         [b for b in at.button if b.label == "Apply linear design"][0].click().run()
         assert any("lo must be below" in e for e in _errors(at))
 
-    def test_monotone_on_linear_is_a_message_not_a_crash(self, workspace):
+    def test_monotone_on_linear_is_accepted_by_both_pages(self, workspace):
+        """B2 re-enables the constraint for linear terms; neither page complains
+        any more (a categorical still does)."""
         prelude = 'S.project().design.variables["Density"] = __import__("easy_glm.workflow", fromlist=["VariableDesign"]).VariableDesign(kind="linear", monotone="increasing")'
         at = _run(
             _script("pages_design", workspace["project"], fit=False, prelude=prelude)
         )
-        assert any("monotone" in e.lower() for e in _errors(at))
+        assert not any("monotone" in e.lower() for e in _errors(at))
         at_model = _run(
             _script("pages_model", workspace["project"], fit=False, prelude=prelude)
         )
-        assert any("monotone" in e.lower() for e in _errors(at_model))
+        assert not any("monotone" in e.lower() for e in _errors(at_model))
+        bad = 'S.project().design.variables["Region"] = __import__("easy_glm.workflow", fromlist=["VariableDesign"]).VariableDesign(kind="categorical", monotone="increasing")'
+        at_bad = _run(
+            _script("pages_design", workspace["project"], fit=False, prelude=bad)
+        )
+        assert any("monotone" in e.lower() for e in _errors(at_bad))
+
+    def test_model_page_lists_a_monotone_constraint_on_a_linear_term(self, workspace):
+        """The caption is the only place the Model page shows a design-level
+        constraint; the linear path through it is new in B2."""
+        prelude = 'S.project().design.variables["Density"] = __import__("easy_glm.workflow", fromlist=["VariableDesign"]).VariableDesign(kind="continuous", monotone="increasing")'
+        at = _run(
+            _script("pages_model", workspace["project"], fit=False, prelude=prelude)
+        )
+        assert any(
+            "Monotone constraints from the Design page" in c.value
+            and "Density increasing" in c.value
+            for c in at.caption
+        ), [c.value for c in at.caption]
 
 
 # --------------------------------------------------------------------------
@@ -513,15 +556,16 @@ def test_pages_survive_a_removed_predictor(page, workspace):
 # review follow-ups
 # --------------------------------------------------------------------------
 def test_flash_notice_survives_the_rerun(workspace):
-    """The kind switch reruns immediately; the warning must reach the next run."""
-    prelude = 'S.project().design.variables["DrivAge"] = __import__("easy_glm.workflow", fromlist=["VariableDesign"]).VariableDesign(monotone="decreasing")'
-    at = _run(_script("pages_design", workspace["project"], fit=False, prelude=prelude))
-    at.selectbox(key=wk(at, "design_detail_var")).set_value("DrivAge").run()
-    at.selectbox(key=wk(at, "kind_DrivAge")).set_value("linear").run()
-    assert any("Monotone constraint" in w.value for w in at.warning)
+    """Adding an interaction reruns immediately; the notice must reach the next
+    run (and only that one)."""
+    at = _run(_script("pages_design", workspace["project"], fit=False))
+    at.selectbox(key=wk(at, "inter_a_freq")).set_value("BonusMalus").run()
+    at.selectbox(key=wk(at, "inter_b_freq")).set_value("Density").run()
+    [b for b in at.button if b.label == "Add interaction"][0].click().run()
+    assert any("Added BonusMalus × Density" in s.value for s in at.success)
     # one-shot: gone on the following run
     at.run()
-    assert not any("Monotone constraint" in w.value for w in at.warning)
+    assert not any("Added BonusMalus × Density" in s.value for s in at.success)
 
 
 def test_e2e_folder_skips_cleanly_without_playwright_or_flag():

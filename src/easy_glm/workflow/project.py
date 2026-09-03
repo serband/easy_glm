@@ -169,9 +169,15 @@ class DataConfig:
 class VariableDesign:
     """Per-variable overrides of the design defaults. ``None`` = inherit."""
 
-    kind: str | None = None  # "step" | "linear" | "categorical" | None (infer)
+    #: ``"step"`` (bands with their own relativity), ``"linear"`` (a continuous
+    #: curve whose slope may change at each knot), ``"continuous"`` (one slope
+    #: on the raw clamped value — a linear term with no interior knots),
+    #: ``"categorical"`` (each value a level) or ``None`` = infer (numeric →
+    #: step, everything else → categorical).
+    kind: str | None = None
     knots: str | list[float] = "quantile"  # "quantile" | "integer" | explicit list
-    #: linear only: (lo, hi) the value is clipped to; None = training min/max
+    #: linear / continuous only: (lo, hi) the value is clipped to;
+    #: None = training min/max rounded outward
     clamp: list[float] | None = None
     n_bins: int | None = None
     null_indicator: bool | None = None
@@ -483,20 +489,16 @@ class Project:
         if self.data.split.mode == "random" and not 0 < self.data.split.fraction < 1:
             problems.append("split.fraction must be in (0, 1)")
         for var, vd in self.design.variables.items():
-            if vd.kind not in (None, "step", "linear", "categorical"):
+            if vd.kind not in (None, "step", "linear", "continuous", "categorical"):
                 problems.append(
-                    f"design[{var!r}].kind must be 'step', 'linear' or 'categorical'"
+                    f"design[{var!r}].kind must be 'step', 'linear', 'continuous' "
+                    "or 'categorical'"
                 )
             if vd.monotone not in (None, "increasing", "decreasing"):
                 problems.append(f"design[{var!r}].monotone invalid")
-            if vd.monotone and vd.kind == "linear":
-                problems.append(
-                    f"design[{var!r}]: monotone constraints are not available for "
-                    "piecewise-linear terms; use a step design or drop the constraint"
-                )
             if vd.monotone and vd.kind == "categorical":
                 problems.append(
-                    f"design[{var!r}]: monotone constraints apply to numeric step "
+                    f"design[{var!r}]: monotone constraints apply to numeric "
                     "designs only"
                 )
             if vd.clamp is not None and (
@@ -546,13 +548,7 @@ class Project:
                 if vd_kind is not None and vd_kind.kind == "categorical":
                     problems.append(
                         f"{name}: monotone[{v!r}] — {v!r} is categorical; monotone "
-                        "constraints apply to numeric step designs only"
-                    )
-                vd = self.design.variables.get(v)
-                if vd is not None and vd.kind == "linear":
-                    problems.append(
-                        f"{name}: monotone[{v!r}] — {v!r} is a piecewise-linear term; "
-                        "monotone constraints are not available for linear terms"
+                        "constraints apply to numeric designs only"
                     )
             seen_pairs: set[frozenset[str]] = set()
             for it in cfg.interactions:

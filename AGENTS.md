@@ -87,7 +87,8 @@ Key invariant of the 0.3 core: `to_rate_model(fit).predict(data, exposure_col=No
 src/easy_glm/
 ├── __init__.py             # Public API exports
 ├── core/
-│   ├── design.py           # DesignSpec, StepEncoder (1{x>=k} + null col), LinearEncoder (hinges + clamp),
+│   ├── design.py           # DesignSpec, StepEncoder (1{x>=k} + null col), LinearEncoder (one slope
+│   │                       #   column per band + clamp; no knots = "continuous"),
 │   │                       #   InteractionEncoder (A×B cells), CategoricalEncoder (one-hot + Other),
 │   │                       #   Feature metadata, quantile_knots, frequent_levels; JSON round-trip
 │   ├── fit.py              # fit_glm -> GLMFit (glum wrapper: families/links,
@@ -207,12 +208,41 @@ User edits relativity in table
   see `DesignSpec.slices()`.
 - Step columns are `1{x >= knot}`; nulls are all-zero step columns (lowest bin)
   plus an `is null` column. Bin `j` relativity = `exp(cumsum(step coefs)[:j])`.
+- **Linear (piecewise-linear) columns are per-band amounts**
+  `clip(x_clipped - k_j, 0, k_{j+1} - k_j)`, one per band of
+  `[lo, k1, ..., km, hi]`, so coefficient `beta_j` **is** band `j`'s slope and the
+  lasso zeroes *slopes* (flat sections), not bends — the actuary's answer to Q3.
+  Never reintroduce hinge (`max(x-k, 0)`) columns: the table's `slope` column is
+  read straight off the coefficients and `log_rel_at_from` accumulates from `lo`,
+  so continuity is automatic. Nulls are all-zero band columns plus `is null`.
+  A `LinearEncoder` with no interior knots is the `continuous` kind (one band).
+- **Band columns and interaction cells carry a `P1`** (`core/fit.py::penalty_weights`).
+  glum penalises the *standardised* coefficient, so a column with little spread buys a
+  large effect cheaply. For a band the effect is its **rise** (`beta_j x width_j`), so
+  `P1_j = 0.5 / sd(column_j / width_j)` makes one unit of rise cost the same in every
+  band; without standardisation the same equality needs `P1_j = width_j x n_bands /
+  (hi - lo)`. Never rescale the columns themselves to achieve this — `beta_j` must stay
+  band `j`'s slope so the table can read it straight off the coefficients. Note the
+  standardised form **raises** a term's total penalty (`sd(u) <= 0.5`, so every
+  `P1_j >= 1`): 1.6-4.1x on the check's multi-band fits and 3.6-6.3x on a one-band term.
+  Only the unstandardised form is a pure redistribution. Any statement that this rule
+  "only redistributes" is wrong.
 - Categorical reference level = `levels[0]` (most frequent, no column); `Other`
   column catches lumped, unseen and null values.
 - `fit_glm` requires `alpha=` or `cv=`; never let glum's `alpha_search` pick
   (its `coef_` is the least-regularised end of the path).
-- Monotone constraints are coefficient sign bounds on step columns (work with L1;
-  glum's own `monotonic_constraints` does not).
+- Monotone constraints are coefficient sign bounds on the step columns of a step
+  term or the band-slope columns of a linear/continuous term (work with L1; glum's
+  own `monotonic_constraints` does not). Bounding slopes makes the curve monotone
+  without forcing convexity, which is why linear terms may be constrained.
+  Categoricals and interactions cannot; a constraint binds the factor's own curve,
+  never the interaction cells on top of it.
+- The 1.00 point of a linear term must be an **edge of a table row** — that is how the
+  rate table, the Excel `is_base` column and `from_rate_tables` carry `x_base`. A
+  one-band (`continuous`) term therefore bases at the lower clamp unless the
+  exposure-weighted median is past `CONTINUOUS_BASE_AT_HI` (0.6) of the range
+  (`core/fit.py::_continuous_base_row`), not at a point inside the band. The threshold is
+  off centre so a mid-range factor cannot flip between clamps on sampling noise.
 - Numeric `VariableConfig` tables may end with a `FromToRow(None, None, rel)` null
   row; `_precompute_variables` stores it as `null_relativity` and `score_numeric`
   applies it to NaN. Without that row NaN still raises (legacy behaviour).
@@ -227,9 +257,19 @@ User edits relativity in table
   leakage, knots/levels) and `sample_frame()` / `raw_sample()` (exploration only:
   Explore page, Design/Variables previews). `data_hash`/`model_hash` exclude the
   sample settings; `sample_hash` keys the sample.
+- **Bump `app.state.PERSIST_FORMAT` whenever the shape *or the meaning* of anything
+  pickled changes** (`ModelRun`, `GLMFit`, `RateModel`, `DesignSpec`, what their
+  coefficients mean). A change of meaning that leaves the shape alone is the dangerous
+  one: the pickle unpickles cleanly, `_design_matches` compares the new feature names
+  against themselves and passes, and the cached fit is silently re-read under the new
+  rules. Worked example: piece **B2** turned a `LinearEncoder`'s coefficients from
+  change-of-slope (hinge) numbers into per-band slopes without touching a single pickled
+  field — `PERSIST_FORMAT` 2 → 3 is what makes those runs a cache miss. The installed
+  version number is not a substitute: it does not move in a development checkout.
 - A browser reload starts a new Streamlit session: the project (spec) survives via the
   autosaved JSON; fitted runs are restored from `<project>.easyglm-runs/` when
-  `run_key` (spec hash + data file identity + library versions) matches, else refitted.
+  `run_key` (spec hash + data file identity + library versions + `PERSIST_FORMAT`)
+  matches, else refitted.
   `load_persisted_run` treats any failure as a cache miss, and deletes the file only
   when the pickle is corrupt or its design no longer matches *readable* data — data
   that cannot be read right now is a miss that keeps the fit;
@@ -305,7 +345,7 @@ User edits relativity in table
 | `test_engine.py` | RateModel: from_rate_tables (0.3 table format, null/Other rows, validation), from_glm_model, predict (numeric/categorical/multi), update_relativity, snapshots (+ metrics), switch_to, clone, JSON roundtrip, exposure, column mapping, metadata |
 | `test_golden.py` | Golden French-motor numbers on the checked-in 50k subsample (runs in CI) |
 | `test_invariants.py` | RateModel == GLM, JSON and Excel round-trips over step / categorical (string and integer) / mixed / offset / interaction / piecewise-linear designs with nulls and unseen levels |
-| `test_linear.py` | Piece B: `LinearEncoder` (clamp, hinges, nulls), slopes = cumulative hinge coefficients, continuity, exactness at/beyond the clamp, band-edit rule, snapshots/JSON/Excel/`from_rate_tables`, interaction with a linear parent, project validation, script round trip, workbench pages |
+| `test_linear.py` | Pieces B / B2: `LinearEncoder` (clamp, per-band slope columns, nulls, the one-band `continuous` kind), band slope = the coefficient itself, continuity, monotone as a sign bound on slopes, exactness at/beyond the clamp, band-edit rule, snapshots/JSON/Excel/`from_rate_tables`, interaction with a linear parent, project validation, script round trip, workbench pages |
 | `test_c1_foundations.py` | 0.3 bug regressions, format versions and migrations, editor defaults |
 | `test_scoring.py` | Isolated scoring: score_numeric (searchsorted), score_categorical (dict lookup), edge cases, fallbacks |
 | `test_workflow.py` | Project JSON/validation, prep steps, univariate, leakage report on planted leaks, build_design overrides, run_model (metrics, exactness, adjustments, CV), diagnostics, exported script executed in a subprocess and compared |

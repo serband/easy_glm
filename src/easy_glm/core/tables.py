@@ -47,17 +47,19 @@ def _bin_rows(fit: GLMFit, variable: str) -> tuple[list[Any], np.ndarray]:
     enc = fit.spec[variable]
     coef = fit.coef[fit.spec.slices()[variable]]
     if isinstance(enc, LinearEncoder):
-        hinges = np.asarray(enc.hinges)
-        beta = coef[: len(hinges)]
-        null_contrib = float(coef[len(hinges)]) if enc.null_indicator else 0.0
+        starts = np.asarray(enc.band_starts())
+        widths = np.asarray(enc.band_widths())
+        slopes = coef[: enc.n_bands]  # each coefficient *is* its band's slope
+        null_contrib = float(coef[enc.n_bands]) if enc.null_indicator else 0.0
         edges = enc.band_edges()
-        slopes = np.cumsum(beta)  # slope in band j = sum of hinge coefs up to j
 
         def value_at(x: float) -> float:
-            return float(np.dot(beta, np.maximum(x - hinges, 0.0)))
+            """Log relativity at ``x`` relative to ``lo``: the slope of each band
+            times the amount of ``x`` inside it (so the curve is continuous)."""
+            return float(np.dot(slopes, np.clip(x - starts, 0.0, widths)))
 
         rows: list[Any] = [BandRow(None, edges[0], 1.0, 0.0)]
-        contrib = [0.0]  # below lo: all hinges are zero
+        contrib = [0.0]  # below lo: every band is empty
         for j in range(len(edges) - 1):
             rows.append(BandRow(edges[j], edges[j + 1], 1.0, float(slopes[j])))
             contrib.append(value_at(edges[j]))

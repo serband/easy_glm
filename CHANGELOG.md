@@ -53,6 +53,74 @@
   for the two-tab cases) and the plain-language replay in
   `docs/checks/w4-runs-folder.md` (`scripts/checks/w4_runs_folder.py --write`).
 
+### Piecewise-linear terms: flat unless the data insists (B2)
+- **The basis now penalises slopes, not bends** (the actuary's answer to Q3).
+  A `LinearEncoder` builds one column per band — `clip(x - k_j, 0, band width)`,
+  the amount of the value inside that band — instead of the AGLM hinges
+  `max(x - k, 0)`. Each fitted number is therefore the **slope inside one band**
+  and the lasso drives it to exactly zero, so a stretch the data does not argue
+  about comes back perfectly flat rather than gently sloped. The curve is still
+  continuous by construction and still flat outside the clamp range; the rate
+  table is unchanged — `(from, to, relativity at from, slope)` — except that the
+  `slope` column is now the coefficient itself rather than a cumulative sum, so
+  Excel, the editor, the exported script, `.easyglm` files and
+  `RateModel.from_rate_tables` all keep working unchanged. On the French motor
+  set the `BonusMalus` curve improves from Gini 0.3072 / 4.79 % deviance
+  explained (the step design) to 0.3103 / 4.94 % and two of its nine bands come
+  back exactly flat (`docs/checks/b-linear.md`). The hinge basis earlier in this
+  release reached 0.3091 / 4.88 %.
+- **Every band pays the same penalty for the same rise.** glum penalises the
+  standardised coefficient, so a wide band that few policies reach used to buy a
+  large rise in relativity for a small penalty: on the French motor set the top
+  bonus-malus band's rise cost about 4 % of what the first band's cost, which
+  left the thinnest, least trustworthy part of a curve the *least* penalised part
+  of it. Band columns now carry a `P1` weight (`core/fit.py::penalty_weights`,
+  the rule interaction cells already had) that equalises the cost per unit of
+  rise. The columns themselves are untouched, so a band's coefficient is still
+  exactly its slope. On the French motor set this brings the bonus-malus
+  relativity at 230 down from 89× to 30× with the holdout essentially unmoved
+  (Gini 0.3106 → 0.3103).
+  **This makes a given `alpha` stronger on these terms, not merely different**:
+  no band's weight goes below 1, so a term's total penalty rises — 1.6× (Density,
+  20 bands) to 4.1× (BonusMalus, 9 bands) on the check's own fits, and 3.6× to
+  6.3× for a single-band `continuous` term, which has no bands to level against
+  each other. A weak trend is therefore now shrunk away where it used to survive
+  (the check document's continuous `Density` column is flat for exactly this
+  reason); re-check the penalty, or let cross-validation choose it, after
+  switching a factor to linear or continuous.
+- **The 1.00 point of a `continuous` term is stated rather than incidental**: a
+  single band has only two points a rate table can carry 1.00 at, so it sits at
+  the lower clamp unless the exposure-weighted median is past 60 % of the way up
+  the range. The threshold is off centre on purpose — at a halfway split a factor
+  whose median sits near the middle would flip between the two clamps on
+  sampling noise, moving every relativity and the base rate between refits for no
+  reason. With one slope the choice only rescales the base rate; the ratios
+  between relativities do not move.
+- **Fits cached in a `*.easyglm-runs` folder by an earlier 0.4 development build
+  are ignored and refitted** (`PERSIST_FORMAT` 2 → 3). The basis change altered
+  what a `LinearEncoder`'s coefficients *mean* without changing anything about
+  the pickle's shape, so such a run would have loaded cleanly and been re-read as
+  if its numbers were band slopes. `.easyglm` scorers and project files are
+  unaffected and need no migration.
+- **Monotone constraints work on piecewise-linear terms again.** A direction is a
+  sign bound on every band slope (`increasing` → slope ≥ 0), which keeps the
+  curve rising or falling throughout without forcing it convex — the reason the
+  constraint was refused in the first place no longer applies. The Design page,
+  the Model page and `Project.validate` accept it, and switching a variable to
+  *linear* no longer silently drops the constraint.
+- **New variable kind `continuous`**: one straight line on the raw (clamped)
+  value, no knots. It is the linear encoder with a single band, so it shares the
+  rate-table type, the editor, the Excel sheet and the exported script. The
+  Design page now offers *auto · step · linear · continuous · categorical* with
+  a line of help each. Numeric variables still default to **step** (Q9).
+- Planted-truth tests (`tests/test_recovery.py`) now plant a **flat** / sloped /
+  **flat** mileage curve and assert that the rate table's slope is exactly zero
+  for all nine bands inside the flat stretches and non-zero for exactly the six
+  bands of the sloped one, which is recovered within 10 %, plus a monotone case
+  where a *decreasing* constraint on a rising curve gives a flat term and never a
+  positive slope. The old "bends are sparse" assertion is gone with this basis:
+  there are no change-of-slope coefficients left to count.
+
 ### Workbench hardening (W3) — the break-it review's blocking findings
 - **No more silent loss of work.** *New empty project* asks for a second click and
   starts with no file (the old project file is never rewritten); the same project
@@ -113,7 +181,7 @@
   a model whose predictors were removed with a message instead of a traceback;
   the data steps failing (a bad recode / derived column / filter) are reported
   on the page.
-- **Notices survive reruns**: messages shown just before a rerun (a dropped monotone constraint, an added interaction, a refused adjustment, a filter added, a project opened) are queued with `ui.flash()` and drawn at the top of the next run, so they are visible on every supported Streamlit version.
+- **Notices survive reruns**: messages shown just before a rerun (an added interaction, a refused adjustment, a filter added, a project opened) are queued with `ui.flash()` and drawn at the top of the next run, so they are visible on every supported Streamlit version.
 - **Rate-table editors** show and accept relativities to 4 decimal places; cells no policy ever fell in are blank and cannot be edited; the pair search reports a dispersion-scaled Pearson z-score and draws the shown pair on the same 8-band grid it searched.
 - **Persona e2e runs** (`tests/e2e`, Playwright, opt-in with `EASY_GLM_E2E=1`):
   an actuary's rate review and a data scientist's model comparison drive the
@@ -151,8 +219,9 @@
 - Numeric factors can now be **piecewise-linear** instead of step functions
   (`DesignSpec.from_data(..., linear=["Mileage"])`, `LinearEncoder`,
   `VariableDesign(kind="linear")`): the relativity changes smoothly with the
-  value along straight-line segments (on the log scale) between knots, and the
-  lasso decides where the slope changes. The AGLM "L-dummies".
+  value along straight-line segments (on the log scale) between knots. (The
+  basis first shipped as the AGLM "L-dummies" and was replaced in the same
+  release by the per-band slope columns described under *B2* above.)
 - The curve is **clamped to the training range** and flat beyond it (±infinity
   scores as the clamp value, like the GLM); missing values get their own row.
   The default clamp is the training minimum / maximum **rounded outward** to a

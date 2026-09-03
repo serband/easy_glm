@@ -16,7 +16,7 @@ from easy_glm import (
     to_rate_model,
 )
 from easy_glm.core.excel import interaction_matrices, rate_model_tables
-from easy_glm.core.fit import interaction_penalty_weights, monotone_bounds
+from easy_glm.core.fit import monotone_bounds, penalty_weights
 from easy_glm.core.tables import base_rate
 from easy_glm.engine import RateModel
 from easy_glm.engine._scoring import row_index as engine_row_index
@@ -328,7 +328,7 @@ class TestInteractionEncoder:
 class TestPenalty:
     def test_p1_aligns_with_features(self, book, spec):
         design = spec.build(book)
-        p1 = interaction_penalty_weights(
+        p1 = penalty_weights(
             spec, design, book["Exposure"].to_numpy(), scale_predictors=True
         )
         assert p1 is not None and p1.shape == (spec.n_features,)
@@ -340,12 +340,10 @@ class TestPenalty:
         sl = spec.slices()["DrivAge×Region"]
         share = design[:, sl].mean(axis=0)
         assert p1[sl][np.argmin(share)] > p1[sl][np.argmax(share)]
-        # no interactions -> glum default
+        # no interactions and no linear terms -> glum default
         plain = DesignSpec({"DrivAge": spec["DrivAge"]})
         assert (
-            interaction_penalty_weights(
-                plain, plain.build(book), None, scale_predictors=True
-            )
+            penalty_weights(plain, plain.build(book), None, scale_predictors=True)
             is None
         )
 

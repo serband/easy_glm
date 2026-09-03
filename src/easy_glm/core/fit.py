@@ -58,11 +58,25 @@ def resolve_family(family: Any) -> tuple[Any, str, str]:
 def monotone_bounds(
     spec: DesignSpec, monotone: Mapping[str, Direction]
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Coefficient bounds that make step effects monotone in the variable.
+    """Coefficient bounds that make a numeric effect monotone in the variable.
 
-    Each step column is the *increment* at a knot, so a monotone curve just
-    needs every increment to share a sign: ``lower = 0`` for increasing,
-    ``upper = 0`` for decreasing. Works with the L1 penalty.
+    * **Step** terms: each column is the *increment* at a knot, so a monotone
+      curve just needs every increment to share a sign.
+    * **Piecewise-linear** terms: each column is the *slope inside one band*
+      (see :class:`~easy_glm.core.design.LinearEncoder`), so a monotone curve
+      needs every slope to share a sign. Nothing is implied about the *change*
+      of slope, so the curve is monotone without being forced convex — that is
+      why the constraint is available for linear terms.
+
+    Either way: ``lower = 0`` for increasing, ``upper = 0`` for decreasing.
+    The null-indicator column is never bounded (nulls are not on the curve).
+    Works with the L1 penalty: a lasso'd slope is 0, which both bounds allow.
+
+    The bound binds the **factor's own curve**, not any interaction cell sitting
+    on top of it: ``A × B`` can still turn the combined effect round for some
+    level of ``B``. That has always been true for step terms; it matters more
+    now that the constraint is offered on the smooth curves an actuary is most
+    likely to constrain.
     """
     p = spec.n_features
     lower = np.full(p, -np.inf)
@@ -72,17 +86,10 @@ def monotone_bounds(
     for var, direction in monotone.items():
         if var not in spec:
             raise KeyError(f"monotone: {var!r} is not a predictor in the spec")
-        if isinstance(spec[var], LinearEncoder):
+        if not isinstance(spec[var], StepEncoder | LinearEncoder):
             raise ValueError(
-                f"monotone: {var!r} is a piecewise-linear term; monotone constraints "
-                "are not available for linear terms in this release (a sign bound on "
-                "the hinge coefficients would force the curve to be convex, not just "
-                "monotone). Use a step design for this variable or drop the constraint."
-            )
-        if not isinstance(spec[var], StepEncoder):
-            raise ValueError(
-                f"monotone: {var!r} is categorical or an interaction; only step "
-                "(numeric) variables can be constrained"
+                f"monotone: {var!r} is categorical or an interaction; only numeric "
+                "(step or piecewise-linear) variables can be constrained"
             )
         if direction not in ("increasing", "decreasing"):
             raise ValueError(
@@ -90,7 +97,9 @@ def monotone_bounds(
                 f"got {direction!r}"
             )
         sl = slices[var]
-        idx = [i for i in range(sl.start, sl.stop) if features[i].kind == "step"]
+        idx = [
+            i for i in range(sl.start, sl.stop) if features[i].kind in ("step", "band")
+        ]
         if direction == "increasing":
             lower[idx] = 0.0
         else:
@@ -207,15 +216,70 @@ class GLMFit:
         )
 
 
+#: A one-band ("continuous") term bases at the **upper** clamp only when the
+#: exposure-weighted median is past this fraction of the range; below it the
+#: lower clamp wins. Off centre on purpose: at 0.5 a factor whose median sits
+#: near the middle would flip between clamps on sampling noise.
+CONTINUOUS_BASE_AT_HI = 0.6
+
+
+def weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
+    """Exposure-weighted median of ``values``, ignoring NaN. NaN if all null."""
+    x = np.asarray(values, dtype=float)
+    w = np.asarray(weights, dtype=float)
+    ok = np.isfinite(x) & (w > 0)
+    x, w = x[ok], w[ok]
+    if x.size == 0:
+        return float("nan")
+    order = np.argsort(x, kind="stable")
+    x, w = x[order], np.cumsum(w[order])
+    return float(x[min(int(np.searchsorted(w, 0.5 * w[-1])), x.size - 1)])
+
+
+def _continuous_base_row(enc: LinearEncoder, x: np.ndarray, w: np.ndarray) -> int:
+    """Base row of a **one-band** (``kind="continuous"``) linear term.
+
+    Q2 puts relativity 1.00 where the exposure is, which for a multi-band term
+    is the lower edge of the most exposed band. A continuous term has a single
+    band, so that rule would always give the lower clamp — the bottom of the
+    range, where hardly any business is. The 1.00 point must still be an edge of
+    a table row (that is how the rate table, Excel and ``from_rate_tables``
+    carry it), and a one-band term has exactly two: the lower clamp and the
+    upper one. So: **1.00 sits at the lower clamp unless the bulk of the business
+    is well up the range** — the exposure-weighted median past
+    :data:`CONTINUOUS_BASE_AT_HI` of the way from ``lo`` to ``hi``. Row 1 is the
+    band (base at ``lo``), row 2 the ``(hi, None)`` row (base at ``hi``).
+
+    The threshold is deliberately off centre. At the midpoint a factor whose
+    median sits near the middle of its range would flip between the two clamps
+    on sampling noise — a refit on next month's data would move every relativity
+    and the base rate, for no reason anyone could explain. 0.6 makes the lower
+    clamp the default answer and reserves the upper one for factors that are
+    plainly top heavy. Because a continuous curve has one slope, the choice only
+    rescales the base rate: the ratios between relativities are unchanged, and
+    ``base="reference"`` or a base-rate override put 1.00 anywhere else.
+    """
+    median = weighted_median(np.clip(x, enc.lo, enc.hi), w)
+    if not np.isfinite(median):
+        return 1
+    cut = enc.lo + CONTINUOUS_BASE_AT_HI * (enc.hi - enc.lo)
+    return 2 if median > cut else 1
+
+
 def _modal_bins(
     spec: DesignSpec, data: pl.DataFrame, weights: np.ndarray | None
 ) -> dict[str, int]:
     """Index of the most exposed table row per main effect (see ``rate_tables``).
-    Uses the encoders' shared ``row_index`` rule; interactions have no base row."""
+    Uses the encoders' shared ``row_index`` rule; interactions have no base row.
+    One-band linear terms follow :func:`_continuous_base_row`."""
     w = np.ones(data.height) if weights is None else np.asarray(weights, dtype=float)
     out: dict[str, int] = {}
     for var, enc in spec.encoders.items():
         if isinstance(enc, InteractionEncoder):
+            continue
+        if isinstance(enc, LinearEncoder) and enc.n_bands == 1:
+            x = data[var].cast(pl.Float64).to_numpy()
+            out[var] = _continuous_base_row(enc, x, w)
             continue
         idx = enc.row_index(data[var])
         counts = np.bincount(idx, weights=w, minlength=enc.n_rows)
@@ -227,39 +291,91 @@ def _modal_bins(
     return out
 
 
-def interaction_penalty_weights(
+def penalty_weights(
     spec: DesignSpec,
     design: np.ndarray,
     weights: np.ndarray | None,
     *,
     scale_predictors: bool,
 ) -> np.ndarray | None:
-    """Per-column L1 weights (glum ``P1``) for interaction cells.
+    """Per-column L1 weights (glum ``P1``) for piecewise-linear bands and
+    interaction cells.
 
-    With ``scale_predictors=True`` glum penalises the standardised coefficient
-    ``beta * sd(column)``, so a thin cell (small sd) buys a large raw effect for
-    little penalty — the opposite of what a pricing model wants. Cell columns
-    therefore get ``P1 = penalty_weight * 0.5 / sd``: the penalty an
-    *unstandardised* column would carry, scaled so that a 50/50 cell is
-    penalised exactly like a 50/50 main effect (sd 0.5). Thin cells are shrunk
-    harder, fat cells like the mains. Main-effect columns keep ``P1 = 1``.
-    Returns ``None`` when the spec has no interactions (glum's default applies).
+    Both need one for the same reason: with ``scale_predictors=True`` glum
+    penalises the *standardised* coefficient ``alpha * P1_j * |beta_j| * sd_j``,
+    so a column with little spread buys a large **effect** for a small penalty —
+    the opposite of what a pricing model wants.
+
+    **Piecewise-linear bands.** The effect an actuary reads off a band is its
+    *rise*: the change in log relativity from one end of the band to the other,
+    ``beta_j * width_j``. Unweighted, one unit of rise costs
+    ``alpha * sd_j / width_j``, which collapses in a wide band that few rows
+    reach: on the French motor set the top bonus-malus band ``[95, 230)`` bought
+    its rise for **4 %** of what the first band paid, so the thin tail — the part
+    of a curve an actuary trusts least — was the *least* penalised part of it.
+    Writing ``u_j = column_j / width_j`` (the share of band ``j`` a row has
+    used, in ``[0, 1]``), ``P1_j = 0.5 / sd(u_j)`` makes one unit of rise cost
+    ``0.5 * alpha`` in **every** band. The 0.5 is the same normalisation the
+    cells use: a band that half the exposure has passed has ``sd(u) = 0.5`` and
+    so ``P1 = 1``, exactly like a 50/50 step column. Note what this also does at
+    the ends of the range: the first and last bands of a wide design are nearly
+    constant columns (almost every row is past the first band, almost none
+    reaches the last), so they are penalised hardest — a rise placed there is
+    close to a shift of the whole curve and now has to pay for itself.
+
+    **This raises a linear term's penalty as well as levelling it.** ``u_j`` lives
+    in ``[0, 1]``, so ``sd(u_j) <= 0.5`` and ``P1_j >= 1`` always: no band is
+    penalised less than before and most are penalised more. Measured on the
+    French motor set, the mean weight over a term's bands is **1.6x** (Density,
+    20 bands) to **4.1x** (BonusMalus, 9 bands), and a **one-band (continuous)
+    term, which has nothing to level, is simply penalised 3.6x (Density) to 6.3x
+    (BonusMalus) harder** than before. That is what turns a weak continuous trend
+    into a flat term: the penalty is now on the rise, and a rise of a few per
+    cent across the whole range does not pay for itself. It is a real change in
+    how strong a given ``alpha`` is on these terms, not a redistribution.
+
+    Without standardisation the raw coefficient is the *slope*, so a wide band
+    is still cheap per unit of rise; ``P1_j = width_j * n_bands / (hi - lo)``
+    restores equality there. That form **is** a pure redistribution: the weights
+    average to 1 over the term's bands, so the overall strength of ``alpha`` on
+    the term is unchanged.
+
+    **Interaction cells** get ``P1 = penalty_weight * 0.5 / sd`` under
+    standardisation (thin cells shrunk harder, fat cells like the mains) and
+    ``penalty_weight`` without it.
+
+    The columns themselves are never rescaled, so ``beta_j`` stays band ``j``'s
+    slope and the rate table reads it off the coefficients unchanged.
+
+    Returns ``None`` when the spec has neither linear terms nor interactions
+    (glum's default applies).
     """
-    if not spec.interactions:
+    linears = [(v, e) for v, e in spec.encoders.items() if isinstance(e, LinearEncoder)]
+    if not linears and not spec.interactions:
         return None
     p1 = np.ones(spec.n_features)
     w = np.ones(design.shape[0]) if weights is None else np.asarray(weights, float)
     w = w / w.sum()
     slices = spec.slices()
+
+    def _sd(cols: np.ndarray) -> np.ndarray:
+        mean = w @ cols
+        var = w @ (cols**2) - mean**2
+        sd = np.sqrt(np.clip(var, 0.0, None))
+        return np.where(sd > 0, sd, 0.5)
+
+    for var, enc in linears:
+        start = slices[var].start
+        idx = np.arange(start, start + enc.n_bands)
+        widths = np.asarray(enc.band_widths(), dtype=float)
+        if scale_predictors:
+            p1[idx] = 0.5 / _sd(design[:, idx] / widths)
+        else:
+            p1[idx] = widths * enc.n_bands / (enc.hi - enc.lo)
     for enc in spec.interactions:
         sl = slices[enc.variable]
-        cols = design[:, sl]
         if scale_predictors:
-            mean = w @ cols
-            var = w @ (cols**2) - mean**2
-            sd = np.sqrt(np.clip(var, 0.0, None))
-            sd = np.where(sd > 0, sd, 0.5)
-            p1[sl] = enc.penalty_weight * 0.5 / sd
+            p1[sl] = enc.penalty_weight * 0.5 / _sd(design[:, sl])
         else:
             p1[sl] = enc.penalty_weight
     return p1
@@ -311,13 +427,14 @@ def fit_glm(
         Number of folds; the alpha (and l1_ratio) minimising CV deviance over a
         ``n_alphas``-point path is chosen. Overrides ``alpha``.
     monotone : {variable: "increasing" | "decreasing"}, optional
-        Sign constraints on step increments (see :func:`monotone_bounds`).
+        Sign constraints on step increments / piecewise-linear band slopes
+        (see :func:`monotone_bounds`).
     scale_predictors : bool
         Standardise columns before penalising (glmnet/aglm default).
     glum_kwargs
         Anything else for the glum estimator (``max_iter``, ``P1``, ``link``,
         ``lower_bounds`` ...). Passing your own ``P1`` replaces the per-cell
-        interaction penalty rule entirely (see ``interaction_penalty_weights``).
+        per-band / per-cell penalty rule entirely (see ``penalty_weights``).
     """
     if cv is None and alpha is None:
         raise ValueError(
@@ -353,9 +470,7 @@ def fit_glm(
     _validate_target(y, family_name)
 
     if "P1" not in glum_kwargs:
-        p1 = interaction_penalty_weights(
-            spec, design, sw, scale_predictors=scale_predictors
-        )
+        p1 = penalty_weights(spec, design, sw, scale_predictors=scale_predictors)
         if p1 is not None:
             glum_kwargs["P1"] = p1
 
