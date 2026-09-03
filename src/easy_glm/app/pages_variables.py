@@ -17,7 +17,7 @@ import streamlit as st
 
 from easy_glm.core.design import NUMERIC_DTYPES
 from easy_glm.workflow import Derived, Project, Recode, apply_variables, eval_expr
-from easy_glm.workflow.project import ROLES
+from easy_glm.workflow.project import ROLES, premium_offset_column
 
 from . import state as S
 from . import ui
@@ -217,7 +217,7 @@ def _roles_grid(raw: pl.DataFrame) -> None:
     roles = p.data.roles
     summary = " · ".join(
         f"**{r}**: {', '.join(p.columns_with_role(r)) or '—'}"
-        for r in ("target", "weight", "exposure", "offset", "split")
+        for r in ("target", "weight", "exposure", "offset", "current_premium", "split")
     )
     st.caption(
         summary
@@ -225,6 +225,13 @@ def _roles_grid(raw: pl.DataFrame) -> None:
     )
     if roles and p.target is None:
         st.warning("No target assigned yet.")
+    if (premium := p.current_premium) is not None:
+        st.caption(
+            f"Rate change: `{premium_offset_column(premium)}` = log({premium}) is "
+            "derived for you and pre-filled as the offset of new models, so a model "
+            "fits the **change** from today's premium. Filter out rows with a "
+            "premium of zero or less first."
+        )
 
 
 def _recodes(raw: pl.DataFrame) -> None:

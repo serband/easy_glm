@@ -298,8 +298,8 @@ def penalty_weights(
     *,
     scale_predictors: bool,
 ) -> np.ndarray | None:
-    """Per-column L1 weights (glum ``P1``) for piecewise-linear bands and
-    interaction cells.
+    """Per-column L1 weights (glum ``P1``) for piecewise-linear bands,
+    interaction cells and any variable given its own ``penalty_weight``.
 
     Both need one for the same reason: with ``scale_predictors=True`` glum
     penalises the *standardised* coefficient ``alpha * P1_j * |beta_j| * sd_j``,
@@ -340,18 +340,29 @@ def penalty_weights(
     average to 1 over the term's bands, so the overall strength of ``alpha`` on
     the term is unchanged.
 
-    **Interaction cells** get ``P1 = penalty_weight * 0.5 / sd`` under
-    standardisation (thin cells shrunk harder, fat cells like the mains) and
-    ``penalty_weight`` without it.
+    **Interaction cells** get ``0.5 / sd`` under standardisation (thin cells
+    shrunk harder, fat cells like the mains) and 1.0 without it.
+
+    **Per-variable weights.** Every encoder carries a ``penalty_weight``
+    (``VariableDesign.penalty_weight`` on the Design page, ``Interaction.
+    penalty_weight`` for cells). It **multiplies** the rule above over all of
+    that variable's columns — so ``2.0`` shrinks a factor twice as hard as the
+    rest of the design and ``0.0`` leaves it unpenalised: every level of a
+    categorical stays in the model, which is what an actuary means by "do not
+    let the lasso thin out my territory table". Only the L1 penalty is weighted;
+    with ``l1_ratio < 1`` glum's ridge part still applies to every column.
 
     The columns themselves are never rescaled, so ``beta_j`` stays band ``j``'s
     slope and the rate table reads it off the coefficients unchanged.
 
-    Returns ``None`` when the spec has neither linear terms nor interactions
-    (glum's default applies).
+    Returns ``None`` when the spec has no linear terms, no interactions and no
+    variable with a non-default penalty weight (glum's default applies).
     """
     linears = [(v, e) for v, e in spec.encoders.items() if isinstance(e, LinearEncoder)]
-    if not linears and not spec.interactions:
+    weighted = [
+        (v, e) for v, e in spec.encoders.items() if float(e.penalty_weight) != 1.0
+    ]
+    if not linears and not spec.interactions and not weighted:
         return None
     p1 = np.ones(spec.n_features)
     w = np.ones(design.shape[0]) if weights is None else np.asarray(weights, float)
@@ -375,9 +386,10 @@ def penalty_weights(
     for enc in spec.interactions:
         sl = slices[enc.variable]
         if scale_predictors:
-            p1[sl] = enc.penalty_weight * 0.5 / _sd(design[:, sl])
-        else:
-            p1[sl] = enc.penalty_weight
+            p1[sl] = 0.5 / _sd(design[:, sl])
+    # the per-variable weight multiplies whatever rule the term's columns got
+    for var, enc in weighted:
+        p1[slices[var]] *= float(enc.penalty_weight)
     return p1
 
 

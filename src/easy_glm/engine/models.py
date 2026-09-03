@@ -29,6 +29,11 @@ class ModelMetadata:
     #: ``offset_is_log``); ``None`` = no offset
     offset_col: str | None = None
     offset_is_log: bool = True
+    #: True when the offset is the log of the **premium charged today** (the
+    #: rate-change setup): the base rate is then the overall rate change and
+    #: every relativity is a multiplier on the current premium, not a rate
+    #: (the actuary's answer to Q6). Only changes labels, never a number.
+    offset_is_premium: bool = False
     #: link function of the fitted GLM ("log" for multiplicative tables)
     link: str = "log"
     #: True when the GLM target was ``target / weight`` (e.g. claim counts with an
@@ -154,6 +159,47 @@ class Snapshot:
 class SessionState:
     column_mapping: dict[str, str] = field(default_factory=dict)
     actual_formula: str = "sum_weighted"
+
+
+#: What one number in a rate table means, by model shape. The label goes on the
+#: Excel ``Summary`` sheet, the Rate tables page and the Export page so a reader
+#: never has to infer it from the family and the offset.
+RELATIVITY_LABEL = "relativity"
+ODDS_RELATIVITY_LABEL = "odds relativity"
+PREMIUM_MULTIPLIER_LABEL = "multiplier on current premium"
+
+
+def relativity_label(metadata: ModelMetadata) -> str:
+    """Short name for one number of this model's rate tables."""
+    if metadata.link == "logit":
+        return ODDS_RELATIVITY_LABEL
+    if metadata.offset_is_premium:
+        return PREMIUM_MULTIPLIER_LABEL
+    return RELATIVITY_LABEL
+
+
+def relativity_note(metadata: ModelMetadata) -> str:
+    """One sentence saying how to read this model's tables."""
+    if metadata.link == "logit":
+        return (
+            "Odds relativities: the tables multiply the odds, not the "
+            "probability. The base rate is the odds for the base risk and the "
+            "scorer turns odds into a probability, so predictions are between "
+            "0 and 1 and are never multiplied by exposure."
+        )
+    if metadata.offset_is_premium:
+        premium = metadata.offset_col or "the current premium"
+        return (
+            "Multipliers on the current premium: this model was fitted with "
+            f"{premium} (the log of the premium charged today) as an offset, so "
+            "the base rate is the **overall** rate change and each relativity is "
+            "the **differential** change for that band. 1.00 means that band's "
+            "premium changes by the overall change and no more."
+        )
+    return (
+        "Relativities: the base rate times one relativity per rating factor "
+        "gives the predicted rate for a risk."
+    )
 
 
 def lumped_label(other_label: str | None) -> str | None:

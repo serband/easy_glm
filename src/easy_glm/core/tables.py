@@ -229,6 +229,7 @@ def to_rate_model(
     exposure_col: str | None = None,
     train_test_col: str | None = None,
     model_type: str | None = None,
+    offset_is_premium: bool = False,
 ) -> RateModel:
     """Compile the GLM into a :class:`RateModel` that reproduces it exactly.
 
@@ -243,6 +244,12 @@ def to_rate_model(
     ``base_rate_override`` to rescale (e.g. for a target loss ratio); the
     relativities are unaffected. ``model_type`` is a label stored in the
     metadata (defaults to the canonical family name).
+
+    ``offset_is_premium`` records that the offset is the log of the premium
+    charged today, so the tables are **multipliers on the current premium**
+    (base rate = the overall rate change, relativities = differential changes).
+    It only changes what the Excel summary, the workbench and the report call
+    the numbers; no number moves.
     """
     _check_log_link(fit)
     variables: dict[str, VariableConfig] = {}
@@ -281,6 +288,7 @@ def to_rate_model(
         predictor_variables=list(variables),
         offset_col=fit.offset_col,
         offset_is_log=True,
+        offset_is_premium=bool(offset_is_premium) and fit.offset_col is not None,
         link=fit.link,
         divide_target_by_weight=fit.divide_target_by_weight,
     )

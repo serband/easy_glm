@@ -27,6 +27,11 @@ def render() -> None:
         "Model", names, index=names.index(default), key=S.widget_key("export_model")
     )
     run = S.get_run(name)
+    if run is not None and run.rate_model.relativity_label != "relativity":
+        st.info(
+            f"**{run.rate_model.relativity_label}** — "
+            f"{run.rate_model.relativity_note}"
+        )
     if run is None:
         st.warning(
             "This model is not fitted (or its spec changed). The script below derives knots and levels from the data at run time; fit it to get every knot and level written out explicitly."

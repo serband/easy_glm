@@ -26,6 +26,8 @@ from .models import (
     ModelMetadata,
     Snapshot,
     VariableConfig,
+    relativity_label,
+    relativity_note,
 )
 
 _UNSET = object()
@@ -247,6 +249,20 @@ class RateModel:
         self._pending_changes: list[Change] = []
         self.column_mapping = column_mapping or {}
 
+    # -- what one number in these tables means ---------------------------
+    @property
+    def relativity_label(self) -> str:
+        """Short name for one number of these tables: ``"relativity"``,
+        ``"odds relativity"`` (logit link) or ``"multiplier on current premium"``
+        (the offset is the log of today's premium)."""
+        return relativity_label(self.metadata)
+
+    @property
+    def relativity_note(self) -> str:
+        """One sentence saying how to read these tables (see
+        :attr:`relativity_label`)."""
+        return relativity_note(self.metadata)
+
     @classmethod
     def from_rate_tables(
         cls,
@@ -260,6 +276,7 @@ class RateModel:
         train_test_col: str | None = None,
         offset_col: str | None = None,
         offset_is_log: bool = True,
+        offset_is_premium: bool = False,
         link: str = "log",
         divide_target_by_weight: bool | None = None,
         predictor_variables: list[str] | None = None,
@@ -333,6 +350,7 @@ class RateModel:
             predictor_variables=list(variables),
             offset_col=offset_col,
             offset_is_log=offset_is_log,
+            offset_is_premium=offset_is_premium,
             link=link,
             divide_target_by_weight=divide_target_by_weight,
         )
@@ -983,7 +1001,9 @@ class RateModel:
         )
 
         summary: dict[str, Any] = {
-            "tables": "current relativities (manual adjustments included)",
+            "tables": f"current {self.relativity_label} per band "
+            "(manual adjustments included)",
+            "how to read them": self.relativity_note,
             "base_rate": self.base_rate,
             "model_type": self.metadata.model_type,
             "link": self.metadata.link,

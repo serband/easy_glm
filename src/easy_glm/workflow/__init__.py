@@ -25,12 +25,14 @@ from .diagnostics import (
 from .explore import leakage_report, single_factor_strength, univariate
 from .export import to_script
 from .prep import (
+    add_premium_offset,
     add_split_column,
     apply_variables,
     column_summary,
     eval_expr,
     infer_source_type,
     load_source,
+    premium_offset_expr,
     prepare,
     train_holdout,
 )
@@ -48,6 +50,7 @@ from .project import (
     Recode,
     Split,
     VariableDesign,
+    premium_offset_column,
 )
 from .report import to_report_html
 from .run import (
@@ -58,8 +61,10 @@ from .run import (
     encoder_for,
     exposure_for,
     monotone_for,
+    offset_is_premium,
     rebuild_rate_model,
     run_model,
+    solve_base_rate,
 )
 
 __all__ = [
@@ -80,6 +85,9 @@ __all__ = [
     "infer_source_type",
     "eval_expr",
     "apply_variables",
+    "add_premium_offset",
+    "premium_offset_expr",
+    "premium_offset_column",
     "add_split_column",
     "train_holdout",
     "prepare",
@@ -90,7 +98,9 @@ __all__ = [
     "build_design",
     "encoder_for",
     "monotone_for",
+    "offset_is_premium",
     "run_model",
+    "solve_base_rate",
     "AdjustmentError",
     "UnusableColumnError",
     "rebuild_rate_model",

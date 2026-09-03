@@ -12,7 +12,7 @@ from easy_glm.core.design import (
     StepEncoder,
 )
 
-from .project import ModelConfig, Project
+from .project import ModelConfig, Project, premium_offset_column
 from .run import ModelRun
 
 
@@ -39,23 +39,32 @@ def _list(values: list[Any], indent: int = 8, width: int = 88) -> str:
     return "[\n" + "\n".join(lines) + "\n" + " " * (indent - 4) + "]"
 
 
+def _penalty_arg(enc) -> str:
+    """``, penalty_weight=...`` when the variable is not penalised like the rest
+    of the design (0 = unpenalised), else nothing."""
+    weight = float(getattr(enc, "penalty_weight", 1.0))
+    return "" if weight == 1.0 else f", penalty_weight={weight!r}"
+
+
 def _spec_code(spec: DesignSpec) -> str:
     parts = []
     inter: list[InteractionEncoder] = []
     for var, enc in spec.encoders.items():
         if isinstance(enc, StepEncoder):
             parts.append(
-                f"    {var!r}: StepEncoder({var!r}, {_list(enc.knots)}, null_indicator={enc.null_indicator}),"
+                f"    {var!r}: StepEncoder({var!r}, {_list(enc.knots)}, "
+                f"null_indicator={enc.null_indicator}{_penalty_arg(enc)}),"
             )
         elif isinstance(enc, CategoricalEncoder):
             parts.append(
-                f"    {var!r}: CategoricalEncoder({var!r}, {_list(enc.levels)}),"
+                f"    {var!r}: CategoricalEncoder({var!r}, {_list(enc.levels)}"
+                f"{_penalty_arg(enc)}),"
             )
         elif isinstance(enc, LinearEncoder):
             parts.append(
                 f"    {var!r}: LinearEncoder({var!r}, {_list(enc.knots)}, "
                 f"clamp=({_lit(enc.lo)}, {_lit(enc.hi)}), "
-                f"null_indicator={enc.null_indicator}),"
+                f"null_indicator={enc.null_indicator}{_penalty_arg(enc)}),"
             )
         elif isinstance(enc, InteractionEncoder):
             inter.append(enc)
@@ -201,6 +210,16 @@ def to_script(
         lines.append(f"df = df.with_columns(({der.expr}).alias({der.name!r}))")
     for f in d.filters:
         lines.append(f"df = df.filter({f})")
+    if (premium := project.current_premium) is not None:
+        # exactly what workflow.prep.add_premium_offset does, written out so the
+        # rate-change setup is visible rather than implied by a role
+        lines += [
+            f"# {premium} is the premium charged today; its log is the model's",
+            "# offset, so the base rate is the overall rate change and every",
+            "# relativity is a multiplier on the current premium",
+            f"df = df.with_columns(pl.col({premium!r}).cast(pl.Float64).log()"
+            f".alias({premium_offset_column(premium)!r}))",
+        ]
 
     split = d.split
     lines += [
@@ -272,6 +291,17 @@ def to_script(
                 else []
             ),
             *(
+                [f"    penalty_weight={pweights!r},"]
+                if (
+                    pweights := {
+                        v: float(vd.penalty_weight)
+                        for v, vd in project.design.variables.items()
+                        if float(vd.penalty_weight) != 1.0 and v in cfg.predictors
+                    }
+                )
+                else []
+            ),
+            *(
                 [f"    clamp={clamps!r},"]
                 if (
                     clamps := {
@@ -319,6 +349,12 @@ def to_script(
         f"    exposure_col={exposure!r},",
         f"    train_test_col={split.column!r},",
         f"    model_type={cfg.family!r},",
+        *(
+            ["    offset_is_premium=True,  # tables are multipliers on the premium"]
+            if project.current_premium
+            and cfg.offset == premium_offset_column(project.current_premium)
+            else []
+        ),
         ")",
     ]
     if cfg.adjustments:
