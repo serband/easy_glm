@@ -98,3 +98,12 @@ ignore = ["E501"]
 "src/easy_glm/app/*" = ["N812", "C408"]
 "tests/test_app_state.py" = ["N812"]  # `state as S` mirrors the app modules
 "tests/test_w4_runs_folder.py" = ["N812"]
+
+[tool.mypy]
+# The CI step only names core/ and workflow/ on the command line, but mypy
+# follows imports by default and would otherwise also report every error it
+# finds in engine/ and ui/ (not yet type-checked). `follow_imports = "silent"`
+# keeps those modules' types available for checking core/workflow's calls into
+# them without mypy reporting errors that live inside them.
+follow_imports = "silent"
+ignore_missing_imports = true

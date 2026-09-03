@@ -14,7 +14,10 @@ Purpose: Provide build/test commands, architecture guidance, and code style guid
   source checkout: `PYTHONPATH=src python -m easy_glm.cli run project.json --out out/`)
 - Lint: `ruff check .`
 - Types: `mypy src/easy_glm/core src/easy_glm/workflow --ignore-missing-imports` (a CI step;
-  `core` and `workflow` are kept clean, the app and engine are not checked yet)
+  `core` and `workflow` are kept clean, the app and engine are not checked yet).
+  Only `core` and `workflow` are type-checked; `[tool.mypy]` in `pyproject.toml`
+  sets `follow_imports = "silent"` so errors in the modules they import
+  (`engine`, `ui`) don't fail the CI step.
 - Format: `black .`
 - Run all quality steps: `black . && ruff check . && mypy src/easy_glm/core src/easy_glm/workflow --ignore-missing-imports && pytest -q`
 

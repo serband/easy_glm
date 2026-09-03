@@ -20,7 +20,8 @@ that silently reused a fit from one would be the least predictable thing here.
 
 Exit codes: ``0`` success, ``1`` a problem the user can act on (an invalid
 project, an unreadable data file, a model that will not fit), ``2`` a usage
-error from ``argparse``.
+error — from ``argparse``, or a project path that is plainly the wrong kind of
+file (a ``.easyglm`` scorer, a directory, a zip archive).
 """
 
 from __future__ import annotations
@@ -56,14 +57,48 @@ class CliError(Exception):
         return "\n".join(lines)
 
 
+class ProjectFileError(Exception):
+    """The path given is not, and cannot be, a workbench project JSON — a
+    command-line mistake (exit 2, like argparse's own usage errors), not a
+    data problem (exit 1)."""
+
+
 # --------------------------------------------------------------------------
 # loading and checking
 # --------------------------------------------------------------------------
+def _reject_non_project_file(p: Path) -> None:
+    """Refuse, before parsing, a path that cannot be a workbench project:
+    a rate-table scorer (``.easyglm``), a directory, or a zip archive (an
+    Excel export is the obvious slip). ``Project.from_json`` tolerates unknown
+    keys, so a scorer file would otherwise load as a near-empty project and
+    fail much later with a baffling data-glob error instead of naming the
+    real mistake."""
+    if p.suffix == ".easyglm":
+        raise ProjectFileError(
+            f"{p} is a rate-table scorer (.easyglm), not a workbench project "
+            "— pass the project.json this model was fitted from"
+        )
+    if p.is_dir():
+        raise ProjectFileError(f"{p} is a directory, not a project JSON file")
+    try:
+        head = p.open("rb").read(4)
+    except OSError:
+        return  # let the normal read report whatever is actually wrong
+    if head[:2] == b"PK":
+        raise ProjectFileError(
+            f"{p} looks like a zip archive (e.g. an .xlsx export), not a "
+            "project JSON file"
+        )
+
+
 def open_project(path: str | Path) -> Project:
-    """Read a project file, turning every failure into a :class:`CliError`."""
+    """Read a project file, turning every failure into a :class:`CliError`
+    (or, for a path that is plainly the wrong kind of file, a
+    :class:`ProjectFileError`)."""
     p = Path(path)
     if not p.exists():
         raise CliError(f"no project file at {p}")
+    _reject_non_project_file(p)
     try:
         return Project.from_json(p)
     except Exception as exc:  # noqa: BLE001 - the user gets the reason verbatim
@@ -94,22 +129,28 @@ def pick_model(project: Project, model: str | None) -> str:
     return next(iter(project.models))
 
 
-def check(project: Project, model: str | None = None) -> list[str]:
+def check(
+    project: Project, model: str | None = None, columns: list[str] | None = None
+) -> list[str]:
     """Everything wrong with the project, including its column references.
 
-    The data is loaded so that a model naming a column the prepared frame does
-    not have is reported here rather than at the first fit. A data file that
-    cannot be read is itself one of the problems.
+    With ``columns`` (an already-prepared frame's columns), that frame is
+    trusted and the data is not loaded again. Otherwise the data is loaded
+    here so that a model naming a column the prepared frame does not have is
+    reported before the first fit; a data file that cannot be read is itself
+    one of the problems.
     """
+    if columns is not None:
+        return project.validate(model, columns=columns)
     try:
-        columns: list[str] | None = list(prepare(project).columns)
+        columns = list(prepare(project).columns)
     except Exception as exc:  # noqa: BLE001
         return [f"the data cannot be prepared: {exc}"] + project.validate(model)
     return project.validate(model, columns=columns)
 
 
 def fit(project: Project, model: str, df: pl.DataFrame) -> ModelRun:
-    problems = check(project, model)
+    problems = check(project, model, columns=list(df.columns))
     if problems:
         raise CliError(f"model {model!r} cannot be fitted", problems)
     try:
@@ -324,6 +365,12 @@ def main(argv: list[str] | None = None) -> int:
         return int(args.func(args))
     except CliError as exc:
         print(exc.render(), file=sys.stderr)
+        return 1
+    except ProjectFileError as exc:
+        print(f"easy-glm: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"easy-glm: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:  # pragma: no cover - interactive only
         print("easy-glm: interrupted", file=sys.stderr)

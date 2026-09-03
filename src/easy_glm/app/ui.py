@@ -30,6 +30,18 @@ def fmt(x: Any, *, pct: bool = False, digits: int = 3) -> str:
     return f"{x:.{digits}f}" if isinstance(x, float) else str(x)
 
 
+def relativity_note_markdown(rm: Any) -> str:
+    """``rm.relativity_label`` / ``relativity_note`` as one markdown line.
+
+    The engine's note is plain text (it also lands verbatim in Excel and the
+    HTML report); only here, where Streamlit renders markdown, do "overall"
+    and "differential" get bolded alongside the label."""
+    note = rm.relativity_note.replace("overall", "**overall**").replace(
+        "differential", "**differential**"
+    )
+    return f"**{rm.relativity_label}** — {note}"
+
+
 def metric_row(items: list[tuple[str, Any, str | None]]) -> None:
     """``[(label, value, help), ...]`` rendered as a row of ``st.metric``."""
     cols = st.columns(len(items))

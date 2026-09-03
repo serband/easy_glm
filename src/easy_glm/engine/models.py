@@ -179,7 +179,10 @@ def relativity_label(metadata: ModelMetadata) -> str:
 
 
 def relativity_note(metadata: ModelMetadata) -> str:
-    """One sentence saying how to read this model's tables."""
+    """One sentence saying how to read this model's tables.
+
+    Plain text — no markdown. Excel and the HTML report show this string as
+    written; a Streamlit page wanting emphasis applies its own markdown."""
     if metadata.link == "logit":
         return (
             "Odds relativities: the tables multiply the odds, not the "
@@ -192,8 +195,8 @@ def relativity_note(metadata: ModelMetadata) -> str:
         return (
             "Multipliers on the current premium: this model was fitted with "
             f"{premium} (the log of the premium charged today) as an offset, so "
-            "the base rate is the **overall** rate change and each relativity is "
-            "the **differential** change for that band. 1.00 means that band's "
+            "the base rate is the overall rate change and each relativity is "
+            "the differential change for that band. 1.00 means that band's "
             "premium changes by the overall change and no more."
         )
     return (

@@ -904,6 +904,32 @@ class TestCliRun:
         assert "cannot be fitted" in proc.stderr
         assert not (tmp_path / "never").exists()
 
+    def test_an_out_path_that_is_an_existing_file_is_a_message(
+        self, cli_project, tmp_path
+    ):
+        """S1: a filesystem error on ``--out`` is a message, never a traceback."""
+        out = tmp_path / "afile"
+        out.write_text("already here")
+        proc = cli("run", str(cli_project), "--out", str(out))
+        assert proc.returncode == 1
+        assert "Traceback" not in proc.stderr
+        assert "easy-glm:" in proc.stderr
+
+    def test_an_out_path_under_a_read_only_parent_is_a_message(
+        self, cli_project, tmp_path
+    ):
+        parent = tmp_path / "readonly_parent"
+        parent.mkdir()
+        old_mode = parent.stat().st_mode
+        parent.chmod(0o500)
+        try:
+            proc = cli("run", str(cli_project), "--out", str(parent / "sub"))
+            assert proc.returncode == 1
+            assert "Traceback" not in proc.stderr
+            assert "easy-glm:" in proc.stderr
+        finally:
+            parent.chmod(old_mode)
+
 
 class TestCliExport:
     def test_each_flag_writes_its_own_artefact(self, cli_project, tmp_path):
@@ -972,6 +998,111 @@ class TestCliWorkbench:
             "block": True,
             "headless": True,
         }
+
+
+class TestCliProjectFileErrors:
+    """S2: a path that is plainly the wrong kind of file is refused before it
+    is parsed, naming what the CLI expected — exit 2, like an argparse usage
+    error, since the mistake is in the command line."""
+
+    def test_an_easyglm_scorer_is_named_for_what_it_is(self, data_path, tmp_path):
+        p = rate_change_project(data_path)
+        run = run_model(p, prepare(p), "change")
+        scorer = tmp_path / "change.easyglm"
+        run.rate_model.to_json(scorer)
+        proc = cli("validate", str(scorer))
+        assert proc.returncode == 2
+        assert "rate-table scorer" in proc.stderr and ".easyglm" in proc.stderr
+        assert "Traceback" not in proc.stderr
+
+    def test_a_directory_is_named_for_what_it_is(self, tmp_path):
+        d = tmp_path / "a_directory"
+        d.mkdir()
+        proc = cli("validate", str(d))
+        assert proc.returncode == 2
+        assert "directory" in proc.stderr
+        assert "Traceback" not in proc.stderr
+
+    def test_a_zip_archive_is_named_for_what_it_is(self, tmp_path):
+        """Even with a ``.json`` name — the content, not the extension, gives
+        away an Excel export or other zip archive."""
+        import zipfile
+
+        z = tmp_path / "looks_like_a_project.json"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("sheet.xml", "<x/>")
+        proc = cli("validate", str(z))
+        assert proc.returncode == 2
+        assert "zip archive" in proc.stderr
+        assert "Traceback" not in proc.stderr
+
+
+class TestNoMarkdownLeak:
+    """S3: the "multiplier on current premium" note is plain text at its
+    source, so it reaches the Excel Summary sheet and the HTML report without
+    the markdown bold meant for Streamlit's ``st.info``."""
+
+    def test_the_excel_summary_and_html_report_have_no_asterisks(
+        self, data_path, tmp_path
+    ):
+        p = rate_change_project(data_path)
+        path = tmp_path / "ratechange.json"
+        p.to_json(path)
+        out = tmp_path / "artefacts"
+        proc = cli("run", str(path), "--out", str(out))
+        assert proc.returncode == 0, proc.stderr
+
+        xlsx = next(out.glob("*_rate_tables.xlsx"))
+        summary = pl.read_excel(xlsx, sheet_name="Summary", has_header=False)
+        text = " ".join(str(v) for v in summary.to_series(1).to_list())
+        assert "overall" in text and "differential" in text
+        assert "**" not in text
+
+        html = next(out.glob("*_report.html")).read_text(encoding="utf-8")
+        assert "multiplier on current premium" in html
+        assert "**" not in html
+
+
+class TestPrepareRunsOnce:
+    """S4: ``run``/``export`` prepare the data once, not once for the frame
+    and again inside ``fit``'s validation."""
+
+    def _spy(self, monkeypatch) -> list[object]:
+        import easy_glm.cli as cli_mod
+
+        calls: list[object] = []
+        real_prepare = cli_mod.prepare
+
+        def spy(project):
+            calls.append(project)
+            return real_prepare(project)
+
+        monkeypatch.setattr(cli_mod, "prepare", spy)
+        return calls
+
+    def test_run_prepares_once(self, cli_project, tmp_path, monkeypatch):
+        import easy_glm.cli as cli_mod
+
+        calls = self._spy(monkeypatch)
+        code = cli_mod.main(["run", str(cli_project), "--out", str(tmp_path / "out")])
+        assert code == 0
+        assert len(calls) == 1
+
+    def test_export_prepares_once(self, cli_project, tmp_path, monkeypatch):
+        import easy_glm.cli as cli_mod
+
+        calls = self._spy(monkeypatch)
+        code = cli_mod.main(
+            [
+                "export",
+                str(cli_project),
+                "--script",
+                "--out",
+                str(tmp_path / "out"),
+            ]
+        )
+        assert code == 0
+        assert len(calls) == 1
 
 
 def _assert_same_model_json(a, b, path: str = "") -> None:
