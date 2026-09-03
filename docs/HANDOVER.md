@@ -39,9 +39,9 @@ file). They do **not** review code. Never ask them coding questions.
 | A, B, B2 | interactions, linear/continuous terms, slope-penalised basis | merged | done, reviewed |
 | W1–W4 | workbench pages, hardening, runs folder; 2 breaker passes (15 findings fixed) | merged | done, reviewed |
 | D3, D4 | Compare page, HTML report | merged | done, reviewed |
-| A2 | two-stage interactions (mains frozen, Q5) | `piece/a2` | review round 1 done (2 blocking, 7 should-fix); builder fixing; then re-check, merge |
-| D5 | smooth / cap-floor / round / undo / snapshots | `piece/d5` | built (577 tests); reviewer running |
-| E+F | rate-change offset, per-factor penalties, Tweedie/lapse, target loss ratio, CLI, mypy | `piece/e-f` | builder running |
+| A2 | two-stage interactions (mains frozen, Q5) | merged | done, 2 review rounds, approved |
+| D5 | smooth / cap-floor / round / undo / snapshots | `piece/d5` | review round 1 done (2 blocking, 2 should-fix); builder fixing |
+| E+F | rate-change offset, per-factor penalties, Tweedie/lapse, target loss ratio, CLI, mypy | `piece/e-f` | built (609 tests); merging release-0.4 (A2) into it, then review |
 | G | scale: bin-index design matrices for 1–5M rows | `piece/g` (based on `piece/a2`) | builder running |
 | Breaker #3 | on the merged workbench (Compare, report, tooling) | — | not started |
 | R11 | README + examples release gate | — | not started; written last against the final API |
@@ -55,9 +55,9 @@ record every decision taken since it was written).
 
 ## Order of remaining work
 
-1. A2: builder fixes → reviewer re-check → merge into `release-0.4`.
-2. D5: review → fixes → merge. Then E+F likewise (expect conflicts with A2 in
-   `workflow/export.py`).
+1. D5: fixes → re-check → merge.
+2. E+F: merge release-0.4 into piece/e-f (conflicts with A2 in run.py, fit.py,
+   export.py, easyglm.py, state.py) → review → fixes → merge.
 3. G: review → fixes → merge (it is based on `piece/a2`, so merge A2 first).
 4. Breaker #3 on the merged workbench; fix findings with tests.
 5. R11: write README examples + `examples/`, `tests/test_readme.py`, run in CI;
