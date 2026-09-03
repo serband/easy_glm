@@ -1,111 +1,126 @@
-# Handover: finishing the 0.4 release
+# Handover: easy_glm after the 0.4.0 release
 
-This file exists so that **any agent or person** (a fresh Claude session, Codex,
-a human) can pick up the 0.4 release from wherever it stands. It is updated at
-every milestone; the "Status" table is the source of truth. If this file and
-the chat history disagree, trust this file plus `git log`.
+This file exists so that **any agent or person** (a fresh Claude session, another
+LLM, a human) can pick up the project cold. It is the source of truth for
+status; if it and a chat history disagree, trust this file plus `git log`. Update
+it whenever a piece of work starts, merges or is abandoned.
 
-The owner is an actuary, not a programmer. They read the plain-language
+**State on 2026-09-03:** `main` is **v0.4.0**, released that day (PR #2 merged,
+tag `v0.4.0`, published to PyPI by the tag workflow, GitHub release created).
+830 tests green on Python 3.10–3.13 and on Streamlit 1.57 and 1.63. The owner
+asked for the release to go out without their code review and is now testing it
+on a real pricing workflow, so the next work will be **bug reports from real
+use** plus the backlog below.
+
+## Who the owner is and how to work with them
+
+The owner is a pricing actuary, not a programmer. They read the plain-language
 documents in `docs/checks/` and answer domain questions in
-`docs/checks/00-questions-for-the-actuary.md` (as PR review comments on that
-file). They do **not** review code. Never ask them coding questions.
+`docs/checks/00-questions-for-the-actuary.md` (answers arrive as GitHub review
+comments on that file, or in chat). They do **not** review code. Never ask them
+coding questions; ask domain questions, in their vocabulary (relativity, base
+rate, A/E, lift, rate change, loss ratio, exposure, band), and make every
+deliverable readable from a phone via GitHub.
 
 ## Standing instructions from the owner (do not violate)
 
-1. **Do not merge to `main`, tag, or publish to PyPI.** Those are the owner's
-   actions. Pushing branches and opening/updating PR #2 is fine.
-2. Every piece is built by a **builder agent**, reviewed by an **independent
-   reviewer agent** that did not write it, fixed, and re-checked. **At most two
-   review rounds per piece**; after round two only defects that change numbers,
-   lose work, or crash are fixed, the rest goes in CHANGELOG "Known
-   limitations" for 0.4.1.
-3. After every GUI piece, a **breaker session** tries to crash the workbench or
-   lose the user's work ("do stupid shit"); every finding gets a reproducing
-   test before the fix.
+1. **Do not merge to `main`, tag, or publish to PyPI without the owner saying
+   so.** The 0.4.0 grant was a one-off. Push branches and open PRs freely.
+2. Every piece is built by a **builder agent** and checked by an **independent
+   reviewer agent** that did not write it; fixes, then a re-check. **At most two
+   review rounds per piece.** After round two only defects that change numbers,
+   lose work or crash are fixed; everything else goes to the CHANGELOG "Known
+   limitations" list.
+3. After any change to the workbench, a **breaker session** tries to crash it or
+   lose the user's work, deliberately doing stupid things; every finding gets a
+   reproducing test before its fix. Three sessions so far (records in
+   `docs/reviews/w2-breakage.md`, `w3-breakage-2.md`, `w5-breakage-3.md`).
 4. **No references to the owner's private models or their variable names**
    anywhere in the repo. There are only "variables that go into a GLM".
-5. **Every numeric variable is a step (banded) factor by default** unless the
-   user explicitly chooses linear or continuous.
-6. **README examples must all run**, verified by a test (`tests/test_readme.py`
-   executes every python block) and in CI. Release gate.
-7. Run cheaper models for agents by default; use the most expensive only when
-   necessary.
+5. **Every numeric variable is a step (banded) factor by default**; linear or
+   continuous is an explicit choice.
+6. **README examples must all run.** `tests/test_readme.py` executes every
+   python block on the README and every `examples/*.py` in CI. Keep it that way;
+   a README example that does not run is a release blocker.
+7. Run cheaper models for agents by default (Opus, Sonnet for bounded re-checks
+   and small fixes); use the most expensive only when necessary.
+8. **Five decimals is enough.** Agreement of two computation paths to 1e-5 is a
+   pass; do not chase or quote finer figures to the owner. Existing tests with
+   tighter tolerances stay as they are.
+9. Report at milestones, not per hand-off; the owner found per-step narration
+   "monstrously verbose".
 
-## Status (update at every milestone)
+## Where things are
 
-| Piece | What | Branch | State |
-|---|---|---|---|
-| C1, C2 | exact rate tables, legacy removal | merged | done, reviewed |
-| A, B, B2 | interactions, linear/continuous terms, slope-penalised basis | merged | done, reviewed |
-| W1–W4 | workbench pages, hardening, runs folder; 2 breaker passes (15 findings fixed) | merged | done, reviewed |
-| D3, D4 | Compare page, HTML report | merged | done, reviewed |
-| A2 | two-stage interactions (mains frozen, Q5) | merged | done, 2 review rounds, approved |
-| D5 | smooth / cap-floor / round / undo / snapshots / rebalance | merged | done, 2 review rounds, approved |
-| E+F | rate-change offset, per-factor penalties, Tweedie/lapse, target loss ratio, CLI, mypy | merged | done, 2 review rounds, approved (PERSIST_FORMAT 7) |
-| G | scale: bin-index design matrices for 1–5M rows | merged | done, reviewed, approved (5M rows × 227 columns in 2.6 GB, 21 s) |
-| Breaker #3 | on the merged workbench (Compare, report, tooling, CLI, compact path) | merged | 5 + 2 findings (hand-edited project files), all fixed with tests; reviewed, approved |
-| R11 | README + examples release gate | merged | done: 19 README blocks + 9 examples executed by `tests/test_readme.py`; version 0.4.0; reviewed, approved |
+| What | Where |
+|---|---|
+| What 0.4.0 contains, piece by piece | `CHANGELOG.md` (0.4.0 section) |
+| The backlog | `CHANGELOG.md` → "Known limitations in 0.4.0" |
+| Open domain questions (Q7–Q17 on defaults; Q17 is the newest) | `docs/checks/00-questions-for-the-actuary.md` |
+| Plain-language check per piece (numbers, screenshots) | `docs/checks/<piece>.md`, regenerated by `scripts/checks/<piece>.py --write` |
+| Independent review per piece (verdict at the top) | `docs/reviews/<piece>.md` |
+| The 0.4 plan and every decision taken while executing it (R1–R11) | `docs/RELEASE_0.4_PLAN.md` |
+| Conventions, module map, invariants, gotchas | `AGENTS.md` |
+| Workbench design | `docs/WORKBENCH_PLAN.md` |
+| Scale spike (why the compact matrix looks the way it does) | `docs/spikes/g-scale/` |
 
-`main` is v0.4.0 (PR #2 merged 2026-09-03). `release-0.4` is kept for history.
+## Invariants that must hold at every merge
 
-Reviews live in `docs/reviews/<piece>.md` (verdict at the top). Plain-language
-checks in `docs/checks/<piece>.md`, regenerated by `scripts/checks/<piece>.py
---write`. The plan is `docs/RELEASE_0.4_PLAN.md` (revisions R1–R11 at the end
-record every decision taken since it was written).
+- `RateModel.predict == fit.predict` (`tests/test_invariants.py`); the exported
+  rate tables *are* the model.
+- The golden French-motor fixture (`tests/test_golden.py`, `tests/fixtures/`) is
+  never edited; if its numbers move, something changed a model.
+- Main tables and base rate do not move when an interaction is added (two-stage
+  fit, Q5).
+- `black`, `ruff`, `mypy src/easy_glm/core src/easy_glm/workflow
+  --ignore-missing-imports`, full `pytest -q tests` on both Streamlit versions,
+  CI green on 3.10–3.13.
+- `PERSIST_FORMAT` in `src/easy_glm/app/state.py` (now 7) goes up whenever a
+  pickled run would be misread; the comment above it lists every reason.
 
-## Order of remaining work
+## How a piece of work runs (the loop that shipped 0.4)
 
-**Released.** PR #2 merged to `main` on 2026-09-03 (830 tests), tagged `v0.4.0`,
-published to PyPI by the tag workflow, GitHub release created. The owner asked for
-the release to be pushed without their code review; they will test it on a real
-workflow. Next work (0.4.1 / 0.5) starts from the "Known limitations" in
-CHANGELOG.md and the open questions Q7–Q17 in
-`docs/checks/00-questions-for-the-actuary.md`.
-4. Breaker #3 on the merged workbench; fix findings with tests.
-5. R11: write README examples + `examples/`, `tests/test_readme.py`, run in CI;
-   review the README as a first-time user.
-6. Bump `pyproject.toml` to 0.4.0, finalise CHANGELOG, mark PR #2 ready,
-   hand to the owner. Owner merges, tags `v0.4.0`, publishes.
+1. Branch `piece/<name>` from `main`, built in a `git worktree` with
+   `PYTHONPATH=<worktree>/src` and the repo venv's python (check
+   `easy_glm.__file__` points at the worktree before trusting a test run).
+2. Builder agent: implements with tests, a check script and check page if the
+   owner needs to see numbers, CHANGELOG and AGENTS entries; runs the gates.
+3. Independent reviewer agent: runs code, not just reads; writes
+   `docs/reviews/<name>.md` with blocking / should-fix / nice-to-have; at most two
+   rounds.
+4. Orchestrator re-runs the gates, merges `--no-ff` into `main` (or a release
+   branch if several pieces are in flight), pushes, watches CI, removes the
+   worktree.
+5. Workbench changes get a breaker session afterwards.
+6. Releases: bump `pyproject.toml`, date the CHANGELOG heading, `python -m build`
+   and `twine check` locally, install the wheel in a fresh venv and run
+   `tests/test_readme.py` against it; then the owner merges/tags (the tag
+   triggers `.github/workflows/publish.yml`); confirm on PyPI with a fresh
+   `pip install easy_glm==<version>` and the README test.
 
-If credits or time run short: cut 0.4.0 after step 5 with whatever pieces have
-merged; unmerged pieces become 0.4.1. Tell the owner which.
-
-## Merge procedure for a piece (what "merge" means above)
-
-```
-cd <main checkout>                     # on release-0.4
-git merge --no-ff piece/<x>            # resolve conflicts
-# PERSIST_FORMAT in src/easy_glm/app/state.py: take the HIGHEST number + 1 if
-# two pieces both bumped it (A2 and D5 both set 5 -> resolve to 6).
-black . && ruff check .
-pytest -q                              # repo venv, Streamlit 1.57
-<streamlit-1.63 venv> -m pytest -q tests/test_app*.py tests/test_w*.py tests/test_d*.py
-git push
-gh run watch                           # CI must be green (3.10–3.13)
-git worktree remove <worktree>; git branch -d piece/<x>
-```
-
-Gates that must hold at every merge: golden test untouched
-(`tests/test_golden.py`, `tests/fixtures/`), `RateModel.predict == fit.predict`
-to 1e-10 (`tests/test_invariants.py`), all tests green on both Streamlit
-versions, ruff and black clean.
+Merge conflicts to expect between parallel pieces: `PERSIST_FORMAT` (take the
+highest + 1), `CHANGELOG.md` / `AGENTS.md` (union), `core/fit.py` around
+`penalty_weights` and the `GLMFit(...)` construction, `workflow/run.py` imports.
 
 ## Environment
 
-- Repo venv: `.venv` in the repo (Python 3.12, Streamlit 1.57, glum, polars).
-- CI runs Streamlit 1.63; create a second venv with `pip install -e ".[dev,ui]"
+- Repo venv `.venv` (Python 3.14, Streamlit 1.57). It has an old `easy_glm`
+  installed in site-packages, so **always** run with `PYTHONPATH=src` (pytest is
+  configured for `tests/` only; run it from the repo root).
+- CI runs Streamlit 1.63; keep a second venv with `pip install -e ".[dev,ui]"
   "streamlit>=1.63"` and run the app tests on it too. Warnings before
   `st.rerun()` are lost on 1.63; use `ui.flash()`.
 - Playwright e2e (optional): `EASY_GLM_E2E=1 EASY_GLM_SERVER_PYTHON=<python>
   pytest tests/e2e`.
-- Parallel pieces are built in `git worktree`s with `PYTHONPATH=<worktree>/src`
-  and the repo venv's python; check `easy_glm.__file__` before running tests.
+- `glum` is pinned `>=3.4,<3.5` because of a private-API shim for the compact
+  matrix path (`AGENTS.md`, "Scale" conventions).
+- macOS sometimes leaves "keep both" duplicates (`test_x 2.py`, `HANDOVER 2.md`)
+  in the tree; they are git-ignored (`* 2.*`) — delete them, never commit them.
 - Commit trailer used throughout: `Co-Authored-By: Claude Fable 5.1
   <noreply@anthropic.com>`.
 
-## For a non-Claude agent
+## If you are not Claude
 
-Read, in order: this file, `AGENTS.md` (conventions, module map),
-`docs/RELEASE_0.4_PLAN.md` (what and why, test strategy per piece), the latest
-`docs/reviews/*.md` for the piece you pick up, `CHANGELOG.md`. Then run the
-gates above before changing anything so you know the baseline is green.
+Read, in order: this file, `AGENTS.md`, the CHANGELOG 0.4.0 section, the "Known
+limitations" list, the questions file, then the review of whatever you touch.
+Run the gates once before changing anything so you know the baseline is green.

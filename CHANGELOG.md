@@ -343,6 +343,34 @@
   driven end to end through `subprocess`. Plain-language replay:
   `docs/checks/e-f-extras-cli.md` (`scripts/checks/e_f_extras_cli.py --write`).
 
+### Known limitations in 0.4.0 (the 0.4.1 / 0.5 backlog)
+Items the independent reviews accepted as not worth a further round before the
+release. None changes a number a model produces.
+- **Scale**: piecewise-linear bands are stored dense (8 bytes per row per band);
+  the `(band, overlap)` pair form is the fix if it ever binds. There is no
+  per-penalty progress callback (glum 3.4 has none), only elapsed time.
+  `aggregate=True` is refused with cross-validation. Data is not loaded lazily;
+  a 5M-row book needs the frame in memory. The glum shim's install check is not
+  lock-protected (a benign double-wrap if two fits start at once).
+- **Interactions**: the cells-alpha box shows `0.00000` for alphas below 5e-6
+  (the stored value is kept); `Interaction.alpha` has no upper bound in
+  `validate`; a `RateModel` built from a fit given an offset *array* (not a
+  column) does not carry that offset — use `offset_col`.
+- **Rate reviews**: the Excel `Summary` wording "current multiplier on current
+  premium" stumbles; `solve_base_rate` on a target with nulls reports a
+  non-positive total rather than naming the nulls; there is no `easy-glm score`
+  command (scoring new business is a two-line Python example in the README).
+- **Tooling**: smoothing preserves the mean log relativity (plan R6) and shows,
+  but does not automatically correct, the change in total expected claims — open
+  question Q17 for the owner.
+- **Docs and packaging**: `aggregate=`, `progress=`, `penalty_weight` and
+  `tweedie_power` are documented in the check pages rather than on the README;
+  `elastic-net` and `tabmat` are used without a gloss; the CI matrix is 3.10–3.13
+  (3.14 untested); there is no documentation site beyond the README and
+  `docs/`.
+- The runs folder and multi-tab conflict detection are per machine; nothing
+  coordinates two people editing one project on a shared drive.
+
 ### Hand-edited project files (W5) — the third breaker session
 - The third break-it session targeted the surfaces added late in 0.4: Compare,
   the HTML report, the rate-table tools and snapshots, the rate-change flow,

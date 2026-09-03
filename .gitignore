@@ -68,3 +68,7 @@ french_motor.easyglm
 
 # persisted workbench fits (pickles next to a project file)
 *.easyglm-runs/
+
+# macOS "keep both" duplicates (e.g. "test_x 2.py") must never be committed or
+# collected by pytest
+* 2.*
