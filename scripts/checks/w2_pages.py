@@ -1,0 +1,250 @@
+"""Actuarial check for piece W2 — the workbench pages for interactions and
+piecewise-linear terms.
+
+Starts the workbench on the French-motor fixture with one interaction
+(DrivAge × VehPower) and a linear Density term, takes screenshots of the new
+screens with Playwright, and writes a plain-language page describing what each
+screen shows and what to look at.
+
+Usage: python scripts/checks/w2_pages.py [--write]
+  --write regenerates docs/checks/w2-pages.md and docs/checks/img/w2_*.png;
+  otherwise the document is printed. Screenshots need Playwright: either
+  importable here, or an interpreter with it in EASY_GLM_PLAYWRIGHT_PYTHON.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+FIXTURE = ROOT / "tests" / "fixtures" / "french_motor_50k.parquet"
+DOC = ROOT / "docs" / "checks" / "w2-pages.md"
+IMG = ROOT / "docs" / "checks" / "img"
+DRIVER = ROOT / "scripts" / "checks" / "_w2_screens.py"
+PREDICTORS = ["DrivAge", "VehAge", "BonusMalus", "Density", "VehPower", "Region"]
+
+
+def _project(folder: Path) -> Path:
+    project = {
+        "name": "w2check",
+        "version": 2,
+        "data": {
+            "source": {"type": "parquet", "path": str(FIXTURE), "options": {}},
+            "roles": {
+                "IDpol": "id",
+                "ClaimNb": "target",
+                "Exposure": "weight",
+                **dict.fromkeys(PREDICTORS, "predictor"),
+            },
+            "split": {
+                "mode": "random",
+                "column": "traintest",
+                "fraction": 0.7,
+                "seed": 7,
+            },
+        },
+        "design": {"variables": {"Density": {"kind": "linear"}}},
+        "models": {
+            "freq": {
+                "family": "poisson",
+                "target": "ClaimNb",
+                "weight": "Exposure",
+                "divide_target_by_weight": True,
+                "predictors": PREDICTORS,
+                "penalty": {"alpha": 0.0005, "cv": None},
+                "interactions": [
+                    {"a": "DrivAge", "b": "VehPower", "min_cell_exposure": 0.005}
+                ],
+            }
+        },
+        "champion": "freq",
+    }
+    path = folder / "w2check.easyglm-project.json"
+    path.write_text(json.dumps(project, indent=2))
+    return path
+
+
+def _playwright_python() -> str | None:
+    try:
+        import playwright  # noqa: F401
+
+        return sys.executable
+    except ImportError:
+        cand = os.environ.get("EASY_GLM_PLAYWRIGHT_PYTHON")
+        if cand and Path(cand).exists():
+            return cand
+    return None
+
+
+def _screens(out: Path) -> tuple[bool, str]:
+    py = _playwright_python()
+    if py is None:
+        return (
+            False,
+            "Playwright not available (set EASY_GLM_PLAYWRIGHT_PYTHON); text only.",
+        )
+    folder = Path(tempfile.mkdtemp(prefix="w2check_"))
+    project = _project(folder)
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "streamlit",
+            "run",
+            str(ROOT / "src/easy_glm/app/main.py"),
+            "--server.port",
+            str(port),
+            "--server.headless",
+            "true",
+            "--browser.gatherUsageStats",
+            "false",
+            "--",
+            f"--project={project}",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        cwd=str(ROOT),
+    )
+    try:
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(
+                    f"http://localhost:{port}/_stcore/health", timeout=2
+                ) as r:
+                    if r.status == 200:
+                        break
+            except Exception:  # noqa: BLE001
+                time.sleep(0.5)
+        res = subprocess.run(
+            [py, str(DRIVER), f"http://localhost:{port}", str(out)],
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+        ok = res.returncode == 0 and "DONE" in res.stdout
+        return ok, (res.stdout + res.stderr)[-1500:]
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+DOC_TEXT = """# W2 — the workbench screens for interactions and piecewise-linear terms
+
+*French-motor fixture (50,000 policies, 70/30 split), frequency model with
+DrivAge × VehPower as an interaction and Density as a piecewise-linear term.
+Screenshots regenerated by `scripts/checks/w2_pages.py --write`.*
+
+## Design page — piecewise-linear editor
+
+![linear editor](img/w2_design_linear.png)
+
+What you see: the variable's **kind** (step / linear / categorical), the knot
+strategy, the clamp range (defaults to the training range rounded outward — the
+rule is written on the screen) and a preview of exposure and observed rate by
+band with the two clamp points marked. Values below the lower clamp or above the
+upper clamp get the relativity at the clamp; the curve is continuous and
+log-linear inside each band.
+
+What to look at: whether the default clamp is sensible for the variable (a
+long thin tail above the last knot is where a straight line can run away — set
+the upper clamp lower if so), and whether the knots sit where the observed
+rate bends.
+
+## Design page — interactions
+
+![interactions](img/w2_design_interactions.png)
+
+What you see: the interactions of the selected model, and a form to add one:
+two predictors, the minimum cell exposure (default 0.5 % of the pair's
+exposure) and the penalty weight. The preview counts how many cells would get
+their own adjustment and shows the training exposure per cell; the tool refuses
+the same variable twice, a duplicate pair, or a parent that is not a predictor.
+
+What to look at: the number of cells with real exposure. A pair with very few
+populated cells is not worth an interaction; a threshold that keeps hundreds of
+tiny cells will fit noise.
+
+## Diagnostics — actual / expected by pair
+
+![A/E by pair](img/w2_diagnostics_pair.png)
+
+What you see: for any two variables (in or out of the model), the ratio of
+actual to expected claims in every cell, red above 1, blue below, with the
+actual, expected and exposure on hover. Below the tab, **Search pairs** ranks
+every pair of the model's predictors by the excess deviance of its cells (a
+z-score, so a pair with many small noisy cells does not outrank one with a
+single large real effect).
+
+What to look at: a block of cells with the same colour and real exposure is an
+interaction the model is missing; scattered colours in thin cells are noise.
+
+## Rate tables — interaction cells
+
+![interaction table](img/w2_tables_interaction.png)
+
+What you see: the fitted cell adjustments as a heatmap (1.00 = no adjustment,
+hover shows exposure and the fitted value), the actual / expected by cell with
+the current tables, and an editable grid of the cells. An edited cell is saved
+as a cell adjustment and applied without refitting; a value of 0 or below is
+refused with a message. The Excel download carries the interaction as a long
+sheet and a matrix sheet.
+
+## Rate tables — piecewise-linear curve
+
+![linear table](img/w2_tables_linear.png)
+
+What you see: the fitted relativity curve with the clamp points and the base
+point (relativity 1.00), the actual / expected by band, and the band editor.
+Each row is a node: editing the relativity at the start of a band re-derives
+the slopes on either side so the curve stays continuous; the two flat end rows
+and the null row behave as steps.
+
+## Questions for you
+
+None new. Q1–Q3 (clamp behaviour, base point, few bends) and Q10 (default
+upper clamp) still apply and their defaults are what these screens implement.
+"""
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--write", action="store_true")
+    args = ap.parse_args()
+    if args.write:
+        IMG.mkdir(parents=True, exist_ok=True)
+        ok, log = _screens(IMG)
+        print(log)
+        if not ok:
+            print(
+                "screenshots failed or unavailable; document written without new images"
+            )
+        DOC.write_text(DOC_TEXT)
+        for f in sorted(IMG.glob("w2_*.png")):
+            print(f"{f.name}: {f.stat().st_size // 1024} KB")
+        print(f"wrote {DOC}")
+    else:
+        print(DOC_TEXT)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

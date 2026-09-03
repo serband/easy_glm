@@ -8,6 +8,7 @@ Purpose: Provide build/test commands, architecture guidance, and code style guid
 
 - Single test: `pytest tests/test_engine.py -k test_clone --maxfail=1 -q`
 - Full suite: `pytest -q` (includes Streamlit `AppTest` smoke tests for every workbench page)
+- Persona e2e: `EASY_GLM_E2E=1 EASY_GLM_SERVER_PYTHON=.venv/bin/python <python-with-playwright> -m pytest tests/e2e` (navigate via sidebar links only; grids are canvas widgets Playwright cannot type into)
 - Workbench: `python -m easy_glm.app [project.json]` (or `easy-glm-workbench`); headless: `--headless`
 - Lint: `ruff check .`
 - Format: `black .`
@@ -109,7 +110,8 @@ src/easy_glm/
 ├── app/                    # Streamlit workbench (thin views over workflow + state)
 │   ├── main.py             # st.navigation entry; --project=path
 │   ├── state.py            # session Project, hash-keyed caches (raw/prepared/runs/leakage), autosave
-│   ├── charts.py, ui.py    # plotly charts, shared widgets
+│   ├── charts.py, ui.py    # plotly charts (incl. heatmaps, linear curves), shared widgets
+│   ├── grids.py            # pure grid-edit rules (row / cell adjustments, pair matrices)
 │   └── pages_*.py          # one module per page: project, variables, explore, split,
 │                           #   design, model, diagnostics, tables, export
 ├── engine/
@@ -252,6 +254,8 @@ User edits relativity in table
 | `test_c1_foundations.py` | 0.3 bug regressions, format versions and migrations, editor defaults |
 | `test_scoring.py` | Isolated scoring: score_numeric (searchsorted), score_categorical (dict lookup), edge cases, fallbacks |
 | `test_workflow.py` | Project JSON/validation, prep steps, univariate, leakage report on planted leaks, build_design overrides, run_model (metrics, exactness, adjustments, CV), diagnostics, exported script executed in a subprocess and compared |
+| `test_w2_pages.py` | W2 pages: interaction section, linear editor, kind selector, A/E-by-pair, pair search, cell/band edits via `app.grids`, break-it (empty project, missing file, removed predictor) |
+| `tests/e2e/` | Playwright persona runs (actuary rate review, data-scientist comparison); opt-in `EASY_GLM_E2E=1`, server from `EASY_GLM_SERVER_PYTHON` |
 | `test_app.py` | AppTest: every workbench page renders (with and without a fit), main entry point, leakage scan action |
 | `test_design_fit_tables.py` | 0.3 core: DesignSpec/encoders, fit_glm (alpha/cv/monotone/validation), exact RateModel reproduction incl. nulls + unseen levels, numeric null row scoring, EasyGLM save/load, A/E masks |
 | `test_easyglm.py` | EasyGLM front door: fit/predict, equivalence with the building blocks, serialization |

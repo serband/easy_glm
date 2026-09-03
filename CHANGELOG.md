@@ -2,6 +2,37 @@
 
 ## 0.4.0 (unreleased)
 
+### Workbench pages for interactions and piecewise-linear terms (W2)
+- **Design page**: an *Interactions* section per model — add a pair (minimum cell
+  exposure, penalty weight) with a preview of the training exposure per cell and
+  how many cells would get their own adjustment; remove interactions; clear
+  messages for the same variable twice, a duplicate pair or a non-predictor.
+  The variable detail gained a *Kind* selector and a full piecewise-linear
+  editor (knot strategy, custom knots, clamp lo/hi with the rounding rule shown,
+  preview with the clamp points marked); bad inputs are messages, not errors.
+- **Model page** lists the model's interactions next to its predictors and warns
+  when a parent is no longer a predictor.
+- **Diagnostics**: a new *A/E by pair* tab (heatmap of actual / expected per
+  cell with actual, expected and exposure on hover, for any two variables), and
+  *Search pairs* — every pair of the model's predictors ranked by the Pearson
+  excess of its cells after re-fitting the margins (a z-score), the way to find
+  interactions worth adding. `workflow.residual_pair_search` is the API.
+- **Rate tables**: interaction tables show the adjustment heatmap, the A/E by
+  cell and an editable cell grid (edits saved as cell adjustments, applied
+  without a refit; 0 or below refused); linear tables show the continuous
+  curve with the clamp and base points and a node editor with the slope and the
+  value at both band ends. The base-rate caption explains that cells are
+  adjustments (1.00 = none).
+- **Robustness**: every page survives an empty project, a missing data file and
+  a model whose predictors were removed with a message instead of a traceback;
+  the data steps failing (a bad recode / derived column / filter) are reported
+  on the page.
+- **Persona e2e runs** (`tests/e2e`, Playwright, opt-in with `EASY_GLM_E2E=1`):
+  an actuary's rate review and a data scientist's model comparison drive the
+  real app end to end (about 30 s each), including running the exported script
+  and comparing it with the downloaded scorer.
+
+
 ### Workbench state (piece W1)
 
 - **Exploration sample vs full data.** The Project page setting is now an
