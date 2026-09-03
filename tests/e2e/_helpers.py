@@ -124,13 +124,35 @@ def assert_clean(pg, where: str = "") -> None:
     assert not exc, f"{where}: {exc[0][:800]}"
 
 
-def select(pg, label: str, value: str) -> None:
-    """Pick ``value`` in the selectbox whose label contains ``label``."""
-    box = pg.get_by_test_id("stSelectbox").filter(has_text=label).first
+def _pick(pg, box, value: str) -> None:
     box.locator("input").click()
     box.locator("input").fill(value)
     pg.keyboard.press("Enter")
     settle(pg)
+
+
+def select(pg, label: str, value: str) -> None:
+    """Pick ``value`` in the **main panel** selectbox whose label contains
+    ``label`` (the sidebar has selectboxes too — see :func:`select_sidebar`)."""
+    box = (
+        pg.get_by_test_id("stMain")
+        .get_by_test_id("stSelectbox")
+        .filter(has_text=label)
+        .first
+    )
+    _pick(pg, box, value)
+
+
+def select_sidebar(pg, label: str, value: str) -> None:
+    """Pick ``value`` in the sidebar selectbox whose label contains ``label``
+    (the persistent "compare with" model)."""
+    box = (
+        pg.get_by_test_id("stSidebar")
+        .get_by_test_id("stSelectbox")
+        .filter(has_text=label)
+        .first
+    )
+    _pick(pg, box, value)
 
 
 def click(pg, name: str, *, exact: bool = True) -> None:
