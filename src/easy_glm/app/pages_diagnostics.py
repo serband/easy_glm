@@ -15,6 +15,7 @@ from easy_glm.workflow import (
     double_lift,
     gini,
     lift_table,
+    pearson_dispersion,
     residual_factor_search,
     residual_pair_search,
     totals,
@@ -354,12 +355,21 @@ def render() -> None:
                     width="stretch",
                 )
         st.markdown("**Missing interactions** — pairs of the model's predictors")
+        counts = cfg.family == "poisson"
+        phi = 1.0 if counts else pearson_dispersion(actual, expected, len(run.fit.coef))
         st.caption(
             "For every pair of the model's predictors: the cells' Pearson excess "
             "after re-fitting the two margins, as a z-score (numerics in 8 coarse "
-            "bands, cells with fewer than 3 expected claims ignored; many small "
-            "noisy cells do not outrank one large real effect). The top pairs are "
-            "the interactions worth trying on the Design page."
+            "bands, cells with fewer than 3 expected ignored; many small noisy cells "
+            "do not outrank one large real effect). The top pairs are the "
+            "interactions worth trying on the Design page."
+            + (
+                ""
+                if counts
+                else f" This is not a claim-count model, so the statistic is scaled by "
+                f"the model's Pearson dispersion φ̂ = {phi:,.1f}; read it as a ranking "
+                "rather than a calibrated z-score."
+            )
         )
         existing = {frozenset((it.a, it.b)) for it in cfg.interactions}
         pairs = [
@@ -384,6 +394,7 @@ def render() -> None:
                     w,
                     levels=levels,  # numerics in 8 coarse bands: enough claims per cell
                     pairs=pairs,
+                    dispersion=phi,
                 )
             st.session_state.rps_result = res
             if res.is_empty():
@@ -410,6 +421,7 @@ def render() -> None:
                 )
                 top_pair = st.selectbox("Show", res["pair"].to_list(), key="rps_show")
                 row = res.filter(pl.col("pair") == top_pair).row(0, named=True)
+                # the same 8-band grid the search scored, so worst_cell is visible
                 _pair_heatmap(
                     frame,
                     row["a"],
@@ -417,9 +429,10 @@ def render() -> None:
                     actual,
                     expected,
                     w,
-                    knots,
+                    {},
                     levels,
-                    title=f"{top_pair} — actual / expected by cell ({which})",
+                    title=f"{top_pair} — actual / expected by cell ({which}), search bands",
+                    n_bins=8,
                 )
 
     with tabs[5]:

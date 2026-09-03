@@ -193,9 +193,10 @@ def _kind_selector(var: str, vd: VariableDesign, numeric: bool) -> None:
         vd.kind = None if kind == "auto" else kind
         if kind == "linear" and vd.monotone:
             vd.monotone = None
-            st.warning(
+            ui.flash(
+                "warning",
                 f"Monotone constraint on {var} removed: not available for "
-                "piecewise-linear terms"
+                "piecewise-linear terms",
             )
         p.design.variables[var] = vd
         S.touch()
@@ -585,9 +586,11 @@ def _interactions(train: pl.DataFrame) -> None:
         if preview_enc is not None:
             n_cells = preview_enc.a.n_rows * preview_enc.b.n_rows
             st.caption(
-                f"Preview on {train.height:,} training rows: **{len(preview_enc.cells)} of "
-                f"{n_cells} cells** would get their own adjustment at a "
-                f"{share:.1f}% threshold ({preview_enc.n_features} design columns)."
+                f"Preview on all {train.height:,} training rows (never the exploration "
+                f"sample — the fit decides cells on the same rows): "
+                f"**{len(preview_enc.cells)} of {n_cells} cells** would get their own "
+                f"adjustment at a {share:.1f}% threshold ({preview_enc.n_features} "
+                "design columns)."
             )
             rows_a = [row_label(r) for r in preview_enc.a.rows()]
             rows_b = [row_label(r) for r in preview_enc.b.rows()]
@@ -623,6 +626,7 @@ def _interactions(train: pl.DataFrame) -> None:
                 )
             )
             S.touch()
+            ui.flash("success", f"Added {a} × {b} to {name}; fit on the Model page.")
             st.rerun()
 
 

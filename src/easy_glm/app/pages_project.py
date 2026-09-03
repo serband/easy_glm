@@ -16,7 +16,7 @@ from . import ui
 def _open_project(path: str) -> None:
     p = Project.from_json(path)
     S.set_project(p, path)
-    st.success(f"Opened {path}")
+    ui.flash("success", f"Opened {path}")
 
 
 def render() -> None:

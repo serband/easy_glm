@@ -320,7 +320,7 @@ def _filters(raw: pl.DataFrame) -> None:
         else:
             p.data.filters.append(expr)
             S.touch()
-            st.success(f"Filter added — {kept:,} rows kept")
+            ui.flash("success", f"Filter added — {kept:,} rows kept")
             st.rerun()
 
 

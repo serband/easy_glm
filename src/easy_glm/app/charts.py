@@ -334,6 +334,17 @@ def matrix_heatmap(
     ]
     hover = hover or {}
     names = list(hover)
+    ticks = [0.5, 0.67, 0.8, 1.0, 1.25, 1.5, 2.0]
+    colorbar = (
+        dict(
+            title="ratio",
+            thickness=12,
+            tickvals=[math.log(t) for t in ticks],
+            ticktext=[f"{t:.2f}" for t in ticks],
+        )
+        if (centred and log_colour)
+        else dict(title=("ratio" if centred else ""), thickness=12)
+    )
     custom = [
         [
             [values[i][j]] + [hover[n][i][j] for n in names]
@@ -354,10 +365,7 @@ def matrix_heatmap(
             hovertemplate="<br>".join(parts) + "<extra></extra>",
             colorscale="RdBu_r" if centred else "Blues",
             zmid=(0.0 if log_colour else 1.0) if centred else None,
-            colorbar=dict(
-                title=("log ratio" if log_colour else "ratio") if centred else "",
-                thickness=12,
-            ),
+            colorbar=colorbar,
             xgap=1,
             ygap=1,
         )
@@ -382,6 +390,7 @@ def linear_curve_chart(
     clamp: tuple[float, float] | None = None,
     x_base: float | None = None,
     height: int = 360,
+    log_x: bool = False,
 ) -> go.Figure:
     """Continuous relativity curve of a piecewise-linear table
     (``from``, ``to``, ``relativity`` at the band start, ``relativity_to`` at
@@ -433,7 +442,10 @@ def linear_curve_chart(
     fig.update_layout(
         height=height,
         title=title,
-        xaxis=dict(title="value"),
+        xaxis=dict(
+            title="value" + (" (log scale)" if log_x else ""),
+            type="log" if log_x else "linear",
+        ),
         yaxis=dict(title="relativity", rangemode="tozero"),
         **_LAYOUT,
     )

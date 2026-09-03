@@ -540,7 +540,10 @@ def _drop_refused_adjustment(cfg, exc: AdjustmentError) -> None:
     bad = exc.adjustment
     cfg.adjustments = [a for a in cfg.adjustments if a is not bad]
     touch()
-    st.error(f"Adjustment not applied and removed from the project: {exc}")
+    msg = f"Adjustment not applied and removed from the project: {exc}"
+    st.error(msg)
+    # the caller usually reruns straight after; keep the message for that run
+    st.session_state.setdefault("_flash", []).append(("error", msg))
 
 
 def refresh_adjustments(model: str) -> ModelRun | None:

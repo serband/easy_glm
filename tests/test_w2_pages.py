@@ -502,3 +502,100 @@ def test_pages_survive_a_removed_predictor(page, workspace):
     at = AppTest.from_string(script, default_timeout=240)
     at.run()
     assert not at.exception, [e.value for e in at.exception]
+
+
+# --------------------------------------------------------------------------
+# review follow-ups
+# --------------------------------------------------------------------------
+def test_flash_notice_survives_the_rerun(workspace):
+    """The kind switch reruns immediately; the warning must reach the next run."""
+    prelude = 'S.project().design.variables["DrivAge"] = __import__("easy_glm.workflow", fromlist=["VariableDesign"]).VariableDesign(monotone="decreasing")'
+    at = _run(_script("pages_design", workspace["project"], fit=False, prelude=prelude))
+    at.selectbox(key="design_detail_var").set_value("DrivAge").run()
+    at.selectbox(key="kind_DrivAge").set_value("linear").run()
+    assert any("Monotone constraint" in w.value for w in at.warning)
+    # one-shot: gone on the following run
+    at.run()
+    assert not any("Monotone constraint" in w.value for w in at.warning)
+
+
+def test_e2e_folder_skips_cleanly_without_playwright_or_flag():
+    import os
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k != "EASY_GLM_E2E"}
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/e2e", "-q", "-p", "no:cacheprovider"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(__import__("pathlib").Path(__file__).resolve().parents[1]),
+        timeout=300,
+    )
+    assert proc.returncode in (0, 5), proc.stdout[-800:] + proc.stderr[-800:]
+    assert "Traceback" not in proc.stdout + proc.stderr
+
+
+def test_e2e_server_python_is_absolute(monkeypatch):
+    import importlib
+
+    monkeypatch.setenv("EASY_GLM_SERVER_PYTHON", ".venv/bin/python")
+    conftest = importlib.import_module("tests.e2e.conftest")
+    assert __import__("pathlib").Path(conftest._server_python()).is_absolute()
+    monkeypatch.setenv("EASY_GLM_SERVER_PYTHON", "/usr/bin/env")
+    assert conftest._server_python() == "/usr/bin/env"
+
+
+def test_pair_search_dispersion_scaling(workspace):
+    """Amounts (severity-like) must not produce huge z-scores once the
+    dispersion is passed; scaling actual and expected by a constant with
+    dispersion=constant reproduces the count-scale statistic."""
+    from easy_glm.workflow import pearson_dispersion
+
+    df = pl.read_parquet(workspace["data"]).filter(pl.col("traintest") == 1)
+    rng = np.random.default_rng(1)
+    expected = 0.1 * df["Exposure"].to_numpy()
+    actual = rng.poisson(expected).astype(float)  # null book: no structure
+    w = df["Exposure"].to_numpy()
+    base = residual_pair_search(
+        df, ["DrivAge", "BonusMalus", "Region"], actual, expected, w
+    )
+    scaled = residual_pair_search(
+        df, ["DrivAge", "BonusMalus", "Region"], actual * 2000, expected * 2000, w
+    )
+    fixed = residual_pair_search(
+        df,
+        ["DrivAge", "BonusMalus", "Region"],
+        actual * 2000,
+        expected * 2000,
+        w,
+        dispersion=2000.0,
+    )
+    assert scaled["signal"].max() > 100  # the naive statistic explodes
+    np.testing.assert_allclose(
+        fixed["signal"].to_numpy(), base["signal"].to_numpy(), atol=1e-9
+    )
+    phi = pearson_dispersion(actual * 2000, expected * 2000)
+    assert 1000 < phi < 4000  # ~2000 on a null Poisson book
+
+
+def test_no_data_cells_are_blank_and_not_editable(workspace):
+    at = _run(_script("pages_tables", workspace["project"], fit=True))
+    run = at.session_state["runs"]["freq"][1]
+    grid = grids.cell_grid(run.rate_model, "DrivAge×Region")
+    blanks = [
+        (i, j)
+        for i in range(len(grid["rows"]))
+        for j in range(len(grid["cols"]))
+        if grid["keys"][i][j] is not None and grid["exposure"][i][j] == 0
+    ]
+    assert blanks, "the fixture has a null/Other row without exposure"
+    i, j = blanks[0]
+    assert grid["current"][i][j] is None and grid["fitted"][i][j] is None
+    edited = [[v if v is not None else None for v in row] for row in grid["current"]]
+    edited[i][j] = 1.3
+    cfg = at.session_state["_project"].models["freq"]
+    changed, errors = grids.apply_cell_edits(cfg, "DrivAge×Region", grid, edited)
+    assert not changed and errors and "no policy" in errors[0]
+    assert grid["n_below_threshold"] >= 0

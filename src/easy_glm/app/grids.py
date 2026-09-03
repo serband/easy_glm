@@ -92,8 +92,8 @@ def cell_grid(rm: RateModel, var: str) -> dict[str, Any]:
     ka = {(r.from_, r.to_): i for i, r in enumerate(rm.variables[a].table)}
     kb = {(r.from_, r.to_): i for i, r in enumerate(rm.variables[b].table)}
     n_a, n_b = len(rows_a), len(rows_b)
-    current = [[1.0] * n_b for _ in range(n_a)]
-    fitted = [[1.0] * n_b for _ in range(n_a)]
+    current: list[list[float | None]] = [[1.0] * n_b for _ in range(n_a)]
+    fitted: list[list[float | None]] = [[1.0] * n_b for _ in range(n_a)]
     exposure = [[0.0] * n_b for _ in range(n_a)]
     keys: list[list[tuple | None]] = [[None] * n_b for _ in range(n_a)]
     base = rm.snapshots[0].relativities.get(var) if rm.snapshots else None
@@ -107,10 +107,22 @@ def cell_grid(rm: RateModel, var: str) -> dict[str, Any]:
         j = kb.get((row.from_b, row.to_b))
         if i is None or j is None:
             continue
-        current[i][j] = float(row.relativity)
-        fitted[i][j] = fitted_by_key.get(row.key, float(row.relativity))
         exposure[i][j] = float(row.exposure)
         keys[i][j] = row.key
+        if row.exposure > 0:
+            current[i][j] = float(row.relativity)
+            fitted[i][j] = fitted_by_key.get(row.key, float(row.relativity))
+        else:  # no policy ever fell in this cell: blank, not "1.00"
+            current[i][j] = None
+            fitted[i][j] = None
+    # cells with exposure whose fitted value is exactly 1.0 and were never
+    # adjusted: below the exposure threshold by construction
+    n_below = sum(
+        1
+        for i in range(n_a)
+        for j in range(n_b)
+        if exposure[i][j] > 0 and fitted[i][j] == 1.0 and current[i][j] == 1.0
+    )
     return {
         "rows": rows_a,
         "cols": rows_b,
@@ -119,6 +131,7 @@ def cell_grid(rm: RateModel, var: str) -> dict[str, Any]:
         "fitted": fitted,
         "exposure": exposure,
         "parents": (a, b),
+        "n_below_threshold": n_below,
     }
 
 
@@ -137,9 +150,17 @@ def apply_cell_edits(
             key = grid["keys"][i][j]
             if key is None:
                 continue
+            raw = edited[i][j] if j < len(edited[i]) else None
+            if grid["current"][i][j] is None:
+                if raw is not None and raw == raw and raw != "":
+                    errors.append(
+                        f"{row_label} | {col_label}: no policy ever fell in this cell; "
+                        "an adjustment there would never apply — change not saved"
+                    )
+                continue
             try:
-                new = float(edited[i][j])
-            except (TypeError, ValueError, IndexError):
+                new = float(raw)
+            except (TypeError, ValueError):
                 errors.append(
                     f"{row_label} | {col_label}: not a number; change not saved"
                 )

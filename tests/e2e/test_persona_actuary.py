@@ -19,11 +19,13 @@ from ._helpers import (
     assert_clean,
     click,
     download,
+    edit_grid_cell,
     goto_page,
     run_python,
     select,
     settle,
     tab,
+    wait_text,
 )
 from .conftest import SERVER_PYTHON
 
@@ -62,14 +64,15 @@ def test_actuary_rate_review(actuary_server, browser, e2e_dir):
     assert_clean(pg, "add interaction")
     assert "VehPower×VehGas" in pg.locator('[data-testid="stMain"]').inner_text()
 
-    # -- Model: offset = log(current premium) via the derived column is not in
-    #    this project (rate-change setup is exercised by the scientist run's
-    #    challenger); here we keep the frequency model and fit it.
+    # -- Model: offset = log(current premium) (the derived column), then fit
     goto_page(pg, "Model")
     assert_clean(pg, "model")
+    select(pg, "Offset", "log_current_premium")
     click(pg, "Fit model")
     assert_clean(pg, "fit")
-    assert "Fitted and up to date" in pg.locator('[data-testid="stMain"]').inner_text()
+    main_text = pg.locator('[data-testid="stMain"]').inner_text()
+    assert "Fitted and up to date" in main_text
+    assert "log_current_premium" in main_text
 
     # -- Diagnostics: A/E by every rating factor, then by pair
     goto_page(pg, "Diagnostics")
@@ -91,12 +94,17 @@ def test_actuary_rate_review(actuary_server, browser, e2e_dir):
     select(pg, "Columns", "VehGas")
     assert_clean(pg, "A/E by pair")
 
-    # -- Rate tables: the interaction table and its exports
+    # -- Rate tables: cap one relativity (VehGas row 2 -> 1.05), then the
+    #    interaction table and its exports
     goto_page(pg, "Rate tables")
     assert_clean(pg, "rate tables")
+    select(pg, "Variable", "VehGas")
+    edit_grid_cell(pg, 0, 1, "1.05", expect="1 adjustment")
+    assert_clean(pg, "cap relativity")
+    main = pg.locator('[data-testid="stMain"]')
     select(pg, "Variable", "VehPower×VehGas")
     assert_clean(pg, "interaction table")
-    assert "Cells multiply" in pg.locator('[data-testid="stMain"]').inner_text()
+    assert "Cells multiply" in main.inner_text()
     xlsx = download(pg, "Excel rate tables", e2e_dir)
     names = zipfile.ZipFile(xlsx).read("xl/workbook.xml").decode()
     assert "VehPower×VehGas (matrix)" in names and "Density" in names
@@ -117,6 +125,12 @@ def test_actuary_rate_review(actuary_server, browser, e2e_dir):
     settle(pg)
     goto_page(pg, "Model")
     assert "Fitted and up to date" in pg.locator('[data-testid="stMain"]').inner_text()
+    goto_page(pg, "Rate tables")
+    assert wait_text(pg, "1 adjustment"), pg.locator(
+        '[data-testid="stMain"]'
+    ).inner_text()[
+        :500
+    ]  # the cap survived the reload
 
     # -- The exported script reproduces the downloaded scorer
     out = run_python(
@@ -130,8 +144,10 @@ rebuilt = [p for p in Path('.').glob('*.easyglm')]
 assert rebuilt, 'script wrote no .easyglm'
 a = RateModel.from_json(rebuilt[0]); b = RateModel.from_json({str(scorer)!r})
 df = pl.read_parquet({str(project_path.parent / 'policies.parquet')!r}).head(5000)
-df = df.with_columns(pl.col('Area').cast(pl.Utf8).replace({{'E': 'D', 'F': 'D'}}))
+df = df.with_columns(pl.col('Area').cast(pl.Utf8).replace({{'E': 'D', 'F': 'D'}}), pl.col('current_premium').log().alias('log_current_premium'))
 pa = a.predict(df, exposure_col=None); pb = b.predict(df, exposure_col=None)
+assert b.metadata.offset_col == 'log_current_premium', b.metadata
+assert len(b.snapshots) >= 2, 'adjustment snapshot missing from the downloaded scorer'
 print('maxdiff', float(np.max(np.abs(pa / pb - 1))))
 """,
         e2e_dir,

@@ -8,7 +8,7 @@ Purpose: Provide build/test commands, architecture guidance, and code style guid
 
 - Single test: `pytest tests/test_engine.py -k test_clone --maxfail=1 -q`
 - Full suite: `pytest -q` (includes Streamlit `AppTest` smoke tests for every workbench page)
-- Persona e2e: `EASY_GLM_E2E=1 EASY_GLM_SERVER_PYTHON=.venv/bin/python <python-with-playwright> -m pytest tests/e2e` (navigate via sidebar links only; grids are canvas widgets Playwright cannot type into)
+- Persona e2e: `EASY_GLM_E2E=1 EASY_GLM_SERVER_PYTHON=.venv/bin/python <python-with-playwright> -m pytest tests/e2e` (navigate via sidebar links only; grids are canvas widgets — edit a cell with `_helpers.edit_grid_cell`, which double-clicks the cell, types into the overlay editor and waits for the expected text; set `EASY_GLM_E2E_SHOTS=<dir>` to get screenshots when an edit does not register). Any message drawn right before `st.rerun()` must go through `ui.flash()` (shown at the top of the next run), or Streamlit ≥ 1.63 drops it.
 - Workbench: `python -m easy_glm.app [project.json]` (or `easy-glm-workbench`); headless: `--headless`
 - Lint: `ruff check .`
 - Format: `black .`

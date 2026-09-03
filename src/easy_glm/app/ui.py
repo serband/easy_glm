@@ -33,7 +33,25 @@ def metric_row(items: list[tuple[str, Any, str | None]]) -> None:
         col.metric(label, value, help=help_text)
 
 
+def flash(kind: str, text: str) -> None:
+    """Queue a one-shot notice to show at the top of the *next* run.
+
+    Streamlit discards anything drawn in a run that ends with ``st.rerun()``, so
+    every message that precedes a rerun goes through here and is rendered by
+    :func:`show_flash` (called from :func:`status_bar`)."""
+    st.session_state.setdefault("_flash", []).append((kind, text))
+
+
+def show_flash() -> None:
+    notices = st.session_state.pop("_flash", [])
+    for kind, text in notices:
+        getattr(
+            st, kind if kind in ("success", "warning", "error", "info") else "info"
+        )(text)
+
+
 def status_bar() -> None:
+    show_flash()
     s = S.status()
     steps = [
         ("data", "Data"),

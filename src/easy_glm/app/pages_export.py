@@ -16,6 +16,8 @@ def render() -> None:
     st.title("Export")
     ui.status_bar()
     p = S.project()
+    if ui.require_data() is None:
+        return
     if not p.models:
         st.info("Create and fit a model first.")
         return

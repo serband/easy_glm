@@ -485,6 +485,22 @@ def residual_factor_search(
     ).sort("signal", descending=True)
 
 
+def pearson_dispersion(
+    actual_total: np.ndarray, expected_total: np.ndarray, n_params: int = 0
+) -> float:
+    """Pearson dispersion ``φ̂ = Σ (A − E)² / E / (n − p)`` on totals, the scale
+    that makes ``(A − E)² / (φ E)`` a unit-variance quantity. About 1 for
+    Poisson claim counts; far above 1 for amounts (severity, Tweedie). Used to
+    make :func:`residual_pair_search` comparable across families."""
+    a = np.asarray(actual_total, float)
+    e = np.asarray(expected_total, float)
+    ok = e > 0
+    n = int(ok.sum())
+    if n <= max(n_params, 0) + 1:
+        return 1.0
+    return float(np.sum((a[ok] - e[ok]) ** 2 / e[ok]) / (n - n_params))
+
+
 def _margin_adjusted(cells: pl.DataFrame, iterations: int = 5) -> np.ndarray:
     """Expected counts per cell after re-fitting the two margins (iterative
     proportional fitting on the A/E of each row and each column), so that what
@@ -517,6 +533,7 @@ def residual_pair_search(
     min_cell_share: float = 0.0,
     pairs: list[tuple[str, str]] | None = None,
     top: int = 20,
+    dispersion: float = 1.0,
 ) -> pl.DataFrame:
     """Rank variable **pairs** by the interaction structure left in their cells.
 
@@ -526,10 +543,16 @@ def residual_pair_search(
     (and their exposure share at least ``min_cell_share``). The two margins are
     then re-fitted by iterative proportional fitting so misfit of the main
     effects does not count, and ``signal`` is the Pearson excess as a z-score:
-    ``(Σ (A − E')² / E' − d) / sqrt(2d)`` with ``d = k − rows − cols + 1`` the
-    degrees of freedom left after the margin refit — so a pair
+    ``(Σ (A − E')² / (φ E') − d) / sqrt(2d)`` with ``d = k − rows − cols + 1`` the
+    degrees of freedom left after the margin refit and ``φ = dispersion`` — so a pair
     with many small noisy cells does not outrank one with a single large real
     effect. Large values point at an interaction worth adding.
+
+    ``min_expected`` is on the count scale: a cell is kept when
+    ``expected >= min_expected × φ``. ``Var(A) = φ E'`` holds for claim counts
+    with ``φ = 1``; for amounts
+    (severity, Tweedie) pass the model's Pearson dispersion from
+    :func:`pearson_dispersion`, otherwise the z-scores are meaningless.
 
     Columns: ``pair``, ``a``, ``b``, ``signal``, ``sd_log_ae`` (exposure-weighted
     sd of log A/E' over kept cells), ``max_abs_log_ae``, ``n_cells``,
@@ -563,7 +586,7 @@ def residual_pair_search(
             continue
         total = float(tbl["exposure"].sum()) or 1.0
         cells = tbl.filter(
-            (pl.col("expected") >= min_expected)
+            (pl.col("expected") >= min_expected * float(dispersion))
             & (pl.col("exposure") / total >= min_cell_share)
         )
         if cells.height < 2:
@@ -575,7 +598,7 @@ def residual_pair_search(
             continue
         act, exp = act[ok], exp[ok]
         k = int(ok.sum())
-        pearson = float(np.sum((act - exp) ** 2 / exp))
+        pearson = float(np.sum((act - exp) ** 2 / exp)) / float(dispersion)
         # the margin refit uses (rows + cols - 1) degrees of freedom
         n_rows = len(set(cells["label_a"].to_numpy()[ok]))
         n_cols = len(set(cells["label_b"].to_numpy()[ok]))

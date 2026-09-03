@@ -35,7 +35,10 @@ def _ae_frame(df: pl.DataFrame, which: str) -> pl.DataFrame:
 
 def _apply(run_name: str, changed: bool, errors: list[str]) -> None:
     for e in errors:
-        st.error(e)
+        if changed:
+            ui.flash("error", e)  # the rerun below would discard it otherwise
+        else:
+            st.error(e + " (retype the cell to clear this message)")
     if changed:
         S.touch()
         S.refresh_adjustments(run_name)
@@ -66,6 +69,7 @@ def _main_effect(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
                     working=working if cfg.adjustments else None,
                     clamp=(enc.lo, enc.hi),
                     x_base=rm.variables[var].x_base,
+                    log_x=enc.lo > 0 and enc.hi / enc.lo > 100,
                 ),
                 width="stretch",
             )
@@ -115,7 +119,9 @@ def _main_effect(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
             col_cfg = {
                 "fitted": st.column_config.NumberColumn(format="%.4f"),
                 "working": st.column_config.NumberColumn(
-                    "working (at band start)", format="%.4f", min_value=1e-4, step=0.01
+                    "working (at band start)",
+                    format="%.4f",
+                    min_value=1e-4,
                 ),
                 "at band end": st.column_config.NumberColumn(format="%.4f"),
                 "slope": st.column_config.NumberColumn(
@@ -137,9 +143,7 @@ def _main_effect(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
             disabled = ["bin", "fitted"]
             col_cfg = {
                 "fitted": st.column_config.NumberColumn(format="%.4f"),
-                "working": st.column_config.NumberColumn(
-                    format="%.4f", min_value=0.0, step=0.01
-                ),
+                "working": st.column_config.NumberColumn(format="%.4f", min_value=0.0),
             }
         edited = st.data_editor(
             grid,
@@ -171,10 +175,15 @@ def _interaction(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
     rm = run.rate_model
     grid = G.cell_grid(rm, var)
     a, b = grid["parents"]
+    n_all = sum(1 for row in grid["keys"] for k in row if k is not None)
+    n_nodata = sum(1 for row in grid["current"] for v in row if v is None)
+    n_thin = int(grid["n_below_threshold"])
     st.caption(
         f"Cells multiply the two main effects **{a}** and **{b}**; 1.00 means no "
-        "adjustment — either the fit found none or the cell had too little exposure "
-        "(hover shows the training exposure)."
+        "adjustment. Blank cells had **no training exposure** "
+        f"({n_nodata} of {n_all}) and cannot be edited; a further {n_thin} cells were "
+        "below the exposure threshold and are 1.00 by construction (hover shows the "
+        "training exposure and the fitted value)."
     )
     left, right = st.columns([3, 2])
     with left:
@@ -239,9 +248,7 @@ def _interaction(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
             width="stretch",
             height=min(38 * (len(grid["rows"]) + 1) + 4, 560),
             column_config={
-                c: st.column_config.NumberColumn(
-                    format="%.3f", min_value=0.0, step=0.01
-                )
+                c: st.column_config.NumberColumn(format="%.4f", min_value=0.0)
                 for c in grid["cols"]
             },
             key=f"cell_editor_{run.name}_{var}",

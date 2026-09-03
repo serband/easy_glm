@@ -8,6 +8,7 @@ they never import ``easy_glm``; project files are written as plain JSON.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import socket
@@ -21,16 +22,32 @@ import numpy as np
 import polars as pl
 import pytest
 
-playwright = pytest.importorskip("playwright.sync_api")
-if not os.environ.get("EASY_GLM_E2E"):
-    pytest.skip(
-        "set EASY_GLM_E2E=1 to run the persona e2e tests", allow_module_level=True
-    )
-
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests" / "fixtures" / "french_motor_50k.parquet"
-SERVER_PYTHON = os.environ.get("EASY_GLM_SERVER_PYTHON", sys.executable)
 MAIN = ROOT / "src" / "easy_glm" / "app" / "main.py"
+
+ENABLED = bool(os.environ.get("EASY_GLM_E2E")) and (
+    importlib.util.find_spec("playwright") is not None
+)
+if not ENABLED:
+    # skip cleanly whether the folder is collected from the root or named on the
+    # command line (a module-level pytest.skip() in a conftest is a traceback there)
+    collect_ignore_glob = ["test_*.py"]
+
+
+def _server_python() -> str:
+    """``EASY_GLM_SERVER_PYTHON`` resolved against the repo root, so the
+    documented relative form works from every working directory."""
+    raw = os.environ.get("EASY_GLM_SERVER_PYTHON", sys.executable)
+    path = Path(raw)
+    if not path.is_absolute():
+        path = ROOT / path
+    # absolute but NOT resolved: a venv's python is a symlink to the base
+    # interpreter, which does not have the venv's packages
+    return os.path.normpath(str(path))
+
+
+SERVER_PYTHON = _server_python()
 
 
 def free_port() -> int:
@@ -190,7 +207,7 @@ def _project_file(
 
 @pytest.fixture(scope="module")
 def actuary_server(e2e_dir, data_path):
-    path = _project_file(e2e_dir, "actuary", data_path, offset=False, cv=False)
+    path = _project_file(e2e_dir, "actuary", data_path, offset=True, cv=False)
     srv = Server(path, free_port())
     yield srv, path
     log = srv.stop()
@@ -208,7 +225,9 @@ def scientist_server(e2e_dir, data_path):
 
 @pytest.fixture(scope="module")
 def browser():
-    with playwright.sync_playwright() as p:
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
         b = p.chromium.launch()
         yield b
         b.close()

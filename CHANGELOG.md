@@ -27,6 +27,8 @@
   a model whose predictors were removed with a message instead of a traceback;
   the data steps failing (a bad recode / derived column / filter) are reported
   on the page.
+- **Notices survive reruns**: messages shown just before a rerun (a dropped monotone constraint, an added interaction, a refused adjustment, a filter added, a project opened) are queued with `ui.flash()` and drawn at the top of the next run, so they are visible on every supported Streamlit version.
+- **Rate-table editors** show and accept relativities to 4 decimal places; cells no policy ever fell in are blank and cannot be edited; the pair search reports a dispersion-scaled Pearson z-score and draws the shown pair on the same 8-band grid it searched.
 - **Persona e2e runs** (`tests/e2e`, Playwright, opt-in with `EASY_GLM_E2E=1`):
   an actuary's rate review and a data scientist's model comparison drive the
   real app end to end (about 30 s each), including running the exported script
