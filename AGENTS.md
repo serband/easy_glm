@@ -222,7 +222,11 @@ User edits relativity in table
   `P1_j = 0.5 / sd(column_j / width_j)` makes one unit of rise cost the same in every
   band; without standardisation the same equality needs `P1_j = width_j x n_bands /
   (hi - lo)`. Never rescale the columns themselves to achieve this — `beta_j` must stay
-  band `j`'s slope so the table can read it straight off the coefficients.
+  band `j`'s slope so the table can read it straight off the coefficients. Note the
+  standardised form **raises** a term's total penalty (`sd(u) <= 0.5`, so every
+  `P1_j >= 1`): 1.6-4.1x on the check's multi-band fits and 3.6-6.3x on a one-band term.
+  Only the unstandardised form is a pure redistribution. Any statement that this rule
+  "only redistributes" is wrong.
 - Categorical reference level = `levels[0]` (most frequent, no column); `Other`
   column catches lumped, unseen and null values.
 - `fit_glm` requires `alpha=` or `cv=`; never let glum's `alpha_search` pick
@@ -235,9 +239,10 @@ User edits relativity in table
   never the interaction cells on top of it.
 - The 1.00 point of a linear term must be an **edge of a table row** — that is how the
   rate table, the Excel `is_base` column and `from_rate_tables` carry `x_base`. A
-  one-band (`continuous`) term therefore bases at whichever clamp the exposure-weighted
-  median is nearer to (`core/fit.py::_continuous_base_row`), not at a point inside the
-  band.
+  one-band (`continuous`) term therefore bases at the lower clamp unless the
+  exposure-weighted median is past `CONTINUOUS_BASE_AT_HI` (0.6) of the range
+  (`core/fit.py::_continuous_base_row`), not at a point inside the band. The threshold is
+  off centre so a mid-range factor cannot flip between clamps on sampling noise.
 - Numeric `VariableConfig` tables may end with a `FromToRow(None, None, rel)` null
   row; `_precompute_variables` stores it as `null_relativity` and `score_numeric`
   applies it to NaN. Without that row NaN still raises (legacy behaviour).

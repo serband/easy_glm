@@ -92,6 +92,22 @@ def fit(
     )
 
 
+def mean_band_penalty(fitted, train: pl.DataFrame, var: str) -> float:
+    """Mean ``P1`` over a term's band columns: how much the per-unit-of-rise
+    rule multiplies that term's penalty (1.0 = unchanged)."""
+    from easy_glm.core.fit import penalty_weights
+
+    spec = fitted.spec
+    p1 = penalty_weights(
+        spec,
+        spec.build(train),
+        train["Exposure"].to_numpy(),
+        scale_predictors=True,
+    )
+    start = spec.slices()[var].start
+    return float(p1[start : start + spec[var].n_bands].mean())
+
+
 def flat_bands(fitted, var: str) -> tuple[int, int]:
     """``(bands whose fitted slope is exactly zero, bands in total)``."""
     enc = fitted.spec[var]
@@ -163,6 +179,9 @@ def main(write: bool) -> None:
         cont_main_fit.coef[cont_main_fit.spec.slices()[LINEAR_VAR]][0]
     )
     cont_slope = float(cont_fit.coef[cont_fit.spec.slices()[SECOND_VAR]][0])
+    pen_lin = mean_band_penalty(lin_fit, train, LINEAR_VAR)
+    pen_cont = mean_band_penalty(cont_fit, train, SECOND_VAR)
+    pen_cont_main = mean_band_penalty(cont_main_fit, train, LINEAR_VAR)
     zero_lin, n_lin = flat_bands(lin_fit, LINEAR_VAR)
     zero_lin2, n_lin2 = flat_bands(lin2_fit, SECOND_VAR)
     mono_curve = curve(mono_rm, LINEAR_VAR, PROBE)
@@ -234,11 +253,14 @@ def main(write: bool) -> None:
         "2. **Relativity 1.00 sits at the lower edge of the most exposed band**, so the base "
         f"risk is a round, visible number (here `{LINEAR_VAR}` = {base_row['from'][0]:g}). "
         "A **continuous** factor has only one band and so only two points the table can "
-        "carry a 1.00 at — the two ends of the range. It goes to whichever end the bulk of "
-        "the business is nearer to (the exposure-weighted median against the middle of the "
-        "range), which for a factor skewed low is the bottom. Because such a curve has a "
-        "single slope, moving the 1.00 point only rescales the base rate; the ratios "
-        "between relativities do not move, and you can override the base rate directly.",
+        "carry a 1.00 at — the two ends of the range. It sits at the **bottom** unless "
+        "the business is plainly top heavy: the upper end is used only when the "
+        "exposure-weighted middle value (the median) is past 60 % of the way up the "
+        "range. The 60 % is deliberate rather than a halfway split, so that a factor "
+        "sitting near the middle of its range cannot flip from one end to the other "
+        "between refits on a little sampling noise. Because such a curve has a single "
+        "slope, moving the 1.00 point only rescales the base rate; the ratios between "
+        "relativities do not move, and you can override the base rate directly.",
         "3. **Few slopes, not few bends** (your Q3 answer). Each fitted number is the "
         "slope of one band and the penalty removes slopes, so flat stretches are the "
         f"norm: of the {n_lin} bands of the `{LINEAR_VAR}` curve below, {zero_lin} came "
@@ -302,6 +324,17 @@ def main(write: bool) -> None:
         "brought 230 down from 89× to "
         f"{lin_curve[-2]:.0f}× while the holdout barely moved.",
         "",
+        "**It also makes these terms more strongly penalised overall, not just "
+        "differently.** Levelling the cost of a rise raises every band's share of the "
+        "penalty and lowers none: on this fit the "
+        f"`{LINEAR_VAR}` curve carries {pen_lin:.1f}× the penalty it would have had at "
+        "the same setting before, and a single-band (**continuous**) term, which has no "
+        f"bands to level against each other, {pen_cont_main:.1f}× for `{LINEAR_VAR}` and "
+        f"{pen_cont:.1f}× for `{SECOND_VAR}`. A penalty setting that suited these factors "
+        "before will flatten them more now, so re-check the penalty (or let "
+        "cross-validation choose it) after switching a factor to linear or continuous — "
+        f"the `{SECOND_VAR}` column below is that effect in the extreme.",
+        "",
         f"## Keeping a curve monotone: `{LINEAR_VAR}` increasing",
         "",
         "Ask for a direction on the Design page and every band slope is bounded to that "
@@ -342,17 +375,18 @@ def main(write: bool) -> None:
         "categorical are the explicit overrides, one per factor, on the Design page.",
         "",
         f"Asked for one straight line through `{SECOND_VAR}`, this fit answered **no "
-        f"slope at all** (the column below is 1.00 everywhere, slope {cont_slope:g}): "
-        "over the whole range the trend it could buy was too small to pay for itself "
-        "under a penalty that charges per unit of rise. Holdout Gini "
-        f"{m_cont['gini']:.4f} against {m_step['gini']:.4f} for the step design — it was "
-        'not carrying much. That is "flat unless the data insists" doing its job, not '
-        "a broken option: the same choice on "
-        f"`{LINEAR_VAR}`, which really does trend, keeps its slope "
-        f"({cont_main_slope:.4f} per point, {cont_main_curve[-2]:.0f}× at 230, holdout "
-        f"Gini {m_cont_main['gini']:.4f}) — and shows the other side of the coin, since "
-        "one straight line has to keep climbing through the thin tail that the "
-        f"{len(enc.knots)}-knot version flattens off.",
+        f"slope at all** (the column below is 1.00 everywhere, slope {cont_slope:g}). "
+        "Two things put it there: the rise it could buy across the whole range was only "
+        "about 6 %, and a one-band term is exactly where the per-unit-of-rise rule bites "
+        f"hardest — it carries {pen_cont:.1f}× the penalty the same setting used to "
+        f"apply. Holdout Gini {m_cont['gini']:.4f} against {m_step['gini']:.4f} for the "
+        "step design, so it was not carrying much; but if you want this factor to keep a "
+        "gentle slope, lower the penalty for the model or let cross-validation set it. "
+        f"The same choice on `{LINEAR_VAR}`, which really does trend, keeps its slope at "
+        f"this setting ({cont_main_slope:.4f} per point, {cont_main_curve[-2]:.0f}× at "
+        f"230, holdout Gini {m_cont_main['gini']:.4f}) — and shows the other side of the "
+        "coin, since one straight line has to keep climbing through the thin tail that "
+        f"the {len(enc.knots)}-knot version flattens off.",
         "",
         f"| {SECOND_VAR} | step (0.3) | piecewise-linear | continuous |",
         "|---:|---:|---:|---:|",

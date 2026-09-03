@@ -216,6 +216,13 @@ class GLMFit:
         )
 
 
+#: A one-band ("continuous") term bases at the **upper** clamp only when the
+#: exposure-weighted median is past this fraction of the range; below it the
+#: lower clamp wins. Off centre on purpose: at 0.5 a factor whose median sits
+#: near the middle would flip between clamps on sampling noise.
+CONTINUOUS_BASE_AT_HI = 0.6
+
+
 def weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
     """Exposure-weighted median of ``values``, ignoring NaN. NaN if all null."""
     x = np.asarray(values, dtype=float)
@@ -238,18 +245,25 @@ def _continuous_base_row(enc: LinearEncoder, x: np.ndarray, w: np.ndarray) -> in
     range, where hardly any business is. The 1.00 point must still be an edge of
     a table row (that is how the rate table, Excel and ``from_rate_tables``
     carry it), and a one-band term has exactly two: the lower clamp and the
-    upper one. So: **1.00 sits at whichever clamp the bulk of the business is
-    nearer to**, decided by the exposure-weighted median of the training values
-    against the middle of the range. Row 1 is the band (base at ``lo``), row 2
-    the ``(hi, None)`` row (base at ``hi``). Because a continuous curve has one
-    slope, moving the 1.00 point only rescales the base rate: the ratios between
-    relativities are unchanged, and ``base="reference"`` or a base-rate override
-    put it anywhere else.
+    upper one. So: **1.00 sits at the lower clamp unless the bulk of the business
+    is well up the range** — the exposure-weighted median past
+    :data:`CONTINUOUS_BASE_AT_HI` of the way from ``lo`` to ``hi``. Row 1 is the
+    band (base at ``lo``), row 2 the ``(hi, None)`` row (base at ``hi``).
+
+    The threshold is deliberately off centre. At the midpoint a factor whose
+    median sits near the middle of its range would flip between the two clamps
+    on sampling noise — a refit on next month's data would move every relativity
+    and the base rate, for no reason anyone could explain. 0.6 makes the lower
+    clamp the default answer and reserves the upper one for factors that are
+    plainly top heavy. Because a continuous curve has one slope, the choice only
+    rescales the base rate: the ratios between relativities are unchanged, and
+    ``base="reference"`` or a base-rate override put 1.00 anywhere else.
     """
     median = weighted_median(np.clip(x, enc.lo, enc.hi), w)
     if not np.isfinite(median):
         return 1
-    return 2 if median > 0.5 * (enc.lo + enc.hi) else 1
+    cut = enc.lo + CONTINUOUS_BASE_AT_HI * (enc.hi - enc.lo)
+    return 2 if median > cut else 1
 
 
 def _modal_bins(
@@ -309,11 +323,22 @@ def penalty_weights(
     reaches the last), so they are penalised hardest — a rise placed there is
     close to a shift of the whole curve and now has to pay for itself.
 
+    **This raises a linear term's penalty as well as levelling it.** ``u_j`` lives
+    in ``[0, 1]``, so ``sd(u_j) <= 0.5`` and ``P1_j >= 1`` always: no band is
+    penalised less than before and most are penalised more. Measured on the
+    French motor set, the mean weight over a term's bands is **1.6x** (Density,
+    20 bands) to **4.1x** (BonusMalus, 9 bands), and a **one-band (continuous)
+    term, which has nothing to level, is simply penalised 3.6x (Density) to 6.3x
+    (BonusMalus) harder** than before. That is what turns a weak continuous trend
+    into a flat term: the penalty is now on the rise, and a rise of a few per
+    cent across the whole range does not pay for itself. It is a real change in
+    how strong a given ``alpha`` is on these terms, not a redistribution.
+
     Without standardisation the raw coefficient is the *slope*, so a wide band
     is still cheap per unit of rise; ``P1_j = width_j * n_bands / (hi - lo)``
-    restores equality there. It only redistributes: the weights average to 1
-    over the term's bands, so the overall strength of ``alpha`` on the term is
-    unchanged.
+    restores equality there. That form **is** a pure redistribution: the weights
+    average to 1 over the term's bands, so the overall strength of ``alpha`` on
+    the term is unchanged.
 
     **Interaction cells** get ``P1 = penalty_weight * 0.5 / sd`` under
     standardisation (thin cells shrunk harder, fat cells like the mains) and

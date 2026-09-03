@@ -969,8 +969,13 @@ class TestWorkflow:
 
     def test_base_point_of_a_one_band_term_follows_the_exposure(self, book):
         """Q2 for a continuous term: with a single band the 1.00 point is the
-        clamp the bulk of the business is nearer to, not always the lower one."""
-        from easy_glm.core.fit import weighted_median
+        lower clamp unless the business is plainly top heavy — the
+        exposure-weighted median past 60% of the range. The threshold is off
+        centre so a factor sitting near the middle cannot flip between the two
+        clamps on sampling noise (review N6)."""
+        from easy_glm.core.fit import CONTINUOUS_BASE_AT_HI, weighted_median
+
+        assert CONTINUOUS_BASE_AT_HI == 0.6
 
         low = book.with_columns((pl.col("Mileage") * 0.2).alias("Mileage"))
         high = book.with_columns((30_000.0 - pl.col("Mileage") * 0.2).alias("Mileage"))
@@ -993,10 +998,31 @@ class TestWorkflow:
             assert cfg.x_base == base["from"][0]
             seen.append(cfg.x_base)
         assert seen == [0.0, 30_000.0]
-        # the rule itself: the weighted median against the middle of the range
+        # the rule itself: the weighted median against 60% of the range
         med = weighted_median(high["Mileage"].to_numpy(), high["Exposure"].to_numpy())
-        assert med > 15_000.0
+        assert med > CONTINUOUS_BASE_AT_HI * 30_000.0
         assert weighted_median(np.array([np.nan, np.nan]), np.ones(2)) != med
+
+        # a factor whose median sits just past the *middle* stays at the lower
+        # clamp: no flip on the noise that moves a median a few per cent
+        for centre in (0.50, 0.55, 0.59):
+            mid = book.with_columns(
+                (pl.col("Mileage") * 0.2 + (centre - 0.1) * 30_000.0).alias("Mileage")
+            )
+            spec = DesignSpec.from_data(
+                mid,
+                ["Mileage"],
+                linear=["Mileage"],
+                knots={"Mileage": []},
+                clamp={"Mileage": (0.0, 30_000.0)},
+            )
+            fit = fit_glm(mid, spec, "ClaimNb", alpha=0.0005, **FIT)
+            kept = mid.drop_nulls("Mileage")
+            med = weighted_median(
+                kept["Mileage"].to_numpy(), kept["Exposure"].to_numpy()
+            )
+            assert 0.45 < med / 30_000.0 < 0.60, med
+            assert to_rate_model(fit).variables["Mileage"].x_base == 0.0
 
     def test_a_flattened_term_keeps_its_base_point_and_edits_as_nodes(self, book, spec):
         """A monotone constraint in the wrong direction leaves every slope 0 and

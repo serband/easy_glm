@@ -28,13 +28,23 @@
   rise. The columns themselves are untouched, so a band's coefficient is still
   exactly its slope. On the French motor set this brings the bonus-malus
   relativity at 230 down from 89× to 30× with the holdout essentially unmoved
-  (Gini 0.3106 → 0.3103). A `continuous` term whose trend is too small to pay for
-  itself is now shrunk away entirely, which is the same rule doing its job.
+  (Gini 0.3106 → 0.3103).
+  **This makes a given `alpha` stronger on these terms, not merely different**:
+  no band's weight goes below 1, so a term's total penalty rises — 1.6× (Density,
+  20 bands) to 4.1× (BonusMalus, 9 bands) on the check's own fits, and 3.6× to
+  6.3× for a single-band `continuous` term, which has no bands to level against
+  each other. A weak trend is therefore now shrunk away where it used to survive
+  (the check document's continuous `Density` column is flat for exactly this
+  reason); re-check the penalty, or let cross-validation choose it, after
+  switching a factor to linear or continuous.
 - **The 1.00 point of a `continuous` term is stated rather than incidental**: a
-  single band has only two points a rate table can carry 1.00 at, so it goes to
-  whichever end of the range the exposure-weighted median is nearer to. With one
-  slope that only rescales the base rate; the ratios between relativities do not
-  move.
+  single band has only two points a rate table can carry 1.00 at, so it sits at
+  the lower clamp unless the exposure-weighted median is past 60 % of the way up
+  the range. The threshold is off centre on purpose — at a halfway split a factor
+  whose median sits near the middle would flip between the two clamps on
+  sampling noise, moving every relativity and the base rate between refits for no
+  reason. With one slope the choice only rescales the base rate; the ratios
+  between relativities do not move.
 - **Fits cached in a `*.easyglm-runs` folder by an earlier 0.4 development build
   are ignored and refitted** (`PERSIST_FORMAT` 2 → 3). The basis change altered
   what a `LinearEncoder`'s coefficients *mean* without changing anything about

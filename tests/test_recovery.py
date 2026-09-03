@@ -210,14 +210,21 @@ def planted_linear() -> pl.DataFrame:
     The flat stretches sit at the two **ends** of the range and the slope in the
     middle, which is where the per-unit-of-rise penalty (see
     ``easy_glm.core.fit.penalty_weights``) is easiest on a fitted slope: an end
-    band is a nearly constant column, so it now pays the most for its rise. The
-    opposite shape is harder and the numbers are worth recording — with the
-    slope at the ends and the flat stretch in the middle, the penalty that
-    flattens the middle costs the end slopes 7-13% of their size. Measured over
-    eight seeds of *this* book at the penalty below: every one of the nine flat
-    bands is exactly 0 and exactly the six bands of the sloped stretch are
-    non-zero, on every seed; the recovered slope is 95.4-97.0% of the truth and
-    the worst gap to the true curve is 0.141.
+    band is a nearly constant column, so it now pays the most for its rise.
+
+    The opposite shape is harder, and the cost is worth recording honestly.
+    Re-running this book with the slopes at the ends and the flat stretch in the
+    middle (3e-4 / 0 / -1.5e-4), at the same size and the same alpha as below:
+    the end slopes come back at **75-82%** of the truth — an 18-25% shortfall,
+    not the 7-13% an earlier draft of this docstring claimed from a different
+    book — and even then the middle is not fully flattened on every seed. So
+    this test's geometry is the favourable one for the penalty, deliberately:
+    it is here to pin the flat-band property, not to claim the penalty is free.
+
+    Measured over eight seeds of *this* book at the penalty below: every one of
+    the nine flat bands is exactly 0 and exactly the six bands of the sloped
+    stretch are non-zero, on every seed; the recovered slope is 95.4-97.0% of
+    the truth and the worst gap to the true curve is 0.141.
     """
     rng = np.random.default_rng(23)
     n = 120_000
