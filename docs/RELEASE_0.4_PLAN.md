@@ -10,7 +10,7 @@ green CI.*
 
 0.3 made rate tables exact and put the whole workflow in the browser. 0.4 makes
 the modelling **expressive enough for a real book** — interactions and
-piecewise-linear terms, the two things the original bike model used that 0.3
+piecewise-linear terms, two things real rating models routinely need that 0.3
 cannot express — removes the legacy path, and turns the workbench from
 "functional" into something people prefer over a spreadsheet.
 
@@ -170,11 +170,11 @@ Four layers, all automated except the last:
 - D4 report: the HTML file is self-contained (no external requests), opens in a headless browser without console errors, and contains one section per predictor.
 - D5 tooling: smoothing preserves the exposure-weighted mean relativity; cap/floor and round are idempotent; undo restores the previous snapshot exactly.
 - D6 theme: Playwright screenshots of every page reviewed by the reviewer and by you.
-- Actuarial check: you use the workbench on the bike data for one session; the list of frictions becomes the polish backlog.
+- Actuarial check: you use the workbench on a real book for one session; the list of frictions becomes the polish backlog.
 
 **E — modelling extras**
 - Tests: with an offset of `log(current premium)`, the fitted relativities equal those of a model on `claims / current premium`-style targets within 1e-8 (algebraic identity); `P1` weights change the number of non-zero terms in the expected direction; target-loss-ratio solver reproduces the target on the training set to 1e-10.
-- Actuarial check: the bike rate-change setup (offset = current premium) fitted in the workbench, with the resulting relativities as a rate-change table.
+- Actuarial check: a rate-change setup (offset = current premium) fitted in the workbench, with the resulting relativities as a rate-change table.
 
 **F — CLI / packaging**
 - Tests: `easy-glm run project.json` in a subprocess produces the script, tables, `.easyglm` and report; `mypy` clean on `core`/`workflow`; the 3.14 CI leg passes.
@@ -188,10 +188,11 @@ agent whose only brief is to misuse the tool.
 
 ### Persona runs (scripted, kept in `tests/e2e/`)
 
-**Actuary — rate review.** Open the bike-style project (SAS-like column names,
-a current-premium column). Set roles, recode the PO-score band, add the
-`Drvr1Exp_Q/M` derived columns, filter to positive premium, random split, fit
-frequency with `log(current premium)` as offset, add `Cover × VehTerms`, look
+**Actuary — rate review.** Open a project with untidy column names and a
+current-premium column. Set roles, recode a categorical band, add derived
+columns built from a conditional expression, filter to positive premium, random
+split, fit frequency with `log(current premium)` as offset, add a two-way
+interaction, look
 at A/E by every rating factor on holdout, cap one relativity, export Excel and
 the script, reopen the project file and confirm the fit and adjustments are
 still there. Assertions: every step succeeds, exported script reproduces
@@ -310,9 +311,9 @@ Rules
 
 * A model with `A × B` and a linear term round-trips: fit → `RateModel` →
   Excel → script → refit, with `RateModel.predict == fit.predict` to 1e-12.
-* The bike model from the original script (interactions, `Drvr1Exp_Q/M`
-  derived columns, PO-score recode, mileage linear term) can be built entirely
-  in the workbench and exported as a script that reproduces it.
+* A realistic model (interactions, derived columns from conditional
+  expressions, a categorical recode, a piecewise-linear term) can be built
+  entirely in the workbench and exported as a script that reproduces it.
 * No DuckDB anywhere; `pip install easy_glm` is lighter than 0.3.
 * Reloading the browser does not lose a fit.
 * 5M synthetic rows × ~200 design columns fit in < 3 GB peak memory; float32
