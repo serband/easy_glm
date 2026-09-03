@@ -457,3 +457,26 @@ prototype `StepMatrix`). Decisions:
   cells as a single cell-index block (a `CategoricalMatrix` over the kept-cell
   code, with "no cell" as an all-zero row) so memory is 4 bytes per row per
   interaction.
+
+### R10. Actuary's answers to Q1–Q6 (PR #2 review comments, 2026-09-03)
+Q1, Q2, Q4, Q6 confirm the defaults. Two answers change the build:
+* **Q3 → piece B2 (linear basis penalises slopes).** Replace the hinge basis
+  with per-band columns `clip(x − k_j, 0, k_{j+1} − k_j)` so each coefficient is
+  the slope *within* band j; the lasso then zeroes slopes (flat sections) rather
+  than bends. Table representation `(from, to, log_rel_at_from, slope)` is
+  unchanged (slope_j = β_j directly). Monotone constraints on linear terms are
+  re-enabled as sign bounds on the slope coefficients (`increasing` → β ≥ 0).
+  Re-run the planted-slope recovery, the b-linear actuarial check and update
+  Q3 in the questions file. The reviewer's B2 concern (convexity) no longer
+  applies because the constraint is on slopes, not on slope changes.
+* **Q5 → piece A2 (two-stage interactions, mains frozen).** When a model has
+  interactions, `run_model` fits stage 1 (mains only, as today) and stage 2
+  (interaction cells only, `fit_intercept=False`, offset = stage-1 linear
+  predictor incl. any user offset). `to_rate_model` takes main tables and base
+  rate from stage 1 and cell adjustments from stage 2; the exactness invariant
+  becomes `RateModel.predict == exp(η₁ + η₂)`. The exported script writes both
+  stages. The Model page shows the two stages; the pair search runs on the
+  stage-1 residuals (already the case). The `a-interactions` actuarial check is
+  re-run: main tables must now be identical with and without the interaction.
+  Cell penalty rule (P1 = penalty_weight·0.5/sd) is re-validated in stage 2.
+Sequencing: B2 and A2 run right after W3 (hardening), before D3/D4.
