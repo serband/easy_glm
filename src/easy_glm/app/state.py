@@ -55,6 +55,7 @@ import os
 import pickle
 import re
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -981,6 +982,36 @@ def interrupted_fits() -> list[str]:
     return out
 
 
+def fit_progress_callback():
+    """A progress callback that writes elapsed time into a placeholder.
+
+    ``fit_glm`` reports from a background thread, and Streamlit only accepts
+    drawing from a thread that carries the script's run context — so the
+    context of the thread that created the placeholder is attached on every
+    call (cheap, and correct if the reporting thread is recreated). Everything
+    is guarded: a workbench that cannot draw a progress line must still fit.
+    """
+    try:
+        from streamlit.runtime.scriptrunner import (
+            add_script_run_ctx,
+            get_script_run_ctx,
+        )
+
+        placeholder = st.empty()
+        ctx = get_script_run_ctx()
+    except Exception:  # pragma: no cover - older/newer Streamlit internals
+        return None
+
+    def report(message: str) -> None:
+        try:
+            add_script_run_ctx(threading.current_thread(), ctx)
+            placeholder.caption(message)
+        except Exception:  # pragma: no cover - never fail a fit for a caption
+            pass
+
+    return report
+
+
 def fit_model(model: str) -> ModelRun:
     p = project()
     df = prepared_frame()
@@ -990,9 +1021,10 @@ def fit_model(model: str) -> ModelRun:
     _mark_fit_started(model, key)
     try:
         with st.spinner(f"Fitting {model} ..."):
+            progress = fit_progress_callback()
             while True:
                 try:
-                    run = run_model(p, df, model)
+                    run = run_model(p, df, model, progress=progress)
                     break
                 except AdjustmentError as exc:
                     _drop_refused_adjustment(p.models[model], exc)
