@@ -159,6 +159,49 @@ def test_pages_render_with_an_interaction(page, project_file, tmp_path):
         assert "alpha (mains)" in labels and "alpha (cells)" in labels
 
 
+@pytest.mark.parametrize("page", ["pages_model", "pages_export"])
+def test_pages_with_an_interaction_that_kept_no_cell(page, project_file, tmp_path):
+    """Every cell below the exposure floor means there was no second stage: the
+    Model page must say so rather than fall silent, and the exported script must
+    not contain a stage-2 block it cannot run."""
+    from easy_glm.workflow import Interaction
+
+    p = Project.from_json(project_file)
+    p.models["freq"].interactions = [
+        Interaction("DrivAge", "Region", min_cell_exposure=0.99)
+    ]
+    path = tmp_path / "thin_interaction.json"
+    p.to_json(path)
+    at = AppTest.from_string(_script(page, str(path), fit=True), default_timeout=180)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    if page == "pages_model":
+        assert any("No second stage" in m.value for m in at.info)
+        assert [m.label for m in at.metric].count("alpha (cells)") == 0
+    else:
+        code = "\n".join(c.value for c in at.code)
+        assert "TwoStageFit" not in code and "spec.interactions_spec()" not in code
+
+
+def test_design_page_offers_the_cells_alpha(project_file, tmp_path):
+    """`Interaction.alpha` drives the second stage, so the page that owns
+    interactions has to show it."""
+    from easy_glm.workflow import Interaction
+
+    p = Project.from_json(project_file)
+    p.models["freq"].interactions = [Interaction("DrivAge", "Region", alpha=0.25)]
+    path = tmp_path / "with_alpha.json"
+    p.to_json(path)
+    at = AppTest.from_string(
+        _script("pages_design", str(path), fit=False), default_timeout=180
+    )
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    boxes = [n for n in at.number_input if n.label.startswith("Cells alpha")]
+    assert len(boxes) == 2  # the existing interaction's, and the one being added
+    assert 0.25 in [n.value for n in boxes]
+
+
 def test_main_entry_point_renders(project_file):
     import sys
 

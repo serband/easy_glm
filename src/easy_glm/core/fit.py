@@ -669,6 +669,15 @@ class TwoStageFit(GLMFit):
             dtype=float,
         )
 
+    def __eq__(self, other: object) -> bool:
+        """Both stages, not just the fields :class:`GLMFit` declares — ``stage1``
+        and ``stage2`` are ordinary attributes, so the inherited dataclass
+        equality would call two fits with the same mains and different cells
+        equal."""
+        if not isinstance(other, TwoStageFit):
+            return NotImplemented
+        return (self.stage1, self.stage2) == (other.stage1, other.stage2)
+
     def __repr__(self) -> str:
         nnz = int((self.coef != 0).sum())
         return (
@@ -691,12 +700,20 @@ def fit_two_stage(
     """Fit ``spec`` in two stages and return the composed :class:`TwoStageFit`.
 
     ``kwargs`` are :func:`fit_glm`'s and describe **stage 1** — the main-effect
-    fit, which is bit for bit the fit the same model without any interaction
-    would produce. Stage 2 then fits the interaction cells alone with
-    ``fit_intercept=False`` and ``offset = eta1`` (stage 1's linear predictor on
-    the training rows, plus the user's offset column if there is one), keeping
-    the family, link, weights and ``divide_target_by_weight`` of stage 1;
-    ``monotone`` does not apply to cells and is dropped.
+    fit, which is the fit the same model without any interaction would produce
+    (to glum's own run-to-run noise, ~1e-15 on a coefficient). Stage 2 then fits
+    the interaction cells alone with ``fit_intercept=False`` and
+    ``offset = eta1``, where ``eta1`` is stage 1's whole linear predictor on the
+    training rows — the user's offset included, whether it came from
+    ``offset_col`` or from an ``offset`` array — keeping the family, link,
+    weights and ``divide_target_by_weight`` of stage 1; ``monotone`` does not
+    apply to cells and is dropped, and ``fit_intercept``, ``scale_predictors``
+    and any ``P1`` of stage 1 do not carry over (stage 2 has its own columns).
+
+    An ``offset`` **array** is a training-time offset only, exactly as in
+    :func:`fit_glm`: nothing about it can be stored for scoring, so pass it to
+    ``predict`` as well (and note that a ``RateModel`` compiled from such a fit
+    cannot apply it — use ``offset_col`` for a model you intend to score).
 
     The second stage's penalty:
 
@@ -714,7 +731,9 @@ def fit_two_stage(
     When no cell of any interaction has enough exposure to be rated on its own
     there is nothing for a second stage to fit: a plain :class:`GLMFit` on
     ``spec`` comes back (the same numbers a mains-only fit gives, since the cell
-    block has no columns) and every cell reads 1.00.
+    block has no columns) and every cell reads 1.00. That is why the return type
+    is ``GLMFit``: narrow with ``isinstance(fit, TwoStageFit)`` before reading
+    :attr:`TwoStageFit.alpha_stage2` or :attr:`TwoStageFit.stage2`.
     """
     if not spec.interactions:
         raise ValueError(
@@ -727,11 +746,26 @@ def fit_two_stage(
         # design; a plain GLMFit comes back and every cell reads 1.00
         return fit_glm(data, spec, target, **kwargs)
     fit1 = fit_glm(data, spec.main_effects_spec(), target, **kwargs)
+    # eta1 must be the *whole* of stage 1's linear predictor, the user's offset
+    # included, or stage 2 would see a residual that still contains the offset
+    # and would put it in the cells. linear_predictor() adds neither form of
+    # offset, so both are added here.
     eta1 = fit1.linear_predictor(data)
     if fit1.offset_col:
         eta1 = eta1 + data[fit1.offset_col].cast(pl.Float64).to_numpy()
+    user_offset = kwargs.get("offset")
+    if user_offset is not None:
+        eta1 = eta1 + np.asarray(user_offset, dtype=float)
 
-    dropped = {"monotone", "offset_col", "offset", "alpha", "cv", "fit_intercept"}
+    dropped = {
+        "monotone",
+        "offset_col",
+        "offset",  # already inside eta1
+        "alpha",
+        "cv",
+        "fit_intercept",
+        "P1",  # stage 1's, one weight per main-effect column
+    }
     kw2 = {k: v for k, v in kwargs.items() if k not in dropped}
     kw2["scale_predictors"] = False  # glum refuses to standardise with no intercept
     if stage2_alpha is not None:

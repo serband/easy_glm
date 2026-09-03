@@ -3,6 +3,8 @@ and the two-stage fit (A2) that freezes the mains before fitting the cells."""
 
 from __future__ import annotations
 
+import pickle
+
 import numpy as np
 import polars as pl
 import pytest
@@ -850,6 +852,50 @@ class TestTwoStageFit:
                 two_stage.stage2,
             )
 
+    def test_an_offset_array_reaches_both_stages(self, book, spec):
+        """An `offset=` array must land in stage 2's offset as well as stage 1's
+        fit, or the cells absorb the whole offset. The array route and the
+        `offset_col` route are the same model."""
+        frame = book.with_columns(
+            pl.Series("logprem", np.log(np.linspace(150.0, 900.0, book.height)))
+        )
+        arr = frame["logprem"].to_numpy()
+        by_col = fit_two_stage(
+            frame, spec, "ClaimNb", alpha=0.001, offset_col="logprem", **FIT_KW
+        )
+        by_arr = fit_two_stage(
+            frame, spec, "ClaimNb", alpha=0.001, offset=arr, **FIT_KW
+        )
+        np.testing.assert_allclose(
+            by_arr.stage1.coef, by_col.stage1.coef, rtol=1e-10, atol=1e-12
+        )
+        np.testing.assert_allclose(
+            by_arr.stage2.coef, by_col.stage2.coef, rtol=1e-10, atol=1e-12
+        )
+        score = _scoring(frame)
+        np.testing.assert_allclose(
+            by_arr.predict(score, offset=_scoring(frame)["logprem"].to_numpy()),
+            by_col.predict(score),
+            rtol=1e-10,
+        )
+        # the offset column route stores the column; the array route cannot
+        assert by_arr.offset_col is None and by_col.offset_col == "logprem"
+
+    def test_pickles_and_comes_back_whole(self, book, two_stage):
+        """The runs folder pickles a fit; `TwoStageFit` is not a dataclass, so
+        its round trip is asserted rather than assumed."""
+        back = pickle.loads(pickle.dumps(two_stage))
+        assert isinstance(back, TwoStageFit)
+        assert back.alpha_stage2 == two_stage.alpha_stage2
+        np.testing.assert_array_equal(back.coef, two_stage.coef)
+        score = _scoring(book)
+        np.testing.assert_array_equal(back.predict(score), two_stage.predict(score))
+        assert back == two_stage or back.coef.tolist() == two_stage.coef.tolist()
+        # equality looks at both stages, not only the fields GLMFit declares
+        other = TwoStageFit(two_stage.stage1, two_stage.stage2)
+        assert other == two_stage
+        assert two_stage != two_stage.stage1
+
     def test_fit_glm_offset_and_intercept_arguments(self, book, spec):
         mains = spec.main_effects_spec()
         eta = np.zeros(book.height)
@@ -900,6 +946,57 @@ class TestStageTwoPenalty:
         # penalty_weight still multiplies it, and thin cells are still shrunk
         # harder per unit of *standardised* coefficient
         assert std[np.argmin(design.mean(axis=0))] > std[np.argmax(design.mean(axis=0))]
+
+    def test_the_same_penalty_through_glum_not_only_through_arithmetic(
+        self, book, spec, two_stage
+    ):
+        """The arithmetic above is a property of ``penalty_weights``; this is the
+        property of *glum* it relies on — that a standardised column's ``P1`` is
+        multiplied by that column's ``sd``. Fit the cell block with an intercept
+        (so standardisation is allowed) both ways: same model."""
+        cells = spec.interactions_spec()
+        eta1 = two_stage.stage1.linear_predictor(book)
+        both = [
+            fit_glm(
+                book,
+                cells,
+                "ClaimNb",
+                alpha=0.001,
+                offset=eta1,
+                scale_predictors=sp,
+                **FIT_KW,
+            )
+            for sp in (True, False)
+        ]
+        np.testing.assert_allclose(both[0].coef, both[1].coef, rtol=1e-8, atol=1e-10)
+        assert both[0].intercept == pytest.approx(both[1].intercept, abs=1e-9)
+        assert (both[0].coef != 0).sum() == (both[1].coef != 0).sum() > 0
+
+    def test_a_cell_also_carries_the_level_stage_two_cannot_put_anywhere_else(
+        self, book, spec, two_stage
+    ):
+        """Stage 2 has no intercept, so an overall re-levelling it wants ends up
+        in the cells. This pins the size of that effect, which the actuary
+        document and the Model page both describe."""
+        assert two_stage.stage2.intercept == 0.0
+        with_intercept = fit_glm(
+            book,
+            spec.interactions_spec(),
+            "ClaimNb",
+            alpha=0.001,
+            offset=two_stage.stage1.linear_predictor(book),
+            scale_predictors=False,
+            **FIT_KW,
+        )
+        level = with_intercept.intercept
+        assert level != 0.0
+        nz = two_stage.stage2.coef != 0
+        assert nz.sum() > 0
+        # each shipped cell is the with-intercept cell plus that level, near
+        # enough (not exactly: rows in unrated cells have no cell column to
+        # carry a level shift for them)
+        shift = (two_stage.stage2.coef - with_intercept.coef)[nz]
+        assert np.abs(shift - level).max() < 0.01 * max(abs(level), 1e-6) + 1e-3
 
     def test_penalty_weight_scales_the_cells_of_that_interaction(self, book):
         def _fit(weight: float):
