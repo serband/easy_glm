@@ -221,8 +221,15 @@ User edits relativity in table
   through `app.state` (`S.project()`, then `S.touch()` after any mutation = autosave).
 - Caches are keyed on spec hashes (`state.model_hash` excludes adjustments / base-rate
   override, which are applied post-fit via `rebuild_rate_model`).
+- Two frames in state: `prepared_frame()` (full data — fits, diagnostics, tables,
+  leakage, knots/levels) and `sample_frame()` / `raw_sample()` (exploration only:
+  Explore page, Design/Variables previews). `data_hash`/`model_hash` exclude the
+  sample settings; `sample_hash` keys the sample.
 - A browser reload starts a new Streamlit session: the project (spec) survives via the
-  autosaved JSON, fitted runs do not — refit is ~seconds.
+  autosaved JSON; fitted runs are restored from `<project>.easyglm-runs/` when
+  `run_key` (spec hash + data file identity + library versions) matches, else refitted.
+  `load_persisted_run` treats any failure as a cache miss and deletes the file;
+  adjustments/base-rate override are re-applied from the project on load.
 - Navigation between pages must be client-side (sidebar links) to keep session state;
   Playwright drivers should click sidebar links rather than `goto` page URLs.
 

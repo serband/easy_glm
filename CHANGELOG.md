@@ -2,6 +2,26 @@
 
 ## 0.4.0 (unreleased)
 
+### Workbench state (piece W1)
+
+- **Exploration sample vs full data.** The Project page setting is now an
+  *exploration sample*: it only speeds up the Explore page and the preview
+  charts on the Design and Variables pages. Fits, diagnostics, rate tables,
+  the leakage report, and the knots and levels of every rating factor always
+  use the full data. Behaviour change: a project saved by 0.3 with a sample
+  set used to fit on the sample; it now fits on everything, and changing the
+  sample never invalidates a fit.
+- **Fitted models survive a reload.** Each fit is persisted next to the project
+  file in `<project>.easyglm-runs/` (one file per model, latest only, plus a
+  small JSON sidecar) and restored on the next page load when the model
+  specification, the data file (path, size, last-modified time) and the
+  library versions all match; anything else is discarded and refitted.
+  Manual adjustments and the base-rate override are re-applied from the
+  project file on load. The folder holds pickles — trusted local content, like
+  derived-column expressions. Unsaved projects persist nothing (the sidebar
+  says so). Add `*.easyglm-runs/` to version-control ignores.
+- `EasyGLM.summary()` reports the offset column; `easy_glm.__version__`.
+
 ### Piecewise-linear terms (piece B)
 
 - Numeric factors can now be **piecewise-linear** instead of step functions
