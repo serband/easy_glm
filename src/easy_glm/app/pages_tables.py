@@ -650,18 +650,15 @@ def _rebalance(run, df: pl.DataFrame) -> None:
     balanced = abs(off) < 1e-9
     c1, c2 = st.columns([3, 1])
     c1.caption(
-        (
-            "**The book is balanced**: with these tables the model expects the "
-            "same total claims on the training rows as the fitted model did."
-            if balanced
-            else f"**Off-balance {off:+.3%}** — with these tables the model "
-            f"expects {abs(off):.3%} "
-            + ("more" if off > 0 else "less")
-            + " in total claims on the training rows than the fitted model did. "
-            "Editing a table does not refit the base rate, so this stays until "
-            "you put it back."
-        )
-        + " *Rebalance* sets the base-rate override to "
+        "**The book is balanced**: with these tables the model expects the same "
+        "total claims on the training rows as the fitted model did."
+        if balanced
+        else f"**Off-balance {off:+.3%}** — with these tables the model expects "
+        f"{abs(off):.3%} "
+        + ("more" if off > 0 else "less")
+        + " in total claims on the training rows than the fitted model did. "
+        "Editing a table does not refit the base rate, so this stays until you "
+        "put it back. *Rebalance* sets the base-rate override to "
         f"**{ui.fmt(base, digits=6)}**, which restores the fitted total exactly; "
         "it changes no relativity and is one undo step."
     )
@@ -676,9 +673,11 @@ def _rebalance(run, df: pl.DataFrame) -> None:
         cfg.base_rate_override = base
         ui.flash(
             "success",
-            f"Base rate rebalanced to {base:.6g} — total expected claims on the "
-            f"training rows are back where the fitted model had them ({off:+.3%} "
-            "removed). No relativity changed; *Undo* puts the old base rate back.",
+            f"Base rate rebalanced to {base:.6g}: the {abs(off):.3%} the edits "
+            + ("added to" if off > 0 else "took off")
+            + " the book is gone and total expected claims on the training rows "
+            "are back where the fitted model had them. No relativity changed; "
+            "*Undo* puts the old base rate back.",
         )
         _apply(run.name, True, [], before)
 

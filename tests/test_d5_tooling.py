@@ -1058,9 +1058,9 @@ def test_the_fitted_reference_is_stamped_with_the_fit_it_belongs_to(workspace):
     assert not at.exception, [e.value for e in at.exception]
     stamp, total = at.session_state["_fitted_claims"]["freq"]
     assert total > 0
-    from easy_glm.app import state as S
+    from easy_glm.app.state import model_hash
 
-    assert stamp == S.model_hash(at.session_state["_project"], "freq")
+    assert stamp == model_hash(at.session_state["_project"], "freq")
 
 
 def _train_rows(at) -> pl.DataFrame:
