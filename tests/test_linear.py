@@ -5,7 +5,9 @@ clips ``x`` to ``[lo, hi]`` and has one column per band, ``clip(x - k_j, 0,
 width_j)``, so each coefficient is the *slope inside that band* and the lasso
 zeroes slopes (flat sections). The term is exactly flat outside the clamp,
 treats nulls as the value at ``lo`` times a null factor, and its rate table is
-log-linear inside each band with relativity 1.00 at ``x_base``.
+log-linear inside each band with relativity 1.00 at ``x_base``. Monotone
+constraints are sign bounds on the band slopes and are available for linear
+terms.
 """
 
 from __future__ import annotations
@@ -282,23 +284,40 @@ class TestFit:
             engine_row_index(values, rm.variables["Mileage"]),
         )
 
-    def test_monotone_on_linear_raises(self, spec, book):
-        with pytest.raises(ValueError, match="piecewise-linear"):
-            monotone_bounds(spec, {"Mileage": "increasing"})
-        with pytest.raises(ValueError, match="piecewise-linear"):
-            fit_glm(
-                book.head(2000),
-                spec,
-                "ClaimNb",
-                alpha=0.01,
-                monotone={"Mileage": "increasing"},
-                **FIT,
-            )
+    def test_monotone_bounds_the_band_slopes_of_a_linear_term(self, spec, book):
+        """A monotone constraint on a linear term is a sign bound on every band
+        slope — not on the *change* of slope, so the curve is monotone without
+        being forced convex. The null column is never bounded."""
+        enc = spec["Mileage"]
+        sl = spec.slices()["Mileage"]
+        lower, upper = monotone_bounds(spec, {"Mileage": "increasing"})
+        assert np.all(lower[sl][: enc.n_bands] == 0.0)
+        assert np.all(np.isinf(upper[sl]))
+        assert lower[sl][enc.n_bands] == -np.inf  # the "is null" column
+        lower, upper = monotone_bounds(spec, {"Mileage": "decreasing"})
+        assert np.all(upper[sl][: enc.n_bands] == 0.0)
+        assert np.all(np.isinf(lower[sl]))
+        assert upper[sl][enc.n_bands] == np.inf
+        # and it reaches the fit: an increasing constraint gives no negative slope
+        fit = fit_glm(
+            book.head(4000),
+            spec,
+            "ClaimNb",
+            alpha=0.0005,
+            monotone={"Mileage": "increasing"},
+            **FIT,
+        )
+        tab = rate_tables(fit)["Mileage"]
+        assert (tab["slope"] >= -1e-14).all()
+        rel = tab.filter(pl.col("from").is_not_null() & pl.col("to").is_not_null())
+        assert (rel["relativity_to"].to_numpy() >= rel["relativity"].to_numpy()).all()
         # step variables in the same spec are still fine
         lower, upper = monotone_bounds(spec, {"DrivAge": "decreasing"})
         assert np.all(
             upper[spec.slices()["DrivAge"]][: len(spec["DrivAge"].knots)] == 0
         )
+        with pytest.raises(ValueError, match="categorical"):
+            monotone_bounds(spec, {"Region": "increasing"})
 
 
 # --------------------------------------------------------------------------
@@ -782,17 +801,16 @@ class TestWorkflow:
         p.models["freq"].penalty.cv = None
         return p
 
-    def test_validate_rejects_monotone_on_linear(self, project):
+    def test_validate_accepts_monotone_on_linear(self, project):
         from easy_glm.workflow import VariableDesign
 
         assert project.validate() == []
         project.design.variables["Mileage"] = VariableDesign(
-            kind="linear", monotone="increasing"
+            kind="linear", knots=[8_000.0], monotone="increasing"
         )
-        assert any("piecewise-linear" in p for p in project.validate())
-        project.design.variables["Mileage"] = VariableDesign(kind="linear")
-        project.models["freq"].monotone = {"Mileage": "increasing"}
-        assert any("piecewise-linear" in p for p in project.validate("freq"))
+        assert project.validate() == []  # B2: allowed, as a bound on the slopes
+        project.models["freq"].monotone = {"Mileage": "decreasing"}
+        assert project.validate("freq") == []
         project.models["freq"].monotone = {}
         project.design.variables["Mileage"] = VariableDesign(
             kind="linear", clamp=[5.0, 1.0]

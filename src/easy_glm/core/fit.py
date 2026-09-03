@@ -58,11 +58,19 @@ def resolve_family(family: Any) -> tuple[Any, str, str]:
 def monotone_bounds(
     spec: DesignSpec, monotone: Mapping[str, Direction]
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Coefficient bounds that make step effects monotone in the variable.
+    """Coefficient bounds that make a numeric effect monotone in the variable.
 
-    Each step column is the *increment* at a knot, so a monotone curve just
-    needs every increment to share a sign: ``lower = 0`` for increasing,
-    ``upper = 0`` for decreasing. Works with the L1 penalty.
+    * **Step** terms: each column is the *increment* at a knot, so a monotone
+      curve just needs every increment to share a sign.
+    * **Piecewise-linear** terms: each column is the *slope inside one band*
+      (see :class:`~easy_glm.core.design.LinearEncoder`), so a monotone curve
+      needs every slope to share a sign. Nothing is implied about the *change*
+      of slope, so the curve is monotone without being forced convex — that is
+      why the constraint is available for linear terms.
+
+    Either way: ``lower = 0`` for increasing, ``upper = 0`` for decreasing.
+    The null-indicator column is never bounded (nulls are not on the curve).
+    Works with the L1 penalty: a lasso'd slope is 0, which both bounds allow.
     """
     p = spec.n_features
     lower = np.full(p, -np.inf)
@@ -72,17 +80,10 @@ def monotone_bounds(
     for var, direction in monotone.items():
         if var not in spec:
             raise KeyError(f"monotone: {var!r} is not a predictor in the spec")
-        if isinstance(spec[var], LinearEncoder):
+        if not isinstance(spec[var], StepEncoder | LinearEncoder):
             raise ValueError(
-                f"monotone: {var!r} is a piecewise-linear term; monotone constraints "
-                "are not available for linear terms in this release (a sign bound on "
-                "the hinge coefficients would force the curve to be convex, not just "
-                "monotone). Use a step design for this variable or drop the constraint."
-            )
-        if not isinstance(spec[var], StepEncoder):
-            raise ValueError(
-                f"monotone: {var!r} is categorical or an interaction; only step "
-                "(numeric) variables can be constrained"
+                f"monotone: {var!r} is categorical or an interaction; only numeric "
+                "(step or piecewise-linear) variables can be constrained"
             )
         if direction not in ("increasing", "decreasing"):
             raise ValueError(
@@ -90,7 +91,9 @@ def monotone_bounds(
                 f"got {direction!r}"
             )
         sl = slices[var]
-        idx = [i for i in range(sl.start, sl.stop) if features[i].kind == "step"]
+        idx = [
+            i for i in range(sl.start, sl.stop) if features[i].kind in ("step", "band")
+        ]
         if direction == "increasing":
             lower[idx] = 0.0
         else:
@@ -311,7 +314,8 @@ def fit_glm(
         Number of folds; the alpha (and l1_ratio) minimising CV deviance over a
         ``n_alphas``-point path is chosen. Overrides ``alpha``.
     monotone : {variable: "increasing" | "decreasing"}, optional
-        Sign constraints on step increments (see :func:`monotone_bounds`).
+        Sign constraints on step increments / piecewise-linear band slopes
+        (see :func:`monotone_bounds`).
     scale_predictors : bool
         Standardise columns before penalising (glmnet/aglm default).
     glum_kwargs

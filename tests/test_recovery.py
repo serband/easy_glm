@@ -8,7 +8,8 @@ Piecewise-linear terms (pieces B and B2): a mileage effect with a sloped, a
 **flat** and a second sloped stretch is planted; the fitted band slopes must be
 exactly zero on the flat stretch, recovered within 10% on the sloped ones, the
 whole curve must be close to the truth, and it must be flat beyond the training
-range.
+range. A monotone constraint in the wrong direction must flatten the term
+rather than bend it.
 """
 
 from __future__ import annotations
@@ -228,6 +229,27 @@ def planted_linear() -> pl.DataFrame:
     )
 
 
+@pytest.fixture(scope="module")
+def planted_increasing() -> pl.DataFrame:
+    """A book whose mileage effect only ever goes up (slopes 2e-4 then 1e-4)."""
+    rng = np.random.default_rng(31)
+    n = 60_000
+    mileage = rng.uniform(0, 30_000, n)
+    expo = rng.uniform(0.3, 1.0, n)
+    lp = (
+        -0.5
+        + 2e-4 * np.minimum(mileage, 15_000)
+        + 1e-4 * np.maximum(mileage - 15_000, 0)
+    )
+    return pl.DataFrame(
+        {
+            "ClaimNb": rng.poisson(np.exp(lp) * expo).astype(float),
+            "Exposure": expo,
+            "Mileage": mileage,
+        }
+    )
+
+
 class TestPlantedLinear:
     KNOTS = [2_000.0 * k for k in range(1, 15)]  # every 2,000 miles
     ALPHA = 0.02
@@ -314,6 +336,59 @@ class TestPlantedLinear:
             flat_rows["relativity"].to_numpy(),
             rtol=0,
             atol=0,
+        )
+
+    def test_monotone_in_the_wrong_direction_flattens_the_term(
+        self, planted_increasing
+    ):
+        """B2 re-enables monotone constraints on linear terms as sign bounds on
+        the band slopes. On a curve that truly only rises, a *decreasing*
+        constraint cannot produce a single positive slope, so the lasso's only
+        admissible answer is a flat term; the matching *increasing* constraint
+        leaves the recovery untouched."""
+        knots = [2_500.0 * k for k in range(1, 12)]
+
+        def _fit(monotone):
+            spec = DesignSpec.from_data(
+                planted_increasing,
+                ["Mileage"],
+                linear=["Mileage"],
+                knots={"Mileage": knots},
+                clamp={"Mileage": (0.0, 30_000.0)},
+            )
+            fit = fit_glm(
+                planted_increasing,
+                spec,
+                "ClaimNb",
+                alpha=0.005,
+                monotone=monotone,
+                **FIT,
+            )
+            enc = spec["Mileage"]
+            return fit, fit.coef[fit.spec.slices()["Mileage"]][: enc.n_bands]
+
+        _, free = _fit(None)
+        assert (free > 0).all()  # unconstrained, the planted rise is recovered
+
+        fit_down, down = _fit({"Mileage": "decreasing"})
+        assert not (down > 0).any()  # never a positive slope
+        assert list(down) == [0.0] * len(down)  # ... so the term goes flat
+        probe = pl.DataFrame(
+            {"Mileage": [0.0, 10_000.0, 30_000.0], "Exposure": [1.0] * 3}
+        )
+        p = fit_down.predict(probe)
+        np.testing.assert_allclose(p, p[0], rtol=1e-12)
+        tab = rate_tables(fit_down)["Mileage"]
+        assert (tab["slope"] == 0.0).all()
+        assert np.allclose(tab["relativity"].to_numpy()[:-1], 1.0)
+
+        fit_up, up = _fit({"Mileage": "increasing"})
+        assert (up >= 0).all()
+        # the bound is not binding, so the fit is the free one (to solver noise)
+        np.testing.assert_allclose(up, free, rtol=1e-2, atol=1e-12)
+        log_rel = np.log(fit_up.predict(probe))
+        assert (
+            abs((log_rel[2] - log_rel[0]) / (2e-4 * 15_000 + 1e-4 * 15_000) - 1) < 0.1
         )
 
     def test_curve_is_flat_beyond_the_training_range(self, planted_linear):

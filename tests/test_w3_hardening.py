@@ -537,7 +537,9 @@ def test_misleading_37_monotone_on_a_categorical_is_a_validation_problem(workspa
     p.design.variables["Region"] = VariableDesign(
         kind="categorical", monotone="increasing"
     )
-    assert any("numeric step designs only" in x for x in p.validate())
+    assert any(
+        "monotone constraints apply to numeric designs only" in x for x in p.validate()
+    )
 
 
 def test_cell_text_rules():

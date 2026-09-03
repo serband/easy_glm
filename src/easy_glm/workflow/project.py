@@ -472,14 +472,9 @@ class Project:
                 )
             if vd.monotone not in (None, "increasing", "decreasing"):
                 problems.append(f"design[{var!r}].monotone invalid")
-            if vd.monotone and vd.kind == "linear":
-                problems.append(
-                    f"design[{var!r}]: monotone constraints are not available for "
-                    "piecewise-linear terms; use a step design or drop the constraint"
-                )
             if vd.monotone and vd.kind == "categorical":
                 problems.append(
-                    f"design[{var!r}]: monotone constraints apply to numeric step "
+                    f"design[{var!r}]: monotone constraints apply to numeric "
                     "designs only"
                 )
             if vd.clamp is not None and (
@@ -529,13 +524,7 @@ class Project:
                 if vd_kind is not None and vd_kind.kind == "categorical":
                     problems.append(
                         f"{name}: monotone[{v!r}] — {v!r} is categorical; monotone "
-                        "constraints apply to numeric step designs only"
-                    )
-                vd = self.design.variables.get(v)
-                if vd is not None and vd.kind == "linear":
-                    problems.append(
-                        f"{name}: monotone[{v!r}] — {v!r} is a piecewise-linear term; "
-                        "monotone constraints are not available for linear terms"
+                        "constraints apply to numeric designs only"
                     )
             seen_pairs: set[frozenset[str]] = set()
             for it in cfg.interactions:

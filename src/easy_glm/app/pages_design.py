@@ -170,8 +170,8 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
         if new.monotone and (not numeric or new.kind == "categorical"):
             ui.flash(
                 "error",
-                f"{v}: monotone constraints apply to numeric step designs only; "
-                "the constraint was not saved",
+                f"{v}: monotone constraints apply to numeric designs (step or "
+                "linear) only; the constraint was not saved",
             )
             new.monotone = vd.monotone if numeric and vd.kind != "categorical" else None
         if new != vd:
@@ -204,13 +204,6 @@ def _kind_selector(var: str, vd: VariableDesign, numeric: bool) -> None:
             st.error(f"{var} is not numeric; a {kind} design needs numbers")
             return
         vd.kind = None if kind == "auto" else kind
-        if kind == "linear" and vd.monotone:
-            vd.monotone = None
-            ui.flash(
-                "warning",
-                f"Monotone constraint on {var} removed: not available for "
-                "piecewise-linear terms",
-            )
         p.design.variables[var] = vd
         S.touch()
         st.rerun()
@@ -367,7 +360,6 @@ def _linear_detail(
             vd.knots = knots if strategy == "custom" else strategy
             vd.n_bins = int(n_bins) if strategy == "quantile" else vd.n_bins
             vd.clamp = clamp
-            vd.monotone = None
             p.design.variables[var] = vd
             S.touch()
             st.rerun()
@@ -390,7 +382,7 @@ def _linear_detail(
     st.plotly_chart(
         C.exposure_rate_chart(
             u["table"],
-            title=f"{var}: linear in {len(enc.knots) + 1} band(s) between {enc.lo:g} and {enc.hi:g}",
+            title=f"{var}: linear in {enc.n_bands} band(s) between {enc.lo:g} and {enc.hi:g}",
             marks=marks,
         ),
         width="stretch",
@@ -692,7 +684,8 @@ def render() -> None:
     st.caption(
         "Numeric predictors become step functions (one 0/1 column per knot, penalised increments → automatic banding) "
         "or piecewise-linear curves; categoricals become one-hot with the most frequent level as reference and an "
-        "**Other** bucket. Monotone constraints bound the step increments (not available for linear terms)."
+        "**Other** bucket. Monotone constraints bound the step increments or the piecewise-linear band slopes; they "
+        "are not available for categoricals."
     )
     _grid(train, predictors)
     total = 0
