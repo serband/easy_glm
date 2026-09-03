@@ -45,9 +45,12 @@ two-dimensional adjustment table.
 
 ### B. Piecewise-linear (L-dummy) terms
 
-`LinearEncoder(var, knots)` with hinge columns `max(x − k, 0)`: the AGLM
-"L-dummies". Curves are continuous, which suits mileage, sum insured,
-vehicle value.
+`LinearEncoder(var, knots)`: continuous piecewise-linear curves for mileage,
+sum insured, vehicle value. **Basis (superseded by R10 / piece B2):** the
+original hinge columns `max(x − k, 0)` penalised bends; after the actuary's Q3
+answer the columns are per-band overlaps `clip(x − k_j, 0, k_{j+1} − k_j)` so
+the lasso penalises *slopes* (flat unless the data insists) and monotone
+constraints are sign bounds on slopes.
 
 * **engine** — a numeric table type where each band carries a *slope*:
   `relativity(x) = exp(a_j + b_j · x)` within band `j` (log-linear in `x`). Stored
