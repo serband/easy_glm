@@ -431,8 +431,21 @@ def _fit_and_results(name: str) -> None:
             "rate are now frozen. Stage 2 fitted "
             + ", ".join(f"**{e.variable}**" for e in run.spec.interactions)
             + f" on top of them at alpha {ui.fmt(s['alpha_stage2'], digits=5)}: "
-            f"{s['cells_kept']} cell(s) had enough exposure to be rated on their own, "
-            "and each is an adjustment to the mains (1.00 = none)."
+            f"{s['cells_kept']} cell(s) had enough exposure to be rated on their own. "
+            "Each is an adjustment to the frozen mains (1.00 = none), including any "
+            "small overall re-levelling stage 2 wants — with the mains fixed it has "
+            "nowhere to put that but in the cells."
+        )
+    elif run.config.interactions and not run.cells_kept:
+        st.info(
+            "**No second stage.** No cell of "
+            + ", ".join(f"**{it.name}**" for it in run.config.interactions)
+            + " reached its exposure floor ("
+            + ", ".join(f"{it.min_cell_exposure:.2%}" for it in run.config.interactions)
+            + " of the pair's training exposure), so there was nothing to fit on top "
+            "of the main effects: every cell of the matrix on the Rate tables page "
+            "reads 1.00. Lower the floor on the Design page, or use coarser bands for "
+            "the parents, if you want the pair rated."
         )
     tab1, tab2, tab3 = st.tabs(
         ["Coefficients kept", "Regularisation path", "All coefficients"]

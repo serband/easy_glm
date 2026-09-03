@@ -176,3 +176,44 @@ def test_easyglm_serialization(synthetic_insurance_data, tmp_path):
     original_preds = eglm.predict(df.head(5)).to_list()
     loaded_preds = loaded.predict(df.head(5)).to_list()
     assert original_preds == loaded_preds
+
+
+def test_save_load_round_trip_with_an_interaction(synthetic_insurance_data, tmp_path):
+    """A two-stage fit (mains frozen, interaction cells on top) must survive
+    save/load: stage 1's estimator alone cannot score the composed mains+cells
+    spec, so both are written and the pair is rebuilt."""
+    from easy_glm import TwoStageFit, fit_two_stage, rate_tables
+
+    df = synthetic_insurance_data
+    spec = DesignSpec.from_data(
+        df,
+        ["VehAge", "Region", "DrivAge"],
+        min_level_share=0.02,
+        weight_col="Exposure",
+        interactions=[("DrivAge", "Region")],
+        min_cell_exposure=0.005,
+    )
+    fit = fit_two_stage(
+        df,
+        spec,
+        "ClaimNb",
+        family="poisson",
+        weight_col="Exposure",
+        divide_target_by_weight=True,
+        alpha=0.001,
+    )
+    assert isinstance(fit, TwoStageFit)
+    eglm = EasyGLM(fit, to_rate_model(fit, exposure_col="Exposure"), rate_tables(fit))
+
+    model_dir = tmp_path / "two_stage"
+    eglm.save(model_dir)
+    assert (model_dir / "glm_model_stage2.joblib").exists()
+
+    loaded = EasyGLM.load(model_dir)
+    assert isinstance(loaded.glm, TwoStageFit)
+    assert loaded.glm.alpha_stage2 == fit.alpha_stage2
+    assert loaded.predictors == eglm.predictors
+    np.testing.assert_array_equal(loaded.glm.coef, fit.coef)
+    np.testing.assert_array_equal(
+        loaded.predict(df.head(50)).to_numpy(), eglm.predict(df.head(50)).to_numpy()
+    )
