@@ -1,4 +1,5 @@
-"""Page 5 — Design: how each predictor becomes GLM features."""
+"""Page 5 — Design: how each predictor becomes GLM features, and the
+two-way interactions of the selected model."""
 
 from __future__ import annotations
 
@@ -9,10 +10,14 @@ import streamlit as st
 from easy_glm.core.design import (
     NUMERIC_DTYPES,
     CategoricalEncoder,
+    InteractionEncoder,
     LinearEncoder,
     StepEncoder,
+    quantile_knots,
+    round_range_outward,
+    row_label,
 )
-from easy_glm.workflow import VariableDesign, encoder_for, univariate
+from easy_glm.workflow import Interaction, VariableDesign, encoder_for, univariate
 
 from . import charts as C
 from . import state as S
@@ -21,6 +26,20 @@ from . import ui
 KNOT_OPTIONS = ["quantile", "integer", "custom"]
 KIND_OPTIONS = ["auto", "step", "linear", "categorical"]
 MONO_OPTIONS = ["none", "increasing", "decreasing"]
+
+
+def _parse_numbers(text: str) -> list[float]:
+    """Comma / newline separated numbers; raises ValueError naming the bad token."""
+    out: list[float] = []
+    for tok in text.replace("\n", ",").split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            out.append(float(tok))
+        except ValueError as exc:
+            raise ValueError(f"{tok!r} is not a number") from exc
+    return sorted(set(out))
 
 
 def _defaults() -> None:
@@ -153,24 +172,277 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
         st.rerun()
 
 
+# --------------------------------------------------------------------------
+# variable detail
+# --------------------------------------------------------------------------
+def _kind_selector(var: str, vd: VariableDesign, numeric: bool) -> None:
+    """The kind of the selected variable (mirrors the grid column)."""
+    p = S.project()
+    current = vd.kind or "auto"
+    kind = st.selectbox(
+        "Kind",
+        KIND_OPTIONS,
+        index=KIND_OPTIONS.index(current),
+        key=f"kind_{var}",
+        help="auto = step for numbers, categorical for text",
+    )
+    if kind != current:
+        if kind in ("step", "linear") and not numeric:
+            st.error(f"{var} is not numeric; a {kind} design needs numbers")
+            return
+        vd.kind = None if kind == "auto" else kind
+        if kind == "linear" and vd.monotone:
+            vd.monotone = None
+            st.warning(
+                f"Monotone constraint on {var} removed: not available for "
+                "piecewise-linear terms"
+            )
+        p.design.variables[var] = vd
+        S.touch()
+        st.rerun()
+
+
+def _step_detail(
+    var: str, vd: VariableDesign, enc: StepEncoder, preview: pl.DataFrame, divide
+) -> None:
+    p = S.project()
+    knots_txt = st.text_area(
+        "Knots (comma-separated; editing switches to custom)",
+        ", ".join(f"{k:g}" for k in enc.knots),
+        height=90,
+        key=f"knots_{var}",
+    )
+    if st.button("Apply knots", key=f"apply_knots_{var}"):
+        try:
+            knots = _parse_numbers(knots_txt)
+        except ValueError as exc:
+            st.error(f"Knots: {exc}")
+        else:
+            if not knots:
+                st.error("At least one knot is needed")
+            else:
+                vd.knots = knots
+                p.design.variables[var] = vd
+                S.touch()
+                st.rerun()
+    u = univariate(
+        preview,
+        var,
+        target=p.target,
+        weight=p.weight,
+        divide_target_by_weight=divide,
+        knots=enc.knots,
+    )
+    st.plotly_chart(
+        C.exposure_rate_chart(
+            u["table"],
+            title=f"{var}: {len(enc.knots)} knots → {len(enc.knots) + 1} bins (+ null)",
+        ),
+        width="stretch",
+    )
+    st.caption(
+        f"Design columns: {enc.n_features} · bins: {len(enc.bins())} · "
+        f"null indicator: {enc.null_indicator}"
+    )
+
+
+def _linear_detail(
+    var: str,
+    vd: VariableDesign,
+    enc: LinearEncoder,
+    train: pl.DataFrame,
+    preview: pl.DataFrame,
+    divide,
+) -> None:
+    p = S.project()
+    d = p.design.defaults
+    s = train[var].drop_nulls().cast(pl.Float64)
+    tmin, tmax = float(s.min()), float(s.max())
+    rlo, rhi = round_range_outward(tmin, tmax)
+    st.markdown(
+        f"**Piecewise-linear** — the relativity curve is continuous, log-linear "
+        f"inside each band, and **flat outside the clamp range**. Training range "
+        f"{tmin:g} – {tmax:g}; default clamp = that range rounded outward to a round "
+        f"number → **{rlo:g} – {rhi:g}**."
+    )
+    strategy_now = "custom" if isinstance(vd.knots, list) else vd.knots
+    c1, c2, c3 = st.columns([1, 1, 2])
+    strategy = c1.radio(
+        "Knot strategy",
+        KNOT_OPTIONS,
+        index=KNOT_OPTIONS.index(strategy_now),
+        key=f"lin_strategy_{var}",
+        help="Where the slope may change. quantile: n_bins quantiles · integer: every integer · custom: your list",
+    )
+    n_bins = c2.number_input(
+        "n_bins (quantile)",
+        2,
+        200,
+        int(vd.n_bins or d.n_bins),
+        key=f"lin_nbins_{var}",
+        disabled=strategy != "quantile",
+    )
+    knots_txt = c3.text_area(
+        "Knots (custom)",
+        ", ".join(f"{k:g}" for k in enc.knots),
+        height=70,
+        key=f"lin_knots_{var}",
+        disabled=strategy != "custom",
+    )
+    use_default = st.checkbox(
+        "Clamp to the training range (rounded outward)",
+        vd.clamp is None,
+        key=f"lin_defaultclamp_{var}",
+    )
+    c1, c2, c3 = st.columns([1, 1, 2])
+    lo = c1.number_input(
+        "Clamp lo",
+        value=float(vd.clamp[0]) if vd.clamp else rlo,
+        key=f"lin_lo_{var}",
+        disabled=use_default,
+        format="%g",
+    )
+    hi = c2.number_input(
+        "Clamp hi",
+        value=float(vd.clamp[1]) if vd.clamp else rhi,
+        key=f"lin_hi_{var}",
+        disabled=use_default,
+        format="%g",
+    )
+    c3.caption(
+        "Values below lo / above hi get the relativity at the clamp. Knots must lie "
+        "strictly inside the clamp range."
+    )
+    if st.button("Apply linear design", key=f"apply_lin_{var}", type="primary"):
+        errors: list[str] = []
+        clamp: list[float] | None
+        if use_default:
+            clamp = None
+            lo_c, hi_c = rlo, rhi
+        else:
+            lo_c, hi_c = float(lo), float(hi)
+            clamp = [lo_c, hi_c]
+            if not lo_c < hi_c:
+                errors.append("Clamp lo must be below clamp hi")
+        knots: list[float] = list(enc.knots)
+        if strategy == "custom":
+            try:
+                knots = _parse_numbers(knots_txt)
+            except ValueError as exc:
+                errors.append(f"Knots: {exc}")
+                knots = []
+            outside = [k for k in knots if not lo_c < k < hi_c]
+            if outside:
+                errors.append(
+                    "Knots outside the clamp range: "
+                    + ", ".join(f"{k:g}" for k in outside)
+                    + f" (clamp {lo_c:g} – {hi_c:g}); move them inside or widen the clamp"
+                )
+        if errors:
+            for e in errors:
+                st.error(e)
+        else:
+            vd.kind = "linear"
+            vd.knots = knots if strategy == "custom" else strategy
+            vd.n_bins = int(n_bins) if strategy == "quantile" else vd.n_bins
+            vd.clamp = clamp
+            vd.monotone = None
+            p.design.variables[var] = vd
+            S.touch()
+            st.rerun()
+    edges = enc.band_edges()
+    u = univariate(
+        preview,
+        var,
+        target=p.target,
+        weight=p.weight,
+        divide_target_by_weight=divide,
+        knots=edges,
+    )
+    labels = u["table"]["label"].to_list()
+    marks: dict[str, str] = {}
+    if labels:
+        marks[labels[0]] = f"clamp lo {enc.lo:g}"
+        last = [lab for lab in labels if lab.startswith("≥")]
+        if last:
+            marks[last[-1]] = f"clamp hi {enc.hi:g}"
+    st.plotly_chart(
+        C.exposure_rate_chart(
+            u["table"],
+            title=f"{var}: linear in {len(enc.knots) + 1} band(s) between {enc.lo:g} and {enc.hi:g}",
+            marks=marks,
+        ),
+        width="stretch",
+    )
+    st.caption(
+        f"Design columns: {enc.n_features} · rows in the rate table: {enc.n_rows} · "
+        f"null indicator: {enc.null_indicator} · knots: "
+        + (", ".join(f"{k:g}" for k in enc.knots) or "none (one straight band)")
+    )
+
+
+def _categorical_detail(
+    var: str, vd: VariableDesign, enc: CategoricalEncoder, preview, divide
+) -> None:
+    p = S.project()
+    st.markdown(
+        f"**Reference level:** `{enc.reference}`  \n**Kept levels:** {len(enc.levels)} (+ Other)"
+    )
+    levels_txt = st.text_area(
+        "Levels (first = reference; others lumped into Other)",
+        ", ".join(enc.levels),
+        height=90,
+        key=f"levels_{var}",
+    )
+    if st.button("Apply levels", key=f"apply_levels_{var}"):
+        levels = [
+            x.strip() for x in levels_txt.replace("\n", ",").split(",") if x.strip()
+        ]
+        if len(set(levels)) != len(levels):
+            st.error("Levels must be unique")
+        else:
+            vd.levels = levels or None
+            p.design.variables[var] = vd
+            S.touch()
+            st.rerun()
+    u = univariate(
+        preview,
+        var,
+        target=p.target,
+        weight=p.weight,
+        divide_target_by_weight=divide,
+        max_levels=len(enc.levels),
+    )
+    st.plotly_chart(
+        C.exposure_rate_chart(
+            u["table"], title=f"{var}: {len(enc.levels)} levels + Other"
+        ),
+        width="stretch",
+    )
+
+
 def _detail(train: pl.DataFrame, preview: pl.DataFrame, predictors: list[str]) -> None:
     p = S.project()
     st.subheader("Variable detail")
     c1, c2 = st.columns([2, 1])
     var = c1.selectbox("Variable", predictors, key="design_detail_var")
     vd = p.design.variables.get(var, VariableDesign())
+    numeric = train[var].dtype in NUMERIC_DTYPES
+    with c2:
+        _kind_selector(var, vd, numeric)
+    vd = p.design.variables.get(var, VariableDesign())
     weights = train[p.weight] if p.weight and p.weight in train.columns else None
+    cfg = p.models.get(p.champion) if p.champion else None
+    divide = cfg.divide_target_by_weight if cfg else bool(p.weight)
     try:
         enc = encoder_for(var, train[var], vd, p, weights=weights)
     except Exception as exc:  # noqa: BLE001
         st.warning(f"Cannot build the design for {var} yet: {exc}")
-        if train[var].dtype in NUMERIC_DTYPES:
-            from easy_glm.core.design import quantile_knots
-
+        if numeric and (vd.kind or "step") == "step":
             suggestion = quantile_knots(
                 train[var], vd.n_bins or p.design.defaults.n_bins
             )
-            knots_txt = c2.text_area(
+            knots_txt = st.text_area(
                 "Knots (comma-separated)",
                 ", ".join(f"{k:g}" for k in suggestion),
                 height=90,
@@ -178,161 +450,183 @@ def _detail(train: pl.DataFrame, preview: pl.DataFrame, predictors: list[str]) -
             )
             if st.button("Apply knots", key=f"apply_knots_{var}"):
                 try:
-                    vd.knots = sorted(
-                        {
-                            float(x)
-                            for x in knots_txt.replace("\n", ",").split(",")
-                            if x.strip()
-                        }
-                    )
-                except ValueError:
-                    st.error("Knots must be numbers")
+                    knots = _parse_numbers(knots_txt)
+                except ValueError as err:
+                    st.error(f"Knots: {err}")
                 else:
+                    vd.knots = knots
                     p.design.variables[var] = vd
                     S.touch()
                     st.rerun()
         return
-    cfg = p.models.get(p.champion) if p.champion else None
-    divide = cfg.divide_target_by_weight if cfg else bool(p.weight)
     if isinstance(enc, StepEncoder):
-        knots_txt = c2.text_area(
-            "Knots (comma-separated; editing switches to custom)",
-            ", ".join(f"{k:g}" for k in enc.knots),
-            height=90,
-            key=f"knots_{var}",
-        )
-        if st.button("Apply knots", key=f"apply_knots_{var}"):
-            try:
-                knots = sorted(
-                    {
-                        float(x)
-                        for x in knots_txt.replace("\n", ",").split(",")
-                        if x.strip()
-                    }
-                )
-            except ValueError:
-                st.error("Knots must be numbers")
-            else:
-                vd.knots = knots
-                p.design.variables[var] = vd
+        _step_detail(var, vd, enc, preview, divide)
+    elif isinstance(enc, LinearEncoder):
+        _linear_detail(var, vd, enc, train, preview, divide)
+    elif isinstance(enc, CategoricalEncoder):
+        _categorical_detail(var, vd, enc, preview, divide)
+
+
+# --------------------------------------------------------------------------
+# interactions
+# --------------------------------------------------------------------------
+def _interaction_model_name() -> str | None:
+    p = S.project()
+    names = list(p.models)
+    if not names:
+        return None
+    current = st.session_state.get("model_current")
+    if current not in names:
+        current = p.champion if p.champion in names else names[0]
+    return st.selectbox(
+        "Model",
+        names,
+        index=names.index(current),
+        key="design_inter_model",
+        help="Interactions belong to a model (its predictors must include both parents)",
+    )
+
+
+def _interactions(train: pl.DataFrame) -> None:
+    p = S.project()
+    st.subheader("Interactions")
+    st.caption(
+        "A two-way interaction A × B adds one adjustment per cell on top of the two "
+        "main effects; cells with too little exposure get no adjustment (1.00). "
+        "Add them here, fit on the Model page, see the cells on the Rate tables page."
+    )
+    name = _interaction_model_name()
+    if name is None:
+        st.info("Create a model on the Model page first.")
+        return
+    cfg = p.models[name]
+    if cfg.interactions:
+        for i, it in enumerate(list(cfg.interactions)):
+            c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
+            c1.markdown(f"**{it.name}**")
+            c2.caption(f"min cell exposure {it.min_cell_exposure:.2%}")
+            c3.caption(f"penalty weight {it.penalty_weight:g}")
+            if c4.button("Remove", key=f"rm_inter_{name}_{i}"):
+                cfg.interactions.pop(i)
+                cfg.adjustments = [a for a in cfg.adjustments if a.variable != it.name]
                 S.touch()
                 st.rerun()
-        u = univariate(
-            preview,
-            var,
-            target=p.target,
-            weight=p.weight,
-            divide_target_by_weight=divide,
-            knots=enc.knots,
+    else:
+        st.caption("No interactions in this model yet.")
+    preds = list(cfg.predictors)
+    if len(preds) < 2:
+        st.info("The model needs at least two predictors before adding an interaction.")
+        return
+    with st.container(border=True):
+        c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
+        a = c1.selectbox("First variable", preds, key=f"inter_a_{name}")
+        b = c2.selectbox(
+            "Second variable",
+            preds,
+            index=min(1, len(preds) - 1),
+            key=f"inter_b_{name}",
         )
-        st.plotly_chart(
-            C.exposure_rate_chart(
-                u["table"],
-                title=f"{var}: {len(enc.knots)} knots → {len(enc.knots) + 1} bins (+ null)",
-            ),
-            width="stretch",
+        share = c3.number_input(
+            "Min cell exposure (%)",
+            0.0,
+            50.0,
+            0.5,
+            0.1,
+            key=f"inter_share_{name}",
+            help="Cells below this share of the pair's training exposure get no adjustment",
         )
-        st.caption(
-            f"Design columns: {enc.n_features} · bins: {len(enc.bins())} · null indicator: {enc.null_indicator}"
+        weight = c4.number_input(
+            "Penalty weight", 0.1, 100.0, 1.0, 0.1, key=f"inter_w_{name}"
         )
-    elif isinstance(enc, LinearEncoder):
-        c2.markdown(
-            f"**Piecewise-linear** · clamp `{enc.lo:g}` – `{enc.hi:g}` "
-            f"(flat outside) · {len(enc.knots)} interior knot(s)"
-        )
-        knots_txt = st.text_area(
-            "Knots where the slope may change (comma-separated; editing switches to custom)",
-            ", ".join(f"{k:g}" for k in enc.knots),
-            height=90,
-            key=f"knots_{var}",
-        )
-        clamp_txt = st.text_input(
-            "Clamp range lo, hi (blank = training min/max)",
-            ", ".join(f"{v:g}" for v in vd.clamp) if vd.clamp else "",
-            key=f"clamp_{var}",
-        )
-        if st.button("Apply knots / clamp", key=f"apply_knots_{var}"):
+        errors: list[str] = []
+        if a == b:
+            errors.append("Pick two different variables.")
+        if any({it.a, it.b} == {a, b} for it in cfg.interactions):
+            errors.append(f"{a} × {b} is already in the model.")
+        for v in (a, b):
+            if v not in p.predictors:
+                errors.append(f"{v} is not a predictor of the project.")
+            elif v not in train.columns:
+                errors.append(f"{v} is not in the prepared data.")
+        preview_enc: InteractionEncoder | None = None
+        if not errors:
             try:
-                knots = sorted(
-                    {
-                        float(x)
-                        for x in knots_txt.replace("\n", ",").split(",")
-                        if x.strip()
-                    }
+                weights = (
+                    train[cfg.weight]
+                    if cfg.weight and cfg.weight in train.columns
+                    else None
                 )
-                clamp = [float(x) for x in clamp_txt.split(",") if x.strip()]
-            except ValueError:
-                st.error("Knots and clamp must be numbers")
-            else:
-                if clamp and (len(clamp) != 2 or not clamp[0] < clamp[1]):
-                    st.error("Clamp must be two numbers, lo < hi")
-                else:
-                    lo_c, hi_c = clamp if clamp else (enc.lo, enc.hi)
-                    outside = [k for k in knots if not lo_c < k < hi_c]
-                    if outside:
-                        st.warning(
-                            f"Knots outside the clamp range are dropped: "
-                            f"{', '.join(f'{k:g}' for k in outside)} "
-                            f"(clamp {lo_c:g} – {hi_c:g})"
-                        )
-                    vd.knots = knots
-                    vd.clamp = clamp or None
-                    p.design.variables[var] = vd
-                    S.touch()
-                    st.rerun()
-        u = univariate(
-            preview,
-            var,
-            target=p.target,
-            weight=p.weight,
-            divide_target_by_weight=divide,
-            knots=enc.band_edges(),
-        )
-        st.plotly_chart(
-            C.exposure_rate_chart(
-                u["table"],
-                title=f"{var}: linear in {len(enc.knots) + 1} band(s) between {enc.lo:g} and {enc.hi:g}",
-            ),
-            width="stretch",
-        )
-        st.caption(
-            f"Design columns: {enc.n_features} · rows in the rate table: {enc.n_rows} · "
-            f"null indicator: {enc.null_indicator}"
-        )
-    elif isinstance(enc, CategoricalEncoder):
-        c2.markdown(
-            f"**Reference level:** `{enc.reference}`  \n**Kept levels:** {len(enc.levels)} (+ Other)"
-        )
-        levels_txt = st.text_area(
-            "Levels (first = reference; others lumped into Other)",
-            ", ".join(enc.levels),
-            height=90,
-            key=f"levels_{var}",
-        )
-        if st.button("Apply levels", key=f"apply_levels_{var}"):
-            levels = [
-                x.strip() for x in levels_txt.replace("\n", ",").split(",") if x.strip()
-            ]
-            vd.levels = levels or None
-            p.design.variables[var] = vd
+                ea = encoder_for(
+                    a,
+                    train[a],
+                    p.design.variables.get(a, VariableDesign()),
+                    p,
+                    weights=weights,
+                )
+                eb = encoder_for(
+                    b,
+                    train[b],
+                    p.design.variables.get(b, VariableDesign()),
+                    p,
+                    weights=weights,
+                )
+                preview_enc = InteractionEncoder.from_data(
+                    ea,
+                    eb,
+                    train,
+                    weights=weights,
+                    min_cell_exposure=float(share) / 100.0,
+                    penalty_weight=float(weight),
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"Cannot build {a} × {b}: {exc}")
+        for e in errors:
+            st.error(e)
+        if preview_enc is not None:
+            n_cells = preview_enc.a.n_rows * preview_enc.b.n_rows
+            st.caption(
+                f"Preview on {train.height:,} training rows: **{len(preview_enc.cells)} of "
+                f"{n_cells} cells** would get their own adjustment at a "
+                f"{share:.1f}% threshold ({preview_enc.n_features} design columns)."
+            )
+            rows_a = [row_label(r) for r in preview_enc.a.rows()]
+            rows_b = [row_label(r) for r in preview_enc.b.rows()]
+            kept = [[0.0] * len(rows_b) for _ in rows_a]
+            for i, j in preview_enc.cells:
+                kept[i][j] = 1.0
+            st.plotly_chart(
+                C.matrix_heatmap(
+                    rows_a,
+                    rows_b,
+                    preview_enc.exposure,
+                    title=f"Training exposure by cell — {a} (rows) × {b} (columns)",
+                    row_name=a,
+                    col_name=b,
+                    hover={"kept (1 = own adjustment)": kept},
+                    centred=False,
+                    height=380,
+                ),
+                width="stretch",
+            )
+        if st.button(
+            "Add interaction",
+            type="primary",
+            key=f"inter_add_{name}",
+            disabled=bool(errors),
+        ):
+            cfg.interactions.append(
+                Interaction(
+                    a,
+                    b,
+                    min_cell_exposure=float(share) / 100.0,
+                    penalty_weight=float(weight),
+                )
+            )
             S.touch()
             st.rerun()
-        u = univariate(
-            preview,
-            var,
-            target=p.target,
-            weight=p.weight,
-            divide_target_by_weight=divide,
-            max_levels=len(enc.levels),
-        )
-        st.plotly_chart(
-            C.exposure_rate_chart(
-                u["table"], title=f"{var}: {len(enc.levels)} levels + Other"
-            ),
-            width="stretch",
-        )
 
 
+# --------------------------------------------------------------------------
 def render() -> None:
     st.title("Design")
     ui.status_bar()
@@ -350,6 +644,21 @@ def render() -> None:
     )  # exposure / rate previews may use the exploration sample
     if train is None or preview is None:
         return
+    if train.is_empty():
+        st.error("There are no training rows; check the split on the Split page.")
+        return
+    missing = [v for v in predictors if v not in train.columns]
+    if missing:
+        st.error(
+            "These predictors are not in the prepared data (renamed or removed?): "
+            + ", ".join(missing)
+            + ". Fix their roles on the Variables page."
+        )
+        predictors = [v for v in predictors if v in train.columns]
+        if not predictors:
+            return
+    for m in [m for m in p.validate() if m.startswith("design[")]:
+        st.error(m)
     if S.is_sampled():
         st.caption(
             f"Knots and levels are derived from all {train.height:,} training rows; "
@@ -357,9 +666,9 @@ def render() -> None:
         )
     _defaults()
     st.caption(
-        "Numeric predictors become step functions (one 0/1 column per knot, penalised increments → automatic banding); "
-        "categoricals become one-hot with the most frequent level as reference and an **Other** bucket. "
-        "Monotone constraints bound the step increments."
+        "Numeric predictors become step functions (one 0/1 column per knot, penalised increments → automatic banding) "
+        "or piecewise-linear curves; categoricals become one-hot with the most frequent level as reference and an "
+        "**Other** bucket. Monotone constraints bound the step increments (not available for linear terms)."
     )
     _grid(train, predictors)
     total = 0
@@ -371,6 +680,8 @@ def render() -> None:
         except Exception:  # noqa: BLE001
             pass
     st.caption(
-        f"Design matrix: **{total}** columns across {len(predictors)} predictors on {train.height:,} training rows."
+        f"Design matrix: **{total}** main-effect columns across {len(predictors)} predictors "
+        f"on {train.height:,} training rows (interaction cells come on top)."
     )
     _detail(train, preview, predictors)
+    _interactions(train)

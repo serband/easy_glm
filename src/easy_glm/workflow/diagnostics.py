@@ -485,6 +485,141 @@ def residual_factor_search(
     ).sort("signal", descending=True)
 
 
+def _margin_adjusted(cells: pl.DataFrame, iterations: int = 5) -> np.ndarray:
+    """Expected counts per cell after re-fitting the two margins (iterative
+    proportional fitting on the A/E of each row and each column), so that what
+    remains is the *interaction* signal, not misfit of the two main effects."""
+    act = cells["actual"].to_numpy()
+    exp = cells["expected"].to_numpy().copy()
+    la = cells["label_a"].to_numpy()
+    lb = cells["label_b"].to_numpy()
+    for _ in range(iterations):
+        for labels in (la, lb):
+            for lab in np.unique(labels):
+                m = labels == lab
+                e = exp[m].sum()
+                if e > 0:
+                    exp[m] *= act[m].sum() / e
+    return exp
+
+
+def residual_pair_search(
+    df: pl.DataFrame,
+    variables: list[str],
+    actual_total: np.ndarray,
+    expected_total: np.ndarray,
+    weight: np.ndarray | None = None,
+    *,
+    knots: dict[str, list[float]] | None = None,
+    levels: dict[str, list[str]] | None = None,
+    n_bins: int = 8,
+    min_expected: float = 3.0,
+    min_cell_share: float = 0.0,
+    pairs: list[tuple[str, str]] | None = None,
+    top: int = 20,
+) -> pl.DataFrame:
+    """Rank variable **pairs** by the interaction structure left in their cells.
+
+    For each pair the cells (numeric variables in ``n_bins`` quantile bands
+    unless ``knots`` gives the bands; categoricals by ``levels`` or their top
+    levels) are kept when their expected count is at least ``min_expected``
+    (and their exposure share at least ``min_cell_share``). The two margins are
+    then re-fitted by iterative proportional fitting so misfit of the main
+    effects does not count, and ``signal`` is the Pearson excess as a z-score:
+    ``(Σ (A − E')² / E' − d) / sqrt(2d)`` with ``d = k − rows − cols + 1`` the
+    degrees of freedom left after the margin refit — so a pair
+    with many small noisy cells does not outrank one with a single large real
+    effect. Large values point at an interaction worth adding.
+
+    Columns: ``pair``, ``a``, ``b``, ``signal``, ``sd_log_ae`` (exposure-weighted
+    sd of log A/E' over kept cells), ``max_abs_log_ae``, ``n_cells``,
+    ``worst_cell`` (largest |A − E'| / sqrt(E')). Sorted by ``signal``, at most
+    ``top`` rows."""
+    knots = knots or {}
+    levels = levels or {}
+    if pairs is None:
+        pairs = [
+            (variables[i], variables[j])
+            for i in range(len(variables))
+            for j in range(i + 1, len(variables))
+        ]
+    rows = []
+    for a, b in pairs:
+        try:
+            tbl = ae_by_pair(
+                df,
+                a,
+                b,
+                actual_total,
+                expected_total,
+                weight,
+                n_bins=n_bins,
+                knots_a=knots.get(a),
+                knots_b=knots.get(b),
+                levels_a=levels.get(a),
+                levels_b=levels.get(b),
+            )
+        except Exception:  # noqa: BLE001 - a pair that cannot be banded is skipped
+            continue
+        total = float(tbl["exposure"].sum()) or 1.0
+        cells = tbl.filter(
+            (pl.col("expected") >= min_expected)
+            & (pl.col("exposure") / total >= min_cell_share)
+        )
+        if cells.height < 2:
+            continue
+        act = cells["actual"].to_numpy()
+        exp = _margin_adjusted(cells)
+        ok = exp > 0
+        if ok.sum() < 2:
+            continue
+        act, exp = act[ok], exp[ok]
+        k = int(ok.sum())
+        pearson = float(np.sum((act - exp) ** 2 / exp))
+        # the margin refit uses (rows + cols - 1) degrees of freedom
+        n_rows = len(set(cells["label_a"].to_numpy()[ok]))
+        n_cols = len(set(cells["label_b"].to_numpy()[ok]))
+        dof = max(k - n_rows - n_cols + 1, 1)
+        signal = (pearson - dof) / np.sqrt(2.0 * dof)
+        with np.errstate(divide="ignore"):
+            ratio = np.where(act > 0, act / exp, np.nan)
+        pos = ~np.isnan(ratio)
+        log_ae = np.log(ratio[pos]) if pos.any() else np.zeros(1)
+        w = cells["exposure"].to_numpy()[ok][pos] if pos.any() else np.ones(1)
+        mean = np.average(log_ae, weights=w)
+        sd = float(np.sqrt(np.average((log_ae - mean) ** 2, weights=w)))
+        stand = (act - exp) / np.sqrt(exp)
+        worst = int(np.argmax(np.abs(stand)))
+        la = cells["label_a"].to_numpy()[ok]
+        lb = cells["label_b"].to_numpy()[ok]
+        rows.append(
+            {
+                "pair": f"{a} × {b}",
+                "a": a,
+                "b": b,
+                "signal": float(signal),
+                "sd_log_ae": sd,
+                "max_abs_log_ae": float(np.abs(log_ae).max()),
+                "n_cells": k,
+                "worst_cell": f"{la[worst]} | {lb[worst]}",
+            }
+        )
+    out = pl.DataFrame(
+        rows,
+        schema={
+            "pair": pl.Utf8,
+            "a": pl.Utf8,
+            "b": pl.Utf8,
+            "signal": pl.Float64,
+            "sd_log_ae": pl.Float64,
+            "max_abs_log_ae": pl.Float64,
+            "n_cells": pl.Int64,
+            "worst_cell": pl.Utf8,
+        },
+    ).sort("signal", descending=True)
+    return out.head(top)
+
+
 # --------------------------------------------------------------------------
 # regularisation path
 # --------------------------------------------------------------------------

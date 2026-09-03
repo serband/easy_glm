@@ -327,9 +327,8 @@ def _filters(raw: pl.DataFrame) -> None:
 def render() -> None:
     st.title("Variables")
     ui.status_bar()
-    raw = S.raw_frame() if S.project().data.source.path else None
+    raw = ui.require_raw()
     if raw is None:
-        st.info("Load a data file on the **Project & data** page first.")
         return
     st.subheader("Roles, names and types")
     st.caption(

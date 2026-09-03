@@ -50,10 +50,36 @@ def status_bar() -> None:
 
 
 def require_data() -> pl.DataFrame | None:
-    df = S.prepared_frame()
+    try:
+        df = S.prepared_frame()
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - a bad recode/derived/filter, never a traceback
+        st.error(
+            f"The data steps on the Variables page fail: {exc}. Fix or remove the "
+            "offending recode, derived column or filter."
+        )
+        return None
     if df is None:
-        st.info("Load a data file on the **Project & data** page first.")
+        err = st.session_state.get("load_error")
+        if err:
+            st.error(err)
+        else:
+            st.info("Load a data file on the **Project & data** page first.")
     return df
+
+
+def require_raw() -> pl.DataFrame | None:
+    """The raw frame, or None after showing why it is missing."""
+    p = S.project()
+    raw = S.raw_frame() if p.data.source.path else None
+    if raw is None:
+        err = st.session_state.get("load_error")
+        if err:
+            st.error(err)
+        else:
+            st.info("Load a data file on the **Project & data** page first.")
+    return raw
 
 
 def require_target() -> str | None:

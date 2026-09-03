@@ -136,6 +136,7 @@ def init_state() -> None:
     ss.setdefault("runs", {})  # model name -> (hash, ModelRun)
     ss.setdefault("leakage", None)  # (hash, DataFrame)
     ss.setdefault("errors", [])
+    ss.setdefault("load_error", None)
 
 
 def project() -> Project:
@@ -186,8 +187,17 @@ def raw_frame(force: bool = False) -> pl.DataFrame | None:
     cached = st.session_state.raw
     if cached is not None and cached[0] == h and not force:
         return cached[1]
-    with st.spinner(f"Loading {Path(p.data.source.path).name} ..."):
-        df = load_source(p.data.source)
+    try:
+        with st.spinner(f"Loading {Path(p.data.source.path).name} ..."):
+            df = load_source(p.data.source)
+    except Exception as exc:  # noqa: BLE001 - surfaced on the page, never a traceback
+        st.session_state.raw = None
+        st.session_state.load_error = (
+            f"Could not load {p.data.source.path}: {exc}. Check the path on the "
+            "Project & data page."
+        )
+        return None
+    st.session_state.load_error = None
     st.session_state.raw = (h, df)
     for key in ("prepared", "sample", "raw_sample"):
         st.session_state[key] = None

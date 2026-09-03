@@ -14,9 +14,8 @@ def render() -> None:
     st.title("Split")
     ui.status_bar()
     p = S.project()
-    raw = S.raw_frame() if p.data.source.path else None
+    raw = ui.require_raw()
     if raw is None:
-        st.info("Load a data file on the **Project & data** page first.")
         return
     sp = p.data.split
     mode = st.radio(

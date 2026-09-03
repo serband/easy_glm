@@ -101,6 +101,24 @@ def _config(name: str) -> None:
             default=[v for v in cfg.predictors if v in p.predictors],
             key=f"preds_{name}",
         )
+        if cfg.interactions:
+            bad = [
+                it.name
+                for it in cfg.interactions
+                if it.a not in preds or it.b not in preds
+            ]
+            st.caption(
+                "Interactions (edit on the Design page): "
+                + ", ".join(
+                    f"**{it.name}** (min cell {it.min_cell_exposure:.2%})"
+                    for it in cfg.interactions
+                )
+                + (
+                    f" — ⚠ parents no longer among the predictors: {', '.join(bad)}"
+                    if bad
+                    else ""
+                )
+            )
         st.markdown("**Penalty**")
         c1, c2, c3, c4, c5 = st.columns(5)
         mode = c1.radio(

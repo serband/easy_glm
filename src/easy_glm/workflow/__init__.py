@@ -14,6 +14,7 @@ from .diagnostics import (
     lift_table,
     model_metrics,
     residual_factor_search,
+    residual_pair_search,
     totals,
     unit_values,
 )
@@ -97,6 +98,7 @@ __all__ = [
     "ae_by_variable",
     "ae_by_pair",
     "residual_factor_search",
+    "residual_pair_search",
     "alpha_path",
     "model_metrics",
     "to_script",
