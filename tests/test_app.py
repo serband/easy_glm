@@ -202,6 +202,27 @@ def test_design_page_offers_the_cells_alpha(project_file, tmp_path):
     assert 0.25 in [n.value for n in boxes]
 
 
+@pytest.mark.parametrize("alpha", [12.0, -1.0])
+def test_design_page_survives_an_out_of_range_cells_alpha(
+    project_file, tmp_path, alpha
+):
+    """A hand-edited project file can carry any alpha; the Design page is where
+    it gets fixed, so it must render (validate() reports the bad value)."""
+    from easy_glm.workflow import Interaction
+
+    p = Project.from_json(project_file)
+    p.models["freq"].interactions = [Interaction("DrivAge", "Region", alpha=alpha)]
+    path = tmp_path / "odd_alpha.json"
+    p.to_json(path)
+    at = AppTest.from_string(
+        _script("pages_design", str(path), fit=False), default_timeout=180
+    )
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    boxes = [n for n in at.number_input if n.label.startswith("Cells alpha")]
+    assert alpha in [n.value for n in boxes]
+
+
 def test_main_entry_point_renders(project_file):
     import sys
 

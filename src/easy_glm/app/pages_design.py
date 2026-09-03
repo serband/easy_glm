@@ -599,11 +599,16 @@ def _interactions(train: pl.DataFrame) -> None:
             c1.markdown(f"**{it.name}**")
             c2.caption(f"min cell exposure {it.min_cell_exposure:.2%}")
             c3.caption(f"penalty weight {it.penalty_weight:g}")
+            # A hand-edited project may carry an alpha outside the widget's
+            # usual range; Streamlit raises if the value is out of bounds, so
+            # widen the bounds to the stored value rather than crash the page
+            # the user needs in order to fix it (validate() reports it).
+            current_alpha = float(it.alpha or 0.0)
             new_alpha = c4.number_input(
                 "Cells alpha (0 = as mains)",
-                0.0,
-                10.0,
-                float(it.alpha or 0.0),
+                min(0.0, current_alpha),
+                max(10.0, current_alpha),
+                current_alpha,
                 0.0001,
                 format="%.5f",
                 key=S.widget_key(f"inter_alpha_{name}_{i}"),
