@@ -2,6 +2,48 @@
 
 ## 0.4.0 (unreleased)
 
+### The persisted-run folder is shared state (W4) — the second breaker session
+- **No tab may throw away another tab's fit.** Fits live in
+  `<project>.easyglm-runs/` next to the project file, and every browser tab with
+  that project open writes into the same folder. Three rules now govern it: a
+  tab showing the conflict notice may fit but writes and deletes nothing (the
+  page says the result is kept in this tab only, and *Delete* removes the model
+  from that tab's project alone); nothing is deleted while a tab is out of step
+  with the project file on disk; and the "latest run per model" tidy-up never
+  removes the fit that matches the project *as saved on disk*, nor the one
+  matching this tab's own spec. Before this, a tab that was one edit behind
+  deleted the fit belonging to the saved project, silently.
+- **A fit that never finished says so.** A marker is written next to where the
+  result will be saved and removed once it is there; a session that finds a
+  marker with no result reports "a fit of X was interrupted … fit it again"
+  instead of showing a model that looks as if it was never fitted.
+- **Create now switches to the model it created** — the picker, the whole
+  configuration panel and Fit follow, so a note or a predictor change meant for
+  the new model can no longer land on the champion.
+- **A constant predictor no longer blocks the fit**: a column that is constant
+  or all-null on the training rows is left out of the design and named on the
+  page (`workflow.UnusableColumnError`, `build_design(..., dropped=[])`); every
+  other design problem is still an error, because the user can act on it.
+- **Number boxes never name a number the fit did not use.** A value outside the
+  allowed range (a pasted `1e9` alpha, a typed seed of -5) is refused with a
+  message and the box is put back to the value in the project, instead of the
+  browser keeping the typed text on screen.
+- Smaller fixes from the same review: the "Could not persist the fit" banner
+  clears once saving works again; an orphaned sidecar whose pickle was deleted
+  by hand is removed; the status chips no longer say "✓ Fitted" next to "refit
+  to update"; the *Divide target by weight* box cannot stay ticked while it is
+  disabled; a knot above the largest training value is accepted but flagged;
+  Windows device names (`CON`, `NUL`, `PRN`, `AUX`, `COM1`…) are refused as model
+  names; picking a modelling column as the train/holdout indicator asks first;
+  a training fraction outside 0.50–0.95 in the project file is still repaired but
+  the page now says what it changed; saving a project creates the file but never
+  the folders around it (a typo is a message, not a new folder tree); the Model page names the interaction
+  *parent* that left the predictor list; "1 rows" reads "1 row" and the
+  *Prepared* chip goes out for a frame with no rows.
+- Tests: `tests/test_w4_runs_folder.py` (one per finding, two AppTest sessions
+  for the two-tab cases) and the plain-language replay in
+  `docs/checks/w4-runs-folder.md` (`scripts/checks/w4_runs_folder.py --write`).
+
 ### Workbench hardening (W3) — the break-it review's blocking findings
 - **No more silent loss of work.** *New empty project* asks for a second click and
   starts with no file (the old project file is never rewritten); the same project

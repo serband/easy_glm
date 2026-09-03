@@ -244,6 +244,16 @@ User edits relativity in table
   size and a sha1 of the bytes — mtime alone is too coarse on NFS/SMB/FAT) with the one
   this session last read/wrote; a mismatch sets `conflict`, pauses autosave and shows
   `ui.conflict_notice()` (reload = `set_project` from disk, overwrite = forced save).
+- Runs-folder rule (W4; plain-language page: `docs/checks/w4-runs-folder.md`): the
+  folder is shared by every tab, so `persist_run` refuses to write while
+  `runs_write_paused()` (the conflict notice is up) and nothing is deleted while
+  `runs_delete_paused()` (that, or the project file changed on disk under this tab).
+  `_prune_runs` keeps the key of the project *as saved on disk* (`_saved_project()`)
+  and of this session's current spec; only files matching neither go, together with
+  files of models absent from both projects and sidecars whose pickle is gone. A fit
+  writes a `.fitting` marker (`_mark_fit_started`) that `interrupted_fits()` turns into
+  a one-off notice in `ui.status_bar()`; bump `PERSIST_FORMAT` when a pickled class
+  changes shape.
   A successful save (autosave included) drops the "Autosave failed" banner.
 - Rename rule: column renames go through `Project.rename_column` (roles, types,
   recodes, design, split, row filters and derived expressions — `pl.col('old')`
@@ -255,8 +265,18 @@ User edits relativity in table
 - `state.set_project` bumps `project_token` and drops every session-state key that is
   not app state (`_APP_STATE_KEYS`) or `_`-prefixed, so widgets never carry the previous
   project's values; project-page text boxes use `state.widget_key(name)`.
-- Break-it findings left open after W3 (cosmetic): 15, 23, 28, 35, 38 in
-  `docs/reviews/w2-breakage.md` (32 fixed in the W3 follow-ups).
+- Break-it findings left open after W4 (cosmetic): 15, 23, 35 in
+  `docs/reviews/w2-breakage.md`; 6 and 8 in `docs/reviews/w3-breakage-2.md`
+  (offset plausibility needs an actuary's rule; keying a fit on the data file's
+  contents instead of its mtime means reading the whole book on every page).
+  Everything else in both reports is fixed.
+- Widget rule: Streamlit refuses to set a widget's session-state key once the widget
+  exists in that run, so a page that has to change a box's value (Create selecting the
+  new model, `ui.number_in_range` putting a refused number back, the divide box after
+  the weight is cleared) drops the key *before* the widget is created on the next run —
+  a pending flag plus `st.rerun()`, never an assignment after the fact.
+- Any message drawn immediately before `st.rerun()` (a repaired seed, a clamped
+  training fraction, a knot outside the data) must go through `ui.flash`.
 - Rate-table labels: the catch-all row prints `NULL_LABEL` ("Other / Unknown") unless
   the categorical encoder had to rename its bucket (a real level called `Other`), in
   which case `VariableConfig.other_label` carries the encoder's name through
@@ -281,6 +301,7 @@ User edits relativity in table
 | `test_c1_foundations.py` | 0.3 bug regressions, format versions and migrations, editor defaults |
 | `test_scoring.py` | Isolated scoring: score_numeric (searchsorted), score_categorical (dict lookup), edge cases, fallbacks |
 | `test_workflow.py` | Project JSON/validation, prep steps, univariate, leakage report on planted leaks, build_design overrides, run_model (metrics, exactness, adjustments, CV), diagnostics, exported script executed in a subprocess and compared |
+| `test_w4_runs_folder.py` | W4: the shared runs folder (two AppTest sessions per two-tab case) and every finding of `docs/reviews/w3-breakage-2.md` |
 | `test_w2_pages.py` | W2 pages: interaction section, linear editor, kind selector, A/E-by-pair, pair search, cell/band edits via `app.grids`, break-it (empty project, missing file, removed predictor) |
 | `tests/e2e/` | Playwright persona runs (actuary rate review, data-scientist comparison); opt-in `EASY_GLM_E2E=1`, server from `EASY_GLM_SERVER_PYTHON` |
 | `test_app.py` | AppTest: every workbench page renders (with and without a fit), main entry point, leakage scan action |
