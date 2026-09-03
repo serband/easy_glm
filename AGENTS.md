@@ -301,6 +301,14 @@ User edits relativity in table
   exposure-weighted mean of the **log** relativities (re-centred for the moving
   average, by construction for the weighted PAVA) and cap/floor/round are idempotent
   and deliberately *not* re-centred.
+- **The log mean is the shape rule, not the money.** Preserving the mean of the logs
+  is not preserving the premium (a book is a sum of products, not a geometric mean),
+  so every tool moves total expected claims and the page says so: the panel's
+  headline number is `workflow.expected_claims` on the training rows with
+  `tooling.preview_model` against the current tables, and "no change" is printed only
+  below 1e-9. `workflow.rebalance_override` is the off-balance correction — the base
+  rate that restores the fitted total exactly — behind the *Rebalance base rate*
+  button; it moves no relativity, and it is one undo step.
 - **Exposure per band** rides on the table rows (`FromToRow.exposure` /
   `BandRow.exposure`), filled by `to_rate_model` from `GLMFit.row_exposure`
   (`core/fit.py::row_exposures`, the same count `_modal_bins` takes its argmax of). It
@@ -311,7 +319,17 @@ User edits relativity in table
   undo stack (`state.record_undo` / `undo` / `redo`, 50 steps per model, session-only)
   and `ModelConfig.snapshots` (`TableSnapshot`, in the project file) both store the
   adjustments, and `workflow.rate_model_for(project, run, adjustments)` turns any of
-  them back into tables without refitting. That is why `RateModel.create_snapshot` is
+  them back into tables without refitting. A step is a `state.EditStep`: the
+  adjustments **and the `base_rate_override`**, because both are post-fit and both
+  are what `rebuild_rate_model` applies — a step that carried only the adjustments
+  left a restored snapshot's base rate in force after an undo. Capture one with
+  `state.edit_state(model)` *before* mutating, and hand it to `_apply`.
+- **A set of adjustments that no longer fits is refused, never half-applied**:
+  `workflow.missing_variables` before a snapshot restore (message, nothing changed,
+  nothing saved), and `apply_adjustments` raises `AdjustmentError` — not `KeyError` —
+  for an unknown variable, so `refresh_adjustments` drops and reports it. Anything
+  that deletes a factor for good strips its adjustments through
+  `ModelConfig.drop_adjustments_for`, which cleans the snapshots too. That is why `RateModel.create_snapshot` is
   *not* what the workbench uses: `rebuild_rate_model` builds a fresh RateModel on every
   edit, so its snapshots do not survive one. `model_hash` excludes `snapshots` for the
   same reason it excludes `adjustments`.

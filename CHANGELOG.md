@@ -11,11 +11,21 @@
   **ordinary manual adjustments**, so the project file stays the truth and the
   tables are rebuilt from the fit without refitting.
 - **Smoothing preserves the exposure-weighted mean of the *log* relativities**
-  (plan §R6), to 1e-12: the base rate is not refitted when a table is edited, so
-  a smoothing that moved that mean would move every premium the factor touches.
-  The moving average is re-centred to achieve it; the weighted isotonic fit
-  preserves it by construction. A cap, a floor and a rounding move the level on
-  purpose, and the panel says by how much.
+  (plan §R6), to 1e-12 — the *shape* rule: the moving average is re-centred to
+  achieve it, the weighted isotonic fit preserves it by construction.
+- **The panel reports what a tool does to the money, separately.** Preserving a
+  mean of logs is not preserving the premium: a premium is a product of
+  relativities and a book is the sum of those products, so every tool — a
+  smoothing included — moves total expected claims (a 3-band moving average on
+  DrivAge takes 0.57 % off the French motor book; a cap at 3.00 on BonusMalus
+  takes 4.86 %). The Tools panel therefore shows **the change in total expected
+  claims on the training rows**, measured by scoring both sets of tables, and it
+  says "no change" only when that change is zero to 1e-9.
+- **Rebalance base rate**: one click sets the base-rate override so total
+  expected claims on the training rows are exactly what the fitted model
+  expected — the off-balance correction of a rate review — without touching a
+  relativity. The page shows the current off-balance whenever a model has been
+  edited.
 - **Rate-table rows now carry their training exposure** (`FromToRow.exposure`,
   `BandRow.exposure`, from the new `GLMFit.row_exposure` — the count
   `_modal_bins` already took its argmax of). It is what the tools weight a band
@@ -28,20 +38,36 @@
   **piecewise-linear** table is smoothed at its *nodes* and the slopes are
   re-derived, so the curve stays continuous.
 - **Undo / Redo** on the Rate tables page: 50 steps per model per session, one
-  step per edit, tool, reset or restored snapshot; a step is the whole set of
-  adjustments, so undo restores the previous tables exactly.
+  step per edit, tool, reset, rebalance or restored snapshot. A step is the
+  model's whole post-fit state — the adjustments **and the base-rate override**
+  — so undo restores the previous tables exactly, level included (a snapshot
+  carries a base rate, and restoring one used to leave that base rate in force
+  after an undo).
 - **Snapshots**: *Snapshot as…* names the tables as they stand and keeps them in
-  the **project file** (a named list of adjustments, `ModelConfig.snapshots`), so
-  they survive a reload and a refit; snapshots can be restored, deleted and
-  **compared** — the same table the Compare page shows for two models
-  (`workflow.rate_model_diff` / `snapshot_diff`, and `RateModel.diff` for two
-  versions of one model).
+  the **project file** (a named list of adjustments plus the base rate,
+  `ModelConfig.snapshots`), so they survive a reload and a refit; snapshots can
+  be restored, deleted and **compared** — the same table the Compare page shows
+  for two models (`workflow.rate_model_diff` / `snapshot_diff`, and
+  `RateModel.diff` for two versions of one model). A snapshot that no longer
+  fits the model (it adjusts a factor the model has lost) is **refused by name
+  and changes nothing**, rather than half-applying and tracebacking the page;
+  removing an interaction now strips its cell adjustments from every snapshot as
+  well as from the working set (`ModelConfig.drop_adjustments_for`); and
+  deleting a snapshot asks twice, because it is the one action undo does not
+  cover.
+- An adjustment naming a variable the model does not have is now an
+  `AdjustmentError` rather than a bare `KeyError`, so the workbench drops it and
+  says so instead of showing a traceback — the same treatment a stale *band*
+  already got (this also fixes the pre-0.4 crash after deleting a predictor that
+  carried an adjustment).
 - Engine: `easy_glm.engine.tooling` (pure functions on one `VariableConfig`,
-  returning the relativities a tool would set); `workflow.rate_model_for`
-  compiles "this fit plus this list of adjustments" into tables, which is what a
-  snapshot, a restore and a diff all use. `app.state.PERSIST_FORMAT` 4 → 5
-  (rate-table rows changed shape), so runs cached by an earlier 0.4 build are
-  refitted.
+  returning the relativities a tool would set, plus `preview_model` for pricing
+  one before applying it); `workflow.expected_claims`,
+  `workflow.rebalance_override`, `workflow.missing_variables`; and
+  `workflow.rate_model_for`, which compiles "this fit plus this list of
+  adjustments" into tables — what a snapshot, a restore, a rebalance and a diff
+  all use. `app.state.PERSIST_FORMAT` 4 → 5 (rate-table rows changed shape), so
+  runs cached by an earlier 0.4 build are refitted.
 - Tests: `tests/test_d5_tooling.py` (engine unit tests per tool, the exposure
   plumbing from fit to JSON, exactness after a tool, and the page's apply / undo
   / redo / snapshot / diff through AppTest); plain-language page in
