@@ -336,6 +336,8 @@ def run_model(project: Project, df: pl.DataFrame, model_name: str) -> ModelRun:
     kwargs: dict[str, Any] = {}
     if cfg.link:
         kwargs["link"] = cfg.link
+    if cfg.family == "tweedie":
+        kwargs["tweedie_power"] = float(cfg.tweedie_power)
     fit = fit_glm(
         train,
         spec,
@@ -388,8 +390,19 @@ def run_model(project: Project, df: pl.DataFrame, model_name: str) -> ModelRun:
     )
 
 
+def link_for(cfg: ModelConfig) -> str:
+    """The link this model will be fitted with: its own if it names one, else
+    the family default (logit for binomial, log for everything else)."""
+    return cfg.link or ("logit" if cfg.family == "binomial" else "log")
+
+
 def exposure_for(project: Project, cfg: ModelConfig) -> str | None:
-    """Column the RateModel multiplies by when scoring."""
+    """Column the RateModel multiplies by when scoring.
+
+    A logit model predicts a **probability**, which is not an amount, so it
+    never gets one — the weight still drives the fit and the A/E."""
+    if link_for(cfg) == "logit":
+        return None
     return project.exposure or (cfg.weight if cfg.divide_target_by_weight else None)
 
 

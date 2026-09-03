@@ -5,7 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from easy_glm.core.design import NUMERIC_DTYPES
-from easy_glm.workflow import alpha_path
+from easy_glm.workflow import alpha_path, solve_base_rate, train_holdout
 from easy_glm.workflow.project import FAMILIES, validate_model_name
 
 from . import charts as C
@@ -97,6 +97,12 @@ def _column_pick(
 def _config(name: str) -> None:
     p = S.project()
     cfg = p.models[name]
+    # the solver below writes a new base-rate override into the project;
+    # Streamlit refuses to set a widget's key once the widget exists, so the key
+    # is dropped here — before the box is drawn — and the box falls back to the
+    # number the project now holds
+    if st.session_state.pop("solved_base_rate", None) == name:
+        st.session_state.pop(S.widget_key(f"bro_{name}"), None)
     df = S.prepared_frame()
     numeric_cols = (
         [c for c, t in df.schema.items() if t in NUMERIC_DTYPES]
@@ -111,6 +117,32 @@ def _config(name: str) -> None:
             index=list(FAMILIES).index(cfg.family) if cfg.family in FAMILIES else 0,
             key=S.widget_key(f"fam_{name}"),
         )
+        power = float(cfg.tweedie_power)
+        if family == "tweedie":
+            power = float(
+                ui.number_in_range(
+                    c1,
+                    "Tweedie power",
+                    value=float(cfg.tweedie_power),
+                    lo=1.001,
+                    hi=1.999,
+                    step=0.05,
+                    what="The Tweedie power",
+                    format="%.3f",
+                    key=S.widget_key(f"tw_{name}"),
+                    help="Between 1 (Poisson: counts) and 2 (Gamma: amounts). "
+                    "1.5 is the usual starting point for a pure premium — a "
+                    "mass of policies with no claim plus a skewed amount for "
+                    "those that do. Nearer 1 puts more weight on how often "
+                    "claims happen, nearer 2 on how large they are.",
+                )
+            )
+        if family == "binomial":
+            c1.caption(
+                "Binomial: the target must be 0/1 (or a proportion). The tables "
+                "are **odds relativities** and the scorer returns a probability, "
+                "so predictions are never multiplied by exposure."
+            )
         if df is not None:
             target = _column_pick(
                 c2,
@@ -229,7 +261,7 @@ def _config(name: str) -> None:
             0.05,
             key=S.widget_key(f"l1_{name}"),
         )
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         base = c1.radio(
             "Base risk for tables",
             ["modal", "reference"],
@@ -262,7 +294,8 @@ def _config(name: str) -> None:
                     f"({fitted_base:.6g}); every prediction is scaled by that much."
                 )
             del adj_count
-        notes = c3.text_input("Notes", cfg.notes, key=S.widget_key(f"notes_{name}"))
+        _target_loss_ratio(c3, name, cfg, run_now)
+        notes = c4.text_input("Notes", cfg.notes, key=S.widget_key(f"notes_{name}"))
         mono_default = {
             v: vd.monotone
             for v, vd in p.design.variables.items()
@@ -283,6 +316,7 @@ def _config(name: str) -> None:
     )
     new_vals = dict(
         family=family,
+        tweedie_power=power,
         target=target,
         weight=weight,
         offset=offset,
@@ -312,6 +346,67 @@ def _config(name: str) -> None:
             # the status chips and the sidebar were drawn before this change:
             # redraw, or they would say "Fitted" next to "refit to update"
             st.rerun()
+
+
+def _target_loss_ratio(col, name: str, cfg, run) -> None:
+    """Enter the loss ratio the book should be priced to; the base rate that
+    achieves it on the training rows is solved and stored as the override.
+
+    The denominator is the current-premium column when the project has one — so
+    the number really is a loss ratio — and the model's own target otherwise,
+    where 1.00 simply balances the model to the data.
+    """
+    p = S.project()
+    premium = p.current_premium
+    label = f"Target loss ratio (÷ {premium})" if premium else "Target ratio (÷ actual)"
+    ratio = ui.number_in_range(
+        col,
+        label,
+        value=1.0,
+        lo=0.0001,
+        hi=100.0,
+        step=0.05,
+        what="The target loss ratio",
+        format="%.4f",
+        key=S.widget_key(f"tlr_{name}"),
+        help=(
+            "Solve sets the base-rate override so that, on the training rows, "
+            + (
+                f"the total expected cost is this multiple of the total {premium}."
+                if premium
+                else "the total expected equals this multiple of the total actual "
+                "(1.00 = overall A/E exactly 1)."
+            )
+            + " The relativities are untouched, and solving again from an "
+            "existing override gives the same answer."
+        ),
+    )
+    df = S.prepared_frame()
+    blocked = run is None or df is None
+    if col.button(
+        "Solve base rate",
+        disabled=blocked,
+        key=S.widget_key(f"solve_{name}"),
+    ):
+        train, _ = train_holdout(df, p.data.split)
+        value = ui.guarded(
+            lambda: solve_base_rate(run, train, float(ratio)),
+            "Solving the base rate",
+        )
+        if value is None:
+            return
+        cfg.base_rate_override = float(value)
+        st.session_state["solved_base_rate"] = name
+        ui.flash(
+            "success",
+            f"Base rate override set to {value:.6g} — "
+            f"{'expected ÷ ' + premium if premium else 'expected ÷ actual'} is "
+            f"now {float(ratio):.4g} on the training rows.",
+        )
+        S.touch()
+        st.rerun()
+    if blocked:
+        col.caption("Fit the model to solve for a base rate.")
 
 
 def _explain_fit_error(exc: Exception) -> str:

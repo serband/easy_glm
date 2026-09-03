@@ -92,7 +92,12 @@ _SAMPLE_KEYS = ("sample_rows", "sample_seed")
 #: as if its numbers were slopes.
 #: 4 — merge of W4 (per-session .fitting markers, pruning rules) and B2 above;
 #: both bumped 2 → 3 independently, so the merged tree moves on to 4.
-PERSIST_FORMAT = 4
+#: 5 — E: every encoder gained ``penalty_weight``, ``ModelMetadata`` gained
+#: ``offset_is_premium`` and ``ModelConfig`` gained ``tweedie_power``. A run
+#: pickled by an earlier build unpickles without those attributes, so anything
+#: reading them (the penalty rule, the table labels) would see a half-built
+#: object rather than a clean cache miss.
+PERSIST_FORMAT = 5
 #: A marker left by *another* session is only removed once it is this old:
 #: younger than this it may belong to a fit that is still running in another
 #: tab, and taking its marker away would cost that tab its own warning.

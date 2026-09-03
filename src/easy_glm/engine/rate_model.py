@@ -641,12 +641,28 @@ class RateModel:
             result *= rel
 
         result = self._apply_offset(result, data)
+        result = self._response(result)
         result = self._apply_exposure(result, data, exposure_col)
 
         return result
 
+    def _response(self, product: np.ndarray) -> np.ndarray:
+        """Turn the product of the base rate and the relativities into the
+        prediction the model makes.
+
+        With the log link the product *is* the prediction. With the **logit**
+        link (a binomial model) the tables are odds relativities, so the product
+        is the odds and the prediction is ``odds / (1 + odds)`` — a probability
+        strictly between 0 and 1, exactly what the GLM predicts.
+        """
+        if self.metadata.link != "logit":
+            return product
+        return product / (1.0 + product)
+
     def _apply_offset(self, result: np.ndarray, data: pl.DataFrame) -> np.ndarray:
-        """Multiply by ``exp(offset)`` (or the raw column) when the fit used an offset."""
+        """Multiply by ``exp(offset)`` (or the raw column) when the fit used an
+        offset. It applies on the linear-predictor scale, so for a logit model
+        it multiplies the **odds**, before they become a probability."""
         name = self.metadata.offset_col
         if not name:
             return result
@@ -671,6 +687,14 @@ class RateModel:
         )
         if exposure_name is None:
             return result
+        if self.metadata.link == "logit":
+            # a probability is not an amount: multiplying it by exposure would
+            # produce a number between 0 and the exposure that means nothing
+            raise ValueError(
+                f"This model predicts a probability (logit link), which cannot be "
+                f"multiplied by an exposure column ({exposure_name!r}). Score it "
+                "with exposure_col=None and multiply outside if you need counts."
+            )
         if exposure_name not in data.columns:
             warnings.warn(
                 f"Exposure column '{exposure_name}' not found in data "

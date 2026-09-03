@@ -31,6 +31,7 @@ from easy_glm.workflow import (
     premium_offset_column,
     prepare,
     run_model,
+    solve_base_rate,
     to_script,
 )
 
@@ -416,3 +417,255 @@ def _env() -> dict[str, str]:
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
     )
     return env
+
+
+# --------------------------------------------------------------------------
+# E3 — Tweedie power and binomial (logit) models
+# --------------------------------------------------------------------------
+def binomial_project(data_path: Path) -> Project:
+    p = Project(name="lapse")
+    p.data.source.path = str(data_path)
+    p.data.roles = {
+        "Lapsed": "target",
+        "DrivAge": "predictor",
+        "Region": "predictor",
+        "Exposure": "ignore",
+        "Premium": "ignore",
+        "log_Premium_expected": "ignore",
+        "ClaimNb": "ignore",
+    }
+    p.data.split.mode = "column"
+    p.data.split.column = "traintest"
+    p.data.split.train_value = 1
+    p.design.variables["DrivAge"] = VariableDesign(knots=[25.0, 40.0, 60.0])
+    p.new_model("lapse", family="binomial", predictors=["DrivAge", "Region"])
+    p.models["lapse"].penalty.alpha = 0.001
+    p.models["lapse"].penalty.cv = None
+    return p
+
+
+class TestTweediePower:
+    def test_the_power_reaches_the_distribution(self, book):
+        spec = DesignSpec({"DrivAge": StepEncoder("DrivAge", [40.0])})
+        fit = fit_glm(
+            book, spec, "ClaimNb", family="tweedie", tweedie_power=1.7, alpha=0.01
+        )
+        assert fit.family == "tweedie"
+        assert fit.model.family_instance.power == pytest.approx(1.7)
+
+    def test_the_default_is_one_and_a_half(self, book):
+        spec = DesignSpec({"DrivAge": StepEncoder("DrivAge", [40.0])})
+        fit = fit_glm(book, spec, "ClaimNb", family="tweedie", alpha=0.01)
+        assert fit.model.family_instance.power == pytest.approx(1.5)
+
+    def test_a_power_outside_one_to_two_is_refused(self, book):
+        spec = DesignSpec({"DrivAge": StepEncoder("DrivAge", [40.0])})
+        with pytest.raises(ValueError, match="strictly between 1 and 2"):
+            fit_glm(
+                book, spec, "ClaimNb", family="tweedie", tweedie_power=2.5, alpha=0.01
+            )
+
+    def test_it_is_only_for_the_tweedie_family(self, book):
+        spec = DesignSpec({"DrivAge": StepEncoder("DrivAge", [40.0])})
+        with pytest.raises(ValueError, match="only meaningful for the tweedie"):
+            fit_glm(
+                book, spec, "ClaimNb", family="poisson", tweedie_power=1.7, alpha=0.01
+            )
+
+    def test_the_workbench_carries_it_into_the_fit_and_the_script(self, data_path):
+        p = rate_change_project(data_path)
+        cfg = p.models["change"]
+        cfg.family = "tweedie"
+        cfg.tweedie_power = 1.8
+        run = run_model(p, prepare(p), "change")
+        assert run.fit.model.family_instance.power == pytest.approx(1.8)
+        assert "tweedie_power=1.8" in to_script(p, "change", run=run)
+
+    def test_the_project_refuses_a_power_outside_the_range(self, data_path):
+        p = rate_change_project(data_path)
+        p.models["change"].family = "tweedie"
+        p.models["change"].tweedie_power = 2.0
+        assert any("tweedie_power" in m for m in p.validate("change"))
+
+
+class TestBinomial:
+    def test_the_scorer_returns_probabilities_and_matches_the_glm(self, data_path):
+        p = binomial_project(data_path)
+        run = run_model(p, prepare(p), "lapse")
+        df = prepare(p)
+        pred = run.rate_model.predict(df, exposure_col=None)
+        assert ((pred > 0) & (pred < 1)).all()
+        assert np.allclose(pred, run.fit.predict(df), rtol=1e-10)
+
+    def test_the_tables_are_odds_relativities(self, data_path):
+        p = binomial_project(data_path)
+        run = run_model(p, prepare(p), "lapse")
+        assert run.rate_model.metadata.link == "logit"
+        assert run.rate_model.relativity_label == "odds relativity"
+        assert "odds" in run.rate_model.relativity_note
+
+    def test_the_base_rate_is_the_base_risk_odds(self, data_path):
+        """base rate x relativities = odds, so the base rate is odds, and the
+        probability it implies is what the scorer returns for the base risk."""
+        p = binomial_project(data_path)
+        run = run_model(p, prepare(p), "lapse")
+        odds = run.rate_model.base_rate
+        assert 0 < odds / (1 + odds) < 1
+
+    def test_excel_says_odds_relativity(self, data_path, tmp_path):
+        p = binomial_project(data_path)
+        run = run_model(p, prepare(p), "lapse")
+        path = run.rate_model.to_excel(tmp_path / "lapse.xlsx")
+        summary = pl.read_excel(path, sheet_name="Summary", has_header=False)
+        text = " ".join(str(v) for v in summary.to_series(1).to_list())
+        assert "odds relativity" in text
+
+    def test_exposure_multiplication_is_refused(self, data_path):
+        p = binomial_project(data_path)
+        run = run_model(p, prepare(p), "lapse")
+        df = prepare(p)
+        with pytest.raises(ValueError, match="probability"):
+            run.rate_model.predict(df, exposure_col="Exposure")
+
+    def test_a_model_never_gets_an_exposure_column_to_begin_with(self, data_path):
+        p = binomial_project(data_path)
+        p.data.roles["Exposure"] = "exposure"
+        run = run_model(p, prepare(p), "lapse")
+        assert run.rate_model.metadata.exposure_col is None
+
+    def test_to_rate_model_refuses_an_exposure_column(self, data_path):
+        p = binomial_project(data_path)
+        run = run_model(p, prepare(p), "lapse")
+        with pytest.raises(ValueError, match="cannot be multiplied by an exposure"):
+            to_rate_model(run.fit, exposure_col="Exposure")
+
+    def test_it_round_trips_through_json(self, data_path, tmp_path):
+        p = binomial_project(data_path)
+        run = run_model(p, prepare(p), "lapse")
+        df = prepare(p)
+        path = tmp_path / "lapse.easyglm"
+        run.rate_model.to_json(path)
+        back = RateModel.from_json(path)
+        assert back.relativity_label == "odds relativity"
+        assert np.allclose(
+            back.predict(df, exposure_col=None),
+            run.rate_model.predict(df, exposure_col=None),
+        )
+
+    def test_the_exported_script_reproduces_it(self, data_path, tmp_path):
+        p = binomial_project(data_path)
+        run = run_model(p, prepare(p), "lapse")
+        src = to_script(p, "lapse", run=run, output_prefix="lapse")
+        assert "exposure_col=None" in src
+        script = tmp_path / "lapse_rebuild.py"
+        script.write_text(src)
+        proc = subprocess.run(
+            [sys.executable, str(script)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            env=_env(),
+        )
+        assert proc.returncode == 0, proc.stderr
+        rebuilt = RateModel.from_json(tmp_path / "lapse.easyglm")
+        assert np.allclose(
+            rebuilt.predict(prepare(p), exposure_col=None),
+            run.rate_model.predict(prepare(p), exposure_col=None),
+        )
+
+    def test_a_link_that_is_not_multiplicative_is_still_refused(self, book):
+        spec = DesignSpec({"DrivAge": StepEncoder("DrivAge", [40.0])})
+        fit = fit_glm(
+            book, spec, "ClaimNb", family="gaussian", link="identity", alpha=0.01
+        )
+        with pytest.raises(NotImplementedError, match="logit link"):
+            to_rate_model(fit)
+
+
+# --------------------------------------------------------------------------
+# E4 — the target-loss-ratio base rate
+# --------------------------------------------------------------------------
+class TestSolveBaseRate:
+    def _run(self, data_path):
+        p = rate_change_project(data_path)
+        df = prepare(p)
+        return p, df, run_model(p, df, "change")
+
+    def _expected(self, run, df) -> float:
+        from easy_glm.workflow import totals
+
+        _, expected, _ = totals(df, run.config, run.predict(df))
+        return float(expected.sum())
+
+    def test_it_hits_the_target_against_the_current_premium(self, data_path):
+        p, df, run = self._run(data_path)
+        target = 0.62
+        p.models["change"].base_rate_override = solve_base_rate(run, df, target)
+        run = run_model(p, df, "change")
+        assert self._expected(run, df) / float(df["Premium"].sum()) == pytest.approx(
+            target, rel=1e-10
+        )
+
+    def test_without_a_premium_it_balances_against_the_actual(self, data_path):
+        p, df, run = self._run(data_path)
+        p.data.roles["Premium"] = "ignore"  # no current premium any more
+        p.models["change"].offset = None
+        df = prepare(p)
+        run = run_model(p, df, "change")
+        p.models["change"].base_rate_override = solve_base_rate(run, df, 1.0)
+        run = run_model(p, df, "change")
+        actual = float(df["ClaimNb"].sum())
+        assert self._expected(run, df) == pytest.approx(actual, rel=1e-10)
+
+    def test_an_existing_override_does_not_change_the_answer(self, data_path):
+        p, df, run = self._run(data_path)
+        first = solve_base_rate(run, df, 0.62)
+        p.models["change"].base_rate_override = 12345.0  # somebody's typo
+        overridden = run_model(p, df, "change")
+        assert overridden.rate_model.base_rate == 12345.0
+        assert solve_base_rate(overridden, df, 0.62) == pytest.approx(first, rel=1e-12)
+
+    def test_solving_twice_is_idempotent(self, data_path):
+        p, df, run = self._run(data_path)
+        p.models["change"].base_rate_override = solve_base_rate(run, df, 0.62)
+        again = run_model(p, df, "change")
+        assert solve_base_rate(again, df, 0.62) == pytest.approx(
+            again.rate_model.base_rate, rel=1e-12
+        )
+
+    def test_weights_are_respected(self, data_path):
+        """A frequency model: the expected total is per-unit prediction times
+        exposure, so the solved base rate has to use the same weights."""
+        p = rate_change_project(data_path)
+        p.data.roles["Premium"] = "ignore"
+        p.data.roles["Exposure"] = "weight"
+        cfg = p.models["change"]
+        cfg.offset = None
+        cfg.weight = "Exposure"
+        cfg.divide_target_by_weight = True
+        df = prepare(p)
+        run = run_model(p, df, "change")
+        cfg.base_rate_override = solve_base_rate(run, df, 1.0)
+        run = run_model(p, df, "change")
+        pred = run.predict(df) * df["Exposure"].to_numpy()
+        assert float(pred.sum()) == pytest.approx(float(df["ClaimNb"].sum()), rel=1e-10)
+        assert run.rate_model.metadata.exposure_col == "Exposure"
+
+    def test_an_explicit_weight_column_overrides_the_convention(self, data_path):
+        p, df, run = self._run(data_path)
+        value = solve_base_rate(run, df, 1.0, weight="Exposure", against="ClaimNb")
+        scaled = value / run.rate_model.base_rate
+        expected = float((run.predict(df) * df["Exposure"].to_numpy()).sum())
+        assert scaled == pytest.approx(float(df["ClaimNb"].sum()) / expected, rel=1e-12)
+
+    def test_a_binomial_model_is_refused(self, data_path):
+        p = binomial_project(data_path)
+        df = prepare(p)
+        run = run_model(p, df, "lapse")
+        with pytest.raises(ValueError, match="log-link"):
+            solve_base_rate(run, df, 1.0)
+
+    def test_a_target_that_is_not_positive_is_refused(self, data_path):
+        p, df, run = self._run(data_path)
+        with pytest.raises(ValueError, match="positive number"):
+            solve_base_rate(run, df, 0.0)

@@ -13,7 +13,7 @@ from easy_glm.core.design import (
 )
 
 from .project import ModelConfig, Project, premium_offset_column
-from .run import ModelRun
+from .run import ModelRun, exposure_for
 
 
 def _lit(value: Any) -> str:
@@ -116,6 +116,8 @@ def _fit_code(
         repr(cfg.target),
         f"family={cfg.family!r}",
     ]
+    if cfg.family == "tweedie":
+        args.append(f"tweedie_power={float(cfg.tweedie_power)!r}")
     if cfg.link:
         args.append(f"link={cfg.link!r}")
     if cfg.weight:
@@ -338,7 +340,7 @@ def to_script(
         fit_src = _fit_code(cfg, float(alpha), monotone, chose_by_cv)
     lines += [fit_src, "print(fit)", "print(fit.coef_table(drop_zero=True))"]
 
-    exposure = project.exposure or (cfg.weight if cfg.divide_target_by_weight else None)
+    exposure = exposure_for(project, cfg)
     lines += [
         "",
         "# --------------------------------------------------- 5. rate tables & scorer",

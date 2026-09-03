@@ -31,13 +31,26 @@ _FAMILY_ALIASES: dict[str, str] = {
 Direction = str  # "increasing" | "decreasing"
 
 
-def resolve_family(family: Any) -> tuple[Any, str, str]:
+#: Tweedie power used when none is given: between 1 (Poisson) and 2 (Gamma),
+#: the usual choice for a pure-premium model on data with many zero claims.
+DEFAULT_TWEEDIE_POWER = 1.5
+
+
+def resolve_family(
+    family: Any, tweedie_power: float | None = None
+) -> tuple[Any, str, str]:
     """Return ``(glum_family, canonical_name, default_link)``.
 
     Strings are case-insensitive (``"Poisson"``, ``"gaussian"``, ``"tweedie"``
-    = Tweedie with power 1.5). glum distribution objects pass through. Every
-    family defaults to the log link except binomial (logit), because rate
+    = Tweedie with power ``tweedie_power``, default
+    :data:`DEFAULT_TWEEDIE_POWER`). glum distribution objects pass through.
+    Every family defaults to the log link except binomial (logit), because rate
     tables are multiplicative.
+
+    ``tweedie_power`` must lie strictly between 1 and 2 — the range where the
+    distribution is a compound Poisson-Gamma, i.e. a mass of zeros plus positive
+    claim amounts. Passing it for another family is an error rather than a
+    silent no-op.
     """
     if isinstance(family, str):
         key = family.strip().lower()
@@ -47,12 +60,38 @@ def resolve_family(family: Any) -> tuple[Any, str, str]:
                 f"{sorted(_FAMILY_ALIASES)} or a glum distribution object."
             )
         name = _FAMILY_ALIASES[key]
-        fam: Any = TweedieDistribution(1.5) if name == "tweedie" else name
+        if name == "tweedie":
+            fam: Any = TweedieDistribution(check_tweedie_power(tweedie_power))
+        else:
+            if tweedie_power is not None:
+                raise ValueError(
+                    f"tweedie_power is only meaningful for the tweedie family, "
+                    f"not {family!r}"
+                )
+            fam = name
     else:
+        if tweedie_power is not None:
+            raise ValueError(
+                "tweedie_power cannot be combined with a glum distribution "
+                "object; build the distribution with the power you want"
+            )
         fam = family
         name = type(family).__name__.replace("Distribution", "").lower()
     link = "logit" if name == "binomial" else "log"
     return fam, name, link
+
+
+def check_tweedie_power(power: float | None) -> float:
+    """``power`` as a float, defaulted and checked to be strictly in (1, 2)."""
+    if power is None:
+        return DEFAULT_TWEEDIE_POWER
+    value = float(power)
+    if not 1.0 < value < 2.0:
+        raise ValueError(
+            f"tweedie_power must be strictly between 1 and 2 (1 is Poisson, 2 is "
+            f"Gamma; insurance pure premium usually sits near 1.5), got {power!r}"
+        )
+    return value
 
 
 def monotone_bounds(
@@ -399,6 +438,7 @@ def fit_glm(
     target: str,
     *,
     family: Any = "poisson",
+    tweedie_power: float | None = None,
     weight_col: str | None = None,
     offset_col: str | None = None,
     divide_target_by_weight: bool = False,
@@ -423,8 +463,11 @@ def fit_glm(
         Response column.
     family : str or glum distribution
         ``"poisson"``, ``"gamma"``, ``"gaussian"``, ``"binomial"``,
-        ``"tweedie"`` (power 1.5) or e.g. ``TweedieDistribution(1.7)``. The link
+        ``"tweedie"`` or e.g. ``TweedieDistribution(1.7)``. The link
         is log (logit for binomial) unless ``link=`` is passed in ``glum_kwargs``.
+    tweedie_power : float, optional
+        Power of the Tweedie distribution, strictly between 1 and 2 (default
+        1.5). Only for ``family="tweedie"``.
     weight_col, offset_col : str, optional
         Sample weights (exposure or premium) and an offset already on the
         linear-predictor scale (e.g. ``log(exposure)``).
@@ -458,7 +501,7 @@ def fit_glm(
     if data.is_empty():
         raise ValueError("No training rows.")
 
-    fam, family_name, default_link = resolve_family(family)
+    fam, family_name, default_link = resolve_family(family, tweedie_power)
     link = glum_kwargs.pop("link", default_link)
 
     design = spec.build(data)

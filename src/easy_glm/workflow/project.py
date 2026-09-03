@@ -276,6 +276,10 @@ class Interaction:
 @dataclass
 class ModelConfig:
     family: str = "poisson"
+    #: only for ``family="tweedie"``: the power of the compound Poisson-Gamma,
+    #: strictly between 1 (Poisson) and 2 (Gamma). 1.5 is the usual starting
+    #: point for a pure-premium model.
+    tweedie_power: float = 1.5
     link: str | None = None
     target: str | None = None
     weight: str | None = None
@@ -600,6 +604,11 @@ class Project:
                 continue
             if cfg.family not in FAMILIES:
                 problems.append(f"{name}: unknown family {cfg.family!r}")
+            if cfg.family == "tweedie" and not 1.0 < float(cfg.tweedie_power) < 2.0:
+                problems.append(
+                    f"{name}: tweedie_power must be strictly between 1 and 2 "
+                    f"(1 = Poisson, 2 = Gamma), got {cfg.tweedie_power!r}"
+                )
             if not cfg.target:
                 problems.append(f"{name}: no target column")
             if cfg.divide_target_by_weight and not cfg.weight:
