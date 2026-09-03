@@ -1203,6 +1203,12 @@ class DesignSpec:
         if self.n_features == 0:
             raise ValueError("Cannot build a design matrix with no features")
         n = data.height
+        if n == 0:
+            # tabmat's CategoricalMatrix cannot be built from zero rows; an
+            # empty dense block has the right shape and nothing to save.
+            return tm.DenseMatrix(
+                np.asarray(self.build(data, sparse=False), dtype=np.float64)
+            )
         codes = self.codes(data)
         slices = self.slices()
         step_blocks: list[tuple[Any, np.ndarray]] = []

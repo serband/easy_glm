@@ -693,8 +693,9 @@ def fit_glm(
         knots, few levels, no continuous term) can collapse a book several
         fold, a fine one barely at all (1.5x on the French motor set), and the
         grouping itself costs a pass over the data. Off by default, and
-        refused with ``cv`` (folds must be assigned to rows, not groups) and
-        when the fit has a piecewise-linear term with many distinct values.
+        refused with ``cv`` (folds must be assigned to rows, not groups); with a
+        piecewise-linear or continuous term most rows are unique, so it saves
+        little but is not refused.
         Nothing downstream changes: rate tables, predictions and diagnostics
         are still per row.
     progress : callable, optional

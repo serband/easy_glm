@@ -998,3 +998,27 @@ class TestTwoStageBehaviourOnTheCompactPath:
         # ... and stage 2 still ran on its own columns, unpenalised by that P1
         assert with_p1.stage2.spec.n_features == plain.stage2.spec.n_features
         assert (with_p1.stage2.coef != 0).sum() > 0
+
+
+def test_build_sparse_on_zero_rows_with_categoricals_and_cells():
+    """Review G S1: tabmat cannot build a CategoricalMatrix from zero rows, so
+    the compact builder must fall back rather than raise a raw tabmat error."""
+    import polars as pl
+
+    from easy_glm.core.design import (
+        CategoricalEncoder,
+        DesignSpec,
+        InteractionEncoder,
+        StepEncoder,
+    )
+
+    df = pl.DataFrame({"x": [1.0, 2.0, 3.0, 4.0], "g": ["a", "b", "a", "b"]})
+    step = StepEncoder("x", knots=[2.0, 3.0])
+    cat = CategoricalEncoder("g", levels=["a", "b"])
+    inter = InteractionEncoder.from_data(step, cat, df, min_cell_exposure=0.0)
+    spec = DesignSpec([step, cat, inter])
+    empty = df.head(0)
+    m = spec.build_sparse(empty)
+    assert m.shape == (0, spec.n_features)
+    dense = spec.build(empty, sparse=False)
+    assert dense.shape == (0, spec.n_features)
