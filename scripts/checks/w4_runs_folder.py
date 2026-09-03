@@ -235,7 +235,8 @@ def main(write: bool) -> int:
     at = _run(
         _script("pages_model", path).replace(
             'st.session_state["_project"] = S.project()',
-            "S._mark_fit_started('freq')\nst.session_state[\"_project\"] = S.project()",
+            "S._mark_fit_started('freq', S.run_key(S.project(), 'freq'))\n"
+            'st.session_state["_project"] = S.project()',
         )
     )
     markers = sorted(f.name for f in runs.glob("*.fitting"))
@@ -475,6 +476,11 @@ def main(write: bool) -> int:
         "without refitting, so it needs your tab to be looking at the same project "
         "file everyone else is.",
         "",
+        "Resolving the conflict — either way — lets this tab save again straight "
+        "away, including into the fits folder. It does not tidy the folder there "
+        "and then: the version that lost keeps its fit until the next time that "
+        "model is fitted, which is when the tidy-up below runs.",
+        "",
         "3. **The fit that matches the saved project is never tidied away.** The "
         "folder keeps one fit per model — the newest — so it does not grow for ever. "
         "That tidy-up now spares two things: the fit that matches the project *as it "
@@ -501,14 +507,24 @@ def main(write: bool) -> int:
         "page.”* The model is honestly shown as not fitted, instead of quietly looking "
         "like a model that was never fitted at all.",
         "",
+        "One caveat, because there is no way for one tab to see another tab's work in "
+        "progress: **if you open a second tab while a fit is running, that second tab "
+        "may report the running fit as interrupted.** Look at the Model page before "
+        "you refit — if the first tab is still working, let it finish. For the same "
+        "reason a tab never removes a marker that is not its own until it is five "
+        "minutes old: taking it away would cost the tab that is really fitting its own "
+        "warning. The notice is drawn once per session, and it keeps appearing in new "
+        "sessions until that model is fitted again, because until then it is true.",
+        "",
         "## What to check yourself",
         "",
         "- Open your project in two tabs, fit in both, and look in the "
         "`…easyglm-runs/` folder: you should see both fits, and both tabs should still "
         "show their own numbers.",
         "- Make one tab show the conflict notice, then press Fit and Delete in it. "
-        "The folder's timestamps should not move, and the tab should say so in both "
-        "cases.",
+        "Nothing in the folder should change — no new files, no timestamps moving, not "
+        "even the small marker files a fit leaves while it runs — and the tab should "
+        "say so in both cases.",
         "- Create a second model and check the picker moves to it before you type "
         "anything else.",
         "",
@@ -531,7 +547,7 @@ def main(write: bool) -> int:
         DOC.write_text(text)
         print(f"wrote {DOC}")
     else:
-        print(text)
+        print(text, end="")  # the page, byte for byte, with no extra newline
     return 0
 
 

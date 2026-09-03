@@ -251,9 +251,17 @@ User edits relativity in table
   `_prune_runs` keeps the key of the project *as saved on disk* (`_saved_project()`)
   and of this session's current spec; only files matching neither go, together with
   files of models absent from both projects and sidecars whose pickle is gone. A fit
-  writes a `.fitting` marker (`_mark_fit_started`) that `interrupted_fits()` turns into
-  a one-off notice in `ui.status_bar()`; bump `PERSIST_FORMAT` when a pickled class
+  writes a `<tag>-<key>-<session>.fitting` marker (`_mark_fit_started`) that
+  `interrupted_fits()` turns into a notice in `ui.status_bar()` (once per session, and
+  again in later sessions while it stays true); a marker is *removed* only when its
+  result is on disk, when this session wrote it, or when it is older than
+  `MARKER_GRACE_SECONDS` — a younger one from another session may be a fit still
+  running, and a running fit is indistinguishable from an interrupted one from
+  another tab (said on the check page). Bump `PERSIST_FORMAT` when a pickled class
   changes shape.
+- `Project.to_json` writes to a unique temporary file and renames it over the target,
+  so no reader ever sees half a project file and two writers cannot interleave; a
+  target the user made read-only is still refused (the rename would not be).
   A successful save (autosave included) drops the "Autosave failed" banner.
 - Rename rule: column renames go through `Project.rename_column` (roles, types,
   recodes, design, split, row filters and derived expressions — `pl.col('old')`

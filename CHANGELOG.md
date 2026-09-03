@@ -40,6 +40,15 @@
   the folders around it (a typo is a message, not a new folder tree); the Model page names the interaction
   *parent* that left the predictor list; "1 rows" reads "1 row" and the
   *Prepared* chip goes out for a frame with no rows.
+- From the W4 review: the "fit in progress" markers follow the same rules as the
+  fits themselves (a paused tab removes none, and no tab removes another
+  session's marker until it is five minutes old, since it may be a fit still
+  running); the "removed from this tab only" notice is queued before the save,
+  so it survives the rerun that the conflict raises; the check page says that a
+  fit running in another tab may be reported as interrupted; deleting is also
+  paused while the project file is missing; the project file is written to a
+  temporary file and renamed, so no reader sees half of it; and the knot
+  warning reads as English.
 - Tests: `tests/test_w4_runs_folder.py` (one per finding, two AppTest sessions
   for the two-tab cases) and the plain-language replay in
   `docs/checks/w4-runs-folder.md` (`scripts/checks/w4_runs_folder.py --write`).
