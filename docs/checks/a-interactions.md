@@ -12,9 +12,9 @@ You said: *mains are frozen; interactions are fitted only after offsetting the m
 
 1. **Stage 1** fits the 9 main effects on their own. It is the same fit, number for number, that this model gets with no interaction at all.
 2. Stage 1 is then **frozen**: its rate tables and its base rate are the ones the model ships with, whatever happens next.
-3. **Stage 2** fits the interaction cells with stage 1's prediction as an offset and no intercept of its own, so every cell is a *pure adjustment* to a finished model. Nothing in stage 2 can move a main-effect relativity or the base rate.
+3. **Stage 2** fits the interaction cells with stage 1's prediction as an offset and no intercept of its own, so every cell is a *pure adjustment* to a finished model. Nothing in stage 2 can move a main-effect relativity or the base rate — which also means that any overall re-levelling stage 2 wants has to go into the cells; there is a paragraph on that below the metrics table.
 
-The `DrivAge` table below is printed twice — without the interaction and with it — and every row is identical (largest change 1e-15, which is arithmetic rounding, not a difference in the model); the base rate matches to 4e-16. For comparison the table also carries the relativities the **joint fit** (the single fit this replaced) produced from the same data: it moved the same table by up to 21.1% and the base rate by 1.5%, because the split between mains and cells was not unique.
+The `DrivAge` table below is printed twice — without the interaction and with it — and every row is identical: the largest change in any relativity and in the base rate is **below 1e-13**, which is the solver's own run-to-run rounding and not a difference in the model (the same tolerance the test suite holds this to). For comparison the table also carries the relativities the **joint fit** (the single fit this replaced) produced from the same data: it moved the same table by up to 21.1% and the base rate by 1.5%, because the split between mains and cells was not unique.
 
 ## Defaults in force (from the questions for the actuary)
 
@@ -36,6 +36,10 @@ The `DrivAge` table below is printed twice — without the interaction and with 
 | largest cell adjustment | — | 1.180 | 1.579 |
 
 The last column is the fit this replaced, on the same data and the same alpha. Freezing the mains costs a little lift here — Gini 0.3083 against 0.3105, deviance explained 4.84% against 4.93%, both still above the 0.3072 / 4.79% of the model with no interaction at all — because the joint fit is free to place part of the interaction wherever it fits best, including inside the main tables. That freedom is exactly what you asked us to give up, and the price is on this line so you can see it.
+
+**Overall calibration gets slightly worse, not better.** Holdout A/E is 1.0191 without the interaction and 1.0223 with the two stages (the joint fit: 1.0194). The reason is in the next paragraph: with the mains frozen there is no intercept left for the second stage to re-level with, so a small level movement it wants ends up spread over the rated cells instead of over the whole book. If overall level matters more to you than frozen mains on a particular model, the base-rate override on the Model page moves it back in one number without touching a single relativity.
+
+**A cell is a pure adjustment to stage 1 — but it is not purely an interaction.** Stage 2 carries no intercept (that is what keeps the base rate exactly where stage 1 put it), so any overall re-levelling stage 2 would like has nowhere to go but the cells. Fitting the identical second stage *with* an intercept here gives +0.003785 on the log scale, and each of the 9 adjusted cells in the model we ship is about that much larger (within 3e-07, not exactly, because policies in the unrated cells have no cell to carry a level shift for them). So roughly 0.38% of each adjusted cell is overall level rather than interaction. That is a consequence of the design you asked for, not a defect, but it is worth knowing when you read a cell of 1.05 as "5 % worse than the mains say".
 
 Rate tables (mains × matrix) reproduce the GLM on the holdout: max relative difference below 1e-12.
 
@@ -65,7 +69,7 @@ Rate tables (mains × matrix) reproduce the GLM on the holdout: max relative dif
 | ≥ 72.0 | 0.9071 | 0.9071 | 0.00% | 1.0616 |
 | Other / Unknown | 0.8378 | 0.8378 | 0.00% | 0.6610 |
 
-**Every change is 0.00%** — that is the point of the two stages. The last column shows the same table from the joint fit for comparison: it re-priced the youngest band by -21.1% when the interaction was added, which is the behaviour you asked us to remove.
+**All 21 changes are 0.00%** — that is the point of the two stages. The last column shows the same table from the joint fit for comparison: it re-priced the youngest band by -21.1% when the interaction was added, which is the behaviour you asked us to remove.
 
 The `Other / Unknown` row (drivers with no recorded age) tracks the `< 25.0` band because missing ages sit in the lowest band and the data has no such drivers, so no separate effect was fitted for them.
 

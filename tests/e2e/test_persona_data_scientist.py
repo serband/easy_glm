@@ -4,9 +4,10 @@ freq_v1 (CV lasso) is fitted; freq_v2 is created and given an interaction;
 Density is switched to a linear term (the variable design is shared by all
 models, so freq_v1 goes stale and is refitted); both are compared on the
 Diagnostics page (challenger overlay, Gini, double lift), the pair search runs,
-freq_v2 is promoted to champion, both scripts and scorers export, and the Gini
-shown on screen is recomputed from the downloaded scorer. TODO(D3): assert on
-the Compare page once it exists.
+the Compare page shows both models with the table of relativities that differ,
+freq_v2 is promoted to champion there, both scripts and scorers export, the HTML
+report is downloaded and opened in the browser, and the Gini shown on screen is
+recomputed from the downloaded scorer.
 """
 
 from __future__ import annotations
@@ -22,8 +23,10 @@ from ._helpers import (
     goto_page,
     run_python,
     select,
+    select_sidebar,
     settle,
     tab,
+    wait_text,
 )
 from .conftest import SERVER_PYTHON
 
@@ -71,11 +74,13 @@ def test_data_scientist_model_comparison(scientist_server, browser, e2e_dir):
     assert_clean(pg, "fit v2")
     assert "Fitted and up to date" in main.inner_text()
 
-    # -- Diagnostics: challenger overlay + pair search on v1
+    # -- Diagnostics: challenger overlay + pair search on v1. The challenger is
+    #    chosen once in the sidebar; Diagnostics, Rate tables and Compare follow it
+    select_sidebar(pg, "Compare with", "freq_v2")
     goto_page(pg, "Diagnostics")
     select(pg, "Model", "freq_v1")
-    select(pg, "Compare with", "freq_v2")
     assert_clean(pg, "challenger")
+    assert "freq_v2" in pg.get_by_test_id("stMain").inner_text()
     tab(pg, "Lift")
     gini_text = main.inner_text()
     assert "challenger" in gini_text
@@ -93,11 +98,23 @@ def test_data_scientist_model_comparison(scientist_server, browser, e2e_dir):
     assert pg.get_by_test_id("stDataFrame").count() >= 1  # the ranked pairs table
     assert "search bands" in main.inner_text()  # the heatmap of the shown pair
 
-    # -- promote v2 and export both scripts
-    goto_page(pg, "Model")
-    select(pg, "Model", "freq_v2")
-    click(pg, "Make champion")
+    # -- Compare: both models side by side, and which relativities differ
+    goto_page(pg, "Compare")
+    assert_clean(pg, "compare")
+    assert "freq_v1" in main.inner_text() and "freq_v2" in main.inner_text()
+    assert "Project champion: freq_v1" in main.inner_text()
+    tab(pg, "Relativities that differ")
+    assert wait_text(pg, "log_diff"), main.inner_text()[:600]
+    # the diff table itself is a canvas grid: assert the element and the caption
+    assert pg.get_by_test_id("stDataFrame").count() >= 1
+    assert re.search(r"\*?\*?\d+\*?\*? row\(s\)", main.inner_text()), main.inner_text()[
+        :600
+    ]
+
+    # -- promote v2 from the Compare page and export both scripts
+    click(pg, "Make freq_v2 champion")
     assert_clean(pg, "champion")
+    assert wait_text(pg, "Project champion: freq_v2")
     goto_page(pg, "Export")
     scorers = {}
     for name in ("freq_v1", "freq_v2"):
@@ -105,6 +122,35 @@ def test_data_scientist_model_comparison(scientist_server, browser, e2e_dir):
         script = download(pg, "Download script", e2e_dir)
         assert "fit_glm(" in script.read_text()
         scorers[name] = download(pg, "Scorer (.easyglm)", e2e_dir)
+
+    # -- the HTML report: both models in one self-contained file that opens in
+    #    the browser without a console error and without fetching anything
+    select(pg, "Model", "freq_v2")
+    select(pg, "Include a comparison with", "freq_v1")
+    report = download(pg, "Download HTML report", e2e_dir)
+    html = report.read_text()
+    assert "freq_v1" in html and "freq_v2" in html
+    assert 'id="compare"' in html
+    assert not re.search(r'(?:src|href)\s*=\s*["\']https?://', html)
+    problems: list[str] = []
+    viewer = browser.new_page()
+    viewer.on(
+        "console", lambda m: problems.append(m.text) if m.type == "error" else None
+    )
+    viewer.on("pageerror", lambda e: problems.append(str(e)))
+    viewer.on(
+        "request",
+        lambda r: (
+            problems.append(f"external request {r.url}")
+            if not r.url.startswith("file:")
+            else None
+        ),
+    )
+    viewer.goto(report.resolve().as_uri(), wait_until="networkidle")
+    viewer.wait_for_timeout(300)
+    assert viewer.locator("section.variable").count() >= 7  # one per rating factor
+    viewer.close()
+    assert problems == []
     # the Gini shown for freq_v1 on the holdout equals workflow.gini on the
     # downloaded scorer (same split seed, same rows)
     out = run_python(

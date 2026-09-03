@@ -1,4 +1,4 @@
-"""Page 8 — Rate tables: inspect, adjust relativities (rows or cells), export."""
+"""Page 9 — Rate tables: inspect, adjust relativities (rows or cells), export."""
 
 from __future__ import annotations
 
@@ -33,6 +33,28 @@ def _ae_frame(df: pl.DataFrame, which: str) -> pl.DataFrame:
     return df.filter(pl.col(p.data.split.column) == (0 if which == "holdout" else 1))
 
 
+def _challenger_selector(column, model: str):
+    """The challenger whose expected line is overlaid on the A/E charts: the
+    sidebar's "compare with" by default, overridable here (the widget's key
+    carries the sidebar value, so moving that selector re-defaults this one)."""
+    fitted = [n for n in S.fitted_models() if n != model]
+    if not fitted:
+        return None
+    sidebar = S.challenger()
+    options = ["(none)"] + fitted
+    default = sidebar if sidebar in fitted else "(none)"
+    with column:
+        name = st.selectbox(
+            "Compare with (challenger)",
+            options,
+            index=options.index(default),
+            key=S.widget_key(f"tables_chal_{model}_{sidebar}"),
+            help="Overlays the challenger's expected line on the A/E charts "
+            "below. The full side-by-side view is the **Compare** page.",
+        )
+    return S.get_run(name) if name != "(none)" else None
+
+
 def _apply(run_name: str, changed: bool, errors: list[str]) -> None:
     for e in errors:
         if changed:
@@ -48,7 +70,7 @@ def _apply(run_name: str, changed: bool, errors: list[str]) -> None:
 # --------------------------------------------------------------------------
 # main-effect tables (step / categorical / linear)
 # --------------------------------------------------------------------------
-def _main_effect(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
+def _main_effect(run, var: str, df: pl.DataFrame, challenger=None) -> pl.DataFrame:
     p = S.project()
     cfg = p.models[run.name]
     rm = run.rate_model
@@ -95,13 +117,29 @@ def _main_effect(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
             enc = run.spec[var]
             knots = enc.band_edges() if hasattr(enc, "band_edges") else None
             tbl = ae_by_variable(frame, var, actual, expected, w, knots=knots)
+            cmp_tbl = None
+            can_score = challenger is not None and not [
+                c for c in challenger.spec.required_columns if c not in frame.columns
+            ]
+            if can_score and var in challenger.spec.encoders:
+                exp_chal = totals(frame, challenger.config, challenger.predict(frame))[
+                    1
+                ]
+                cmp_tbl = ae_by_variable(frame, var, actual, exp_chal, w, knots=knots)
             st.plotly_chart(
                 C.ae_chart(
                     tbl,
                     title=f"{var} — actual vs expected with current relativities ({which})",
+                    compare=cmp_tbl,
+                    compare_name=challenger.name if challenger else "challenger",
                 ),
                 width="stretch",
             )
+            if challenger is not None and cmp_tbl is None:
+                st.caption(
+                    f"{challenger.name} has no **{var}** term, so there is no "
+                    "second expected line to draw."
+                )
     with right:
         if is_linear:
             st.markdown(
@@ -279,16 +317,17 @@ def render() -> None:
     df = ui.require_data()
     if df is None:
         return
-    c1, c2 = st.columns([2, 3])
+    c1, c2, c3 = st.columns([2, 2, 4])
     with c1:
         run = ui.run_selector("Model", key=S.widget_key("tables_run"))
     if run is None:
         return
+    challenger = _challenger_selector(c2, run.name)
     cfg = p.models[run.name]
     n_inter = sum(
         1 for c in run.rate_model.variables.values() if c.type == "interaction"
     )
-    with c2:
+    with c3:
         ui.metric_row(
             [
                 (
@@ -323,8 +362,14 @@ def render() -> None:
         return
     if run.rate_model.variables[var].type == "interaction":
         working = _interaction(run, var, df)
+        if challenger is not None:
+            st.caption(
+                f"The challenger **{challenger.name}** is not overlaid on a "
+                "heatmap — compare the two models cell by cell on the "
+                "**Compare** page."
+            )
     else:
-        working = _main_effect(run, var, df)
+        working = _main_effect(run, var, df, challenger)
 
     b1, b2 = st.columns(2)
     if b1.button(

@@ -1075,6 +1075,42 @@ def current_runs() -> dict[str, ModelRun]:
     return {name: r for name, (_h, r) in st.session_state.get("runs", {}).items()}
 
 
+# --------------------------------------------------------------------------
+# champion vs challenger
+# --------------------------------------------------------------------------
+#: session key of the sidebar's "compare with" model. Not an app-state key, so
+#: :func:`set_project` drops it: another project's model names must not survive.
+CHALLENGER_KEY = "challenger"
+
+
+def fitted_models() -> list[str]:
+    """The project's models that have a fit matching the current spec, in the
+    project's order."""
+    return [m for m in project().models if get_run(m) is not None]
+
+
+def latest_run(names: list[str]) -> str | None:
+    """The most recently fitted of ``names`` (by the run's ``created_at``), or
+    None when none of them is fitted — the default challenger."""
+    dated = [(run.created_at, n) for n in names if (run := get_run(n)) is not None]
+    return max(dated)[1] if dated else None
+
+
+def challenger() -> str | None:
+    """The sidebar's "compare with" model, or None. A name that is no longer a
+    model of the project reads as None."""
+    init_state()
+    name = st.session_state.get(CHALLENGER_KEY)
+    return name if name in project().models else None
+
+
+def set_challenger(name: str | None) -> None:
+    """Record the sidebar's choice; pages default to it (see the Compare,
+    Diagnostics and Rate tables pages, which each allow an override)."""
+    init_state()
+    st.session_state[CHALLENGER_KEY] = name
+
+
 def leakage(force: bool = False) -> pl.DataFrame | None:
     """Leakage report on the full training rows (the report samples internally)."""
     p = project()

@@ -200,7 +200,7 @@ pip install "easy_glm[ui]"
 easy-glm-workbench                      # or: python -m easy_glm.app my.easyglm-project.json
 ```
 
-An Emblem-style GUI over the same engine. Nine pages, one project file:
+An Emblem-style GUI over the same engine. Ten pages, one project file:
 
 | Page | What you do |
 |------|-------------|
@@ -211,12 +211,28 @@ An Emblem-style GUI over the same engine. Nine pages, one project file:
 | Design | per-predictor kind (**step** by default · **linear** piecewise curve · **continuous** one straight line · **categorical**), knots (quantile / integer / custom), clamp range, null column, level share, monotone direction; exposure + rate preview per bin |
 | Model | family, target/weight/offset, penalty (fixed alpha or CV), predictors; fit; coefficients kept; regularisation path |
 | Diagnostics | A/E by any variable (in or out of the model, champion vs challenger), lift & Gini, double lift vs a challenger or a premium column, residual factor search |
-| Rate tables | relativities with A/E, inline edits saved as adjustments (no refit), Excel / `.easyglm` download |
-| Export | the whole workflow as a **runnable Python script** (explicit knots, levels, resolved alpha, adjustments), project JSON, artefacts |
+| Compare | two fitted models side by side: metrics on train and holdout, A/E with both expected lines, lift, double lift, **which relativities differ**, make champion |
+| Rate tables | relativities with A/E (challenger overlaid), inline edits saved as adjustments (no refit), Excel / `.easyglm` download |
+| Export | the whole workflow as a **runnable Python script** (explicit knots, levels, resolved alpha, adjustments), a **self-contained HTML report**, project JSON, artefacts |
 
 Everything the GUI does edits a `Project` spec (`easy_glm.workflow`) that is autosaved
 as JSON; the exported script reproduces the GUI model exactly (this is tested).
 Design notes: [`docs/WORKBENCH_PLAN.md`](docs/WORKBENCH_PLAN.md).
+
+**Comparing two models, and writing one up.** Pick a challenger once in the sidebar
+("Compare with") and every page uses it: Diagnostics and Rate tables draw its expected
+line next to the champion's, and the **Compare** page puts the two models' metrics
+side by side with the double lift and a table of *which relativities actually differ*
+— one row per band whose relativity moved by more than a tolerance you set (1 % by
+default), on the log scale, with interactions compared cell by cell and the base rates
+against each other; two identical models give an empty table
+(`workflow.relativity_diff`). When you are done, **Download HTML report** on the Export
+page writes the whole model up as **one self-contained file** — summary and split, a
+block per rating factor with its relativities and its actual-vs-expected on train and
+holdout, interaction heatmaps, lift and Gini, the comparison section, every coefficient
+and the reproducing Python script — a few hundred kB (350–400 kB for the French
+motor set), nothing fetched from the internet when it is opened, so it can be
+emailed or attached to a filing (`workflow.to_report_html`).
 
 ---
 

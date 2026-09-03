@@ -11,7 +11,7 @@ import polars as pl
 from easy_glm.engine.rate_model import RateModel
 
 from .design import DesignSpec, StepEncoder
-from .fit import GLMFit, fit_glm
+from .fit import GLMFit, TwoStageFit, fit_glm
 from .split import TRAIN_FLAG, validate_train_test_column
 from .tables import rate_tables, to_rate_model
 
@@ -195,17 +195,27 @@ class EasyGLM:
 
     # ---------------------------------------------------------- persistence
     def save(self, path: str | Path) -> None:
+        """Write the spec, the fitted estimator(s), the RateModel and the tables.
+
+        A two-stage fit (mains frozen, interaction cells on top) writes **both**
+        glum estimators and is rebuilt as a :class:`~easy_glm.TwoStageFit` by
+        :meth:`load`; stage 1's estimator alone could not score the composed
+        spec."""
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         self.spec.to_json(path / "spec.json")
         joblib.dump(self.glm.model, str(path / "glm_model.joblib"))
+        two_stage = isinstance(self.glm, TwoStageFit)
+        if two_stage:
+            joblib.dump(self.glm.stage2.model, str(path / "glm_model_stage2.joblib"))
         self.rate_model.to_json(str(path / "rate_model.json"))
         tables_dir = path / "rate_tables"
         tables_dir.mkdir(exist_ok=True)
         for name, tbl in self._tables.items():
             tbl.write_parquet(str(tables_dir / f"{name}.parquet"))
         config = {
-            "version": 2,
+            "version": 3,
+            "stages": 2 if two_stage else 1,
             "family": self.glm.family,
             "link": self.glm.link,
             "target": self.glm.target,
@@ -228,19 +238,40 @@ class EasyGLM:
                 "(blueprint.json) cannot be loaded; refit with EasyGLM.fit."
             )
         config = json.loads((path / "config.json").read_text())
-        glm = GLMFit(
-            spec=DesignSpec.from_json(path / "spec.json"),
-            model=joblib.load(str(path / "glm_model.joblib")),
-            family=config["family"],
-            link=config["link"],
-            target=config["target"],
-            weight_col=config.get("weight_col"),
-            offset_col=config.get("offset_col"),
-            divide_target_by_weight=config.get("divide_target_by_weight", False),
-            monotone=config.get("monotone", {}),
-            modal_bins=config.get("modal_bins", {}),
-            n_train_rows=config.get("n_train_rows", 0),
-        )
+        spec = DesignSpec.from_json(path / "spec.json")
+        common: dict[str, Any] = {
+            "family": config["family"],
+            "link": config["link"],
+            "target": config["target"],
+            "weight_col": config.get("weight_col"),
+            "offset_col": config.get("offset_col"),
+            "divide_target_by_weight": config.get("divide_target_by_weight", False),
+            "monotone": config.get("monotone", {}),
+            "modal_bins": config.get("modal_bins", {}),
+            "n_train_rows": config.get("n_train_rows", 0),
+        }
+        glm: GLMFit
+        if config.get("stages", 1) == 2:
+            # the two stages were saved separately; rebuild the pair, whose
+            # composed spec is the one on disk (mains then cells)
+            glm = TwoStageFit(
+                GLMFit(
+                    spec=spec.main_effects_spec(),
+                    model=joblib.load(str(path / "glm_model.joblib")),
+                    **common,
+                ),
+                GLMFit(
+                    spec=spec.interactions_spec(),
+                    model=joblib.load(str(path / "glm_model_stage2.joblib")),
+                    **{**common, "offset_col": None, "monotone": {}, "modal_bins": {}},
+                ),
+            )
+        else:
+            glm = GLMFit(
+                spec=spec,
+                model=joblib.load(str(path / "glm_model.joblib")),
+                **common,
+            )
         rm = RateModel.from_json(str(path / "rate_model.json"))
         tables: dict[str, pl.DataFrame] = {}
         tables_dir = path / "rate_tables"

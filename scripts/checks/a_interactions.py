@@ -89,6 +89,36 @@ def fit(train: pl.DataFrame, with_interaction: bool, *, joint: bool = False):
     )
 
 
+def level_in_cells(train: pl.DataFrame, inter) -> dict[str, float]:
+    """How much of each adjusted cell is overall *level* rather than interaction.
+
+    Stage 2 has no intercept — that is what keeps the base rate exactly where
+    stage 1 put it — so any overall re-levelling the second stage would like has
+    nowhere to go but the cells. Fitting the identical second stage *with* an
+    intercept (glum never penalises the intercept) measures it: the intercept it
+    chooses is the level, and every cell of the no-intercept fit should be that
+    much larger."""
+    with_intercept = fit_glm(
+        train,
+        inter.spec.interactions_spec(),
+        "ClaimNb",
+        family="poisson",
+        weight_col="Exposure",
+        divide_target_by_weight=True,
+        alpha=ALPHA,
+        offset=inter.stage1.linear_predictor(train),
+        scale_predictors=False,
+    )
+    level = float(with_intercept.intercept)
+    nz = inter.stage2.coef != 0
+    gap = float(
+        np.abs((inter.stage2.coef - with_intercept.coef)[nz] - level).max()
+        if nz.any()
+        else 0.0
+    )
+    return {"level": level, "gap": gap, "n_cells": int(nz.sum())}
+
+
 def metrics(f, frame: pl.DataFrame) -> dict[str, float]:
     cfg = ModelConfig(target="ClaimNb", weight="Exposure", divide_target_by_weight=True)
     pred = f.predict(frame)
@@ -275,6 +305,7 @@ def main(write: bool) -> None:
         )
 
     planted = planted_check()
+    level = level_in_cells(train, inter)
 
     lines = [
         "# A — two-way interactions: what changed for you",
@@ -306,16 +337,25 @@ def main(write: bool) -> None:
         "3. **Stage 2** fits the interaction cells with stage 1's prediction as an "
         "offset and no intercept of its own, so every cell is a *pure adjustment* to a "
         "finished model. Nothing in stage 2 can move a main-effect relativity or the "
-        "base rate.",
+        "base rate — which also means that any overall re-levelling stage 2 wants has "
+        "to go into the cells; there is a paragraph on that below the metrics table.",
         "",
-        f"The `{PAIR[0]}` table below is printed twice — without the interaction and with "
-        f"it — and every row is identical (largest change "
-        f"{moved_two_stage:.0e}, which is arithmetic rounding, not a difference in the "
-        f"model); the base rate matches to {base_moved:.0e}. For comparison the table "
-        "also carries the relativities the **joint fit** (the single fit this replaced) "
-        f"produced from the same data: it moved the same table by up to "
-        f"{moved_joint:.1%} and the base rate by {base_moved_joint:.1%}, because the "
-        "split between mains and cells was not unique.",
+        f"The `{PAIR[0]}` table below is printed twice — without the interaction and "
+        "with it — and every row is identical: the largest change in any relativity "
+        + (
+            "and in the base rate is **below 1e-13**, which is the solver's own "
+            "run-to-run rounding and not a difference in the model (the same "
+            "tolerance the test suite holds this to). "
+            if max(moved_two_stage, base_moved) < 1e-13
+            else f"is {moved_two_stage:.1e} and in the base rate {base_moved:.1e} — "
+            "both above the 1e-13 this is meant to hold to, so ⚠ **this document "
+            "was generated from a build with a bug in it**. "
+        )
+        + "For comparison the table also carries the "
+        "relativities the **joint fit** (the single fit this replaced) produced from "
+        f"the same data: it moved the same table by up to {moved_joint:.1%} and the "
+        f"base rate by {base_moved_joint:.1%}, because the split between mains and "
+        "cells was not unique.",
         "",
         "## Defaults in force (from the questions for the actuary)",
         "",
@@ -385,6 +425,29 @@ def main(write: bool) -> None:
         "freedom is exactly what you asked us to give up, and the price is on this "
         "line so you can see it.",
         "",
+        "**Overall calibration gets slightly worse, not better.** Holdout A/E is "
+        f"{m0['A/E']:.4f} without the interaction and {m1['A/E']:.4f} with the two "
+        f"stages (the joint fit: {mj['A/E']:.4f}). The reason is in the next "
+        "paragraph: with the mains frozen there is no intercept left for the second "
+        "stage to re-level with, so a small level movement it wants ends up spread "
+        "over the rated cells instead of over the whole book. If overall level "
+        "matters more to you than frozen mains on a particular model, the base-rate "
+        "override on the Model page moves it back in one number without touching a "
+        "single relativity.",
+        "",
+        "**A cell is a pure adjustment to stage 1 — but it is not purely an "
+        "interaction.** Stage 2 carries no intercept (that is what keeps the base "
+        "rate exactly where stage 1 put it), so any overall re-levelling stage 2 "
+        "would like has nowhere to go but the cells. Fitting the identical second "
+        f"stage *with* an intercept here gives {level['level']:+.6f} on the log "
+        f"scale, and each of the {level['n_cells']} adjusted cells in the model we "
+        f"ship is about that much larger (within {level['gap']:.0e}, not exactly, "
+        "because policies in the unrated cells have no cell to carry a level shift "
+        f"for them). So roughly {abs(np.expm1(level['level'])):.2%} of each adjusted "
+        "cell is overall level rather than interaction. That is a consequence of the "
+        "design you asked for, not a defect, but it is worth knowing when you read a "
+        'cell of 1.05 as "5 % worse than the mains say".',
+        "",
         f"Rate tables (mains × matrix) reproduce the GLM on the holdout: max relative "
         f"difference {'below 1e-12' if exact < 1e-12 else f'{exact:.1e}'}.",
         "",
@@ -395,10 +458,18 @@ def main(write: bool) -> None:
             ["band", "without", "with (two stages)", "change", "old joint fit"],
         ),
         "",
-        "**Every change is 0.00%** — that is the point of the two stages. The last "
-        "column shows the same table from the joint fit for comparison: it re-priced "
-        f"the youngest band by {(tj['relativity'][0] / t0['relativity'][0] - 1):+.1%} "
-        "when the interaction was added, which is the behaviour you asked us to remove.",
+        (
+            f"**All {len(main_rows)} changes are 0.00%** — that is the point of the "
+            "two stages."
+            if all(row[3] == "0.00%" for row in main_rows)
+            else "⚠ **Some rows moved**, so the two stages are not holding the mains "
+            f"frozen (largest change {moved_two_stage:.1e} against a budget of "
+            "1e-13). This document was generated from a build with a bug in it."
+        )
+        + " The last column shows the same table from the joint fit for comparison: "
+        "it re-priced the youngest band by "
+        f"{(tj['relativity'][0] / t0['relativity'][0] - 1):+.1%} when the interaction "
+        "was added, which is the behaviour you asked us to remove.",
         "",
         "The `Other / Unknown` row (drivers with no recorded age) tracks the `< 25.0` "
         "band because missing ages sit in the lowest band and the data has no such "

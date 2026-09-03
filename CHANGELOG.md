@@ -98,12 +98,30 @@
   `spec.main_effects_spec()`, `eta1 = stage1.linear_predictor(train)`, `fit_glm`
   on `spec.interactions_spec()` with `offset=eta1, fit_intercept=False`, then
   `TwoStageFit(stage1, stage2)` — so what runs outside the workbench is what ran
-  inside it, cell adjustments included.
-- **The cell penalty rule is unchanged**, and is now written the same way in
-  both places: `P1 = penalty_weight × 0.5 / sd` under glum's standardisation and
+  inside it, cell adjustments included. Whether there really were two stages is
+  read off the **fit**, not off the design: an interaction whose every cell is
+  below the exposure floor has no columns to fit, so no stage-2 block is written
+  (it would have been a fit on a zero-column design, which does not run). A
+  script exported *before* fitting cannot know that yet — only the data can say
+  which cells clear the floor — so it calls `fit_two_stage`, which decides at
+  run time, and each interaction is now written out with its own cell floor and
+  penalty weight instead of the shared defaults.
+- **`EasyGLM.save` / `load` handle a two-stage fit** (bundle version 3): both
+  glum estimators are written and the pair is rebuilt on load. Before, the
+  bundle held stage 1's estimator against the composed mains+cells spec and the
+  first prediction after loading raised.
+- **The cell penalty rule is unchanged on the product path, and corrected off
+  it.** `P1 = penalty_weight × 0.5 / sd` under glum's standardisation and
   `penalty_weight × 0.5` without it are the *same* penalty per unit of
   adjustment, which is what lets stage 2 — where glum refuses to standardise,
   because there is no intercept — penalise a cell exactly as the joint fit did.
+  Getting there meant changing `penalty_weights`' **unstandardised** branch from
+  `penalty_weight` to `penalty_weight × 0.5`: the two branches used to disagree
+  by a factor of two, and 0.5 is the value R3 specified. Every path the
+  workbench, the exported script and `EasyGLM` take standardises, so no fitted
+  model moves; a caller who passed `scale_predictors=False` to `fit_glm` on a
+  design with cells by hand will find those cells penalised half as hard as
+  before and should halve their `alpha` to reproduce an earlier fit.
 - **The second stage has its own alpha.** It defaults to the mains' alpha (a
   cell then costs what a main effect that half the exposure shares costs), and
   cross-validates on its own path when the mains do. `Interaction.alpha`
@@ -111,8 +129,18 @@
   because the second stage is one fit.
 - The Model page says which model was fitted in two stages, with the alpha of
   each and how many cells were rated, and shows a regularisation path per stage;
-  the Rate tables page says the base rate comes from the main-effect fit alone.
-  `run.summary()` and a saved snapshot's metrics carry both alphas.
+  when an interaction is present but **no** cell cleared its exposure floor it
+  says that instead, rather than falling silent about a matrix of 1.000s. The
+  Design page offers each interaction's *cells alpha*, and the Rate tables page
+  says the base rate comes from the main-effect fit alone. `run.summary()` and a
+  saved snapshot's metrics carry both alphas.
+- **A cell is a pure adjustment to the mains, but not purely an interaction.**
+  Stage 2 has no intercept — that is what pins the base rate — so any overall
+  re-levelling it wants goes into the cells. On the French motor check that is
+  0.38 % of each adjusted cell, and holdout A/E moves 1.0191 → 1.0223 with the
+  interaction added. Both are now stated in `docs/checks/a-interactions.md` and
+  on the Model page; a base-rate override moves the level back in one number
+  without touching a relativity.
 - **Fits cached in a `*.easyglm-runs` folder by an earlier 0.4 development build
   are ignored and refitted** (`PERSIST_FORMAT` 4 → 5): such a run holds a joint
   fit whose main tables include part of the interaction — the same shape, a
@@ -236,6 +264,59 @@
   where a *decreasing* constraint on a rising curve gives a flat term and never a
   positive slope. The old "bends are sparse" assertion is gone with this basis:
   there are no change-of-slope coefficients left to count.
+
+### Champion vs challenger, and a report you can send (D3 / D4)
+- **A "Compare with" box in the sidebar.** Pick a challenger once and the whole
+  session follows it: the Diagnostics page overlays it, the Rate tables page
+  draws its expected line on the A/E chart, the Compare page and the HTML report
+  default to it. Each page still lets you override it for that page alone.
+- **New Compare page** (after Diagnostics). Two fitted models side by side: rows,
+  exposure, A/E, Gini, deviance explained and mean deviance on train and holdout,
+  plus each model's alpha, non-zero terms, interactions, linear terms,
+  adjustments and base rate. A/E by any variable with *both* models' expected
+  lines, lift for each, the double lift, and **Make … champion** buttons. The
+  metrics recorded with each saved version of the rate tables (`Snapshot.metrics`)
+  are shown when there are any.
+- **A table of which relativities actually differ.** `workflow.relativity_diff`
+  lists every band whose relativity moved by more than a tolerance (default 1 %,
+  editable on the page), on the log scale so `+0.10` reads as "the challenger
+  charges about 10 % more for that band". Interactions are compared cell by cell,
+  piecewise-linear terms by their band-start values, and the base rates against
+  each other — the overall level change is also shown on its own line above the
+  table (`workflow.base_rate_change`), because a band's premium change is its
+  relativity change multiplied by it. **Numeric factors are compared on the
+  union of both models' band edges**, so a moved knot reports exactly the range
+  of ages that would be charged differently, and the same factor banded in one
+  model and a straight line in the other is still compared like for like (the
+  `kind` column then reads `numeric → linear`); levels and interaction cells are
+  matched by name, and a factor only one model has is listed once. Two identical
+  models — or two bands both floored to the same value, zero included — give an
+  empty table. `workflow.describe_diff` puts the statuses into words for a page.
+- **One self-contained HTML report.** `workflow.to_report_html(project, runs, df,
+  champion=..., challenger=...)` and a **Download HTML report** button on the
+  Export page: a single file — summary (data, split, metrics), one block per
+  rating factor (relativities, actual vs expected on train and on holdout, the
+  rate table), interaction heatmaps, lift and Gini, the comparison section when a
+  challenger is chosen, every coefficient and the exported Python script in an
+  appendix, with the generation time and library versions. Nothing is fetched
+  from the internet when it is opened: the charts are written as plain SVG
+  (`workflow/_svg.py`) with a `<title>` naming each one, which keeps the
+  French-motor report at 350–400 kB instead of the 4.8 MB an inlined charting
+  library would cost, and means the file contains no JavaScript and so cannot
+  produce a browser error. A challenger the report cannot score on these rows
+  is explained in the comparison section's place, never silently dropped.
+- **Known limitation.** D4 asks for the report "from the Export page *and the
+  CLI*". Only the Export page (and `workflow.to_report_html` for scripts) ships
+  here — there is no `easy-glm` console script yet, so the CLI half of D4 lands
+  with workstream F (`easy-glm run project.json`) and must not be forgotten when
+  0.4.0 is cut.
+- Tests: `tests/test_d3_d4_compare_report.py` (the diff on hand-made
+  differences, the report's self-containment / one section per predictor /
+  compare-section-only-with-a-challenger / size / headless render, and the pages
+  through AppTest); the data-scientist persona e2e now drives the Compare page
+  and opens the downloaded report in the browser; the plain-language replay is
+  `docs/checks/d3-d4-compare-report.md`
+  (`scripts/checks/d3_d4_compare_report.py --write`).
 
 ### Workbench hardening (W3) — the break-it review's blocking findings
 - **No more silent loss of work.** *New empty project* asks for a second click and
