@@ -808,7 +808,9 @@ def linear_encoder_from_data(
     if x.is_empty():
         raise ValueError(f"Cannot build a linear term for {variable!r}: all null")
     if clamp is None:
-        lo, hi = round_range_outward(float(x.min()), float(x.max()))
+        # min()/max() of a non-empty Float64 series are floats; polars types them
+        # as "any scalar", so the cast is spelled out for the type checker too
+        lo, hi = round_range_outward(float(x.min()), float(x.max()))  # type: ignore[arg-type]
     else:
         lo, hi = (float(clamp[0]), float(clamp[1]))
     if not lo < hi:
@@ -875,7 +877,7 @@ class DesignSpec:
         """
         knots = knots or {}
         pweight = penalty_weight or {}
-        categorical = set(categorical or [])
+        categorical_vars = set(categorical or [])
         linear_vars = set(linear or [])
         clamp = clamp or {}
         weights = data[weight_col] if weight_col else None
@@ -884,7 +886,7 @@ class DesignSpec:
             if var not in data.columns:
                 raise KeyError(f"Predictor {var!r} not found in data")
             s = data[var]
-            is_numeric = s.dtype in NUMERIC_DTYPES and var not in categorical
+            is_numeric = s.dtype in NUMERIC_DTYPES and var not in categorical_vars
             if var in linear_vars and not is_numeric:
                 raise ValueError(f"{var!r} is not numeric; it cannot be a linear term")
             if is_numeric and var in linear_vars:

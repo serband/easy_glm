@@ -197,7 +197,9 @@ class GLMFit:
 
     def coef_table(self, *, drop_zero: bool = False) -> pl.DataFrame:
         """One row per coefficient with structured feature metadata."""
-        rows = [("(intercept)", None, "intercept", None, None, self.intercept)]
+        rows: list[tuple[str, str | None, str, float | None, str | None, float]] = [
+            ("(intercept)", None, "intercept", None, None, self.intercept)
+        ]
         for f, c in zip(self.spec.features, self.coef, strict=True):
             rows.append((f.name, f.variable, f.kind, f.knot, f.level, float(c)))
         out = pl.DataFrame(
@@ -422,13 +424,13 @@ def penalty_weights(
             p1[idx] = 0.5 / _sd(design[:, idx] / widths)
         else:
             p1[idx] = widths * enc.n_bands / (enc.hi - enc.lo)
-    for enc in spec.interactions:
-        sl = slices[enc.variable]
+    for cells in spec.interactions:
+        sl = slices[cells.variable]
         if scale_predictors:
             p1[sl] = 0.5 / _sd(design[:, sl])
     # the per-variable weight multiplies whatever rule the term's columns got
-    for var, enc in weighted:
-        p1[slices[var]] *= float(enc.penalty_weight)
+    for var, encoder in weighted:
+        p1[slices[var]] *= float(encoder.penalty_weight)
     return p1
 
 

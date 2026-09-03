@@ -21,6 +21,7 @@ from easy_glm.engine.models import (
     CellRow,
     FromToRow,
     ModelMetadata,
+    TableType,
     VariableConfig,
     level_label,
     lumped_label,
@@ -59,15 +60,16 @@ def _bin_rows(fit: GLMFit, variable: str) -> tuple[list[Any], np.ndarray]:
             return float(np.dot(slopes, np.clip(x - starts, 0.0, widths)))
 
         rows: list[Any] = [BandRow(None, edges[0], 1.0, 0.0)]
-        contrib = [0.0]  # below lo: every band is empty
+        band_contrib = [0.0]  # below lo: every band is empty
         for j in range(len(edges) - 1):
             rows.append(BandRow(edges[j], edges[j + 1], 1.0, float(slopes[j])))
-            contrib.append(value_at(edges[j]))
+            band_contrib.append(value_at(edges[j]))
         rows.append(BandRow(edges[-1], None, 1.0, 0.0))
-        contrib.append(value_at(edges[-1]))
+        band_contrib.append(value_at(edges[-1]))
         rows.append(BandRow(None, None, 1.0, 0.0))
-        contrib.append(null_contrib)
-        return rows, np.asarray(contrib)
+        band_contrib.append(null_contrib)
+        return rows, np.asarray(band_contrib)
+    contrib: np.ndarray
     if isinstance(enc, StepEncoder):
         n_knots = len(enc.knots)
         step_coefs = coef[:n_knots]
@@ -301,7 +303,7 @@ def to_rate_model(
             x_base = base_row.from_ if base_row.from_ is not None else base_row.to_
             variables[var] = VariableConfig(type="linear", table=rows, x_base=x_base)
             continue
-        kind = "numeric" if isinstance(enc, StepEncoder) else "categorical"
+        kind: TableType = "numeric" if isinstance(enc, StepEncoder) else "categorical"
         variables[var] = VariableConfig(
             type=kind, table=rows, other_label=_other_label(enc)
         )

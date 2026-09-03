@@ -141,6 +141,8 @@ def interaction_matrices(
     """``(row_labels, col_labels, relativity_matrix, exposure_matrix)`` of an
     interaction, in the parents' table order."""
     cfg = rm.variables[var]
+    if cfg.parents is None:
+        raise ValueError(f"Interaction {var!r} has no parents recorded")
     a, b = cfg.parents
     rows_a = [
         level_label(r, rm.variables[a].other_label) for r in rm.variables[a].table

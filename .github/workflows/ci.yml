@@ -33,6 +33,8 @@ jobs:
         run: ruff check .
       - name: Format check (Black)
         run: black --check .
+      - name: Type check (mypy) — the layers the exported script and the CLI rely on
+        run: mypy src/easy_glm/core src/easy_glm/workflow --ignore-missing-imports
       - name: Run tests
         run: pytest --cov=easy_glm --cov-report=xml
       - name: Upload coverage to Codecov

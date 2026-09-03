@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 import math
-import re
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -14,6 +13,7 @@ import polars as pl
 import streamlit as st
 
 from easy_glm.workflow import ModelRun
+from easy_glm.workflow.project import safe_filename as _safe_filename
 
 from . import state as S
 
@@ -232,10 +232,9 @@ def frame_bytes(df: pl.DataFrame, kind: str = "csv") -> bytes:
     return buf.getvalue()
 
 
-def safe_filename(name: str, fallback: str = "model") -> str:
-    """A file-name-safe version of a model/project name (never a path)."""
-    cleaned = re.sub(r"[^\w.\- ]+", "_", str(name)).strip(" ._")
-    return cleaned[:80] if re.search(r"\w", cleaned) else fallback
+#: file-name-safe model / project names (defined in the workflow layer so the
+#: command line can use it without importing Streamlit)
+safe_filename = _safe_filename
 
 
 def excel_bytes(run: ModelRun) -> bytes:

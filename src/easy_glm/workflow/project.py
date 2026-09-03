@@ -84,6 +84,17 @@ def validate_model_name(name: str, existing: Iterable[str] = ()) -> str | None:
     return None
 
 
+def safe_filename(name: str, fallback: str = "model") -> str:
+    """A file-name-safe version of a model / project name (never a path).
+
+    Model names are already refused if they cannot be file names
+    (:func:`validate_model_name`); project names are free text, so anything a
+    file system would object to becomes ``_`` and the result is capped at 80
+    characters. Used by every download button and by the command line."""
+    cleaned = re.sub(r"[^\w.\- ]+", "_", str(name)).strip(" ._")
+    return cleaned[:80] if re.search(r"\w", cleaned) else fallback
+
+
 PROJECT_VERSION = 2  # 1 = easy_glm 0.3 files (loaded and migrated)
 
 ROLES = (
@@ -423,7 +434,12 @@ class Project:
         ]
         for derived in self.data.derived:
             derived.expr = rename_in_expression(derived.expr, old, new)
-        for store in (self.data.roles, self.data.types, self.data.recodes):
+        stores: tuple[dict[str, Any], ...] = (
+            self.data.roles,
+            self.data.types,
+            self.data.recodes,
+        )
+        for store in stores:
             if old in store:
                 store[new] = store.pop(old)
         if old in self.design.variables:

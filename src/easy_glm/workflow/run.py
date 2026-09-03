@@ -47,7 +47,7 @@ def integer_knots(series: pl.Series, max_knots: int) -> list[float] | None:
     s = series.drop_nulls().cast(pl.Float64)
     if s.is_empty():
         return None
-    lo, hi = math.floor(s.min()), math.floor(s.max())
+    lo, hi = math.floor(float(s.min())), math.floor(float(s.max()))  # type: ignore[arg-type]
     if hi - lo > max_knots or hi <= lo:
         return None
     return [float(k) for k in range(lo + 1, hi + 1)]
@@ -319,6 +319,8 @@ def run_model(project: Project, df: pl.DataFrame, model_name: str) -> ModelRun:
     if problems:
         raise ValueError("Project is not valid:\n- " + "\n- ".join(problems))
     cfg = project.models[model_name]
+    if not cfg.target:  # validate() already said so; this keeps the type honest
+        raise ValueError(f"{model_name}: no target column")
     train, holdout = train_holdout(df, project.data.split)
     if train.is_empty():
         raise ValueError("No training rows after the split")
@@ -341,7 +343,7 @@ def run_model(project: Project, df: pl.DataFrame, model_name: str) -> ModelRun:
     fit = fit_glm(
         train,
         spec,
-        cfg.target,
+        cfg.target,  # checked above
         family=cfg.family,
         weight_col=cfg.weight,
         offset_col=cfg.offset,
@@ -411,7 +413,7 @@ def offset_is_premium(project: Project, cfg: ModelConfig) -> bool:
     column, i.e. it is a rate-change model whose tables read as multipliers on
     the premium charged today (Q6)."""
     premium = project.current_premium
-    return bool(premium) and cfg.offset == premium_offset_column(premium)
+    return premium is not None and cfg.offset == premium_offset_column(premium)
 
 
 def solve_base_rate(

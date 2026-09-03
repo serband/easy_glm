@@ -669,3 +669,299 @@ class TestSolveBaseRate:
         p, df, run = self._run(data_path)
         with pytest.raises(ValueError, match="positive number"):
             solve_base_rate(run, df, 0.0)
+
+
+# --------------------------------------------------------------------------
+# F — the command line
+# --------------------------------------------------------------------------
+def cli(*argv: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """Run ``easy-glm`` the way a user would, in its own process."""
+    return subprocess.run(
+        [sys.executable, "-m", "easy_glm.cli", *argv],
+        capture_output=True,
+        text=True,
+        cwd=str(cwd) if cwd else None,
+        env=_env(),
+    )
+
+
+@pytest.fixture
+def cli_project(data_path, tmp_path) -> Path:
+    """The fixture project on disk: a frequency model with a fixed alpha, so a
+    fresh fit is reproducible."""
+    p = Project(name="cli fixture")
+    p.data.source.path = str(data_path)
+    p.data.roles = {
+        "ClaimNb": "target",
+        "Exposure": "weight",
+        "DrivAge": "predictor",
+        "Region": "predictor",
+        "Premium": "ignore",
+        "log_Premium_expected": "ignore",
+        "Lapsed": "ignore",
+    }
+    p.data.split.mode = "column"
+    p.data.split.column = "traintest"
+    p.data.split.train_value = 1
+    p.design.variables["DrivAge"] = VariableDesign(knots=[25.0, 40.0, 60.0])
+    p.new_model(
+        "freq",
+        family="poisson",
+        divide_target_by_weight=True,
+        predictors=["DrivAge", "Region"],
+    )
+    p.models["freq"].penalty.alpha = 0.001
+    p.models["freq"].penalty.cv = None
+    path = tmp_path / "project.json"
+    p.to_json(path)
+    return path
+
+
+class TestCliValidate:
+    def test_a_good_project_is_reported_valid(self, cli_project):
+        proc = cli("validate", str(cli_project))
+        assert proc.returncode == 0, proc.stderr
+        assert "valid" in proc.stdout and "freq" in proc.stdout
+
+    def test_an_invalid_project_exits_non_zero_with_the_problems(
+        self, cli_project, tmp_path
+    ):
+        p = Project.from_json(cli_project)
+        p.models["freq"].predictors = []  # no predictors
+        p.models["freq"].target = None  # and no target
+        bad = tmp_path / "bad.json"
+        p.to_json(bad)
+        proc = cli("validate", str(bad))
+        assert proc.returncode == 1
+        assert "no predictors" in proc.stderr and "no target column" in proc.stderr
+        assert "Traceback" not in proc.stderr
+
+    def test_a_missing_project_file_is_a_message(self, tmp_path):
+        proc = cli("validate", str(tmp_path / "nope.json"))
+        assert proc.returncode == 1
+        assert "no project file" in proc.stderr and "Traceback" not in proc.stderr
+
+    def test_a_file_that_is_not_a_project_is_a_message(self, tmp_path):
+        junk = tmp_path / "junk.json"
+        junk.write_text("this is not JSON")
+        proc = cli("validate", str(junk))
+        assert proc.returncode == 1
+        assert "not a readable easy_glm project" in proc.stderr
+
+    def test_a_missing_data_file_is_one_of_the_problems(self, cli_project, tmp_path):
+        p = Project.from_json(cli_project)
+        p.data.source.path = str(tmp_path / "gone.parquet")
+        bad = tmp_path / "nodata.json"
+        p.to_json(bad)
+        proc = cli("validate", str(bad))
+        assert proc.returncode == 1
+        assert "the data cannot be prepared" in proc.stderr
+
+    def test_a_predictor_that_is_not_in_the_data_is_caught_without_fitting(
+        self, cli_project, tmp_path
+    ):
+        p = Project.from_json(cli_project)
+        p.data.roles["Nonexistent"] = "predictor"
+        p.models["freq"].predictors.append("Nonexistent")
+        bad = tmp_path / "ghost.json"
+        p.to_json(bad)
+        proc = cli("validate", str(bad))
+        assert proc.returncode == 1
+        assert "Nonexistent" in proc.stderr
+
+
+class TestCliRun:
+    def test_it_writes_every_artefact_and_prints_a_summary(self, cli_project, tmp_path):
+        out = tmp_path / "artefacts"
+        proc = cli("run", str(cli_project), "--out", str(out))
+        assert proc.returncode == 0, proc.stderr
+        names = sorted(f.name for f in out.iterdir())
+        assert names == [
+            "cli fixture_freq.easyglm",
+            "cli fixture_freq.py",
+            "cli fixture_freq_rate_tables.xlsx",
+            "cli fixture_freq_report.html",
+        ]
+        assert "holdout" in proc.stdout and "A/E" in proc.stdout
+        assert "base rate" in proc.stdout
+
+    def test_the_report_is_self_contained(self, cli_project, tmp_path):
+        out = tmp_path / "artefacts"
+        assert cli("run", str(cli_project), "--out", str(out)).returncode == 0
+        html = (out / "cli fixture_freq_report.html").read_text(encoding="utf-8")
+        assert "<html" in html.lower()
+        assert 'src="http' not in html and 'href="http' not in html
+
+    def test_the_written_script_rebuilds_the_same_model(self, cli_project, tmp_path):
+        """The script is run in a folder of its own: it writes artefacts under
+        the same names, so running it next to the CLI's would overwrite them."""
+        out = tmp_path / "artefacts"
+        assert cli("run", str(cli_project), "--out", str(out)).returncode == 0
+        rebuild = tmp_path / "rebuild"
+        rebuild.mkdir()
+        script = rebuild / "rebuild.py"
+        script.write_text((out / "cli fixture_freq.py").read_text())
+        proc = subprocess.run(
+            [sys.executable, "rebuild.py"],
+            cwd=str(rebuild),
+            capture_output=True,
+            text=True,
+            env=_env(),
+        )
+        assert proc.returncode == 0, proc.stderr
+        df = prepare(Project.from_json(cli_project))
+        from_cli = RateModel.from_json(out / "cli fixture_freq.easyglm")
+        from_script = RateModel.from_json(rebuild / "cli fixture_freq.easyglm")
+        assert np.allclose(
+            from_cli.predict(df, exposure_col=None),
+            from_script.predict(df, exposure_col=None),
+            rtol=1e-12,
+            atol=0.0,
+        )
+
+    def test_the_easyglm_file_is_the_workbench_model(self, cli_project, tmp_path):
+        """The scorer the CLI writes is `to_rate_model` from the same fit.
+
+        Not compared byte for byte, for two reasons. Every snapshot carries the
+        wall-clock time it was written, so two runs a second apart differ in
+        those strings. And glum's solver is not bit-reproducible: two fits of
+        the same model in the *same* process already disagree in the last
+        floating-point digit (measured: 9e-16 on a relativity), because the
+        linear algebra underneath sums in whatever order its threads finish in.
+        So the comparison is: the same structure, the same keys, every number
+        within 1e-12 relative — and predictions within 1e-12 too.
+        """
+        out = tmp_path / "artefacts"
+        assert cli("run", str(cli_project), "--out", str(out)).returncode == 0
+        p = Project.from_json(cli_project)
+        df = prepare(p)
+        here = run_model(p, df, "freq")
+        mine = tmp_path / "mine.easyglm"
+        here.rate_model.to_json(mine)
+        theirs = out / "cli fixture_freq.easyglm"
+        _assert_same_model_json(
+            json.loads(theirs.read_text()), json.loads(mine.read_text())
+        )
+        assert np.allclose(
+            RateModel.from_json(theirs).predict(df, exposure_col=None),
+            here.rate_model.predict(df, exposure_col=None),
+            rtol=1e-12,
+            atol=0.0,
+        )
+
+    def test_the_output_folder_is_created(self, cli_project, tmp_path):
+        out = tmp_path / "deep" / "nested"
+        assert cli("run", str(cli_project), "--out", str(out)).returncode == 0
+        assert out.is_dir() and any(out.iterdir())
+
+    def test_a_named_model_is_used(self, cli_project, tmp_path):
+        p = Project.from_json(cli_project)
+        p.models["other"] = p.models["freq"]
+        p.to_json(cli_project)
+        out = tmp_path / "named"
+        proc = cli("run", str(cli_project), "--model", "other", "--out", str(out))
+        assert proc.returncode == 0, proc.stderr
+        assert (out / "cli fixture_other.easyglm").exists()
+
+    def test_an_unknown_model_name_is_a_message(self, cli_project, tmp_path):
+        proc = cli("run", str(cli_project), "--model", "nope", "--out", str(tmp_path))
+        assert proc.returncode == 1
+        assert "no model named 'nope'" in proc.stderr
+
+    def test_an_invalid_project_exits_non_zero(self, cli_project, tmp_path):
+        p = Project.from_json(cli_project)
+        p.models["freq"].predictors = []
+        bad = tmp_path / "bad.json"
+        p.to_json(bad)
+        proc = cli("run", str(bad), "--out", str(tmp_path / "never"))
+        assert proc.returncode == 1
+        assert "cannot be fitted" in proc.stderr
+        assert not (tmp_path / "never").exists()
+
+
+class TestCliExport:
+    def test_each_flag_writes_its_own_artefact(self, cli_project, tmp_path):
+        out = tmp_path / "one"
+        assert (
+            cli("export", str(cli_project), "--script", "--out", str(out)).returncode
+            == 0
+        )
+        assert [f.name for f in out.iterdir()] == ["cli fixture_freq.py"]
+
+    def test_two_flags_write_two_artefacts(self, cli_project, tmp_path):
+        out = tmp_path / "two"
+        proc = cli("export", str(cli_project), "--report", "--excel", "--out", str(out))
+        assert proc.returncode == 0, proc.stderr
+        assert sorted(f.name for f in out.iterdir()) == [
+            "cli fixture_freq_rate_tables.xlsx",
+            "cli fixture_freq_report.html",
+        ]
+
+    def test_no_flag_at_all_is_refused(self, cli_project, tmp_path):
+        proc = cli("export", str(cli_project), "--out", str(tmp_path / "none"))
+        assert proc.returncode == 1
+        assert "at least one of --script, --report, --excel" in proc.stderr
+
+    def test_the_exported_script_has_the_resolved_design(self, cli_project, tmp_path):
+        out = tmp_path / "script"
+        assert (
+            cli("export", str(cli_project), "--script", "--out", str(out)).returncode
+            == 0
+        )
+        src = (out / "cli fixture_freq.py").read_text()
+        assert "StepEncoder('DrivAge', [25, 40, 60]" in src
+        assert "DesignSpec.from_data" not in src  # the design is written out
+        assert "alpha=0.001" in src
+
+
+class TestCliWorkbench:
+    def test_it_checks_the_project_before_launching(self, tmp_path):
+        proc = cli("workbench", str(tmp_path / "missing.json"))
+        assert proc.returncode == 1
+        assert "no project file" in proc.stderr
+
+    def test_it_delegates_to_the_app_launcher(self, cli_project, monkeypatch):
+        """Driven in-process: launching a real Streamlit server from a unit test
+        would leave a port open."""
+        import easy_glm.app as app
+        import easy_glm.cli as cli_mod
+
+        seen: dict[str, object] = {}
+
+        class FakeProc:
+            returncode = 0
+
+        def fake_launch(path, *, port, block, headless):
+            seen.update(path=path, port=port, block=block, headless=headless)
+            return FakeProc()
+
+        monkeypatch.setattr(app, "launch", fake_launch)
+        code = cli_mod.main(
+            ["workbench", str(cli_project), "--port", "8599", "--headless"]
+        )
+        assert code == 0
+        assert seen == {
+            "path": str(cli_project),
+            "port": 8599,
+            "block": True,
+            "headless": True,
+        }
+
+
+def _assert_same_model_json(a, b, path: str = "") -> None:
+    """Two ``.easyglm`` documents describe the same model: identical structure,
+    numbers equal to 1e-12 relative, snapshot timestamps ignored."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        assert set(a) == set(b), f"different keys at {path or '<root>'}"
+        for key in a:
+            if key == "timestamp":
+                continue
+            _assert_same_model_json(a[key], b[key], f"{path}.{key}")
+    elif isinstance(a, list) and isinstance(b, list):
+        assert len(a) == len(b), f"different lengths at {path}"
+        for i, (x, y) in enumerate(zip(a, b, strict=True)):
+            _assert_same_model_json(x, y, f"{path}[{i}]")
+    elif isinstance(a, float) or isinstance(b, float):
+        assert a == pytest.approx(b, rel=1e-12, abs=0.0), path
+    else:
+        assert a == b, path

@@ -186,13 +186,13 @@ def _metrics_table(runs: dict[str, ModelRun], names: list[str]) -> str:
         if subset in runs[name].metrics
     ]
     head = "".join(f'<th class="num">{_esc(n)} · {s}</th>' for n, s in cols)
-    body = []
+    body: list[str] = []
     for label, key, digits in _METRIC_ROWS:
-        cells = "".join(
+        row = "".join(
             f'<td class="num">{_esc(_num(runs[n].metrics[s].get(key), digits))}</td>'
             for n, s in cols
         )
-        body.append(f"<tr><th>{_esc(label)}</th>{cells}</tr>")
+        body.append(f"<tr><th>{_esc(label)}</th>{row}</tr>")
     extra = [
         ("alpha", lambda r: _num(r.alpha, 6)),
         ("non-zero terms", lambda r: f"{int((r.fit.coef != 0).sum()):,}"),
@@ -345,7 +345,9 @@ def _ae_chart(
     table = ae_by_variable(
         frame, var, scored.actual, scored.expected, scored.weight, knots=knots
     )
-    lines = [
+    # a fourth element (dashed) is optional: _svg.category_chart reads it when
+    # a challenger line is present
+    lines: list[tuple] = [
         ("actual", table["actual_rate"].to_list(), _svg.BLUE),
         ("expected", table["expected_rate"].to_list(), _svg.ORANGE),
     ]
@@ -390,7 +392,9 @@ def _variable_sections(
         if cfg.type == "interaction":
             continue
         enc = run.spec[var] if var in run.spec.encoders else None
-        knots = enc.band_edges() if hasattr(enc, "band_edges") else None
+        knots = (
+            enc.band_edges() if enc is not None and hasattr(enc, "band_edges") else None
+        )
         blocks = [
             f'<section class="variable" id="var-{_slug(var)}">',
             f'<h3>{_esc(var)} <span class="tag">{_esc(cfg.type)}</span></h3>',
@@ -463,6 +467,8 @@ def _interaction_sections(
     knots, levels = _knots_and_levels(run)
     for var in names:
         cfg = run.rate_model.variables[var]
+        if cfg.parents is None:  # an interaction always records its two parents
+            continue
         a, b = cfg.parents
         rows_a, rows_b, rel, exp = interaction_matrices(run.rate_model, var)
         out.append(f'<section class="variable" id="var-{_slug(var)}">')

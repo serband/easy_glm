@@ -246,6 +246,7 @@ def to_script(
     ignored = project.exploration.get("leakage", {}).get("ignored", [])
     if ignored:
         lines.append(f"# excluded after the leakage review: {', '.join(ignored)}")
+    alpha: float | None
     if run is not None:
         lines.append(_spec_code(run.spec))
         alpha = run.fit.alpha
@@ -318,7 +319,7 @@ def to_script(
             ),
             ")",
         ]
-        alpha = cfg.penalty.alpha if cfg.penalty.alpha is not None else None
+        alpha = cfg.penalty.alpha
         chose_by_cv = False
         monotone = {
             **{

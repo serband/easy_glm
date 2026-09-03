@@ -10,7 +10,7 @@ import polars as pl
 
 from easy_glm.engine.rate_model import RateModel
 
-from .design import DesignSpec, StepEncoder
+from .design import CategoricalEncoder, DesignSpec, StepEncoder
 from .fit import GLMFit, fit_glm
 from .split import TRAIN_FLAG, validate_train_test_column
 from .tables import rate_tables, to_rate_model
@@ -181,7 +181,11 @@ class EasyGLM:
     def blueprint(self) -> dict[str, list]:
         """Legacy view of the spec: knots for numeric, levels for categorical."""
         return {
-            var: list(enc.knots) if isinstance(enc, StepEncoder) else list(enc.levels)
+            var: (
+                list(enc.knots)
+                if isinstance(enc, StepEncoder)
+                else list(enc.levels) if isinstance(enc, CategoricalEncoder) else []
+            )
             for var, enc in self.spec.encoders.items()
         }
 
