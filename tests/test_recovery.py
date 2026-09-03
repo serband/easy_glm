@@ -1,8 +1,10 @@
 """Planted-truth tests: a synthetic book with a known effect must be recovered.
 
-Interactions (piece A): a strong ``Age × Region`` cell is planted; the fitted
-model must reproduce it, thin non-signal cells must stay at 1.0, and the
-A/E-by-pair diagnostic on a model *without* the interaction must expose it.
+Interactions (pieces A and A2): a strong ``Age × Region`` cell is planted; the
+fitted model must reproduce it, thin non-signal cells must stay at 1.0, the
+main-effect tables must not move at all when the interaction is added (A2: the
+mains are fitted first and frozen), and the A/E-by-pair diagnostic on a model
+*without* the interaction must expose it.
 
 Piecewise-linear terms (pieces B and B2): a mileage effect that is flat, then
 rises, then is flat again is planted; the rate table's band slopes must be
@@ -18,7 +20,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-from easy_glm import DesignSpec, fit_glm, rate_tables, to_rate_model
+from easy_glm import DesignSpec, fit_glm, fit_two_stage, rate_tables, to_rate_model
+from easy_glm.core.tables import base_rate
 from easy_glm.workflow import ModelConfig, ae_by_pair, totals
 
 PLANTED_LOG_EFFECT = 0.9  # young drivers in region R2 claim e^0.9 ≈ 2.46× more
@@ -68,18 +71,25 @@ def _double_difference(fit) -> float:
     return float(np.log(p[0] * p[3] / (p[1] * p[2])))
 
 
+def _spec(book: pl.DataFrame, interaction: bool) -> DesignSpec:
+    """The planted book's design, with or without ``DrivAge × Region``."""
+    return DesignSpec.from_data(
+        book,
+        ["DrivAge", "Region"],
+        knots={"DrivAge": KNOTS},
+        min_level_share=0.001,  # keep R5 as a level
+        interactions=[("DrivAge", "Region")] if interaction else None,
+        min_cell_exposure=0.0,  # keep every cell, including the thin ones
+    )
+
+
 class TestPlantedInteraction:
     def test_cell_recovered_and_thin_cells_stay_flat(self, planted):
-        spec = DesignSpec.from_data(
-            planted,
-            ["DrivAge", "Region"],
-            knots={"DrivAge": KNOTS},
-            min_level_share=0.001,  # keep R5 as a level
-            interactions=[("DrivAge", "Region")],
-            min_cell_exposure=0.0,  # keep every cell, including the thin ones
-        )
+        spec = _spec(planted, True)
         assert "R5" in spec["Region"].levels
-        fit = fit_glm(planted, spec, "ClaimNb", alpha=2e-4, **FIT)
+        # A2: two stages — the mains are fitted first and frozen, the cells are
+        # fitted on top of them as pure adjustments
+        fit = fit_two_stage(planted, spec, "ClaimNb", alpha=2e-4, **FIT)
         # the planted effect, within 10% on the relativity scale (|Δlog| ≤ 0.1)
         assert abs(_double_difference(fit) - PLANTED_LOG_EFFECT) < 0.1
         tab = rate_tables(fit)["DrivAge×Region"]
@@ -99,23 +109,24 @@ class TestPlantedInteraction:
         assert (clean["relativity"] <= 1.25).all()
 
     def test_recovery_at_cv_chosen_alpha(self, planted):
-        """The product fits by cross-validation. At a CV-chosen alpha ordinary
+        """The product fits by cross-validation, and in two stages. At a
+        CV-chosen alpha ordinary
         lasso shrinkage recovers the planted interaction at roughly 65–85% of
         its size (the independent reviewer measured 0.59–0.75 of 0.90 over three
         seeds with cv=5 / 25 alphas); the thin cells must still be exactly flat
         and the planted cell must still be the strongest adjustment. Bounds:
         recovered in [0.45, 0.95] — wide enough for CV's fold randomness, tight
         enough to fail if the P1 rule or the cell indexing regress."""
-        spec = DesignSpec.from_data(
-            planted,
-            ["DrivAge", "Region"],
-            knots={"DrivAge": KNOTS},
-            min_level_share=0.001,
-            interactions=[("DrivAge", "Region")],
-            min_cell_exposure=0.0,
+        fit = fit_two_stage(
+            planted, _spec(planted, True), "ClaimNb", cv=5, n_alphas=20, **FIT
         )
-        fit = fit_glm(planted, spec, "ClaimNb", cv=5, n_alphas=20, **FIT)
-        assert 2e-4 < fit.alpha < 3e-3  # a CV alpha, not the hand-picked one
+        # each stage cross-validates on its own path. With the cells taken out,
+        # stage 1 has nothing left to shrink and CV asks for a far smaller
+        # penalty than the joint fit did (measured 3.6e-06, so the bound is two
+        # orders of magnitude of room); the cells land in the range the joint
+        # fit used to.
+        assert fit.alpha < 1e-4, fit.alpha
+        assert 2e-4 < fit.alpha_stage2 < 3e-3, fit.alpha_stage2
         recovered = _double_difference(fit)
         assert 0.45 <= recovered <= 0.95, recovered
         tab = rate_tables(fit)["DrivAge×Region"]
@@ -127,6 +138,65 @@ class TestPlantedInteraction:
         )
         assert planted_cell["relativity"][0] > 1.2
         assert planted_cell["relativity"][0] > others["relativity"].max()
+
+    def test_main_tables_do_not_move_when_the_interaction_is_added(self, planted):
+        """The actuary's answer to Q5, asserted: adding ``DrivAge × Region``
+        leaves both main-effect tables and the base rate exactly where they
+        were, because the mains are fitted first and then frozen. Under the
+        joint fit the split between mains and cells was not unique and the
+        tables moved by several per cent."""
+        without = fit_glm(planted, _spec(planted, False), "ClaimNb", alpha=2e-4, **FIT)
+        with_it = fit_two_stage(
+            planted, _spec(planted, True), "ClaimNb", alpha=2e-4, **FIT
+        )
+        t0, t1 = rate_tables(without), rate_tables(with_it)
+        assert set(t1) == set(t0) | {"DrivAge×Region"}
+        # the tolerance is glum's own run-to-run noise (two identical fits
+        # differ by about 1e-15 on a relativity), not a modelling difference —
+        # the joint fit below moves the same table by more than 1%
+        for var in ("DrivAge", "Region"):
+            for column in ("coef", "relativity", "is_base"):
+                np.testing.assert_allclose(
+                    t1[var][column].to_numpy().astype(float),
+                    t0[var][column].to_numpy().astype(float),
+                    rtol=1e-13,
+                    atol=1e-13,
+                )
+        assert base_rate(with_it) == pytest.approx(base_rate(without), rel=1e-13)
+        # the mains carry none of the interaction: a purely additive model has a
+        # double difference of exactly 0, and the two-stage model's comes from
+        # the four cells alone
+        assert _double_difference(without) == pytest.approx(0.0, abs=1e-12)
+        cells = t1["DrivAge×Region"]
+
+        def cell(age_from: float | None, age_to: float | None, region: str) -> float:
+            row = cells.filter(
+                (
+                    pl.col("from_a").is_null()
+                    if age_from is None
+                    else pl.col("from_a") == age_from
+                )
+                & (pl.col("to_a") == age_to)
+                & (pl.col("from_b") == region)
+            )
+            assert row.height == 1
+            return float(np.log(row["relativity"][0]))
+
+        from_cells = (
+            cell(None, 25.0, "R2")
+            + cell(40.0, 50.0, "R1")
+            - cell(None, 25.0, "R1")
+            - cell(40.0, 50.0, "R2")
+        )
+        assert from_cells == pytest.approx(_double_difference(with_it), rel=1e-12)
+        # ... and the joint fit really did move them (so this is not vacuous)
+        joint = fit_glm(planted, _spec(planted, True), "ClaimNb", alpha=2e-4, **FIT)
+        moved = np.abs(
+            rate_tables(joint)["DrivAge"]["relativity"].to_numpy()
+            / t0["DrivAge"]["relativity"].to_numpy()
+            - 1
+        ).max()
+        assert moved > 0.01, moved
 
     def test_ae_by_pair_exposes_the_missing_interaction(self, planted):
         spec = DesignSpec.from_data(

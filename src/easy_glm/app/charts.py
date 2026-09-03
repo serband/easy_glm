@@ -231,6 +231,8 @@ def double_lift_chart(
 
 
 def alpha_path_chart(path: pl.DataFrame, *, height: int = 360) -> go.Figure:
+    """The regularisation path of **one** stage; filter on ``stage`` first for a
+    two-stage interaction fit, whose two paths are over different columns."""
     fig = _fig(height)
     for l1 in path["l1_ratio"].unique().sort().to_list():
         sub = path.filter(pl.col("l1_ratio") == l1).sort("alpha")

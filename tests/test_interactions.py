@@ -1,6 +1,9 @@
-"""Two-way interactions: encoder, engine table type, Excel, penalties, spec."""
+"""Two-way interactions: encoder, engine table type, Excel, penalties, spec,
+and the two-stage fit (A2) that freezes the mains before fitting the cells."""
 
 from __future__ import annotations
+
+import pickle
 
 import numpy as np
 import polars as pl
@@ -11,7 +14,9 @@ from easy_glm import (
     DesignSpec,
     InteractionEncoder,
     StepEncoder,
+    TwoStageFit,
     fit_glm,
+    fit_two_stage,
     rate_tables,
     to_rate_model,
 )
@@ -668,3 +673,345 @@ def test_cellrow_key_and_label():
     from easy_glm.engine.models import level_label
 
     assert level_label(r) == "< 25.0 | R2"
+
+
+# --------------------------------------------------------------------------
+# A2: two stages — the mains are fitted first and frozen, the cells go on top
+# --------------------------------------------------------------------------
+FIT_KW = {
+    "family": "poisson",
+    "weight_col": "Exposure",
+    "divide_target_by_weight": True,
+}
+
+
+@pytest.fixture(scope="module")
+def two_stage(book, spec):
+    return fit_two_stage(book, spec, "ClaimNb", alpha=0.001, **FIT_KW)
+
+
+class TestTwoStageFit:
+    def test_it_is_a_glmfit_with_both_stages_composed(self, book, spec, two_stage):
+        """The composed object *is* a ``GLMFit``: same spec (mains then cells),
+        stage 1's coefficients followed by stage 2's, stage 1's intercept — so
+        every consumer (rate tables, base rate, coef_table, diagnostics) works
+        with no special case."""
+        fit = two_stage
+        assert isinstance(fit, TwoStageFit)
+        assert fit.spec.variables == spec.variables
+        assert fit.spec.main_effects == spec.main_effects
+        assert fit.intercept == fit.stage1.intercept
+        np.testing.assert_array_equal(
+            fit.coef, np.concatenate([fit.stage1.coef, fit.stage2.coef])
+        )
+        assert len(fit.coef) == spec.n_features
+        # the coefficient table lines up with the composed spec
+        table = fit.coef_table()
+        assert table.height == spec.n_features + 1
+        assert table["feature"].to_list()[1:] == spec.feature_names
+        # linear_predictor = eta1 + eta2, and predict is its inverse link
+        score = _scoring(book)
+        eta1 = fit.stage1.linear_predictor(score)
+        eta2 = fit.stage2.design_matrix(score) @ fit.stage2.coef
+        np.testing.assert_allclose(fit.linear_predictor(score), eta1 + eta2, rtol=1e-12)
+        np.testing.assert_allclose(fit.predict(score), np.exp(eta1 + eta2), rtol=1e-12)
+        assert "TwoStageFit" in repr(fit) and "alpha_stage2" in repr(fit)
+
+    def test_mains_and_base_rate_are_untouched_by_the_interaction(self, book, spec):
+        """Q5: the main tables and the base rate are the ones a model without
+        the interaction produces, to floating-point noise."""
+        mains_only = DesignSpec({v: spec[v] for v in spec.main_effects})
+        alone = fit_glm(book, mains_only, "ClaimNb", alpha=0.001, **FIT_KW)
+        with_cells = fit_two_stage(book, spec, "ClaimNb", alpha=0.001, **FIT_KW)
+        t0, t1 = rate_tables(alone), rate_tables(with_cells)
+        for var in spec.main_effects:
+            np.testing.assert_allclose(
+                t1[var]["relativity"].to_numpy(),
+                t0[var]["relativity"].to_numpy(),
+                rtol=1e-13,  # glum's run-to-run noise, not a modelling difference
+            )
+        assert base_rate(with_cells) == pytest.approx(base_rate(alone), rel=1e-13)
+        assert with_cells.modal_bins == alone.modal_bins
+
+    def test_rate_model_is_exact_and_cells_are_pure_adjustments(self, book, two_stage):
+        fit = two_stage
+        rm = to_rate_model(fit, exposure_col="Exposure")
+        score = _scoring(book)
+        np.testing.assert_allclose(
+            rm.predict(score, exposure_col=None), fit.predict(score), rtol=1e-10, atol=0
+        )
+        assert rm.base_rate == pytest.approx(base_rate(fit))
+        # setting every cell to 1.00 leaves the stage-1 model exactly
+        flat = rm.clone()
+        for row in flat.variables["DrivAge×Region"].table:
+            if row.relativity != 1.0:
+                flat.update_relativity(
+                    "DrivAge×Region",
+                    row.from_a,
+                    row.to_a,
+                    1.0,
+                    from_b=row.from_b,
+                    to_b=row.to_b,
+                )
+        np.testing.assert_allclose(
+            flat.predict(score, exposure_col=None),
+            fit.stage1.predict(score),
+            rtol=1e-10,
+        )
+
+    def test_offset_column_is_carried_by_stage_one_only(self, book, spec):
+        """The user's offset belongs to the model once: stage 2 receives it
+        inside its own offset (eta1 + log premium) and does not add it again."""
+        with_offset = book.with_columns(
+            pl.Series("logprem", np.log(np.linspace(150.0, 900.0, book.height)))
+        )
+        fit = fit_two_stage(
+            with_offset, spec, "ClaimNb", alpha=0.001, offset_col="logprem", **FIT_KW
+        )
+        assert fit.offset_col == "logprem" and fit.stage2.offset_col is None
+        score = _scoring(with_offset)
+        eta = (
+            fit.stage1.linear_predictor(score)
+            + fit.stage2.design_matrix(score) @ fit.stage2.coef
+            + score["logprem"].to_numpy()
+        )
+        np.testing.assert_allclose(fit.predict(score), np.exp(eta), rtol=1e-12)
+        rm = to_rate_model(fit, exposure_col="Exposure")
+        np.testing.assert_allclose(
+            rm.predict(score, exposure_col=None), fit.predict(score), rtol=1e-10
+        )
+
+    def test_stage_two_alpha_defaults_to_stage_one_and_can_be_set(self, book, spec):
+        same = fit_two_stage(book, spec, "ClaimNb", alpha=0.001, **FIT_KW)
+        assert same.alpha == pytest.approx(0.001)
+        assert same.alpha_stage2 == pytest.approx(0.001)
+        harder = fit_two_stage(
+            book, spec, "ClaimNb", alpha=0.001, stage2_alpha=0.5, **FIT_KW
+        )
+        assert harder.alpha_stage2 == pytest.approx(0.5)
+        # the mains are the same fit either way; only the cells shrink
+        np.testing.assert_allclose(harder.stage1.coef, same.stage1.coef, rtol=1e-12)
+        assert np.abs(harder.stage2.coef).max() < np.abs(same.stage2.coef).max()
+
+    def test_no_kept_cell_means_no_second_stage(self, book):
+        s = DesignSpec.from_data(
+            book,
+            ["DrivAge", "Region"],
+            knots={"DrivAge": [30, 45]},
+            min_level_share=0.02,
+            weight_col="Exposure",
+            interactions=[("DrivAge", "Region")],
+            min_cell_exposure=0.99,  # above every cell's share
+        )
+        fit = fit_two_stage(book, s, "ClaimNb", alpha=0.001, **FIT_KW)
+        assert not isinstance(fit, TwoStageFit)  # nothing for stage 2 to fit
+        assert (rate_tables(fit)["DrivAge×Region"]["relativity"] == 1.0).all()
+        score = _scoring(book)
+        np.testing.assert_allclose(
+            to_rate_model(fit).predict(score, exposure_col=None),
+            fit.predict(score),
+            rtol=1e-10,
+        )
+
+    def test_what_the_two_stages_refuse(self, book, spec, two_stage):
+        mains_only = DesignSpec({v: spec[v] for v in spec.main_effects})
+        with pytest.raises(ValueError, match="at least one interaction"):
+            fit_two_stage(book, mains_only, "ClaimNb", alpha=0.001, **FIT_KW)
+        with pytest.raises(ValueError, match="only hold interactions"):
+            TwoStageFit(two_stage.stage1, two_stage.stage1)
+        with pytest.raises(ValueError, match="cannot be a stage of another"):
+            TwoStageFit(two_stage, two_stage.stage2)
+        joint = fit_glm(book, spec, "ClaimNb", alpha=0.001, **FIT_KW)
+        with pytest.raises(ValueError, match="main effects only"):
+            TwoStageFit(joint, two_stage.stage2)
+        # a second stage fitted *with* an intercept would move the base rate
+        with_intercept = fit_glm(
+            book,
+            spec.interactions_spec(),
+            "ClaimNb",
+            alpha=0.001,
+            offset=two_stage.stage1.linear_predictor(book),
+            **FIT_KW,
+        )
+        with pytest.raises(ValueError, match="fit_intercept=False"):
+            TwoStageFit(two_stage.stage1, with_intercept)
+        # ... and a cell whose parent is not the mains' own encoder
+        other = DesignSpec.from_data(
+            book,
+            ["DrivAge", "Region"],
+            knots={"DrivAge": [25, 30, 40, 50, 60]},
+            min_level_share=0.02,
+            weight_col="Exposure",
+            interactions=[("DrivAge", "Region")],
+        )
+        with pytest.raises(ValueError, match="not \\(the same encoder"):
+            TwoStageFit(
+                fit_glm(
+                    book, other.main_effects_spec(), "ClaimNb", alpha=0.001, **FIT_KW
+                ),
+                two_stage.stage2,
+            )
+
+    def test_an_offset_array_reaches_both_stages(self, book, spec):
+        """An `offset=` array must land in stage 2's offset as well as stage 1's
+        fit, or the cells absorb the whole offset. The array route and the
+        `offset_col` route are the same model."""
+        frame = book.with_columns(
+            pl.Series("logprem", np.log(np.linspace(150.0, 900.0, book.height)))
+        )
+        arr = frame["logprem"].to_numpy()
+        by_col = fit_two_stage(
+            frame, spec, "ClaimNb", alpha=0.001, offset_col="logprem", **FIT_KW
+        )
+        by_arr = fit_two_stage(
+            frame, spec, "ClaimNb", alpha=0.001, offset=arr, **FIT_KW
+        )
+        np.testing.assert_allclose(
+            by_arr.stage1.coef, by_col.stage1.coef, rtol=1e-10, atol=1e-12
+        )
+        np.testing.assert_allclose(
+            by_arr.stage2.coef, by_col.stage2.coef, rtol=1e-10, atol=1e-12
+        )
+        score = _scoring(frame)
+        np.testing.assert_allclose(
+            by_arr.predict(score, offset=_scoring(frame)["logprem"].to_numpy()),
+            by_col.predict(score),
+            rtol=1e-10,
+        )
+        # the offset column route stores the column; the array route cannot
+        assert by_arr.offset_col is None and by_col.offset_col == "logprem"
+
+    def test_pickles_and_comes_back_whole(self, book, two_stage):
+        """The runs folder pickles a fit; `TwoStageFit` is not a dataclass, so
+        its round trip is asserted rather than assumed."""
+        back = pickle.loads(pickle.dumps(two_stage))
+        assert isinstance(back, TwoStageFit)
+        assert back.alpha_stage2 == two_stage.alpha_stage2
+        np.testing.assert_array_equal(back.coef, two_stage.coef)
+        score = _scoring(book)
+        np.testing.assert_array_equal(back.predict(score), two_stage.predict(score))
+        assert back == two_stage or back.coef.tolist() == two_stage.coef.tolist()
+        # equality looks at both stages, not only the fields GLMFit declares
+        other = TwoStageFit(two_stage.stage1, two_stage.stage2)
+        assert other == two_stage
+        assert two_stage != two_stage.stage1
+
+    def test_fit_glm_offset_and_intercept_arguments(self, book, spec):
+        mains = spec.main_effects_spec()
+        eta = np.zeros(book.height)
+        with pytest.raises(ValueError, match="not both"):
+            fit_glm(
+                book,
+                mains,
+                "ClaimNb",
+                alpha=0.001,
+                offset=eta,
+                offset_col="Exposure",
+                **FIT_KW,
+            )
+        with pytest.raises(ValueError, match="one value per training row"):
+            fit_glm(book, mains, "ClaimNb", alpha=0.001, offset=eta[:10], **FIT_KW)
+        bad = eta.copy()
+        bad[0] = np.nan
+        with pytest.raises(ValueError, match="offset contains NaN"):
+            fit_glm(book, mains, "ClaimNb", alpha=0.001, offset=bad, **FIT_KW)
+        with pytest.raises(ValueError, match="scale_predictors=False"):
+            fit_glm(
+                book,
+                spec.interactions_spec(),
+                "ClaimNb",
+                alpha=0.001,
+                offset=eta,
+                fit_intercept=False,
+                **FIT_KW,
+            )
+
+
+class TestStageTwoPenalty:
+    def test_the_cell_rule_is_the_same_penalty_in_stage_two(self, book, spec):
+        """R3's cell rule is ``P1 = penalty_weight * 0.5 / sd`` under glum's
+        standardisation. glum refuses to standardise without an intercept, and
+        stage 2 has no intercept — so the rule is written unstandardised as
+        ``penalty_weight * 0.5``. The two are the same penalty because glum
+        multiplies a standardised column's ``P1`` by that column's ``sd``."""
+        cells = spec.interactions_spec()
+        design = cells.build(book)
+        w = book["Exposure"].to_numpy()
+        std = penalty_weights(cells, design, w, scale_predictors=True)
+        raw = penalty_weights(cells, design, w, scale_predictors=False)
+        ww = w / w.sum()
+        sd = np.sqrt(ww @ (design**2) - (ww @ design) ** 2)
+        np.testing.assert_allclose(std * sd, raw, rtol=1e-12)
+        np.testing.assert_allclose(raw, 0.5, rtol=1e-12)  # penalty_weight = 1
+        # penalty_weight still multiplies it, and thin cells are still shrunk
+        # harder per unit of *standardised* coefficient
+        assert std[np.argmin(design.mean(axis=0))] > std[np.argmax(design.mean(axis=0))]
+
+    def test_the_same_penalty_through_glum_not_only_through_arithmetic(
+        self, book, spec, two_stage
+    ):
+        """The arithmetic above is a property of ``penalty_weights``; this is the
+        property of *glum* it relies on — that a standardised column's ``P1`` is
+        multiplied by that column's ``sd``. Fit the cell block with an intercept
+        (so standardisation is allowed) both ways: same model."""
+        cells = spec.interactions_spec()
+        eta1 = two_stage.stage1.linear_predictor(book)
+        both = [
+            fit_glm(
+                book,
+                cells,
+                "ClaimNb",
+                alpha=0.001,
+                offset=eta1,
+                scale_predictors=sp,
+                **FIT_KW,
+            )
+            for sp in (True, False)
+        ]
+        np.testing.assert_allclose(both[0].coef, both[1].coef, rtol=1e-8, atol=1e-10)
+        assert both[0].intercept == pytest.approx(both[1].intercept, abs=1e-9)
+        assert (both[0].coef != 0).sum() == (both[1].coef != 0).sum() > 0
+
+    def test_a_cell_also_carries_the_level_stage_two_cannot_put_anywhere_else(
+        self, book, spec, two_stage
+    ):
+        """Stage 2 has no intercept, so an overall re-levelling it wants ends up
+        in the cells. This pins the size of that effect, which the actuary
+        document and the Model page both describe."""
+        assert two_stage.stage2.intercept == 0.0
+        with_intercept = fit_glm(
+            book,
+            spec.interactions_spec(),
+            "ClaimNb",
+            alpha=0.001,
+            offset=two_stage.stage1.linear_predictor(book),
+            scale_predictors=False,
+            **FIT_KW,
+        )
+        level = with_intercept.intercept
+        assert level != 0.0
+        nz = two_stage.stage2.coef != 0
+        assert nz.sum() > 0
+        # each shipped cell is the with-intercept cell plus that level, near
+        # enough (not exactly: rows in unrated cells have no cell column to
+        # carry a level shift for them)
+        shift = (two_stage.stage2.coef - with_intercept.coef)[nz]
+        assert np.abs(shift - level).max() < 0.01 * max(abs(level), 1e-6) + 1e-3
+
+    def test_penalty_weight_scales_the_cells_of_that_interaction(self, book):
+        def _fit(weight: float):
+            s = DesignSpec.from_data(
+                book,
+                ["DrivAge", "Region"],
+                knots={"DrivAge": [25, 40, 60]},
+                min_level_share=0.02,
+                weight_col="Exposure",
+                interactions=[("DrivAge", "Region")],
+                min_cell_exposure=0.005,
+                interaction_penalty_weight=weight,
+            )
+            return fit_two_stage(book, s, "ClaimNb", alpha=0.002, **FIT_KW)
+
+        light, heavy = _fit(1.0), _fit(20.0)
+        assert np.abs(heavy.stage2.coef).max() < np.abs(light.stage2.coef).max()
+        np.testing.assert_allclose(heavy.stage1.coef, light.stage1.coef, rtol=1e-12)

@@ -1,10 +1,12 @@
-"""Actuarial check for piece A — two-way interactions.
+"""Actuarial check for pieces A / A2 — two-way interactions, fitted in two stages.
 
 Fits the French-motor frequency model with and without ``DrivAge × BonusMalus``
 and prints (or, with ``--write``, regenerates ``docs/checks/a-interactions.md``)
-what an actuary needs to judge the feature: the two DrivAge main tables side by
-side, the adjustment matrix with its training exposure, holdout metrics with
-and without the interaction, and the A/E-by-pair table before and after.
+what an actuary needs to judge the feature: the DrivAge main table with and
+without the interaction (identical, since A2 freezes the mains), the adjustment
+matrix with its training exposure, holdout metrics with and without the
+interaction, the A/E-by-pair table before and after, and — for the record —
+what the joint fit this replaces did to the same main table.
 
 Run from the repository root::
 
@@ -22,7 +24,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from easy_glm import DesignSpec, fit_glm, rate_tables, to_rate_model
+from easy_glm import DesignSpec, fit_glm, fit_two_stage, rate_tables, to_rate_model
 from easy_glm.core.excel import interaction_matrices
 from easy_glm.workflow import ModelConfig, ae_by_pair, gini, totals
 from easy_glm.workflow.diagnostics import deviance_stats, unit_values
@@ -60,7 +62,13 @@ def split(df: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
     return df.filter(pl.col("traintest") == 1), df.filter(pl.col("traintest") == 0)
 
 
-def fit(train: pl.DataFrame, with_interaction: bool):
+def fit(train: pl.DataFrame, with_interaction: bool, *, joint: bool = False):
+    """The model with or without the interaction.
+
+    With the interaction it is fitted in **two stages** (the actuary's answer to
+    Q5): the mains first, then the cells on top of them. ``joint=True`` is the
+    single fit this replaced, kept only so the document can show what it used to
+    do to the main tables."""
     spec = DesignSpec.from_data(
         train,
         PREDICTORS,
@@ -69,7 +77,8 @@ def fit(train: pl.DataFrame, with_interaction: bool):
         interactions=[PAIR] if with_interaction else None,
         min_cell_exposure=MIN_CELL,
     )
-    return fit_glm(
+    fit_it = fit_two_stage if (with_interaction and not joint) else fit_glm
+    return fit_it(
         train,
         spec,
         "ClaimNb",
@@ -78,6 +87,36 @@ def fit(train: pl.DataFrame, with_interaction: bool):
         divide_target_by_weight=True,
         alpha=ALPHA,
     )
+
+
+def level_in_cells(train: pl.DataFrame, inter) -> dict[str, float]:
+    """How much of each adjusted cell is overall *level* rather than interaction.
+
+    Stage 2 has no intercept — that is what keeps the base rate exactly where
+    stage 1 put it — so any overall re-levelling the second stage would like has
+    nowhere to go but the cells. Fitting the identical second stage *with* an
+    intercept (glum never penalises the intercept) measures it: the intercept it
+    chooses is the level, and every cell of the no-intercept fit should be that
+    much larger."""
+    with_intercept = fit_glm(
+        train,
+        inter.spec.interactions_spec(),
+        "ClaimNb",
+        family="poisson",
+        weight_col="Exposure",
+        divide_target_by_weight=True,
+        alpha=ALPHA,
+        offset=inter.stage1.linear_predictor(train),
+        scale_predictors=False,
+    )
+    level = float(with_intercept.intercept)
+    nz = inter.stage2.coef != 0
+    gap = float(
+        np.abs((inter.stage2.coef - with_intercept.coef)[nz] - level).max()
+        if nz.any()
+        else 0.0
+    )
+    return {"level": level, "gap": gap, "n_cells": int(nz.sum())}
 
 
 def metrics(f, frame: pl.DataFrame) -> dict[str, float]:
@@ -131,7 +170,7 @@ def planted_check() -> dict[str, float]:
         interactions=[("DrivAge", "Region")],
         min_cell_exposure=0.0,
     )
-    f = fit_glm(book, spec, "ClaimNb", alpha=2e-4, **kw)
+    f = fit_two_stage(book, spec, "ClaimNb", alpha=2e-4, **kw)
     probe = pl.DataFrame(
         {"DrivAge": [20.0, 20.0, 40.0, 40.0], "Region": ["R2", "R1", "R2", "R1"]}
     )
@@ -167,6 +206,7 @@ def main(write: bool) -> None:
     train, holdout = split(df)
     base = fit(train, False)
     inter = fit(train, True)
+    joint = fit(train, True, joint=True)  # the single fit A2 replaced
     name = f"{PAIR[0]}×{PAIR[1]}"
     rm_inter = to_rate_model(inter, exposure_col="Exposure")
 
@@ -177,13 +217,40 @@ def main(write: bool) -> None:
         ).max()
     )
 
-    # main tables side by side
+    # main tables side by side: without, with (two stages), and what the joint
+    # fit this replaced did to the same table
     t0 = rate_tables(base)["DrivAge"]
     t1 = rate_tables(inter)["DrivAge"]
+    tj = rate_tables(joint)["DrivAge"]
+
+    def _change(new: float, old: float) -> str:
+        """A change of less than half a basis point is written as 0.00%, not as
+        a signed rounding artefact."""
+        pct = (new / old - 1) * 100
+        return "0.00%" if abs(pct) < 5e-3 else f"{pct:+.2f}%"
+
     main_rows = [
-        [a, f"{b:.3f}", f"{c:.3f}", f"{(c / b - 1) * 100:+.1f}%"]
-        for a, b, c in zip(t0["label"], t0["relativity"], t1["relativity"], strict=True)
+        [a, f"{b:.4f}", f"{c:.4f}", _change(c, b), f"{d:.4f}"]
+        for a, b, c, d in zip(
+            t0["label"],
+            t0["relativity"],
+            t1["relativity"],
+            tj["relativity"],
+            strict=True,
+        )
     ]
+    moved_two_stage = float(
+        np.abs(t1["relativity"].to_numpy() / t0["relativity"].to_numpy() - 1).max()
+    )
+    moved_joint = float(
+        np.abs(tj["relativity"].to_numpy() / t0["relativity"].to_numpy() - 1).max()
+    )
+    base_moved = float(
+        abs(to_rate_model(inter).base_rate / to_rate_model(base).base_rate - 1)
+    )
+    base_moved_joint = float(
+        abs(to_rate_model(joint).base_rate / to_rate_model(base).base_rate - 1)
+    )
 
     # adjustment matrix + exposure
     rows_a, rows_b, rel, exp = interaction_matrices(rm_inter, name)
@@ -203,6 +270,17 @@ def main(write: bool) -> None:
     # metrics
     m0 = metrics(base, holdout)
     m1 = metrics(inter, holdout)
+    mj = metrics(joint, holdout)
+    jr = rate_tables(joint)[name]["relativity"].to_numpy()
+    joint_cells = int((jr != 1.0).sum())
+    joint_kept = len(joint.spec[name].cells)
+
+    def _largest(relativities) -> float:
+        """The furthest a cell moves from 1.000, up or down, as a relativity."""
+        return float(np.exp(np.max(np.abs(np.log(np.asarray(relativities))))))
+
+    largest = _largest(rel)
+    largest_joint = _largest(jr)
 
     # A/E by pair before and after (holdout)
     cfg = ModelConfig(target="ClaimNb", weight="Exposure", divide_target_by_weight=True)
@@ -227,6 +305,7 @@ def main(write: bool) -> None:
         )
 
     planted = planted_check()
+    level = level_in_cells(train, inter)
 
     lines = [
         "# A — two-way interactions: what changed for you",
@@ -242,17 +321,56 @@ def main(write: bool) -> None:
         "below. A cell of 1.000 means *no adjustment* — either the data did not ask for "
         "one (the lasso kept it at 1) or the cell had too little exposure to be rated on "
         "its own (shown with its exposure so you can tell the two apart). This is the "
-        "Emblem-style layout agreed in the plan (mains + adjustment matrix, joint fit).",
+        "Emblem-style layout agreed in the plan: mains + adjustment matrix.",
+        "",
+        "## This is the two-stage process you asked for",
+        "",
+        "You said: *mains are frozen; interactions are fitted only after offsetting the "
+        "main effects — finalise the mains, then find and fit interactions as stand-alone "
+        "adjustments on top of stage 1.* That is exactly how the model below is built.",
+        "",
+        f"1. **Stage 1** fits the {len(PREDICTORS)} main effects on their own. It is "
+        "the same fit, "
+        "number for number, that this model gets with no interaction at all.",
+        "2. Stage 1 is then **frozen**: its rate tables and its base rate are the ones "
+        "the model ships with, whatever happens next.",
+        "3. **Stage 2** fits the interaction cells with stage 1's prediction as an "
+        "offset and no intercept of its own, so every cell is a *pure adjustment* to a "
+        "finished model. Nothing in stage 2 can move a main-effect relativity or the "
+        "base rate — which also means that any overall re-levelling stage 2 wants has "
+        "to go into the cells; there is a paragraph on that below the metrics table.",
+        "",
+        f"The `{PAIR[0]}` table below is printed twice — without the interaction and "
+        "with it — and every row is identical: the largest change in any relativity "
+        + (
+            "and in the base rate is **below 1e-13**, which is the solver's own "
+            "run-to-run rounding and not a difference in the model (the same "
+            "tolerance the test suite holds this to). "
+            if max(moved_two_stage, base_moved) < 1e-13
+            else f"is {moved_two_stage:.1e} and in the base rate {base_moved:.1e} — "
+            "both above the 1e-13 this is meant to hold to, so ⚠ **this document "
+            "was generated from a build with a bug in it**. "
+        )
+        + "For comparison the table also carries the "
+        "relativities the **joint fit** (the single fit this replaced) produced from "
+        f"the same data: it moved the same table by up to {moved_joint:.1%} and the "
+        f"base rate by {base_moved_joint:.1%}, because the split between mains and "
+        "cells was not unique.",
         "",
         "## Defaults in force (from the questions for the actuary)",
         "",
         f"- **Q4** minimum cell exposure: {MIN_CELL:.1%} of the interaction's training "
         f"exposure ({kept} of {total} cells were rated on their own; the rest adjust by 1.000).",
-        "- **Q5** joint fit: the main-effect tables move when the interaction is added; both "
-        "versions of the DrivAge table are shown below so the movement is visible.",
-        "- Thin cells are penalised harder than fat ones (an unstandardised penalty scaled so "
-        "that a 50/50 cell is treated like a 50/50 main effect), so sparse corners of the "
-        "matrix do not pick up noise.",
+        "- **Q5 mains frozen (built).** Two stages, as above. The cost is that the mains "
+        "never get to give a cell back part of what it is carrying, so the adjustments "
+        "are a little larger than the joint fit's and the headline metrics move by a "
+        "hair; the gain is that adding, changing or removing an interaction cannot "
+        "re-price a factor you have already signed off.",
+        "- Thin cells are penalised harder than fat ones (per unit of adjustment every "
+        "cell pays the same, so a cell with little data cannot buy a large effect "
+        "cheaply), so sparse corners of the matrix do not pick up noise. The rule is "
+        "unchanged by the two stages: stage 2 penalises a cell exactly as the joint fit "
+        "did.",
         f"- **Alpha {ALPHA} was fixed by hand for this check** — at the plan's default "
         "0.001 the penalty kept no cells at all, so there would have been nothing to look "
         "at. The workbench chooses alpha by cross-validation; at a CV-chosen alpha the same "
@@ -267,31 +385,93 @@ def main(write: bool) -> None:
         "",
         md_table(
             [
-                ["A/E", f"{m0['A/E']:.4f}", f"{m1['A/E']:.4f}"],
-                ["Gini", f"{m0['Gini']:.4f}", f"{m1['Gini']:.4f}"],
+                ["A/E", f"{m0['A/E']:.4f}", f"{m1['A/E']:.4f}", f"{mj['A/E']:.4f}"],
+                ["Gini", f"{m0['Gini']:.4f}", f"{m1['Gini']:.4f}", f"{mj['Gini']:.4f}"],
                 [
                     "deviance explained",
                     f"{m0['deviance explained']:.2%}",
                     f"{m1['deviance explained']:.2%}",
+                    f"{mj['deviance explained']:.2%}",
                 ],
                 [
                     "non-zero coefficients",
                     f"{int((base.coef != 0).sum())} / {len(base.coef)}",
                     f"{int((inter.coef != 0).sum())} / {len(inter.coef)}",
+                    f"{int((joint.coef != 0).sum())} / {len(joint.coef)}",
                 ],
-                ["cells adjusted (≠ 1.000)", "—", f"{cells} of {kept} rated cells"],
+                [
+                    "cells adjusted (≠ 1.000)",
+                    "—",
+                    f"{cells} of {kept} rated cells",
+                    f"{joint_cells} of {joint_kept} rated cells",
+                ],
+                [
+                    "largest cell adjustment",
+                    "—",
+                    f"{largest:.3f}",
+                    f"{largest_joint:.3f}",
+                ],
             ],
-            ["quantity", "without", "with"],
+            ["quantity", "without", "with (two stages)", "with (old joint fit)"],
         ),
+        "",
+        "The last column is the fit this replaced, on the same data and the same alpha. "
+        f"Freezing the mains costs a little lift here — Gini {m1['Gini']:.4f} against "
+        f"{mj['Gini']:.4f}, deviance explained {m1['deviance explained']:.2%} against "
+        f"{mj['deviance explained']:.2%}, both still above the "
+        f"{m0['Gini']:.4f} / {m0['deviance explained']:.2%} of the model with no "
+        "interaction at all — because the joint fit is free to place part of the "
+        "interaction wherever it fits best, including inside the main tables. That "
+        "freedom is exactly what you asked us to give up, and the price is on this "
+        "line so you can see it.",
+        "",
+        "**Overall calibration gets slightly worse, not better.** Holdout A/E is "
+        f"{m0['A/E']:.4f} without the interaction and {m1['A/E']:.4f} with the two "
+        f"stages (the joint fit: {mj['A/E']:.4f}). The reason is in the next "
+        "paragraph: with the mains frozen there is no intercept left for the second "
+        "stage to re-level with, so a small level movement it wants ends up spread "
+        "over the rated cells instead of over the whole book. If overall level "
+        "matters more to you than frozen mains on a particular model, the base-rate "
+        "override on the Model page moves it back in one number without touching a "
+        "single relativity.",
+        "",
+        "**A cell is a pure adjustment to stage 1 — but it is not purely an "
+        "interaction.** Stage 2 carries no intercept (that is what keeps the base "
+        "rate exactly where stage 1 put it), so any overall re-levelling stage 2 "
+        "would like has nowhere to go but the cells. Fitting the identical second "
+        f"stage *with* an intercept here gives {level['level']:+.6f} on the log "
+        f"scale, and each of the {level['n_cells']} adjusted cells in the model we "
+        f"ship is about that much larger (within {level['gap']:.0e}, not exactly, "
+        "because policies in the unrated cells have no cell to carry a level shift "
+        f"for them). So roughly {abs(np.expm1(level['level'])):.2%} of each adjusted "
+        "cell is overall level rather than interaction. That is a consequence of the "
+        "design you asked for, not a defect, but it is worth knowing when you read a "
+        'cell of 1.05 as "5 % worse than the mains say".',
         "",
         f"Rate tables (mains × matrix) reproduce the GLM on the holdout: max relative "
         f"difference {'below 1e-12' if exact < 1e-12 else f'{exact:.1e}'}.",
         "",
         f"## {PAIR[0]} main table, without and with the interaction",
         "",
-        md_table(main_rows, ["band", "without", "with", "change"]),
+        md_table(
+            main_rows,
+            ["band", "without", "with (two stages)", "change", "old joint fit"],
+        ),
         "",
-        "The `Other / Unknown` row (drivers with no recorded age) moves with the `< 25.0` "
+        (
+            f"**All {len(main_rows)} changes are 0.00%** — that is the point of the "
+            "two stages."
+            if all(row[3] == "0.00%" for row in main_rows)
+            else "⚠ **Some rows moved**, so the two stages are not holding the mains "
+            f"frozen (largest change {moved_two_stage:.1e} against a budget of "
+            "1e-13). This document was generated from a build with a bug in it."
+        )
+        + " The last column shows the same table from the joint fit for comparison: "
+        "it re-priced the youngest band by "
+        f"{(tj['relativity'][0] / t0['relativity'][0] - 1):+.1%} when the interaction "
+        "was added, which is the behaviour you asked us to remove.",
+        "",
+        "The `Other / Unknown` row (drivers with no recorded age) tracks the `< 25.0` "
         "band because missing ages sit in the lowest band and the data has no such "
         "drivers, so no separate effect was fitted for them.",
         "",
@@ -313,7 +493,8 @@ def main(write: bool) -> None:
         "",
         "## Controlled check on synthetic data",
         "",
-        "A synthetic book of 40,000 policies with a planted effect: drivers under 25 "
+        "The same two-stage process on a synthetic book of 40,000 policies with a "
+        "planted effect: drivers under 25 "
         f"in one region claim e^{planted['truth']:.1f} = {np.exp(planted['truth']):.2f}× more "
         "than the mains alone would say, and a deliberately rare region (about 80 "
         "policies) carries no effect at all.",
@@ -336,6 +517,9 @@ def main(write: bool) -> None:
         "",
         "## Questions for you",
         "",
+        "- The two stages are now the only way an interaction is fitted. Is that what "
+        "you want everywhere, or would you like the joint fit kept as an option for "
+        "exploratory work? Default: two stages only.",
         "- Is **mains + adjustment matrix** how you want to read an interaction in Excel "
         "(sheet `"
         + name

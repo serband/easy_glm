@@ -22,7 +22,7 @@ import polars as pl
 
 from easy_glm.core.design import NUMERIC_DTYPES, quantile_knots
 from easy_glm.core.excel import rate_model_tables
-from easy_glm.core.fit import GLMFit
+from easy_glm.core.fit import GLMFit, TwoStageFit
 from easy_glm.engine.models import NULL_LABEL, FromToRow, level_label
 
 from .explore import band_expr
@@ -648,9 +648,31 @@ def residual_pair_search(
 # regularisation path
 # --------------------------------------------------------------------------
 def alpha_path(fit: GLMFit) -> pl.DataFrame:
-    """One row per (l1_ratio, alpha) of the fitted path with CV deviance
+    """One row per (stage, l1_ratio, alpha) of the fitted path with CV deviance
     (mean/std over folds), training deviance where available, the number of
-    non-zero coefficients and the selected point."""
+    non-zero coefficients and the selected point.
+
+    A two-stage interaction fit has **two** paths — the mains' and the cells' —
+    and both are returned, told apart by the ``stage`` column (1 = main effects,
+    2 = interaction cells). A one-stage fit is all ``stage = 1``."""
+    if isinstance(fit, TwoStageFit):
+        return pl.concat(
+            [
+                _stage_alpha_path(f).with_columns(
+                    pl.lit(k, dtype=pl.Int64).alias("stage")
+                )
+                for k, f in ((1, fit.stage1), (2, fit.stage2))
+            ]
+        ).select(["stage", pl.exclude("stage")])
+    return (
+        _stage_alpha_path(fit)
+        .with_columns(pl.lit(1, dtype=pl.Int64).alias("stage"))
+        .select(["stage", pl.exclude("stage")])
+    )
+
+
+def _stage_alpha_path(fit: GLMFit) -> pl.DataFrame:
+    """The path of one glum estimator (see :func:`alpha_path`)."""
     m = fit.model
     rows: list[dict[str, Any]] = []
     if hasattr(m, "alphas_") and hasattr(m, "deviance_path_"):
