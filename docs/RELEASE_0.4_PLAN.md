@@ -481,3 +481,9 @@ Q1, Q2, Q4, Q6 confirm the defaults. Two answers change the build:
   re-run: main tables must now be identical with and without the interaction.
   Cell penalty rule (P1 = penalty_weight·0.5/sd) is re-validated in stage 2.
 Sequencing: B2 and A2 run right after W3 (hardening), before D3/D4.
+* **Q9 (answered 2026-09-03): all numeric variables are step unless explicitly
+  specified as not needing knots.** Default unchanged. B2 adds
+  `VariableDesign.kind = "continuous"`: one slope on the raw (clamped) value,
+  no interior knots — implemented as the linear encoder with a single band, so
+  it shares the table type, editor and export. The Design page lists the three
+  explicit overrides (categorical, linear, continuous) next to the default.
