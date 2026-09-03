@@ -4,6 +4,8 @@ Copy-paste into a notebook or run as a script:
     python examples/basic_usage.py
 """
 
+from pathlib import Path
+
 import numpy as np
 import polars as pl
 
@@ -11,16 +13,22 @@ import easy_glm
 
 # ---------------------------------------------------------------------------
 # 1. Load data & create a train / holdout split
+#
+# tests/fixtures/french_motor_50k.parquet is a 50,000-row sample of the
+# public French motor third-party liability dataset (freMTPL2freq), checked
+# into the repo so this runs offline. Use easy_glm.load_external_dataframe()
+# for the full ~678k-row dataset (downloads the CASdatasets .rda on first use).
 # ---------------------------------------------------------------------------
 
-df = easy_glm.load_external_dataframe()
+DATA = Path(__file__).resolve().parents[1] / "tests/fixtures/french_motor_50k.parquet"
+df = pl.read_parquet(DATA)
 
 # Add a train-test split column (1 = train, 0 = holdout)
 rng = np.random.default_rng(42)
 df = df.with_columns(pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64))
 
 print(f"Loaded: {len(df):,} rows × {len(df.columns)} cols")
-# → Loaded: 678,013 rows × 12 cols
+# → Loaded: 50,000 rows × 13 cols (12 in the fixture + the traintest split)
 
 # ---------------------------------------------------------------------------
 # 2. Pick predictors & fit (one call)
@@ -42,7 +50,7 @@ eglm = easy_glm.EasyGLM.fit(
 print(eglm)
 # → EasyGLM(model_type='Poisson', target='ClaimNb',
 #           predictors=['VehAge', 'Region', 'VehGas', 'DrivAge', 'BonusMalus', 'Density'],
-#           alpha=0.001234, base_rate=0.0712)
+#           alpha=0.00169, base_rate=0.0397)
 
 # ---------------------------------------------------------------------------
 # 3. Inspect relativities — one table per predictor
@@ -80,22 +88,24 @@ print(f"\nHoldout A/E: {ae:.4f}")
 # → Holdout A/E: ~1.00
 
 # ---------------------------------------------------------------------------
-# 6. Per-variable A/E (on holdout)
+# 6. Per-variable A/E (on holdout) — bins by each variable's own rate-table
+#    bands and reports the spread across bins; a well-calibrated factor keeps
+#    every bin's A/E close to 1 (summing across all bins would just give the
+#    overall A/E back, since the bins partition the same rows).
 # ---------------------------------------------------------------------------
 
+from easy_glm.workflow import ae_by_variable  # noqa: E402
+
+actual_total = holdout["ClaimNb"].to_numpy()
+weight = holdout["Exposure"].to_numpy()
 for var in PREDICTORS:
-    result = eglm.rate_model.compute_ae_for_variable(holdout, var)
-    for subset_name, buckets in result["subsets"].items():
-        if not buckets:
-            continue
-        actual = sum(b["actual"] for b in buckets)
-        expected = sum(b["expected"] for b in buckets)
-        if expected == 0:
-            continue
-        ae = actual / expected
-        print(f"  {var:15s}  {subset_name:5s}  A/E = {ae:.4f}  ({len(buckets)} bins)")
-# → VehAge          A/E = 0.98  (20 bins)
-#   Region          A/E = 1.01  (11 bins)
+    table = ae_by_variable(holdout, var, actual_total, preds, weight)
+    print(
+        f"  {var:15s}  A/E ranges {table['ae'].min():.3f}-{table['ae'].max():.3f}  "
+        f"({table.height} bins)"
+    )
+# → VehAge          A/E ranges 0.66-1.23  (16 bins)
+#   Region          A/E ranges 0.00-2.27  (22 bins)
 #   ...
 
 # ---------------------------------------------------------------------------

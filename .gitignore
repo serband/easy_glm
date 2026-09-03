@@ -61,3 +61,10 @@ discardpy
 scripts/job-logs.txt
 french_motor_spec.json
 french_motor.easyglm
+/*.easyglm
+
+# test fixtures are always tracked
+!tests/fixtures/*.easyglm
+
+# persisted workbench fits (pickles next to a project file)
+*.easyglm-runs/

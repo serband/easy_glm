@@ -48,7 +48,7 @@ def build_relativity_chart(
     variable: str,
     height: int = 400,
 ) -> go.Figure:
-    labels = level_labels(config.table)
+    labels = level_labels(config.table, config.other_label)
     rels = [row.relativity for row in config.table]
     fig = go.Figure()
 
@@ -109,7 +109,7 @@ def build_relativity_comparison(
     height: int = 400,
 ) -> go.Figure:
     """Overlay baseline (dashed) and working copy (solid) relativities."""
-    labels = level_labels(baseline.table)
+    labels = level_labels(baseline.table, baseline.other_label)
     rels_base = [r.relativity for r in baseline.table]
     rels_work = [r.relativity for r in working.table]
     fig = go.Figure()

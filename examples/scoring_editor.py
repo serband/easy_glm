@@ -8,6 +8,8 @@ Run as a script:
     python examples/scoring_editor.py
 """
 
+from pathlib import Path
+
 import numpy as np
 import polars as pl
 
@@ -18,7 +20,8 @@ from easy_glm.engine import RateModel
 # 0. Fit a quick model (skip if you already have a .easyglm file)
 # ---------------------------------------------------------------------------
 
-df = easy_glm.load_external_dataframe()
+DATA = Path(__file__).resolve().parents[1] / "tests/fixtures/french_motor_50k.parquet"
+df = pl.read_parquet(DATA)
 rng = np.random.default_rng(42)
 df = df.with_columns(pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64))
 
@@ -71,8 +74,8 @@ new_business = pl.DataFrame(
 premiums = rm.predict(new_business)
 for i, p in enumerate(premiums):
     print(f"  Risk {i + 1}: {p:.6f}")
-# → Risk 1: 0.034251
-#   Risk 2: 0.029118
+# → Risk 1: 0.053832
+#   Risk 2: 0.188926
 #   ...
 
 # ---------------------------------------------------------------------------
@@ -90,13 +93,14 @@ mismatched_data = pl.DataFrame(
     }
 )
 
+# keys are the *dataset* column names, values the model variables they map to
 rm.column_mapping = {
-    "VehAge": "vehicle_age",
-    "Region": "region_code",
-    "VehGas": "fuel",
-    "DrivAge": "driver_age",
-    "BonusMalus": "bonus_malus",
-    "Density": "pop_density",
+    "vehicle_age": "VehAge",
+    "region_code": "Region",
+    "fuel": "VehGas",
+    "driver_age": "DrivAge",
+    "bonus_malus": "BonusMalus",
+    "pop_density": "Density",
 }
 
 mapped_preds = rm.predict(mismatched_data)

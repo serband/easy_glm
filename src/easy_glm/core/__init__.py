@@ -1,14 +1,16 @@
-from .all_ratetables import generate_all_ratetables
-from .blueprint import generate_blueprint
 from .data import load_external_dataframe
-from .design import CategoricalEncoder, DesignSpec, StepEncoder
+from .design import (
+    CategoricalEncoder,
+    DesignSpec,
+    InteractionEncoder,
+    LinearEncoder,
+    StepEncoder,
+)
 from .easyglm import EasyGLM
 from .excel import write_rate_tables_xlsx
-from .fit import GLMFit, fit_glm
-from .model import fit_lasso_glm, predict_with_model
+from .fit import GLMFit, TwoStageFit, fit_glm, fit_two_stage
 from .plots import plot_all_ratetables
-from .prepare import prepare_data
-from .ratetable import ratetable
+from .split import HOLDOUT_FLAG, TRAIN_FLAG, validate_train_test_column
 from .tables import base_rate, rate_tables, to_rate_model
 
 __all__ = [
@@ -16,19 +18,19 @@ __all__ = [
     "DesignSpec",
     "StepEncoder",
     "CategoricalEncoder",
+    "InteractionEncoder",
+    "LinearEncoder",
     "GLMFit",
+    "TwoStageFit",
     "fit_glm",
+    "fit_two_stage",
     "rate_tables",
     "base_rate",
     "to_rate_model",
     "write_rate_tables_xlsx",
     "load_external_dataframe",
     "plot_all_ratetables",
-    # legacy (deprecated)
-    "generate_blueprint",
-    "prepare_data",
-    "fit_lasso_glm",
-    "predict_with_model",
-    "ratetable",
-    "generate_all_ratetables",
+    "validate_train_test_column",
+    "TRAIN_FLAG",
+    "HOLDOUT_FLAG",
 ]

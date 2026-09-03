@@ -279,7 +279,19 @@ class TestRateTables:
         tables = rate_tables(fit)
         assert set(tables) == set(PREDICTORS)
         age = tables["DrivAge"]
-        assert age.columns == ["from", "to", "label", "coef", "relativity", "is_base"]
+        assert age.columns == [
+            "from",
+            "to",
+            "label",
+            "coef",
+            "relativity",
+            "exposure",
+            "is_base",
+        ]
+        # D5: every row carries the training exposure (the weight) that fell in it
+        train_exposure = messy_data.filter(pl.col("traintest") == 1)["Exposure"].sum()
+        assert age["exposure"].sum() == pytest.approx(train_exposure)
+        assert tables["Region"]["exposure"].sum() == pytest.approx(train_exposure)
         assert age.height == len(fit.spec["DrivAge"].knots) + 2  # bins + null row
         assert age["from"].dtype == pl.Float64
         assert age["label"][0].startswith("<") and age["label"][-1] == "Other / Unknown"
@@ -302,7 +314,9 @@ class TestRateTables:
         rm_override = to_rate_model(fit, base_rate_override=0.05)
         assert rm_override.base_rate == 0.05
 
-    def test_non_log_link_raises(self, messy_data):
+    def test_a_logit_link_gives_odds_relativities(self, messy_data):
+        """Piece E3 (Q7): a binomial fit *does* have rate tables — the numbers
+        multiply the odds instead of the rate. Before E3 this raised."""
         train = messy_data.filter(pl.col("traintest") == 1).with_columns(
             (pl.col("ClaimNb") > 0).cast(pl.Float64).alias("AnyClaim")
         )
@@ -312,7 +326,19 @@ class TestRateTables:
         assert np.all(
             (fit.predict(train.head(5)) > 0) & (fit.predict(train.head(5)) < 1)
         )
-        with pytest.raises(NotImplementedError, match="log link"):
+        tables = rate_tables(fit)
+        assert set(tables) == set(spec.variables)
+        rm = to_rate_model(fit)
+        assert rm.relativity_label == "odds relativity"
+        assert np.allclose(rm.predict(train, exposure_col=None), fit.predict(train))
+
+    def test_a_link_that_is_not_multiplicative_raises(self, messy_data):
+        train = messy_data.filter(pl.col("traintest") == 1)
+        spec = DesignSpec.from_data(train, PREDICTORS)
+        fit = fit_glm(
+            train, spec, "ClaimNb", family="gaussian", link="identity", alpha=0.01
+        )
+        with pytest.raises(NotImplementedError, match="logit link"):
             rate_tables(fit)
 
 
@@ -498,7 +524,15 @@ def test_to_excel_writes_summary_coefficients_and_one_sheet_per_variable(
 
     tables = rate_model_tables(rm)
     age = tables["DrivAge"]
-    assert age.columns == ["from", "to", "label", "relativity"]
+    assert age.columns == [
+        "from",
+        "to",
+        "label",
+        "fitted",
+        "relativity",
+        "exposure",
+    ]
+    np.testing.assert_allclose(age["fitted"].to_numpy(), age["relativity"].to_numpy())
     assert age.height == len(fit.spec["DrivAge"].knots) + 2
     assert age["from"].dtype == pl.Float64
     np.testing.assert_allclose(

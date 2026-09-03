@@ -1,15 +1,43 @@
 from __future__ import annotations
 
+import numpy as np
 import polars as pl
 
 from easy_glm.engine import RateModel
-from easy_glm.engine.models import level_labels
+from easy_glm.engine.models import CellRow, FromToRow, level_labels
 
 FORMULAS: dict[str, str] = {
     "sum_weighted": "sum(target × weight) / sum(weight)",
     "sum_unweighted": "sum(target) / count",
     "sum_over_weight": "sum(target) / sum(weight)",
 }
+
+
+def default_formula(metadata) -> str:
+    """A/E formula implied by the model's metadata.
+
+    A count target divided by an exposure weight (``divide_target_by_weight``)
+    needs ``sum(target) / sum(weight)`` for both actual and expected; anything
+    else (a rate target, or a 0.3 file where the flag is unknown) uses the
+    exposure-weighted mean.
+    """
+    if (
+        metadata is not None
+        and metadata.divide_target_by_weight
+        and metadata.weight_col
+    ):
+        return "sum_over_weight"
+    return "sum_weighted"
+
+
+def _predictions_on_total_scale(rm: RateModel, data: pl.DataFrame) -> np.ndarray:
+    """Expected values on the same scale as the target column: for a count model
+    whose RateModel has no exposure column, multiply by the weight so that
+    ``sum(expected) / sum(weight)`` is a rate like ``sum(claims) / sum(weight)``."""
+    meta = rm.metadata
+    if meta.divide_target_by_weight and meta.exposure_col is None and meta.weight_col:
+        return rm.predict(data, exposure_col=meta.weight_col)
+    return rm.predict(data)
 
 
 def compute_actual_expected(
@@ -27,7 +55,7 @@ def compute_actual_expected(
     if target not in data.columns:
         raise ValueError(f"Target column '{target}' not found in data")
 
-    predictions = rm.predict(data)
+    predictions = _predictions_on_total_scale(rm, data)
     data = data.with_columns(pred=pl.Series("pred", predictions))
 
     subsets = {"all": data}
@@ -37,13 +65,21 @@ def compute_actual_expected(
 
     config = rm.variables[variable]
     rows = config.table
-    level_edges = level_labels(rows)
+    level_edges = level_labels(rows, config.other_label)
 
     results: dict[str, list[dict]] = {}
     for subset_name, subset in subsets.items():
         results[subset_name] = []
         for i, row in enumerate(rows):
-            mask = _mask_for_row(subset, variable, row, config)
+            if config.type == "interaction":
+                a, b = config.parents
+                mask = _mask_for_row(
+                    subset, a, FromToRow(row.from_a, row.to_a, 1.0), rm.variables[a]
+                ) & _mask_for_row(
+                    subset, b, FromToRow(row.from_b, row.to_b, 1.0), rm.variables[b]
+                )
+            else:
+                mask = _mask_for_row(subset, variable, row, config)
             matched = subset.filter(mask)
             if matched.is_empty():
                 results[subset_name].append(
@@ -76,6 +112,8 @@ def compute_actual_expected(
 
 
 def _mask_for_row(data: pl.DataFrame, variable: str, row, config=None) -> pl.Series:
+    if isinstance(row, CellRow):
+        raise TypeError("pass the parent rows of a cell separately")
     col = data[variable]
     if row.from_ is None and row.to_ is None:
         # Numeric: the null bin. Categorical: Other = unseen levels or null.

@@ -13,7 +13,26 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from .project import DataConfig, DataSource, Project, Split
+from .project import (
+    DataConfig,
+    DataSource,
+    Project,
+    Split,
+    premium_offset_column,
+)
+
+NUMERIC_DTYPES_FOR_SPLIT = (
+    pl.Int8,
+    pl.Int16,
+    pl.Int32,
+    pl.Int64,
+    pl.UInt8,
+    pl.UInt16,
+    pl.UInt32,
+    pl.UInt64,
+    pl.Float32,
+    pl.Float64,
+)
 
 _SAFE_BUILTINS = {
     "abs": abs,
@@ -109,8 +128,42 @@ def recode_expr(column: str, mapping: dict[str, str], default: str | None) -> pl
     ).alias(column)
 
 
+def premium_offset_expr(premium: str) -> pl.Expr:
+    """``log(premium)`` aliased to :func:`premium_offset_column` — the offset of
+    a rate-change model, written exactly like this in the exported script."""
+    return pl.col(premium).cast(pl.Float64).log().alias(premium_offset_column(premium))
+
+
+def add_premium_offset(df: pl.DataFrame, data: DataConfig) -> pl.DataFrame:
+    """Add ``log(<current premium>)`` when a column has the ``current_premium``
+    role, so a model can offset on it and fit the *change* from today's premium.
+
+    Runs **after** the row filters, so a filter such as ``pl.col('Premium') > 0``
+    does its job first. A premium that is not a positive, finite number has no
+    logarithm, so the whole frame is refused with a message naming how many rows
+    are wrong — a silent null there would become a NaN offset and a fit that
+    fails deep inside the solver.
+    """
+    premium = next((c for c, r in data.roles.items() if r == "current_premium"), None)
+    if premium is None or premium not in df.columns:
+        return df
+    value = df[premium].cast(pl.Float64, strict=False)
+    bad = int((~(value.is_finite() & (value > 0))).fill_null(True).sum())
+    if bad:
+        raise ValueError(
+            f"Current premium column {premium!r} has {bad:,} row(s) that are not a "
+            "positive number (zero, negative, missing or infinite), so "
+            f"log({premium}) — the rate-change offset — cannot be computed. Add a "
+            f"row filter such as pl.col({premium!r}) > 0 on the Variables page, or "
+            "give the column another role."
+        )
+    return df.with_columns(premium_offset_expr(premium))
+
+
 def apply_variables(df: pl.DataFrame, data: DataConfig) -> pl.DataFrame:
-    """Renames, recodes, type overrides, derived columns and filters, in that order."""
+    """Renames, recodes, type overrides, derived columns, filters and — when a
+    column has the ``current_premium`` role — the derived ``log(premium)``
+    offset column, in that order."""
     renames = {k: v for k, v in data.renames.items() if k in df.columns and k != v}
     if renames:
         df = df.rename(renames)
@@ -141,7 +194,8 @@ def apply_variables(df: pl.DataFrame, data: DataConfig) -> pl.DataFrame:
 
     for f in data.filters:
         df = df.filter(eval_expr(f))
-    return df
+
+    return add_premium_offset(df, data)
 
 
 # --------------------------------------------------------------------------
@@ -152,11 +206,41 @@ def add_split_column(df: pl.DataFrame, split: Split) -> pl.DataFrame:
     if split.mode == "column":
         if split.column not in df.columns:
             raise KeyError(f"Split column {split.column!r} not found")
-        flag = (pl.col(split.column) == pl.lit(split.train_value)).cast(pl.Int64)
-        return df.with_columns(flag.alias(split.column))
+        dtype = df.schema[split.column]
+        if dtype in NUMERIC_DTYPES_FOR_SPLIT:
+            try:
+                value = float(split.train_value)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"Split column {split.column!r} is numeric but the value meaning "
+                    f"TRAIN is {split.train_value!r}; enter a number"
+                ) from None
+            flag = (pl.col(split.column).cast(pl.Float64) == pl.lit(value)).cast(
+                pl.Int64
+            )
+        else:
+            # text / categorical / boolean indicators: compare as text
+            flag = (
+                pl.col(split.column).cast(pl.Utf8) == pl.lit(str(split.train_value))
+            ).cast(pl.Int64)
+        out = df.with_columns(flag.alias(split.column))
+        if out[split.column].sum() == 0:
+            raise ValueError(
+                f"No row of {split.column!r} equals the TRAIN value "
+                f"{split.train_value!r}; check the value on the Split page"
+            )
+        return out
     if split.mode == "random":
+        name = str(split.column).strip()
+        if not name:
+            raise ValueError("The random split column needs a name")
+        if name in df.columns:
+            raise ValueError(
+                f"The random split column {name!r} would overwrite an existing data "
+                "column; choose another name on the Split page"
+            )
         is_train = np.random.default_rng(split.seed).random(df.height) < split.fraction
-        return df.with_columns(pl.Series(split.column, is_train.astype(np.int64)))
+        return df.with_columns(pl.Series(name, is_train.astype(np.int64)))
     raise ValueError(f"Unknown split mode {split.mode!r}")
 
 

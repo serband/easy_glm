@@ -81,7 +81,7 @@ relevant part of the spec.
 ```jsonc
 {
   "version": 1,
-  "name": "bike_2026_07",
+  "name": "motor_2026_07",
   "data": {
     "source": {"type": "parquet|csv|sas7bdat|xlsx", "path": "...", "options": {}},
     "sample": {"rows": null, "seed": 42},            // exploration sample only
@@ -89,8 +89,8 @@ relevant part of the spec.
     "roles": {"ClaimNb": "target", "Exposure": "weight", "traintest": "split",
               "IDpol": "id", "DrivAge": "predictor", "...": "ignore"},
     "types": {"VehPower": "categorical"},             // overrides inference
-    "recodes": {"cVarN": {"mapping": {"0": "B", "1": "B"}, "default": "keep|Other|<value>"}},
-    "derived": [{"name": "Drvr1Exp_Q", "expr": "pl.when(pl.col('Drvr1Lic')=='Q').then(pl.col('Drvr1Exp')).otherwise(0)"}],
+    "recodes": {"ScoreBand": {"mapping": {"0": "B", "1": "B"}, "default": "keep|Other|<value>"}},
+    "derived": [{"name": "YearsLicensed_Full", "expr": "pl.when(pl.col('LicenceType')=='Full').then(pl.col('YearsLicensed')).otherwise(0)"}],
     "filters": ["pl.col('cPrem_nep') > 0", "pl.col('aPrem') < 5000"],
     "split": {"mode": "column|random", "column": "traintest", "train_value": 1,
               "fraction": 0.7, "seed": 42}
@@ -114,7 +114,7 @@ relevant part of the spec.
     }
   },
   "champion": "freq_v1",
-  "exploration": {"leakage": {"ignored": ["IDpol"], "acknowledged": ["cVarN"]}}
+  "exploration": {"leakage": {"ignored": ["IDpol"], "acknowledged": ["ScoreBand"]}}
 }
 ```
 

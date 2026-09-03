@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easy_glm"
-version = "0.3.0"
-description = "Automate insurance pricing with LASSO-regularised GLMs – blueprint generation, preprocessing, model fitting, rate table extraction & plotting. Built on glum."
+version = "0.4.0"
+description = "LASSO-regularised GLMs for insurance pricing: exact rate tables, a browser workbench and a portable scoring model. Built on glum."
 readme = "README.md"
 authors = [
     {name = "Serban Dragne", email = "sadragne@gmail.com"}
@@ -26,18 +26,33 @@ dependencies = [
     "polars>=1.17.0",
     "numpy>=1.24.0",
     "pyarrow>=14.0.0",
-    "glum>=3.0.0",
-    "matplotlib>=3.7.0",
-    "seaborn>=0.12.0",
-    "scikit-learn>=1.3.0",
+    # 3.4.* is pinned by piece G: the compact design matrix passes a tabmat
+    # block glum does not know through its private input validation
+    # (easy_glm.core.stepmatrix.install_glum_shim). The dense path works with
+    # any 3.x, so widen this once the pass-through is upstream.
+    "glum>=3.4.0,<3.5",
+    "tabmat>=4.0.0",       # the design matrix blocks (glum's own dependency)
     "pandas>=2.0.0",
-    "rdata>=0.9.0",        # for R data file parsing
-    "joblib>=1.0.0",
+    "rdata>=0.9.0",        # load_external_dataframe (French motor .rda), imported lazily
+    "joblib>=1.0.0",       # EasyGLM.save / load
     "xlsxwriter>=3.0.0",   # Excel rate-table export
 ]
 
 
+[tool.pytest.ini_options]
+# Only tests/ is a test suite; docs/spikes holds throwaway scripts that pytest
+# would otherwise collect (and that break as the library moves on).
+testpaths = ["tests"]
+# The 5M-row memory benchmark is marked slow and is *not* run by `pytest -q`;
+# run it on its own with `pytest -m slow`, which overrides this filter.
+addopts = "-m 'not slow'"
+markers = [
+    "slow: long, memory-hungry checks (the 5M-row scale budget). Run with -m slow.",
+]
+
+
 [project.scripts]
+easy-glm = "easy_glm.cli:main"
 easy-glm-workbench = "easy_glm.app.__main__:main"
 
 [project.urls]
@@ -47,13 +62,14 @@ Issues = "https://github.com/serband/easy_glm/issues"
 
 [project.optional-dependencies]
 dev = [
-    "duckdb>=1.3.0",       # legacy prepare_data tests
     "streamlit>=1.45.0",   # workbench + editor tests (AppTest)
     "plotly>=5.15.0",
+    "fastexcel>=0.12.0",   # read Excel back in tests (polars engine)
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "black>=23.0.0",
     "ruff>=0.1.0",
+    "mypy>=1.8.0",         # type check of core/ and workflow/ (CI step)
     "jupyter>=1.0.0",
     "ipykernel>=6.0.0",
     "build>=0.10.0",
@@ -64,10 +80,9 @@ ui = [
     "plotly>=5.15.0",
 ]
 viz = [
+    "matplotlib>=3.7.0",   # plot_all_ratetables
+    "seaborn>=0.12.0",
     "plotnine>=0.14.0",
-]
-legacy = [
-    "duckdb>=1.3.0",       # deprecated prepare_data() path
 ]
 benchmark = [
     "statsmodels>=0.14.0",
@@ -84,12 +99,12 @@ include = ["easy_glm*"]
 [tool.black]
 line-length = 88
 target-version = ['py310']
+extend-exclude = 'docs/spikes'  # research prototypes, not shipped code
 
 [tool.ruff]
 line-length = 88
 target-version = "py310"
-# exploratory / one-off scripts are formatted but not linted
-extend-exclude = ["scripts", "examples/new_scoring_prototype.py"]
+extend-exclude = ["docs/spikes"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "B", "C4", "UP"]
@@ -98,3 +113,14 @@ ignore = ["E501"]
 [tool.ruff.lint.per-file-ignores]
 # Streamlit pages: short module aliases (S = state, C = charts) and plotly's dict() idiom
 "src/easy_glm/app/*" = ["N812", "C408"]
+"tests/test_app_state.py" = ["N812"]  # `state as S` mirrors the app modules
+"tests/test_w4_runs_folder.py" = ["N812"]
+
+[tool.mypy]
+# The CI step only names core/ and workflow/ on the command line, but mypy
+# follows imports by default and would otherwise also report every error it
+# finds in engine/ and ui/ (not yet type-checked). `follow_imports = "silent"`
+# keeps those modules' types available for checking core/workflow's calls into
+# them without mypy reporting errors that live inside them.
+follow_imports = "silent"
+ignore_missing_imports = true

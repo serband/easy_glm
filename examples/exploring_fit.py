@@ -8,25 +8,30 @@ Run as a script:
     python examples/exploring_fit.py
 """
 
+from pathlib import Path
+
 import numpy as np
 import polars as pl
 
 import easy_glm
+from easy_glm.workflow import ae_by_variable
 
 # ---------------------------------------------------------------------------
 # Either load a previously saved model or fit one now
 # ---------------------------------------------------------------------------
 
+DATA = Path(__file__).resolve().parents[1] / "tests/fixtures/french_motor_50k.parquet"
+
 # --- Option A: reload from disk (if you ran basic_usage.py first) ---
 # eglm = easy_glm.EasyGLM.load("my_model")
-# df = easy_glm.load_external_dataframe()
+# df = pl.read_parquet(DATA)
 # rng = np.random.default_rng(42)
 # df = df.with_columns(
 #     pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64)
 # )
 
 # --- Option B: fit inline (standalone run) ---
-df = easy_glm.load_external_dataframe()
+df = pl.read_parquet(DATA)
 rng = np.random.default_rng(42)
 df = df.with_columns(pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64))
 
@@ -75,29 +80,19 @@ for name in sorted(non_const):
 # ---------------------------------------------------------------------------
 
 holdout = df.filter(pl.col("traintest") == 0)
+holdout_actual = holdout["ClaimNb"].to_numpy()
+holdout_weight = holdout["Exposure"].to_numpy()
+holdout_preds = eglm.rate_model.predict(holdout)
 
-print("\n=== A/E on holdout (per variable) ===\n")
+print("\n=== A/E on holdout, per variable, per bin ===\n")
 for var in PREDICTORS:
-    result = eglm.rate_model.compute_ae_for_variable(holdout, var)
-    subsets = result["subsets"]
-    for split_name in ("train", "test"):
-        if split_name not in subsets:
-            continue
-        buckets = subsets[split_name]
-        actual = sum(b["actual"] for b in buckets)
-        expected = sum(b["expected"] for b in buckets)
-        ae = actual / expected if expected > 0 else float("nan")
-
-        # Show first and last bucket for each variable
-        first = buckets[0]
-        last = buckets[-1]
-        print(
-            f"  {var:15s}  {split_name:5s}  "
-            f"A/E = {ae:.4f}  "
-            f"first bin: A={first['actual']:.3f} / E={first['expected']:.3f}  "
-            f"last bin:  A={last['actual']:.3f} / E={last['expected']:.3f}"
-        )
-    print()
+    table = ae_by_variable(holdout, var, holdout_actual, holdout_preds, holdout_weight)
+    first, last = table.row(0, named=True), table.row(-1, named=True)
+    print(
+        f"  {var:15s}  A/E ranges {table['ae'].min():.3f}-{table['ae'].max():.3f}  "
+        f"first bin: A={first['actual']:.2f}/E={first['expected']:.2f}  "
+        f"last bin: A={last['actual']:.2f}/E={last['expected']:.2f}"
+    )
 
 # ---------------------------------------------------------------------------
 # 5. Tweak a relativity, recompute A/E, compare
@@ -126,12 +121,10 @@ tweaked_ae = holdout["ClaimNb"].sum() / tweaked_preds.sum()
 print(f"After  tweak — overall A/E: {tweaked_ae:.4f}")
 
 # Drill into the tweaked variable
-tweaked_ae_result = rm.compute_ae_for_variable(holdout, var)
-for split_name, buckets in tweaked_ae_result["subsets"].items():
-    actual = sum(b["actual"] for b in buckets)
-    expected = sum(b["expected"] for b in buckets)
-    ae = actual / expected if expected > 0 else float("nan")
-    print(f"  {var:15s}  {split_name:5s}  A/E = {ae:.4f}")
+table = ae_by_variable(holdout, var, holdout_actual, tweaked_preds, holdout_weight)
+print(
+    f"  {var:15s}  A/E ranges {table['ae'].min():.3f}-{table['ae'].max():.3f} after the tweak"
+)
 
 # ---------------------------------------------------------------------------
 # 6. Reset to original (discard the tweak)

@@ -21,7 +21,7 @@ from easy_glm.ui.charts import (
     build_histogram,
     build_relativity_comparison,
 )
-from easy_glm.ui.metrics import FORMULAS, compute_actual_expected
+from easy_glm.ui.metrics import FORMULAS, compute_actual_expected, default_formula
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -88,12 +88,17 @@ if "dirty" not in st.session_state:
     st.session_state.dirty = False
 
 if "actual_formula" not in st.session_state:
-    # --formula=sum_over_weight is the right choice for count targets with an
-    # exposure weight (actual = sum(claims) / sum(exposure)).
-    _formula = args.get("formula", "sum_weighted")
-    st.session_state.actual_formula = (
-        _formula if _formula in FORMULAS else "sum_weighted"
-    )
+    # Default from the model's metadata: a count target divided by an exposure
+    # weight needs actual = sum(claims) / sum(exposure); a rate target needs the
+    # exposure-weighted mean. --formula=... overrides.
+    _formula = args.get("formula")
+    if _formula not in FORMULAS:
+        _formula = default_formula(
+            st.session_state.baseline_rm.metadata
+            if st.session_state.baseline_rm is not None
+            else None
+        )
+    st.session_state.actual_formula = _formula
 
 # ---------------------------------------------------------------------------
 # Convenience accessors
@@ -222,7 +227,9 @@ if baseline is None:
 
 meta = baseline.metadata
 non_const = baseline.non_constant_variables
-var_names = sorted(non_const.keys())
+# The stand-alone editor edits one-dimensional tables; interaction cells are
+# edited in the workbench (Rate tables page).
+var_names = sorted(name for name, cfg in non_const.items() if cfg.type != "interaction")
 
 if st.session_state.selected_var is None and var_names:
     st.session_state.selected_var = var_names[0]
@@ -514,7 +521,7 @@ for i, row in enumerate(config_b.table):
     rows_data.append(
         {
             "id": i,
-            "label": level_label(row),
+            "label": level_label(row, config_b.other_label),
             "original": row.relativity,
             "revised": config_w.table[i].relativity,
         }

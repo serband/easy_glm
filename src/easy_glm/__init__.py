@@ -22,30 +22,36 @@ scorer (``.easyglm`` export, relativity editor) and reproduces the GLM exactly.
 3. :func:`rate_tables` / :func:`to_rate_model` — exact relativities and base
    rate read off the coefficients.
 
-**Legacy (deprecated, removed in 0.4)**
-
-``generate_blueprint``, ``prepare_data`` (needs the ``legacy`` extra for
-DuckDB), ``fit_lasso_glm``, ``ratetable``, ``generate_all_ratetables``.
+With interactions, :func:`fit_two_stage` fits the mains first and the cells on
+top of them (:class:`TwoStageFit`), so adding an interaction never moves a
+main-effect table or the base rate and every cell is a pure adjustment.
 """
+
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
+try:
+    __version__ = _pkg_version("easy_glm")
+except PackageNotFoundError:  # pragma: no cover - source checkout without metadata
+    __version__ = "0.0.0"
 
 from .core import (
     CategoricalEncoder,
     DesignSpec,
     EasyGLM,
     GLMFit,
+    InteractionEncoder,
+    LinearEncoder,
     StepEncoder,
+    TwoStageFit,
     base_rate,
     fit_glm,
-    fit_lasso_glm,
-    generate_all_ratetables,
-    generate_blueprint,
+    fit_two_stage,
     load_external_dataframe,
     plot_all_ratetables,
-    predict_with_model,
-    prepare_data,
     rate_tables,
-    ratetable,
     to_rate_model,
+    validate_train_test_column,
     write_rate_tables_xlsx,
 )
 
@@ -57,18 +63,16 @@ __all__ = [
     "DesignSpec",
     "StepEncoder",
     "CategoricalEncoder",
+    "InteractionEncoder",
+    "LinearEncoder",
     "GLMFit",
+    "TwoStageFit",
     "fit_glm",
+    "fit_two_stage",
     "rate_tables",
     "base_rate",
     "to_rate_model",
     "write_rate_tables_xlsx",
     "plot_all_ratetables",
-    # Legacy (deprecated)
-    "generate_blueprint",
-    "prepare_data",
-    "fit_lasso_glm",
-    "predict_with_model",
-    "ratetable",
-    "generate_all_ratetables",
+    "validate_train_test_column",
 ]

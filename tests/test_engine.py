@@ -4,81 +4,209 @@ import numpy as np
 import polars as pl
 import pytest
 
-from easy_glm import (
-    fit_lasso_glm,
-    generate_all_ratetables,
-    generate_blueprint,
-    prepare_data,
-)
+from easy_glm import DesignSpec, base_rate, fit_glm, rate_tables, to_rate_model
 from easy_glm.engine import FromToRow, ModelMetadata, RateModel, VariableConfig
 
 
-def test_from_rate_tables_numeric():
-    rate_table = pl.DataFrame(
-        {"VehAge": [0, 5, 10, 15], "relativity": [0.85, 0.90, 1.00, 1.10]}
+def _numeric_table(
+    edges: list[float], rels: list[float], null_rel: float | None = None
+):
+    """Bands (None, e0), [e0, e1), ..., [e_last, None) (+ null row) in the 0.3 table format."""
+    froms: list[float | None] = [None, *edges]
+    tos: list[float | None] = [*edges, None]
+    if null_rel is not None:
+        froms.append(None)
+        tos.append(None)
+        rels = [*rels, null_rel]
+    return pl.DataFrame(
+        {
+            "from": pl.Series(froms, dtype=pl.Float64),
+            "to": pl.Series(tos, dtype=pl.Float64),
+            "relativity": rels,
+        }
     )
-    blueprint = {"VehAge": [0, 5, 10, 15]}
 
-    rm = RateModel.from_rate_tables({"VehAge": rate_table}, blueprint, base_rate=0.1)
+
+def _categorical_table(
+    levels: list[str], rels: list[float], other: float | None = None
+):
+    froms: list[str | None] = list(levels)
+    tos: list[str | None] = list(levels)
+    if other is not None:
+        froms.append(None)
+        tos.append(None)
+        rels = [*rels, other]
+    return pl.DataFrame(
+        {
+            "from": pl.Series(froms, dtype=pl.Utf8),
+            "to": pl.Series(tos, dtype=pl.Utf8),
+            "relativity": rels,
+        }
+    )
+
+
+def test_from_rate_tables_numeric():
+    table = _numeric_table([0, 5, 10, 15], [0.85, 0.85, 0.90, 1.00, 1.10])
+    rm = RateModel.from_rate_tables({"VehAge": table}, base_rate=0.1)
 
     config = rm.variables["VehAge"]
     assert config.type == "numeric"
     assert len(config.table) == 5
-
-    assert config.table[0].from_ is None
-    assert config.table[0].to_ == 0
+    assert (config.table[0].from_, config.table[0].to_) == (None, 0)
     assert config.table[0].relativity == 0.85
-
-    assert config.table[1].from_ == 0
-    assert config.table[1].to_ == 5
-    assert config.table[1].relativity == 0.85
-
-    assert config.table[2].from_ == 5
-    assert config.table[2].to_ == 10
+    assert (config.table[2].from_, config.table[2].to_) == (5, 10)
     assert config.table[2].relativity == 0.90
+    assert (config.table[4].from_, config.table[4].to_) == (15, None)
+    assert config.null_relativity is None
+    np.testing.assert_array_equal(
+        rm.predict(pl.DataFrame({"VehAge": [-1.0, 0.0, 7.0, 15.0, 99.0]})),
+        0.1 * np.array([0.85, 0.85, 0.90, 1.10, 1.10]),
+    )
 
-    assert config.table[4].from_ == 15
-    assert config.table[4].to_ is None
-    assert config.table[4].relativity == 1.10
+
+def test_from_rate_tables_numeric_with_null_row():
+    table = _numeric_table([0, 5], [0.8, 0.9, 1.0], null_rel=1.2)
+    rm = RateModel.from_rate_tables({"VehAge": table}, base_rate=1.0)
+    assert rm.variables["VehAge"].null_relativity == 1.2
+    np.testing.assert_array_equal(
+        rm.predict(pl.DataFrame({"VehAge": [None, 3.0]})), [1.2, 0.9]
+    )
 
 
 def test_from_rate_tables_categorical():
-    rate_table = pl.DataFrame(
-        {"Region": ["North", "South", "Urban"], "relativity": [0.95, 1.05, 1.00]}
-    )
-    blueprint = {"Region": ["North", "South", "Urban"]}
-
-    rm = RateModel.from_rate_tables({"Region": rate_table}, blueprint, base_rate=0.1)
+    table = _categorical_table(["North", "South", "Urban"], [0.95, 1.05, 1.00])
+    rm = RateModel.from_rate_tables({"Region": table}, base_rate=0.1)
 
     config = rm.variables["Region"]
     assert config.type == "categorical"
     assert len(config.table) == 4
-
-    assert config.table[0].from_ == "North"
-    assert config.table[0].to_ == "North"
+    assert (config.table[0].from_, config.table[0].to_) == ("North", "North")
     assert config.table[0].relativity == 0.95
+    assert (config.table[3].from_, config.table[3].to_) == (None, None)
+    assert config.table[3].relativity == 1.0  # Other row added when absent
 
-    assert config.table[3].from_ is None
-    assert config.table[3].to_ is None
-    assert config.table[3].relativity == 1.0
+    with_other = _categorical_table(["A", "B"], [0.9, 1.1], other=1.3)
+    rm2 = RateModel.from_rate_tables({"R": with_other}, base_rate=1.0)
+    np.testing.assert_array_equal(
+        rm2.predict(pl.DataFrame({"R": ["A", "B", "zzz", None]})), [0.9, 1.1, 1.3, 1.3]
+    )
 
 
-def test_from_rate_tables_skips_missing_blueprint():
-    rate_table = pl.DataFrame({"VarA": [1, 2], "relativity": [1.0, 1.0]})
-    rm = RateModel.from_rate_tables({"VarA": rate_table}, {}, base_rate=0.1)
-    assert len(rm.variables) == 0
+def test_from_rate_tables_rejects_duplicates():
+    dup_level = _categorical_table(["A", "A", "B"], [0.9, 1.5, 1.1])
+    with pytest.raises(ValueError, match=r"level\(s\) \['A'\] more than once"):
+        RateModel.from_rate_tables({"R": dup_level}, base_rate=1.0)
+    two_other = pl.DataFrame(
+        {
+            "from": pl.Series(["A", None, None], dtype=pl.Utf8),
+            "to": pl.Series(["A", None, None], dtype=pl.Utf8),
+            "relativity": [1.0, 1.1, 1.2],
+        }
+    )
+    with pytest.raises(ValueError, match="only one null / Other row"):
+        RateModel.from_rate_tables({"R": two_other}, base_rate=1.0)
+    two_null_numeric = pl.DataFrame(
+        {
+            "from": pl.Series([None, 0.0, None, None], dtype=pl.Float64),
+            "to": pl.Series([0.0, None, None, None], dtype=pl.Float64),
+            "relativity": [1.0, 1.1, 1.2, 1.3],
+        }
+    )
+    with pytest.raises(ValueError, match="only one null / Other row"):
+        RateModel.from_rate_tables({"X": two_null_numeric}, base_rate=1.0)
+
+
+@pytest.mark.parametrize("dtype", [pl.Int64, pl.Float64])
+def test_from_rate_tables_integer_coded_categorical(dtype):
+    table = pl.DataFrame(
+        {
+            "from": pl.Series([4, 5, 6, None], dtype=dtype),
+            "to": pl.Series([4, 5, 6, None], dtype=dtype),
+            "relativity": [0.9, 1.0, 1.2, 1.05],
+        }
+    )
+    rm = RateModel.from_rate_tables({"VehPower": table}, base_rate=1.0)
+    cfg = rm.variables["VehPower"]
+    assert cfg.type == "categorical"
+    assert [r.from_ for r in cfg.table] == ["4", "5", "6", None]
+    np.testing.assert_array_equal(
+        rm.predict(pl.DataFrame({"VehPower": [4, 6, 9, None]})), [0.9, 1.2, 1.05, 1.05]
+    )
+
+
+def test_from_rate_tables_accepts_bands_in_any_order():
+    ordered = _numeric_table([0, 5, 10], [0.8, 0.9, 1.0, 1.1], null_rel=1.3)
+    shuffled = ordered[[3, 1, 4, 0, 2]]
+    descending = ordered.sort("from", descending=True, nulls_last=True)
+    data = pl.DataFrame({"X": [-1.0, 0.0, 7.0, 12.0, None]})
+    expected = RateModel.from_rate_tables({"X": ordered}, base_rate=1.0).predict(data)
+    for variant in (shuffled, descending):
+        rm = RateModel.from_rate_tables({"X": variant}, base_rate=1.0)
+        np.testing.assert_array_equal(rm.predict(data), expected)
+        assert [r.from_ for r in rm.variables["X"].table] == [
+            None,
+            0.0,
+            5.0,
+            10.0,
+            None,
+        ]
+
+
+def test_from_rate_tables_categorical_without_other_row_warns():
+    table = _categorical_table(["A", "B"], [0.9, 1.1])
+    with pytest.warns(UserWarning, match="no Other row"):
+        rm = RateModel.from_rate_tables({"R": table}, base_rate=1.0)
+    assert rm.variables["R"].table[-1].relativity == 1.0
+
+
+def test_from_rate_tables_rejects_bad_tables():
+    with pytest.raises(KeyError):
+        RateModel.from_rate_tables({}, base_rate=0.1, predictor_variables=["X"])
+    with pytest.raises(ValueError, match="lacks columns"):
+        RateModel.from_rate_tables(
+            {"X": pl.DataFrame({"from": [1.0], "relativity": [1.0]})}, base_rate=0.1
+        )
+    gap = pl.DataFrame(
+        {
+            "from": pl.Series([None, 0.0, 6.0], dtype=pl.Float64),
+            "to": pl.Series([0.0, 5.0, None], dtype=pl.Float64),
+            "relativity": [1.0, 1.0, 1.0],
+        }
+    )
+    with pytest.raises(ValueError, match="no gaps or overlaps"):
+        RateModel.from_rate_tables({"X": gap}, base_rate=0.1)
+    closed_low = pl.DataFrame(
+        {
+            "from": pl.Series([0.0, 5.0], dtype=pl.Float64),
+            "to": pl.Series([5.0, None], dtype=pl.Float64),
+            "relativity": [1.0, 1.0],
+        }
+    )
+    with pytest.raises(ValueError, match="open lower band"):
+        RateModel.from_rate_tables({"X": closed_low}, base_rate=0.1)
 
 
 def test_from_rate_tables_creates_initial_snapshot():
-    rate_table = pl.DataFrame({"VehAge": [0, 5], "relativity": [0.85, 0.90]})
-    blueprint = {"VehAge": [0, 5]}
-
-    rm = RateModel.from_rate_tables({"VehAge": rate_table}, blueprint, base_rate=0.1)
+    table = _numeric_table([0, 5], [0.85, 0.90, 0.95])
+    rm = RateModel.from_rate_tables({"VehAge": table}, base_rate=0.1)
 
     assert len(rm.snapshots) == 1
     assert rm.current_version == 1
     assert rm.snapshots[0].description == "Base model"
-    assert rm.snapshots[0].version == 1
+    assert rm.snapshots[0].metrics is None
+
+
+def test_snapshot_metrics_are_stored_and_round_trip(tmp_path):
+    rm = _make_numeric_rm()
+    rm.create_snapshot("with metrics", metrics={"holdout": {"ae": 1.02}})
+    assert rm.snapshots[-1].metrics == {"holdout": {"ae": 1.02}}
+    rm.set_snapshot_metrics({"holdout": {"ae": 0.99}})
+    assert rm.snapshots[-1].metrics == {"holdout": {"ae": 0.99}}
+    with pytest.raises(ValueError):
+        rm.set_snapshot_metrics({}, version=9)
+    rm.to_json(tmp_path / "m.easyglm")
+    back = RateModel.from_json(tmp_path / "m.easyglm")
+    assert back.snapshots[-1].metrics == {"holdout": {"ae": 0.99}}
 
 
 def test_predict_numeric_exact_levels():
@@ -316,128 +444,87 @@ def test_to_json_from_json_preserves_snapshot_relativities(tmp_path):
 
 
 class TestIntegrationWithPipeline:
-    def test_full_pipeline(self, synthetic_insurance_data):
-        df = synthetic_insurance_data
-        predictors = ["VehAge", "Region", "DrivAge"]
-        bp = generate_blueprint(df)
-        prepped = prepare_data(
-            df=df,
-            modelling_variables=predictors,
-            additional_columns=["Exposure", "ClaimNb", "traintest"],
-            formats=bp,
-            traintest_column="traintest",
-            table_name="cars",
-        )
-        model = fit_lasso_glm(
-            dataframe=prepped,
-            target="ClaimNb",
-            model_type="Poisson",
+    @staticmethod
+    def _fit(df):
+        train = df.filter(pl.col("traintest") == 1)
+        spec = DesignSpec.from_data(train, ["VehAge", "Region", "DrivAge"])
+        return fit_glm(
+            train,
+            spec,
+            "ClaimNb",
+            family="poisson",
             weight_col="Exposure",
-            train_test_col="traintest",
             divide_target_by_weight=True,
-        )
-        all_tables = generate_all_ratetables(
-            model=model,
-            dataset=df,
-            predictor_variables=predictors,
-            blueprint=bp,
-            random_seed=42,
+            alpha=0.01,
         )
 
-        rm = RateModel.from_rate_tables(all_tables, bp, base_rate=0.05)
+    def test_from_rate_tables_matches_to_rate_model(self, synthetic_insurance_data):
+        df = synthetic_insurance_data
+        fit = self._fit(df)
+        rm_tables = RateModel.from_rate_tables(rate_tables(fit), base_rate(fit))
+        rm_exact = to_rate_model(fit)
 
-        assert set(rm.variables.keys()) == {"VehAge", "DrivAge", "Region"}
-        assert rm.variables["VehAge"].type == "numeric"
-        assert rm.variables["DrivAge"].type == "numeric"
-        assert rm.variables["Region"].type == "categorical"
-        assert rm.current_version == 1
+        assert set(rm_tables.variables) == {"VehAge", "DrivAge", "Region"}
+        assert rm_tables.variables["VehAge"].type == "numeric"
+        assert rm_tables.variables["Region"].type == "categorical"
+        assert rm_tables.current_version == 1
+        scoring = df.with_columns(
+            pl.when(pl.arange(0, df.height) % 7 == 0)
+            .then(None)
+            .otherwise(pl.col("VehAge"))
+            .alias("VehAge"),
+            pl.when(pl.arange(0, df.height) % 11 == 0)
+            .then(pl.lit("Mars"))
+            .otherwise(pl.col("Region"))
+            .alias("Region"),
+        )
+        np.testing.assert_allclose(
+            rm_tables.predict(scoring, exposure_col=None),
+            rm_exact.predict(scoring, exposure_col=None),
+            rtol=1e-12,
+        )
+        np.testing.assert_allclose(
+            rm_tables.predict(scoring, exposure_col=None),
+            fit.predict(scoring),
+            rtol=1e-10,
+        )
+        # and the tables written by rate_model_tables (Excel layout) load back too
+        from easy_glm.core.excel import rate_model_tables
 
-        data = pl.DataFrame({"VehAge": [5], "DrivAge": [30], "Region": ["North"]})
-        preds = rm.predict(data)
-        assert len(preds) == 1
-        assert np.isfinite(preds[0])
+        rm_round = RateModel.from_rate_tables(
+            rate_model_tables(rm_exact), rm_exact.base_rate
+        )
+        np.testing.assert_allclose(
+            rm_round.predict(scoring, exposure_col=None),
+            rm_exact.predict(scoring, exposure_col=None),
+            rtol=1e-12,
+        )
 
     def test_roundtrip_after_full_pipeline(self, synthetic_insurance_data, tmp_path):
         df = synthetic_insurance_data
-        predictors = ["VehAge", "Region", "DrivAge"]
-        bp = generate_blueprint(df)
-        prepped = prepare_data(
-            df=df,
-            modelling_variables=predictors,
-            additional_columns=["Exposure", "ClaimNb", "traintest"],
-            formats=bp,
-            traintest_column="traintest",
-            table_name="cars",
-        )
-        model = fit_lasso_glm(
-            dataframe=prepped,
-            target="ClaimNb",
-            model_type="Poisson",
-            weight_col="Exposure",
-            train_test_col="traintest",
-            divide_target_by_weight=True,
-        )
-        all_tables = generate_all_ratetables(
-            model=model,
-            dataset=df,
-            predictor_variables=predictors,
-            blueprint=bp,
-            random_seed=42,
-        )
-
-        rm = RateModel.from_rate_tables(all_tables, bp, base_rate=0.05)
+        rm = RateModel.from_rate_tables(rate_tables(self._fit(df)), 0.05)
         data = pl.DataFrame({"VehAge": [5], "DrivAge": [30], "Region": ["North"]})
         before = rm.predict(data)
-
-        path = tmp_path / "model.easyglm"
-        rm.to_json(path)
-        loaded = RateModel.from_json(path)
-        after = loaded.predict(data)
-
+        rm.to_json(tmp_path / "model.easyglm")
+        after = RateModel.from_json(tmp_path / "model.easyglm").predict(data)
         np.testing.assert_array_almost_equal(before, after)
 
     def test_from_glm_model(self, synthetic_insurance_data):
         df = synthetic_insurance_data
-        predictors = ["VehAge", "Region", "DrivAge"]
-        bp = generate_blueprint(df)
-        prepped = prepare_data(
-            df=df,
-            modelling_variables=predictors,
-            additional_columns=["Exposure", "ClaimNb", "traintest"],
-            formats=bp,
-            traintest_column="traintest",
-            table_name="cars",
-        )
-        model = fit_lasso_glm(
-            dataframe=prepped,
-            target="ClaimNb",
-            model_type="Poisson",
-            weight_col="Exposure",
-            train_test_col="traintest",
-            divide_target_by_weight=True,
-        )
-
+        fit = self._fit(df)
         rm = RateModel.from_glm_model(
-            model=model,
-            dataset=df,
-            blueprint=bp,
-            base_rate=0.05,
-            model_type="poisson",
-            target="ClaimNb",
-            weight_col="Exposure",
-            train_test_col="traintest",
-            predictor_variables=predictors,
+            fit, exposure_col="Exposure", train_test_col="traintest"
         )
-
-        assert set(rm.variables.keys()) == {"VehAge", "DrivAge", "Region"}
+        assert set(rm.variables) == {"VehAge", "DrivAge", "Region"}
         assert rm.metadata.model_type == "poisson"
         assert rm.metadata.target == "ClaimNb"
+        assert rm.metadata.exposure_col == "Exposure"
         assert rm.current_version == 1
-
-        data = pl.DataFrame({"VehAge": [5], "DrivAge": [30], "Region": ["North"]})
-        preds = rm.predict(data)
-        assert len(preds) == 1
-        assert np.isfinite(preds[0])
+        np.testing.assert_allclose(
+            rm.predict(df.head(20), exposure_col=None),
+            fit.predict(df.head(20)),
+            rtol=1e-10,
+        )
 
 
 def _make_numeric_rm() -> RateModel:
@@ -494,14 +581,10 @@ def _make_multi_rm() -> RateModel:
 
 class TestMetadata:
     def test_from_rate_tables_stores_metadata(self):
-        rate_table = pl.DataFrame(
-            {"VehAge": [0, 5, 10], "relativity": [0.85, 0.90, 1.00]}
-        )
-        blueprint = {"VehAge": [0, 5, 10]}
+        rate_table = _numeric_table([0, 5, 10], [0.85, 0.85, 0.90, 1.00])
 
         rm = RateModel.from_rate_tables(
             {"VehAge": rate_table},
-            blueprint,
             base_rate=0.1,
             model_type="poisson",
             target="ClaimNb",
@@ -654,13 +737,9 @@ class TestExposure:
         np.testing.assert_array_almost_equal(preds, [expected])
 
     def test_from_rate_tables_stores_exposure(self):
-        rate_table = pl.DataFrame(
-            {"VehAge": [0, 5, 10], "relativity": [0.85, 0.90, 1.00]}
-        )
-        blueprint = {"VehAge": [0, 5, 10]}
+        rate_table = _numeric_table([0, 5, 10], [0.85, 0.85, 0.90, 1.00])
         rm = RateModel.from_rate_tables(
             {"VehAge": rate_table},
-            blueprint,
             base_rate=0.1,
             exposure_col="Exposure",
         )

@@ -9,8 +9,9 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-from easy_glm.core.design import NUMERIC_DTYPES, DesignSpec, quantile_knots
+from easy_glm.core.design import NUMERIC_DTYPES, DesignSpec, quantile_knots, row_label
 from easy_glm.core.fit import fit_glm
+from easy_glm.engine.models import NULL_LABEL
 
 from .project import ModelConfig, Project
 
@@ -33,15 +34,23 @@ def _rate(
     return (pl.col(target) * pl.col(weight)).sum() / pl.col(weight).sum()
 
 
+def band_labels(knots: list[float]) -> list[str]:
+    """Labels of the bands ``(-inf, k0), [k0, k1), ..., [k_last, inf)`` — identical
+    to the rate-table row labels of a step encoder with the same knots."""
+    ks = [float(k) for k in knots]
+    edges: list[float | None] = [None, *ks, None]
+    return [row_label((edges[i], edges[i + 1])) for i in range(len(edges) - 1)]
+
+
 def band_expr(series_name: str, knots: list[float]) -> pl.Expr:
-    """Band a numeric column by ``knots`` into labels matching the step design."""
-    labels = (
-        [f"< {knots[0]:g}"]
-        + [f"[{a:g}, {b:g})" for a, b in zip(knots[:-1], knots[1:], strict=True)]
-        + [f"≥ {knots[-1]:g}"]
-    )
+    """Band a numeric column by ``knots`` into the rate-table row labels; nulls
+    (and NaN) get :data:`NULL_LABEL`, the label of the table's null row."""
+    knots = [float(k) for k in knots]
+    labels = band_labels(knots)
     col = pl.col(series_name).cast(pl.Float64)
-    expr = pl.when(col.is_null()).then(pl.lit("null"))
+    # `when(...).then(...)` returns a chainable builder whose type changes as
+    # branches are added; Any keeps the loop readable
+    expr: Any = pl.when(col.is_null() | col.is_nan()).then(pl.lit(NULL_LABEL))
     expr = expr.when(col < knots[0]).then(pl.lit(labels[0]))
     for i in range(1, len(knots)):
         expr = expr.when(col < knots[i]).then(pl.lit(labels[i]))
@@ -74,7 +83,7 @@ def univariate(
             order_expr = pl.col(variable).cast(pl.Float64).min().alias("order")
         else:  # constant column
             banded = df.with_columns(
-                pl.col(variable).cast(pl.Utf8).fill_null("null").alias("__band__")
+                pl.col(variable).cast(pl.Utf8).fill_null(NULL_LABEL).alias("__band__")
             )
             order_expr = pl.lit(0.0).alias("order")
         table = (
@@ -86,7 +95,7 @@ def univariate(
             )
             .rename({"__band__": "label"})
             .with_columns(
-                pl.when(pl.col("label") == "null")
+                pl.when(pl.col("label") == NULL_LABEL)
                 .then(pl.lit(float("inf")))
                 .otherwise(pl.col("order"))
                 .alias("order")
@@ -134,7 +143,7 @@ def univariate(
                 ]
             )
         table = table.with_columns(
-            pl.col("label").fill_null("null"),
+            pl.col("label").fill_null(NULL_LABEL),
             pl.arange(0, pl.len()).cast(pl.Float64).alias("order"),
         )
     total = table["exposure"].sum() or 1.0
@@ -168,7 +177,11 @@ def single_factor_strength(
     min_level_share: float = 0.002,
 ) -> float | None:
     """Share of the null deviance explained by a one-variable ridge GLM
-    (``1 - deviance / null_deviance``). ``None`` if the variable cannot be encoded."""
+    (``1 - deviance / null_deviance``). ``None`` if the variable cannot be
+    encoded, or if the model has no target yet."""
+    target = cfg.target
+    if not target:
+        return None
     try:
         spec = DesignSpec.from_data(
             train,
@@ -185,7 +198,7 @@ def single_factor_strength(
             fit = fit_glm(
                 train,
                 spec,
-                cfg.target,
+                target,
                 family=cfg.family,
                 weight_col=cfg.weight,
                 offset_col=cfg.offset,
@@ -196,7 +209,7 @@ def single_factor_strength(
             )
         except Exception:  # noqa: BLE001 - a failing single-factor fit is not fatal
             return None
-    y = train[cfg.target].cast(pl.Float64).to_numpy()
+    y = train[target].cast(pl.Float64).to_numpy()
     w = train[cfg.weight].cast(pl.Float64).to_numpy() if cfg.weight else None
     if cfg.divide_target_by_weight and w is not None:
         y = y / w

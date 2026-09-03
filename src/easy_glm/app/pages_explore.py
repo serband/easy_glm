@@ -14,14 +14,22 @@ from . import ui
 
 def _univariate(df: pl.DataFrame) -> None:
     p = S.project()
+    if S.is_sampled():
+        st.caption(
+            f"Charts use the exploration sample of {df.height:,} "
+            f"{'row' if df.height == 1 else 'rows'} (Project page); fits and "
+            "diagnostics use the full data."
+        )
     cfg = p.models.get(p.champion) if p.champion else None
     divide = cfg.divide_target_by_weight if cfg else bool(p.weight)
     reserved = {p.target, p.weight, p.offset, p.data.split.column} - {None}
     candidates = [c for c in df.columns if c not in reserved]
     c1, c2, c3 = st.columns([3, 1, 1])
-    var = c1.selectbox("Variable", candidates, key="explore_var")
-    n_bins = c2.slider("Bands", 5, 50, 20, key="explore_bins")
-    subset = c3.radio("Rows", ["train", "all"], horizontal=True, key="explore_subset")
+    var = c1.selectbox("Variable", candidates, key=S.widget_key("explore_var"))
+    n_bins = c2.slider("Bands", 5, 50, 20, key=S.widget_key("explore_bins"))
+    subset = c3.radio(
+        "Rows", ["train", "all"], horizontal=True, key=S.widget_key("explore_subset")
+    )
     frame = (
         df.filter(pl.col(p.data.split.column) == 1)
         if subset == "train" and p.data.split.column in df.columns
@@ -121,7 +129,10 @@ def _leakage(df: pl.DataFrame) -> None:
     ].to_list()
     c1, c2, c3 = st.columns([3, 1, 1])
     chosen = c1.multiselect(
-        "Variables", rep["variable"].to_list(), default=flagged, key="leak_pick"
+        "Variables",
+        rep["variable"].to_list(),
+        default=flagged,
+        key=S.widget_key("leak_pick"),
     )
     leak = p.exploration.setdefault("leakage", {"ignored": [], "acknowledged": []})
     if (
@@ -163,7 +174,9 @@ def render() -> None:
         return
     tab1, tab2 = st.tabs(["Univariate", "Leakage report"])
     with tab1:
-        _univariate(df)
+        sample = S.sample_frame()
+        if sample is not None:
+            _univariate(sample)
     with tab2:
         if ui.require_target() is not None:
-            _leakage(df)
+            _leakage(df)  # full training rows; the report samples internally

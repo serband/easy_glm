@@ -15,7 +15,7 @@ from typing import Any
 
 import polars as pl
 
-from easy_glm.engine.models import level_label
+from easy_glm.engine.models import CellRow, level_label
 from easy_glm.engine.rate_model import RateModel
 
 _INVALID_SHEET_CHARS = re.compile(r"[\[\]:*?/\\]")
@@ -39,28 +39,166 @@ def sheet_name(key: str, used: set[str]) -> str:
     return candidate
 
 
+def suffixed_sheet_name(key: str, suffix: str, used: set[str]) -> str:
+    """Like :func:`sheet_name` but guarantees the sheet name *ends with*
+    ``suffix`` (e.g. ``" (matrix)"``) even when ``key`` has to be truncated and
+    de-duplicated: the stem is shortened and numbered, the suffix survives."""
+    base = _INVALID_SHEET_CHARS.sub("_", key).strip("'").strip() or "sheet"
+    i = 1
+    while True:
+        extra = "" if i == 1 else f" ({i})"
+        stem = base[: _MAX_SHEET_LEN - len(suffix) - len(extra)].rstrip()
+        candidate = f"{stem}{extra}{suffix}"
+        if candidate.lower() not in used:
+            used.add(candidate.lower())
+            return candidate
+        i += 1
+
+
 def rate_model_tables(rm: RateModel) -> dict[str, pl.DataFrame]:
-    """Per-variable ``from`` / ``to`` / ``label`` / ``relativity`` frames of a
-    :class:`RateModel` (its *current* version)."""
+    """Per-variable ``from`` / ``to`` / ``label`` / [``fitted``] / ``relativity``
+    / ``exposure`` frames of a :class:`RateModel`. ``relativity`` is the
+    *current* value (manual adjustments included); ``fitted`` is the first
+    snapshot's value when present; ``exposure`` is the training exposure that
+    fell in the row (0.0 for a hand-built table). Piecewise-linear variables add
+    ``slope``, ``relativity_to`` (value at the band end) and ``is_base`` (the
+    band starting at ``x_base``); their ``relativity`` is the value at the band
+    start."""
     out: dict[str, pl.DataFrame] = {}
     for var, cfg in rm.variables.items():
-        numeric = cfg.type == "numeric"
-        dtype = pl.Float64 if numeric else pl.Utf8
-        cast = float if numeric else str
-        froms = [None if r.from_ is None else cast(r.from_) for r in cfg.table]
-        tos = [None if r.to_ is None else cast(r.to_) for r in cfg.table]
-
-        out[var] = pl.DataFrame(
-            {
-                "from": pl.Series(froms, dtype=dtype),
-                "to": pl.Series(tos, dtype=dtype),
-                "label": [level_label(r) for r in cfg.table],
-                "relativity": pl.Series(
-                    [float(r.relativity) for r in cfg.table], dtype=pl.Float64
-                ),
-            }
-        )
+        if cfg.type == "interaction":
+            out[var] = _interaction_frame(rm, var, cfg)
+            continue
+        base = rm.snapshots[0].relativities.get(var) if rm.snapshots else None
+        out[var] = variable_frame(cfg, fitted=base)
     return out
+
+
+def variable_frame(cfg, *, fitted: list[Any] | None = None) -> pl.DataFrame:
+    """The frame :func:`rate_model_tables` builds for one main effect.
+
+    ``fitted`` is the same variable's rows in another version (the first
+    snapshot: the pre-adjustment values) and becomes the ``fitted`` column.
+    Taking a :class:`~easy_glm.engine.models.VariableConfig` rather than a whole
+    model is what lets a page draw a *preview* of an edit (the relativity
+    tooling) with exactly the columns the charts and the editor already use.
+    """
+    if cfg.type == "interaction":
+        raise ValueError("variable_frame is for main effects; interactions differ")
+    numeric = cfg.type in ("numeric", "linear")
+    dtype = pl.Float64 if numeric else pl.Utf8
+    cast = float if numeric else str
+    froms = [None if r.from_ is None else cast(r.from_) for r in cfg.table]
+    tos = [None if r.to_ is None else cast(r.to_) for r in cfg.table]
+
+    columns: dict[str, Any] = {
+        "from": pl.Series(froms, dtype=dtype),
+        "to": pl.Series(tos, dtype=dtype),
+        "label": [level_label(r, cfg.other_label) for r in cfg.table],
+    }
+    # ``fitted`` is the pre-adjustment value of each row (the first snapshot).
+    if fitted is not None and len(fitted) == len(cfg.table):
+        columns["fitted"] = pl.Series(
+            [float(r.relativity) for r in fitted], dtype=pl.Float64
+        )
+    columns["relativity"] = pl.Series(
+        [float(r.relativity) for r in cfg.table], dtype=pl.Float64
+    )
+    columns["exposure"] = pl.Series(
+        [float(r.exposure) for r in cfg.table], dtype=pl.Float64
+    )
+    if cfg.type == "linear":
+        columns["slope"] = pl.Series(
+            [float(r.slope) for r in cfg.table], dtype=pl.Float64
+        )
+        columns["relativity_to"] = pl.Series(
+            [float(r.relativity_to) for r in cfg.table], dtype=pl.Float64
+        )
+        # the row whose lower edge is x_base: the band starting there, or the
+        # open "≥ hi" row when x_base is the upper clamp (a one-band term whose
+        # exposure sits at the top of the range); from_rate_tables recovers
+        # x_base from it
+        columns["is_base"] = [
+            cfg.x_base is not None
+            and r.from_ is not None
+            and float(r.from_) == float(cfg.x_base)
+            for r in cfg.table
+        ]
+    return pl.DataFrame(columns)
+
+
+def _interaction_frame(rm: RateModel, var: str, cfg) -> pl.DataFrame:
+    """Long table of an interaction: parent edges, labels, exposure,
+    [fitted], relativity — one row per cell."""
+    a, b = cfg.parents
+    dt_a = pl.Float64 if rm.variables[a].type in ("numeric", "linear") else pl.Utf8
+    dt_b = pl.Float64 if rm.variables[b].type in ("numeric", "linear") else pl.Utf8
+    rows: list[CellRow] = cfg.table
+    others = (rm.variables[a].other_label, rm.variables[b].other_label)
+    columns: dict[str, Any] = {
+        "from_a": pl.Series([r.from_a for r in rows], dtype=dt_a),
+        "to_a": pl.Series([r.to_a for r in rows], dtype=dt_a),
+        "from_b": pl.Series([r.from_b for r in rows], dtype=dt_b),
+        "to_b": pl.Series([r.to_b for r in rows], dtype=dt_b),
+        "label": [level_label(r, others) for r in rows],
+        "exposure": pl.Series([float(r.exposure) for r in rows], dtype=pl.Float64),
+    }
+    base = rm.snapshots[0].relativities.get(var) if rm.snapshots else None
+    if base is not None and len(base) == len(rows):
+        columns["fitted"] = pl.Series(
+            [float(r.relativity) for r in base], dtype=pl.Float64
+        )
+    columns["relativity"] = pl.Series(
+        [float(r.relativity) for r in rows], dtype=pl.Float64
+    )
+    return pl.DataFrame(columns)
+
+
+def interaction_matrices(
+    rm: RateModel, var: str
+) -> tuple[list[str], list[str], list[list[float]], list[list[float]]]:
+    """``(row_labels, col_labels, relativity_matrix, exposure_matrix)`` of an
+    interaction, in the parents' table order."""
+    cfg = rm.variables[var]
+    if cfg.parents is None:
+        raise ValueError(f"Interaction {var!r} has no parents recorded")
+    a, b = cfg.parents
+    rows_a = [
+        level_label(r, rm.variables[a].other_label) for r in rm.variables[a].table
+    ]
+    rows_b = [
+        level_label(r, rm.variables[b].other_label) for r in rm.variables[b].table
+    ]
+    ka = {(r.from_, r.to_): i for i, r in enumerate(rm.variables[a].table)}
+    kb = {(r.from_, r.to_): i for i, r in enumerate(rm.variables[b].table)}
+    rel = [[1.0] * len(rows_b) for _ in rows_a]
+    exp = [[0.0] * len(rows_b) for _ in rows_a]
+    for r in cfg.table:
+        i, j = ka[(r.from_a, r.to_a)], kb[(r.from_b, r.to_b)]
+        rel[i][j] = float(r.relativity)
+        exp[i][j] = float(r.exposure)
+    return rows_a, rows_b, rel, exp
+
+
+def _write_matrix_sheet(
+    wb, name: str, a: str, b: str, rows_a, rows_b, rel, exp, bold
+) -> None:
+    """Relativity matrix and exposure matrix side by side (two blocks)."""
+    ws = wb.add_worksheet(name)
+    ws.write(0, 0, f"{a} (rows) × {b} (columns) — relativity", bold)
+    ws.write_row(1, 1, rows_b, bold)
+    for i, lab in enumerate(rows_a):
+        ws.write(2 + i, 0, lab, bold)
+        ws.write_row(2 + i, 1, rel[i])
+    gap = len(rows_b) + 3
+    ws.write(0, gap, f"{a} (rows) × {b} (columns) — training exposure", bold)
+    ws.write_row(1, gap + 1, rows_b, bold)
+    for i, lab in enumerate(rows_a):
+        ws.write(2 + i, gap, lab, bold)
+        ws.write_row(2 + i, gap + 1, exp[i])
+    ws.set_column(0, 0, 22)
+    ws.set_column(gap, gap, 22)
+    ws.freeze_panes(2, 1)
 
 
 def _cell(value: Any) -> Any:
@@ -82,12 +220,16 @@ def write_rate_tables_xlsx(
     summary: Mapping[str, Any] | None = None,
     coef_table: pl.DataFrame | None = None,
     index_sheet: bool = True,
+    matrices: Mapping[str, tuple] | None = None,
 ) -> Path:
     """Write ``tables`` to an ``.xlsx`` workbook, one worksheet per table.
 
     Optional leading sheets: ``Summary`` (key/value pairs from ``summary``),
     ``Index`` (sheet name -> variable -> row count, useful when names were
-    truncated) and ``Coefficients``. Returns the path written.
+    truncated) and ``Coefficients``. ``matrices`` maps an interaction name to
+    ``(a, b, row_labels, col_labels, relativity_matrix, exposure_matrix)`` and
+    adds one ``"<name> (matrix)"`` sheet per interaction with the relativity
+    and exposure grids side by side. Returns the path written.
     """
     import xlsxwriter
 
@@ -120,6 +262,11 @@ def write_rate_tables_xlsx(
             name = sheet_name(str(key), used)
             frame.write_excel(workbook=wb, worksheet=name, autofit=True)
             index_rows.append((name, str(key), frame.height))
+            if matrices and key in matrices:
+                a, b, rows_a, rows_b, rel, exp = matrices[key]
+                mname = suffixed_sheet_name(str(key), " (matrix)", used)
+                _write_matrix_sheet(wb, mname, a, b, rows_a, rows_b, rel, exp, bold)
+                index_rows.append((mname, f"{key} (matrix)", len(rows_a)))
 
         if index_ws is not None:
             index_ws.write_row(0, 0, ["sheet", "variable", "rows"], bold)

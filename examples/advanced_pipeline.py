@@ -8,6 +8,8 @@ Run as a script:
     python examples/advanced_pipeline.py
 """
 
+from pathlib import Path
+
 import numpy as np
 import polars as pl
 
@@ -16,9 +18,14 @@ from easy_glm.engine import RateModel
 
 # ---------------------------------------------------------------------------
 # 0. Load data & split
+#
+# The 50,000-row checked-in fixture (a sample of the public French motor
+# third-party liability dataset) keeps this offline; swap in
+# easy_glm.load_external_dataframe() for the full ~678k-row dataset.
 # ---------------------------------------------------------------------------
 
-df = easy_glm.load_external_dataframe()
+DATA = Path(__file__).resolve().parents[1] / "tests/fixtures/french_motor_50k.parquet"
+df = pl.read_parquet(DATA)
 rng = np.random.default_rng(42)
 df = df.with_columns(pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64))
 train_df = df.filter(pl.col("traintest") == 1)
@@ -91,19 +98,26 @@ print("\nmax |RateModel / GLM - 1| on holdout:", np.abs(rm_pred / glm_pred - 1).
 # → ~1e-16
 
 # ---------------------------------------------------------------------------
-# 5. A/E on holdout, per variable
+# 5. A/E on holdout, per variable — easy_glm.workflow.ae_by_variable works on
+#    plain actual/expected/weight arrays, so it needs no RateModel at all;
+#    it groups by the same bands the rate table uses.
 # ---------------------------------------------------------------------------
 
-holdout_freq = holdout.with_columns(
-    (pl.col("ClaimNb") / pl.col("Exposure")).alias("ClaimNb")
-)
-overall = holdout["ClaimNb"].sum() / rm.predict(holdout).sum()
+from easy_glm.workflow import ae_by_variable  # noqa: E402
+
+actual_total = holdout["ClaimNb"].to_numpy()
+expected_total = rm.predict(holdout)  # already at total (per-policy) scale
+weight = holdout["Exposure"].to_numpy()
+
+overall = actual_total.sum() / expected_total.sum()
 print(f"\nOverall holdout A/E: {overall:.4f}")
 for var in PREDICTORS:
-    buckets = rm.compute_ae_for_variable(holdout_freq, var)["subsets"]["all"]
-    actual = sum(b["actual"] * b["exposure"] for b in buckets)
-    expected = sum(b["expected"] * b["exposure"] for b in buckets)
-    print(f"  {var:12s} A/E = {actual / expected:.4f}  ({len(buckets)} rows)")
+    # Summing every bin's actual/expected always reproduces the overall A/E
+    # (they partition the same rows); what is informative is the *spread*
+    # across bins — a well-calibrated factor keeps every bin's A/E near 1.
+    table = ae_by_variable(holdout, var, actual_total, expected_total, weight)
+    lo, hi = table["ae"].min(), table["ae"].max()
+    print(f"  {var:12s} A/E ranges {lo:.3f}-{hi:.3f} across {table.height} bins")
 
 # ---------------------------------------------------------------------------
 # 6. Optional charts, save & reload

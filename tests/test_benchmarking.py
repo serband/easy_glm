@@ -2,6 +2,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from easy_glm import DesignSpec, fit_glm
 from easy_glm.benchmarking.data_generators import (
     generate_all_datasets,
     generate_binomial_dataset,
@@ -18,7 +19,6 @@ from easy_glm.benchmarking.metrics import (
     poisson_deviance,
     rmse,
 )
-from easy_glm.core.model import fit_lasso_glm
 
 
 class TestDataGenerators:
@@ -184,85 +184,62 @@ class TestMetrics:
         assert set(result.keys()) == {"deviance", "rmse", "mae"}
 
 
-class TestFitLassoGlmNewFamilies:
+class TestFitGlmFamilies:
+    @staticmethod
+    def _spec_and_train(df):
+        train = df.filter(pl.col("traintest") == 1)
+        numeric_cols = [c for c in df.columns if c.startswith("num_")]
+        return DesignSpec.from_data(train, numeric_cols), train
+
     def test_gaussian_family_fits(self):
         df = generate_gaussian_dataset(n_rows=500, seed=42)
-        numeric_cols = [
-            c for c in df.columns if c.startswith("num_") and c in df.columns
-        ]
-        subset = df.select(numeric_cols + ["Response", "Exposure", "traintest"])
-        model = fit_lasso_glm(
-            dataframe=subset,
-            target="Response",
-            model_type="Gaussian",
-            train_test_col="traintest",
-            use_cv=False,
+        spec, train = self._spec_and_train(df)
+        # synthetic gaussian responses are negative in places: identity link
+        fit = fit_glm(
+            train, spec, "Response", family="gaussian", alpha=0.01, link="identity"
         )
-        assert model.coef_ is not None
+        assert fit.family == "normal" and fit.link == "identity"
+        assert np.all(np.isfinite(fit.predict(train.head(5))))
 
     def test_binomial_family_fits(self):
         df = generate_binomial_dataset(n_rows=500, seed=42)
-        numeric_cols = [
-            c for c in df.columns if c.startswith("num_") and c in df.columns
-        ]
-        subset = df.select(numeric_cols + ["Response", "Exposure", "traintest"])
-        model = fit_lasso_glm(
-            dataframe=subset,
-            target="Response",
-            model_type="Binomial",
-            train_test_col="traintest",
-            use_cv=False,
-        )
-        assert model.coef_ is not None
+        spec, train = self._spec_and_train(df)
+        fit = fit_glm(train, spec, "Response", family="binomial", alpha=0.01)
+        assert fit.link == "logit"
+        p = fit.predict(train.head(20))
+        assert np.all((p > 0) & (p < 1))
 
     def test_gaussian_with_cv_fits(self):
         df = generate_gaussian_dataset(n_rows=500, seed=42)
-        numeric_cols = [
-            c for c in df.columns if c.startswith("num_") and c in df.columns
-        ]
-        subset = df.select(numeric_cols + ["Response", "Exposure", "traintest"])
-        model = fit_lasso_glm(
-            dataframe=subset,
-            target="Response",
-            model_type="Gaussian",
-            train_test_col="traintest",
-            use_cv=True,
-            cv_params={"alphas": [0.01, 0.1, 1.0]},
+        spec, train = self._spec_and_train(df)
+        fit = fit_glm(
+            train,
+            spec,
+            "Response",
+            family="gaussian",
+            cv=2,
+            n_alphas=3,
+            link="identity",
         )
-        assert model.coef_ is not None
+        assert hasattr(fit.model, "alpha_")
 
     def test_invalid_gaussian_target_rejected(self):
-        df = pl.DataFrame(
-            {
-                "x": [1.0, 2.0],
-                "y": [np.nan, 1.0],
-                "traintest": [1, 1],
-            }
-        )
-        with pytest.raises(ValueError, match="Gaussian"):
-            fit_lasso_glm(df, "y", "traintest", "Gaussian", use_cv=False)
+        df = pl.DataFrame({"x": [1.0, 2.0, 3.0], "y": [np.nan, 1.0, 2.0]})
+        spec = DesignSpec.from_data(df, ["x"])
+        with pytest.raises(ValueError, match="NaN"):
+            fit_glm(df, spec, "y", family="gaussian", alpha=0.1, link="identity")
 
     def test_invalid_binomial_target_rejected(self):
-        df = pl.DataFrame(
-            {
-                "x": [1.0, 2.0],
-                "y": [-0.5, 0.8],
-                "traintest": [1, 1],
-            }
-        )
+        df = pl.DataFrame({"x": [1.0, 2.0, 3.0], "y": [-0.5, 0.8, 0.2]})
+        spec = DesignSpec.from_data(df, ["x"])
         with pytest.raises(ValueError, match="Binomial"):
-            fit_lasso_glm(df, "y", "traintest", "Binomial", use_cv=False)
+            fit_glm(df, spec, "y", family="binomial", alpha=0.1)
 
     def test_invalid_family_rejected(self):
-        df = pl.DataFrame(
-            {
-                "x": [1.0, 2.0],
-                "y": [1.0, 2.0],
-                "traintest": [1, 1],
-            }
-        )
-        with pytest.raises(ValueError, match="must be"):
-            fit_lasso_glm(df, "y", "traintest", "InvalidFamily", use_cv=False)
+        df = pl.DataFrame({"x": [1.0, 2.0, 3.0], "y": [1.0, 2.0, 3.0]})
+        spec = DesignSpec.from_data(df, ["x"])
+        with pytest.raises(ValueError, match="Unknown family"):
+            fit_glm(df, spec, "y", family="InvalidFamily", alpha=0.1)
 
 
 class TestBenchmarkRunner:
@@ -288,6 +265,16 @@ class TestBenchmarkRunner:
         methods = result["Method"].unique().to_list()
         assert "statsmodels" in methods
         assert "catboost" in methods
+        # C2 acceptance: easy_glm rows are produced for all four families
+        ours = result.filter(pl.col("Method").str.starts_with("easy_glm"))
+        assert set(ours["Dataset"].to_list()) == {
+            "poisson",
+            "gamma",
+            "gaussian",
+            "binomial",
+        }
+        assert ours["Deviance"].null_count() == 0, ours
+        assert ours.height == 8
 
     def test_benchmark_metrics_are_positive(self):
         from easy_glm.benchmarking.benchmark import run_benchmarks
