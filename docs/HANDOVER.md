@@ -22,8 +22,8 @@ file). They do **not** review code. Never ask them coding questions.
 3. After every GUI piece, a **breaker session** tries to crash the workbench or
    lose the user's work ("do stupid shit"); every finding gets a reproducing
    test before the fix.
-4. **No references to the owner's private models** (any "bike" wording) anywhere
-   in the repo. There are only "variables that go into a GLM".
+4. **No references to the owner's private models or their variable names**
+   anywhere in the repo. There are only "variables that go into a GLM".
 5. **Every numeric variable is a step (banded) factor by default** unless the
    user explicitly chooses linear or continuous.
 6. **README examples must all run**, verified by a test (`tests/test_readme.py`
