@@ -48,6 +48,7 @@ from .project import (
     Split,
     VariableDesign,
 )
+from .report import to_report_html
 from .run import (
     AdjustmentError,
     ModelRun,
@@ -108,4 +109,5 @@ __all__ = [
     "alpha_path",
     "model_metrics",
     "to_script",
+    "to_report_html",
 ]
