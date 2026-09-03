@@ -36,14 +36,21 @@ import polars as pl
 import pytest
 import tabmat as tm
 
-from easy_glm import DesignSpec, fit_glm, fit_two_stage, to_rate_model
+from easy_glm import (
+    DesignSpec,
+    base_rate,
+    fit_glm,
+    fit_two_stage,
+    rate_tables,
+    to_rate_model,
+)
 from easy_glm.core.design import (
     SPARSE_ROW_THRESHOLD,
     _check_step_blocks_first,
     design_bytes,
     quantile_knots,
 )
-from easy_glm.core.fit import aggregate_rows, penalty_weights
+from easy_glm.core.fit import TwoStageFit, aggregate_rows, penalty_weights
 from easy_glm.core.stepmatrix import StepMatrix, install_glum_shim
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -998,6 +1005,178 @@ class TestTwoStageBehaviourOnTheCompactPath:
         # ... and stage 2 still ran on its own columns, unpenalised by that P1
         assert with_p1.stage2.spec.n_features == plain.stage2.spec.n_features
         assert (with_p1.stage2.coef != 0).sum() > 0
+
+
+# --------------------------------------------------------------------------
+# 9. three separately-tested pieces, composed: the compact design (G), a
+#    rate-change offset with per-variable penalty weights (E1/E2) and a
+#    two-stage interaction fit (A2)
+# --------------------------------------------------------------------------
+def rate_change_weighted_spec(data: pl.DataFrame) -> DesignSpec:
+    """A main-effects spec with an unpenalised categorical (``VehBrand``), a
+    doubled-penalty step term (``BonusMalus``) and a ``DrivAge x Region``
+    interaction — three pieces that each have their own tests elsewhere and
+    must still compose correctly here."""
+    return DesignSpec.from_data(
+        data,
+        ["DrivAge", "VehAge", "BonusMalus", "Region", "VehGas", "VehBrand"],
+        knots={
+            "DrivAge": quantile_knots(data["DrivAge"], 8),
+            "VehAge": quantile_knots(data["VehAge"], 6),
+            "BonusMalus": quantile_knots(data["BonusMalus"], 6),
+        },
+        penalty_weight={"VehBrand": 0.0, "BonusMalus": 2.0},
+        interactions=[("DrivAge", "Region")],
+        min_cell_exposure=0.004,
+    )
+
+
+class TestRateChangeWithWeightsOnTheCompactPath:
+    """A Poisson rate-change model — offset on a derived log-premium column,
+    per-variable penalty weights on the mains and a two-stage interaction —
+    fitted on the compact ``SplitMatrix`` design and checked against the
+    dense one on every axis the individual pieces care about: predictions,
+    the non-zero coefficient set, an unpenalised categorical's levels, the
+    ``RateModel`` round trip, the mains-are-unmoved-by-the-interaction
+    guarantee, and the ``P1`` penalty vector itself."""
+
+    FIT_KW = {
+        "family": "poisson",
+        "weight_col": "Exposure",
+        "divide_target_by_weight": True,
+        "offset_col": "logprem",
+        "alpha": 0.001,
+    }
+
+    @staticmethod
+    def _data(book: pl.DataFrame) -> pl.DataFrame:
+        return book.with_columns(pl.col("Exposure").log().alias("logprem"))
+
+    def test_dense_and_compact_agree_on_every_axis(self, book):
+        data = self._data(book)
+        spec = rate_change_weighted_spec(data)
+        dense = fit_two_stage(data, spec, "ClaimNb", sparse=False, **self.FIT_KW)
+        compact = fit_two_stage(data, spec, "ClaimNb", sparse=True, **self.FIT_KW)
+        assert isinstance(dense, TwoStageFit) and isinstance(compact, TwoStageFit)
+        score = scoring_frame(data)
+
+        # predictions to 1e-10 relative, identical non-zero coefficient set
+        assert_same_fit(dense, compact, score, label="rate_change_with_weights")
+
+        # the unpenalised categorical (VehBrand) keeps every one of its
+        # actual levels in both representations. The slice's last column is
+        # the "Other" bucket, which has zero training rows for this variable
+        # (every VehBrand value in the fixture is a kept level) and so reads
+        # a trivial 0.0 regardless of penalty weight; that column is excluded
+        # here, the ten named levels are not.
+        vb_slice = spec.slices()["VehBrand"]
+        assert vb_slice.stop - vb_slice.start == 11
+        vb_levels = slice(vb_slice.start, vb_slice.stop - 1)
+        assert np.all(dense.coef[vb_levels] != 0), dense.coef[vb_slice]
+        assert np.all(compact.coef[vb_levels] != 0), compact.coef[vb_slice]
+
+        # RateModel.predict == fit.predict on the compact fit, offset and all
+        model = to_rate_model(compact, exposure_col="Exposure")
+        np.testing.assert_allclose(
+            model.predict(score, exposure_col=None),
+            compact.predict(score),
+            rtol=1e-10,
+            atol=0,
+        )
+
+        # the main tables and the base rate of the compact fit are unmoved by
+        # adding the interaction (piece A2's promise), on the compact path
+        compact_mains_only = fit_glm(
+            data, spec.main_effects_spec(), "ClaimNb", sparse=True, **self.FIT_KW
+        )
+        with_interaction = rate_tables(compact)
+        without_interaction = rate_tables(compact_mains_only)
+        for var in ("DrivAge", "VehAge", "BonusMalus", "Region", "VehGas", "VehBrand"):
+            np.testing.assert_allclose(
+                with_interaction[var]["relativity"].to_numpy(),
+                without_interaction[var]["relativity"].to_numpy(),
+                rtol=0,
+                atol=1e-12,
+                err_msg=var,
+            )
+        assert base_rate(compact) == pytest.approx(
+            base_rate(compact_mains_only), abs=1e-12
+        )
+
+        # the P1 vector penalty_weights builds for the compact design equals
+        # the dense one, and both obey the merged rule stated in
+        # penalty_weights' docstring: interaction cells get 0.5 / sd (this
+        # interaction's own penalty_weight is the default 1.0), and a
+        # variable's penalty_weight multiplies whatever the term's columns
+        # already got — 0.0 zeroes VehBrand outright, 2.0 doubles BonusMalus'.
+        w = data["Exposure"].to_numpy()
+        dense_design = spec.build(data, sparse=False)
+        compact_design = spec.build(data, sparse=True)
+        p1_dense = penalty_weights(spec, dense_design, w, scale_predictors=True)
+        p1_compact = penalty_weights(spec, compact_design, w, scale_predictors=True)
+        assert p1_dense is not None and p1_compact is not None
+        np.testing.assert_allclose(p1_compact, p1_dense, rtol=1e-10, atol=1e-12)
+
+        assert np.all(p1_dense[vb_slice] == 0.0)
+
+        cell_var = spec.interactions[0].variable
+        cell_slice = spec.slices()[cell_var]
+        wn = w / w.sum()
+        cols = dense_design[:, cell_slice]
+        mean = wn @ cols
+        variance = wn @ (cols**2) - mean**2
+        sd = np.sqrt(np.clip(variance, 0.0, None))
+        sd = np.where(sd > 0, sd, 0.5)
+        expected_cell_p1 = 0.5 / sd  # this interaction's penalty_weight is 1.0
+        np.testing.assert_allclose(
+            p1_dense[cell_slice], expected_cell_p1, rtol=1e-10, atol=0
+        )
+        np.testing.assert_allclose(
+            p1_compact[cell_slice], expected_cell_p1, rtol=1e-10, atol=0
+        )
+
+        baseline_spec = DesignSpec.from_data(
+            data,
+            ["DrivAge", "VehAge", "BonusMalus", "Region", "VehGas", "VehBrand"],
+            knots={
+                "DrivAge": quantile_knots(data["DrivAge"], 8),
+                "VehAge": quantile_knots(data["VehAge"], 6),
+                "BonusMalus": quantile_knots(data["BonusMalus"], 6),
+            },
+            interactions=[("DrivAge", "Region")],
+            min_cell_exposure=0.004,
+        )
+        baseline_p1 = penalty_weights(
+            baseline_spec,
+            baseline_spec.build(data, sparse=False),
+            w,
+            scale_predictors=True,
+        )
+        bonus_slice = spec.slices()["BonusMalus"]
+        bonus_slice_baseline = baseline_spec.slices()["BonusMalus"]
+        np.testing.assert_allclose(
+            p1_dense[bonus_slice],
+            2.0 * baseline_p1[bonus_slice_baseline],
+            rtol=1e-10,
+            atol=0,
+        )
+
+    def test_a_tweedie_variant_also_agrees(self, book):
+        """The same composition, under a different family/link pair
+        (Tweedie, power 1.5): only the prediction-equivalence axis is
+        re-checked here, since the other axes above do not vary by family."""
+        data = self._data(book)
+        spec = rate_change_weighted_spec(data)
+        kwargs = {**self.FIT_KW, "family": "tweedie", "tweedie_power": 1.5}
+        dense = fit_two_stage(data, spec, "ClaimNb", sparse=False, **kwargs)
+        compact = fit_two_stage(data, spec, "ClaimNb", sparse=True, **kwargs)
+        assert isinstance(dense, TwoStageFit) and isinstance(compact, TwoStageFit)
+        assert_same_fit(
+            dense,
+            compact,
+            scoring_frame(data),
+            label="tweedie_rate_change_with_weights",
+        )
 
 
 def test_build_sparse_on_zero_rows_with_categoricals_and_cells():
