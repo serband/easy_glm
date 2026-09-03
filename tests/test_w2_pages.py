@@ -538,11 +538,17 @@ def test_e2e_folder_skips_cleanly_without_playwright_or_flag():
 
 
 def test_e2e_server_python_is_absolute(monkeypatch):
-    import importlib
+    # Load the e2e conftest by path: ``tests`` is not a package, so a module
+    # import only works when the repo root happens to be on sys.path.
+    import importlib.util
+    from pathlib import Path
 
+    path = Path(__file__).parent / "e2e" / "conftest.py"
+    spec = importlib.util.spec_from_file_location("e2e_conftest_for_test", path)
+    conftest = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(conftest)
     monkeypatch.setenv("EASY_GLM_SERVER_PYTHON", ".venv/bin/python")
-    conftest = importlib.import_module("tests.e2e.conftest")
-    assert __import__("pathlib").Path(conftest._server_python()).is_absolute()
+    assert Path(conftest._server_python()).is_absolute()
     monkeypatch.setenv("EASY_GLM_SERVER_PYTHON", "/usr/bin/env")
     assert conftest._server_python() == "/usr/bin/env"
 
