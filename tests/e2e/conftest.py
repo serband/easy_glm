@@ -231,3 +231,13 @@ def browser():
         b = p.chromium.launch()
         yield b
         b.close()
+
+
+@pytest.fixture(scope="module")
+def breakit_server(e2e_dir, data_path):
+    """A plain project for the hostile-tester run (no offset, fixed alpha)."""
+    path = _project_file(e2e_dir, "breakit", data_path, offset=False, cv=False)
+    srv = Server(path, free_port())
+    yield srv, path
+    log = srv.stop()
+    assert "Traceback" not in log, log[-3000:]
