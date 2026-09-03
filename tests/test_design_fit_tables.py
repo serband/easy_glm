@@ -279,7 +279,19 @@ class TestRateTables:
         tables = rate_tables(fit)
         assert set(tables) == set(PREDICTORS)
         age = tables["DrivAge"]
-        assert age.columns == ["from", "to", "label", "coef", "relativity", "is_base"]
+        assert age.columns == [
+            "from",
+            "to",
+            "label",
+            "coef",
+            "relativity",
+            "exposure",
+            "is_base",
+        ]
+        # D5: every row carries the training exposure (the weight) that fell in it
+        train_exposure = messy_data.filter(pl.col("traintest") == 1)["Exposure"].sum()
+        assert age["exposure"].sum() == pytest.approx(train_exposure)
+        assert tables["Region"]["exposure"].sum() == pytest.approx(train_exposure)
         assert age.height == len(fit.spec["DrivAge"].knots) + 2  # bins + null row
         assert age["from"].dtype == pl.Float64
         assert age["label"][0].startswith("<") and age["label"][-1] == "Other / Unknown"
@@ -498,7 +510,14 @@ def test_to_excel_writes_summary_coefficients_and_one_sheet_per_variable(
 
     tables = rate_model_tables(rm)
     age = tables["DrivAge"]
-    assert age.columns == ["from", "to", "label", "fitted", "relativity"]
+    assert age.columns == [
+        "from",
+        "to",
+        "label",
+        "fitted",
+        "relativity",
+        "exposure",
+    ]
     np.testing.assert_allclose(age["fitted"].to_numpy(), age["relativity"].to_numpy())
     assert age.height == len(fit.spec["DrivAge"].knots) + 2
     assert age["from"].dtype == pl.Float64

@@ -49,6 +49,7 @@ instead of vanishing (:func:`interrupted_fits`).
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -57,6 +58,7 @@ import re
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -65,13 +67,16 @@ import polars as pl
 import streamlit as st
 
 from easy_glm.workflow import (
+    Adjustment,
     AdjustmentError,
     ModelRun,
     Project,
     build_design,
+    expected_claims,
     leakage_report,
     load_source,
     prepare,
+    rate_model_for,
     rebuild_rate_model,
     run_model,
     train_holdout,
@@ -97,7 +102,13 @@ _SAMPLE_KEYS = ("sample_rows", "sample_seed")
 #: A run pickled by an earlier build holds a joint fit whose main tables include
 #: part of the interaction — the same shape, a different meaning — so those runs
 #: are a cache miss and are refitted.
-PERSIST_FORMAT = 5
+#: 6 — D5 merged with A2: both pieces claimed 5 while they were on their own
+#: branches, so the merged tree moves on. D5's own reason: rate-table rows carry
+#: the training exposure that fell in them (``FromToRow.exposure`` /
+#: ``BandRow.exposure``, from the new ``GLMFit.row_exposure``) — an older pickle
+#: has rows without the attribute at all, and the relativity tooling weights
+#: bands by it.
+PERSIST_FORMAT = 6
 #: A marker left by *another* session is only removed once it is this old:
 #: younger than this it may belong to a fit that is still running in another
 #: tab, and taking its marker away would cost that tab its own warning.
@@ -170,6 +181,7 @@ def model_hash(project: Project, model: str) -> str:
     d = project.to_dict()
     cfg = dict(d["models"][model])
     cfg.pop("adjustments", None)  # applied post-fit, never require a refit
+    cfg.pop("snapshots", None)  # named copies of the adjustments; same reason
     cfg.pop("base_rate_override", None)
     cfg.pop("notes", None)
     design = {v: d["design"]["variables"].get(v) for v in cfg["predictors"]}
@@ -1037,6 +1049,132 @@ def refresh_adjustments(model: str) -> ModelRun | None:
             _drop_refused_adjustment(cfg, exc)
     persist_run(model, run)
     return run
+
+
+def fitted_expected_claims(model: str) -> float | None:
+    """Total expected claims of the model **as fitted** (no adjustments, no
+    base-rate override) on the training rows.
+
+    The reference every rate-table edit is measured against, and the target the
+    *Rebalance base rate* action puts the book back to. Cached on the fit's
+    hash: it changes only when the model is refitted.
+    """
+    run = get_run(model)
+    df = prepared_frame()
+    p = project()
+    if run is None or df is None:
+        return None
+    key = model_hash(p, model)
+    # one entry per model, each stamped with the fit it belongs to: a refit (or
+    # another project, whose data is part of the hash) is a miss, never a stale
+    # reference level
+    cache: dict[str, tuple[str, float]] = st.session_state.setdefault(
+        "_fitted_claims", {}
+    )
+    hit = cache.get(model)
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    train, _holdout = train_holdout(df, p.data.split)
+    if train.is_empty():
+        return None
+    fitted = rate_model_for(p, run, [], base_rate_override=None)
+    total = expected_claims(fitted, train, p.models[model])
+    cache[model] = (key, total)
+    return total
+
+
+# --------------------------------------------------------------------------
+# undo / redo of the rate-table edits
+# --------------------------------------------------------------------------
+#: session key of the per-model undo stacks. Not an app-state key, so
+#: :func:`set_project` drops it: another project's edits must never be undone
+#: into this one.
+UNDO_KEY = "undo_stacks"
+#: how many steps back each model remembers (per browser session; the stack is
+#: not part of the project file)
+UNDO_LIMIT = 50
+
+
+@dataclass(frozen=True)
+class EditStep:
+    """One undoable state of a model's rate tables.
+
+    The tables are the fit plus **two** post-fit things: the manual adjustments
+    and the base-rate override. ``rebuild_rate_model`` applies both, so an undo
+    step that carried only the adjustments would put the bands back and leave
+    someone else's base rate in force — a premium error with nothing on screen
+    to explain it.
+    """
+
+    adjustments: list[Adjustment]
+    base_rate_override: float | None
+
+
+def _stacks(model: str) -> dict[str, list[EditStep]]:
+    init_state()
+    store = st.session_state.setdefault(UNDO_KEY, {})
+    return store.setdefault(model, {"past": [], "future": []})
+
+
+def edit_state(model: str) -> EditStep | None:
+    """The model's current undoable state, deep-copied — call it *before*
+    changing anything and hand the result to :func:`record_undo`."""
+    cfg = project().models.get(model)
+    if cfg is None:
+        return None
+    return EditStep(copy.deepcopy(cfg.adjustments), cfg.base_rate_override)
+
+
+def record_undo(model: str, previous: EditStep | None) -> None:
+    """Remember ``previous`` — the state before the change the caller is about
+    to make (or has just made) — as one undo step.
+
+    A step is the whole state, not a single edit, so undo restores exactly the
+    tables that were there. Recording a new step drops the redo history, as
+    everywhere else.
+    """
+    if previous is None:
+        return
+    st_ = _stacks(model)
+    st_["past"].append(previous)
+    del st_["past"][:-UNDO_LIMIT]
+    st_["future"].clear()
+
+
+def can_undo(model: str) -> bool:
+    return bool(_stacks(model)["past"])
+
+
+def can_redo(model: str) -> bool:
+    return bool(_stacks(model)["future"])
+
+
+def undo(model: str) -> bool:
+    """Put the previous set of adjustments back (autosave + rebuild included).
+    Returns False when there is nothing to undo."""
+    return _move(model, "past", "future")
+
+
+def redo(model: str) -> bool:
+    """Re-apply the set of adjustments the last undo took away."""
+    return _move(model, "future", "past")
+
+
+def _move(model: str, take: str, keep: str) -> bool:
+    st_ = _stacks(model)
+    cfg = project().models.get(model)
+    if not st_[take] or cfg is None:
+        return False
+    current = edit_state(model)
+    if current is not None:
+        st_[keep].append(current)
+        del st_[keep][:-UNDO_LIMIT]
+    step = st_[take].pop()
+    cfg.adjustments = copy.deepcopy(step.adjustments)
+    cfg.base_rate_override = step.base_rate_override
+    touch()
+    refresh_adjustments(model)
+    return True
 
 
 def current_runs() -> dict[str, ModelRun]:

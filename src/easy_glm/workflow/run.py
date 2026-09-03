@@ -4,7 +4,7 @@ fit, compile the RateModel, apply manual adjustments, compute metrics."""
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -26,9 +26,12 @@ from easy_glm.core.fit import GLMFit, TwoStageFit, fit_glm, fit_two_stage
 from easy_glm.core.tables import rate_tables, to_rate_model
 from easy_glm.engine.rate_model import RateModel
 
-from .diagnostics import model_metrics
+from .diagnostics import expected_claims, model_metrics
 from .prep import train_holdout
 from .project import Adjustment, Interaction, ModelConfig, Project, VariableDesign
+
+#: sentinel for "keep the model config's own base-rate override"
+_KEEP: Any = object()
 
 
 # --------------------------------------------------------------------------
@@ -276,9 +279,13 @@ def apply_adjustments(rm: RateModel, cfg: ModelConfig) -> None:
     for adj in cfg.adjustments:
         config = rm.variables.get(adj.variable)
         if config is None:
-            raise KeyError(
+            # an AdjustmentError, not a KeyError: the caller's job is to drop it
+            # and say so (a predictor left the model, or a snapshot is older
+            # than the design), never to show a traceback
+            raise AdjustmentError(
+                adj,
                 f"Adjustment refers to {adj.variable!r}, which is not a variable of "
-                f"the model (known: {list(rm.variables)})"
+                f"the model (known: {list(rm.variables)})",
             )
         is_cell = config.type == "interaction"
         if is_cell != bool(adj.cell):
@@ -436,20 +443,83 @@ def exposure_for(project: Project, cfg: ModelConfig) -> str | None:
     return project.exposure or (cfg.weight if cfg.divide_target_by_weight else None)
 
 
+def rate_model_for(
+    project: Project,
+    run: ModelRun,
+    adjustments: list[Adjustment] | None = None,
+    *,
+    base_rate_override: float | None = _KEEP,
+) -> RateModel:
+    """The RateModel the run's fit gives with ``adjustments`` applied — a fresh
+    model, with nothing on the run touched and no refit.
+
+    ``adjustments`` defaults to the model's current ones; pass a snapshot's list
+    to see (or compare against) the tables as they stood then. This is the one
+    place that turns "a fit plus a list of adjustments" into tables, so the
+    editor, a snapshot and a snapshot diff can never disagree about what a set
+    of adjustments means.
+    """
+    cfg = project.models[run.name]
+    rm = to_rate_model(
+        run.fit,
+        base=cfg.base,  # type: ignore[arg-type]
+        base_rate_override=(
+            cfg.base_rate_override
+            if base_rate_override is _KEEP
+            else base_rate_override
+        ),
+        exposure_col=exposure_for(project, cfg),
+        train_test_col=project.data.split.column,
+        model_type=cfg.family,
+    )
+    if adjustments is None:
+        apply_adjustments(rm, cfg)
+    else:
+        apply_adjustments(rm, replace(cfg, adjustments=list(adjustments)))
+    return rm
+
+
+def missing_variables(rm: RateModel, adjustments: list[Adjustment]) -> list[str]:
+    """Variables the adjustments name that ``rm`` does not have.
+
+    A set of adjustments that names one of these cannot be applied at all — the
+    caller (a snapshot restore, a project loaded against a changed design)
+    should say which factors are missing and leave the model alone rather than
+    apply half of them.
+    """
+    return sorted({a.variable for a in adjustments if a.variable not in rm.variables})
+
+
+def rebalance_override(
+    project: Project, run: ModelRun, df: pl.DataFrame
+) -> float | None:
+    """The base rate that puts **total expected claims back where the fitted
+    model had them** on the training rows — the off-balance correction after
+    editing rate tables.
+
+    Predictions are linear in the base rate, so this is one ratio:
+    ``base_rate x (expected claims as fitted) / (expected claims now)``. Returns
+    ``None`` when it cannot be computed (no training rows, or a model that
+    expects nothing).
+    """
+    cfg = project.models[run.name]
+    train, _holdout = train_holdout(df, project.data.split)
+    if train.is_empty():
+        return None
+    fitted = rate_model_for(project, run, [], base_rate_override=None)
+    target = expected_claims(fitted, train, cfg)
+    current = expected_claims(run.rate_model, train, cfg)
+    if not current > 0 or not target > 0:
+        return None
+    return float(run.rate_model.base_rate * target / current)
+
+
 def rebuild_rate_model(project: Project, run: ModelRun, df: pl.DataFrame) -> ModelRun:
     """Recompile the run's RateModel from its fit (no refit) — used after the
     manual adjustments or base-rate override of its model config change —
     and refresh tables and metrics in place."""
     cfg = project.models[run.name]
-    rm = to_rate_model(
-        run.fit,
-        base=cfg.base,  # type: ignore[arg-type]
-        base_rate_override=cfg.base_rate_override,
-        exposure_col=exposure_for(project, cfg),
-        train_test_col=project.data.split.column,
-        model_type=cfg.family,
-    )
-    apply_adjustments(rm, cfg)
+    rm = rate_model_for(project, run)
     train, holdout = train_holdout(df, project.data.split)
     frames = {
         k: v

@@ -15,10 +15,14 @@ import polars as pl
 from easy_glm.core.excel import rate_model_tables
 from easy_glm.engine.models import level_label
 from easy_glm.engine.rate_model import RateModel
+from easy_glm.engine.tooling import TOL as TOOL_TOL
 from easy_glm.workflow import Adjustment
 from easy_glm.workflow.project import ModelConfig
 
-TOL = 1e-9
+#: a relativity that moves by less than this has not moved — the same constant
+#: the relativity tools use to decide what they changed, so *Apply* can never
+#: offer a change the grid rules would then refuse to write
+TOL = TOOL_TOL
 
 
 def _positive(value: float) -> bool:

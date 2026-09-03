@@ -38,9 +38,19 @@ class ModelMetadata:
 
 @dataclass
 class FromToRow:
+    """One row of a step (``"numeric"``) or one-hot (``"categorical"``) table.
+
+    ``exposure`` is the training exposure (sum of weights, or the row count when
+    the fit had no weight) that fell in this bin / level — 0.0 for a table that
+    was hand-built or read back from a file that does not carry it. It is what
+    the relativity tooling weights a band by, and what tells "no data" apart
+    from "no effect" when a relativity reads 1.00.
+    """
+
     from_: float | str | None
     to_: float | str | None
     relativity: float
+    exposure: float = 0.0
 
 
 @dataclass
@@ -58,6 +68,8 @@ class BandRow:
     to_: float | None
     relativity: float
     slope: float = 0.0
+    #: training exposure that fell in this band (see :class:`FromToRow`)
+    exposure: float = 0.0
 
     def relativity_at(self, x: float) -> float:
         """Relativity at ``x`` inside this band (``x`` on the raw scale)."""

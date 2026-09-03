@@ -326,15 +326,22 @@ class TestDiagnosticsPage:
 class TestTablesPage:
     def test_interaction_and_linear_tables_render(self, workspace):
         at = _run(_script("pages_tables", workspace["project"], fit=True))
-        sel = at.selectbox(key=wk(at, "tables_var"))
-        labels = {o.split("  ")[0]: o for o in sel.options}  # display labels
+
+        def variable_selector():
+            # a fresh node per run: the page's widgets differ per variable (the
+            # Tools expander is not drawn for an interaction), and an AppTest
+            # node from an earlier run reads the value of a widget that the
+            # last run did not draw
+            return at.selectbox(key=wk(at, "tables_var"))
+
+        labels = {o.split("  ")[0]: o for o in variable_selector().options}
         assert "DrivAge×Region" in labels and "Density" in labels
         assert labels["DrivAge×Region"].endswith("(interaction)")
         assert labels["Density"].endswith("(linear)")
-        sel.set_value(labels["DrivAge×Region"]).run()
+        variable_selector().set_value(labels["DrivAge×Region"]).run()
         assert not at.exception, [e.value for e in at.exception]
         assert any("Cells multiply" in c.value for c in at.caption)
-        sel.set_value(labels["Density"]).run()
+        variable_selector().set_value(labels["Density"]).run()
         assert not at.exception
         assert any("Edit the curve" in m.value for m in at.markdown)
 

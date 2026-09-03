@@ -43,7 +43,8 @@ def _bin_rows(fit: GLMFit, variable: str) -> tuple[list[Any], np.ndarray]:
     relative to the encoder's reference (lowest bin / reference level / the
     value below the lower clamp for linear terms). Linear rows are
     :class:`BandRow` with their slope filled in and the contribution taken at
-    the band start."""
+    the band start. Every row carries the training exposure that fell in it
+    (``fit.row_exposure``; 0.0 for a fit made before it was recorded)."""
     enc = fit.spec[variable]
     coef = fit.coef[fit.spec.slices()[variable]]
     if isinstance(enc, LinearEncoder):
@@ -67,6 +68,7 @@ def _bin_rows(fit: GLMFit, variable: str) -> tuple[list[Any], np.ndarray]:
         contrib.append(value_at(edges[-1]))
         rows.append(BandRow(None, None, 1.0, 0.0))
         contrib.append(null_contrib)
+        _set_exposure(fit, variable, rows)
         return rows, np.asarray(contrib)
     if isinstance(enc, StepEncoder):
         n_knots = len(enc.knots)
@@ -82,7 +84,17 @@ def _bin_rows(fit: GLMFit, variable: str) -> tuple[list[Any], np.ndarray]:
         rows.append(FromToRow(None, None, 1.0))  # other / unseen / null
     else:
         raise NotImplementedError(f"No rate-table rule for {type(enc).__name__}")
+    _set_exposure(fit, variable, rows)
     return rows, contrib
+
+
+def _set_exposure(fit: GLMFit, variable: str, rows: list[Any]) -> None:
+    """Copy the fit's training exposure per rate-table row onto ``rows``."""
+    exposure = fit.row_exposure.get(variable)
+    if exposure is None or len(exposure) != len(rows):
+        return
+    for row, e in zip(rows, exposure, strict=True):
+        row.exposure = float(e)
 
 
 def _cell_rows(fit: GLMFit, variable: str) -> tuple[list[CellRow], np.ndarray]:
@@ -120,7 +132,8 @@ def rate_tables(fit: GLMFit, *, base: Base = "modal") -> dict[str, pl.DataFrame]
     Columns: ``from``, ``to`` (Float64 for numeric, Utf8 for categorical;
     null = open end, both null = the null / Other row), ``label``, ``coef``
     (linear-predictor contribution relative to the base row), ``relativity``
-    (``exp(coef)``) and ``is_base``. Piecewise-linear variables add ``slope``
+    (``exp(coef)``), ``exposure`` (training exposure in that row — the weight
+    total, or the row count without a weight column) and ``is_base``. Piecewise-linear variables add ``slope``
     (change of log relativity per unit of the variable inside the band) and
     ``relativity_to`` (the value at the band end); their ``relativity`` is the
     value at the band **start**.
@@ -147,6 +160,7 @@ def rate_tables(fit: GLMFit, *, base: Base = "modal") -> dict[str, pl.DataFrame]
             "label": [level_label(r, other) for r in rows],
             "coef": rel_lp,
             "relativity": np.exp(rel_lp),
+            "exposure": [r.exposure for r in rows],
             "is_base": [i == b for i in range(len(rows))],
         }
         if isinstance(enc, LinearEncoder):

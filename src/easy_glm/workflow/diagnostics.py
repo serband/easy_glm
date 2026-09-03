@@ -15,6 +15,7 @@ A/E = ``sum(actual_total) / sum(expected_total)``; rates divide by weight.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -55,6 +56,22 @@ def totals(
         w = np.ones(df.height)
         actual, expected = y, pred_unit
     return actual, expected, w
+
+
+def expected_claims(rm: Any, df: pl.DataFrame, cfg: ModelConfig) -> float:
+    """Total expected claims (or expected cost) of ``rm`` on ``df``: the sum of
+    the per-unit predictions times the weight, exactly as :func:`totals`
+    computes the *expected* side of an A/E.
+
+    This is what the **premium level** means on a book, and it is the number an
+    edit to a rate table has to be judged by: relativities multiply, so
+    preserving the exposure-weighted mean of the *log* relativities (what a
+    smoothing does, plan §R6) is not the same as preserving this sum — the
+    difference is the off-balance the base rate has to absorb.
+    """
+    pred = rm.predict(df, exposure_col=None)
+    _actual, expected, _w = totals(df, cfg, pred)
+    return float(expected.sum())
 
 
 # --------------------------------------------------------------------------
@@ -1119,6 +1136,36 @@ def _compare_pair(
             relativity_b=rel_b,
             log_diff=log_diff,
         )
+
+
+@dataclass(frozen=True)
+class _RateModelOnly:
+    """The one attribute :func:`relativity_diff` reads off a run."""
+
+    rate_model: Any
+
+
+def rate_model_diff(rm_a: Any, rm_b: Any, tol: float = 0.01) -> pl.DataFrame:
+    """:func:`relativity_diff` between two :class:`RateModel` objects rather than
+    two fitted runs — the same table, the same rules, the same columns.
+
+    Two versions of the *same* model are exactly what a snapshot comparison is
+    (the tables before an edit against the tables now), and they line up band by
+    band, so every row of the result reads as "this band changed".
+    """
+    return relativity_diff(_RateModelOnly(rm_a), _RateModelOnly(rm_b), tol)
+
+
+def snapshot_diff(rm: Any, v1: int, v2: int, tol: float = 0.01) -> pl.DataFrame:
+    """:func:`rate_model_diff` between two snapshots of one RateModel.
+
+    ``v1`` / ``v2`` are snapshot versions (1-based, as ``list_snapshots``
+    reports them); the model is left on the version it was on.
+    """
+    a, b = rm.clone(), rm.clone()
+    a.switch_to(v1)
+    b.switch_to(v2)
+    return rate_model_diff(a, b, tol)
 
 
 def describe_diff(diff: pl.DataFrame, name_a: str, name_b: str) -> pl.DataFrame:

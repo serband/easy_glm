@@ -57,55 +57,74 @@ def suffixed_sheet_name(key: str, suffix: str, used: set[str]) -> str:
 
 def rate_model_tables(rm: RateModel) -> dict[str, pl.DataFrame]:
     """Per-variable ``from`` / ``to`` / ``label`` / [``fitted``] / ``relativity``
-    frames of a :class:`RateModel`. ``relativity`` is the *current* value (manual
-    adjustments included); ``fitted`` is the first snapshot's value when present.
-    Piecewise-linear variables add ``slope``, ``relativity_to`` (value at the
-    band end) and ``is_base`` (the band starting at ``x_base``); their
-    ``relativity`` is the value at the band start."""
+    / ``exposure`` frames of a :class:`RateModel`. ``relativity`` is the
+    *current* value (manual adjustments included); ``fitted`` is the first
+    snapshot's value when present; ``exposure`` is the training exposure that
+    fell in the row (0.0 for a hand-built table). Piecewise-linear variables add
+    ``slope``, ``relativity_to`` (value at the band end) and ``is_base`` (the
+    band starting at ``x_base``); their ``relativity`` is the value at the band
+    start."""
     out: dict[str, pl.DataFrame] = {}
     for var, cfg in rm.variables.items():
         if cfg.type == "interaction":
             out[var] = _interaction_frame(rm, var, cfg)
             continue
-        numeric = cfg.type in ("numeric", "linear")
-        dtype = pl.Float64 if numeric else pl.Utf8
-        cast = float if numeric else str
-        froms = [None if r.from_ is None else cast(r.from_) for r in cfg.table]
-        tos = [None if r.to_ is None else cast(r.to_) for r in cfg.table]
-
-        columns: dict[str, Any] = {
-            "from": pl.Series(froms, dtype=dtype),
-            "to": pl.Series(tos, dtype=dtype),
-            "label": [level_label(r, cfg.other_label) for r in cfg.table],
-        }
-        # The first snapshot holds the fitted (pre-adjustment) relativities.
         base = rm.snapshots[0].relativities.get(var) if rm.snapshots else None
-        if base is not None and len(base) == len(cfg.table):
-            columns["fitted"] = pl.Series(
-                [float(r.relativity) for r in base], dtype=pl.Float64
-            )
-        columns["relativity"] = pl.Series(
-            [float(r.relativity) for r in cfg.table], dtype=pl.Float64
-        )
-        if cfg.type == "linear":
-            columns["slope"] = pl.Series(
-                [float(r.slope) for r in cfg.table], dtype=pl.Float64
-            )
-            columns["relativity_to"] = pl.Series(
-                [float(r.relativity_to) for r in cfg.table], dtype=pl.Float64
-            )
-            # the row whose lower edge is x_base: the band starting there, or
-            # the open "≥ hi" row when x_base is the upper clamp (a one-band
-            # term whose exposure sits at the top of the range);
-            # from_rate_tables recovers x_base from it
-            columns["is_base"] = [
-                cfg.x_base is not None
-                and r.from_ is not None
-                and float(r.from_) == float(cfg.x_base)
-                for r in cfg.table
-            ]
-        out[var] = pl.DataFrame(columns)
+        out[var] = variable_frame(cfg, fitted=base)
     return out
+
+
+def variable_frame(cfg, *, fitted: list[Any] | None = None) -> pl.DataFrame:
+    """The frame :func:`rate_model_tables` builds for one main effect.
+
+    ``fitted`` is the same variable's rows in another version (the first
+    snapshot: the pre-adjustment values) and becomes the ``fitted`` column.
+    Taking a :class:`~easy_glm.engine.models.VariableConfig` rather than a whole
+    model is what lets a page draw a *preview* of an edit (the relativity
+    tooling) with exactly the columns the charts and the editor already use.
+    """
+    if cfg.type == "interaction":
+        raise ValueError("variable_frame is for main effects; interactions differ")
+    numeric = cfg.type in ("numeric", "linear")
+    dtype = pl.Float64 if numeric else pl.Utf8
+    cast = float if numeric else str
+    froms = [None if r.from_ is None else cast(r.from_) for r in cfg.table]
+    tos = [None if r.to_ is None else cast(r.to_) for r in cfg.table]
+
+    columns: dict[str, Any] = {
+        "from": pl.Series(froms, dtype=dtype),
+        "to": pl.Series(tos, dtype=dtype),
+        "label": [level_label(r, cfg.other_label) for r in cfg.table],
+    }
+    # ``fitted`` is the pre-adjustment value of each row (the first snapshot).
+    if fitted is not None and len(fitted) == len(cfg.table):
+        columns["fitted"] = pl.Series(
+            [float(r.relativity) for r in fitted], dtype=pl.Float64
+        )
+    columns["relativity"] = pl.Series(
+        [float(r.relativity) for r in cfg.table], dtype=pl.Float64
+    )
+    columns["exposure"] = pl.Series(
+        [float(r.exposure) for r in cfg.table], dtype=pl.Float64
+    )
+    if cfg.type == "linear":
+        columns["slope"] = pl.Series(
+            [float(r.slope) for r in cfg.table], dtype=pl.Float64
+        )
+        columns["relativity_to"] = pl.Series(
+            [float(r.relativity_to) for r in cfg.table], dtype=pl.Float64
+        )
+        # the row whose lower edge is x_base: the band starting there, or the
+        # open "≥ hi" row when x_base is the upper clamp (a one-band term whose
+        # exposure sits at the top of the range); from_rate_tables recovers
+        # x_base from it
+        columns["is_base"] = [
+            cfg.x_base is not None
+            and r.from_ is not None
+            and float(r.from_) == float(cfg.x_base)
+            for r in cfg.table
+        ]
+    return pl.DataFrame(columns)
 
 
 def _interaction_frame(rm: RateModel, var: str, cfg) -> pl.DataFrame:
