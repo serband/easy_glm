@@ -104,16 +104,19 @@ src/easy_glm/
 │   ├── prep.py             # load_source, apply_variables, add_split_column, prepare
 │   ├── explore.py          # univariate, leakage_report (single-factor GLM strength etc.)
 │   ├── diagnostics.py      # deviance, lift, gini, double lift, ae_by_variable,
-│   │                       #   residual_factor_search, alpha_path, model_metrics
+│   │                       #   residual_factor_search, alpha_path, model_metrics,
+│   │                       #   relativity_diff / describe_diff (champion vs challenger)
 │   ├── run.py              # build_design, run_model -> ModelRun, rebuild_rate_model
-│   └── export.py           # to_script (self-contained Python; tested by execution)
+│   ├── export.py           # to_script (self-contained Python; tested by execution)
+│   ├── report.py           # to_report_html — ONE self-contained HTML file
+│   └── _svg.py             # the report's charts as plain SVG (no JS, no library)
 ├── app/                    # Streamlit workbench (thin views over workflow + state)
 │   ├── main.py             # st.navigation entry; --project=path
 │   ├── state.py            # session Project, hash-keyed caches (raw/prepared/runs/leakage), autosave
 │   ├── charts.py, ui.py    # plotly charts (incl. heatmaps, linear curves), shared widgets
 │   ├── grids.py            # pure grid-edit rules (row / cell adjustments, pair matrices)
 │   └── pages_*.py          # one module per page: project, variables, explore, split,
-│                           #   design, model, diagnostics, tables, export
+│                           #   design, model, diagnostics, compare, tables, export
 ├── engine/
 │   ├── rate_model.py       # RateModel — the core model representation
 │   │                       #   Key methods:
@@ -234,6 +237,13 @@ User edits relativity in table
   when the pickle is corrupt or its design no longer matches *readable* data — data
   that cannot be read right now is a miss that keeps the fit;
   adjustments/base-rate override are re-applied from the project on load.
+- Champion vs challenger: the sidebar (`main.py`) owns one "compare with" model in
+  `state.CHALLENGER_KEY` (`S.challenger()` / `S.set_challenger()`; not an app-state
+  key, so another project never inherits it). Diagnostics, Rate tables, Compare and
+  the Export page's report default to it and allow a page-level override by putting
+  the sidebar value **in the widget key** (`f"diag_chal_{sidebar}"`), so moving the
+  sidebar re-defaults the page widget while a page choice sticks until it does.
+  `S.fitted_models()` / `S.latest_run()` are the model lists pages select from.
 - Navigation between pages must be client-side (sidebar links) to keep session state;
   Playwright drivers should click sidebar links rather than `goto` page URLs.
 - Errors are messages, never tracebacks: pages call `ui.guarded` / `ui.require_data`,
@@ -281,8 +291,9 @@ User edits relativity in table
 | `test_c1_foundations.py` | 0.3 bug regressions, format versions and migrations, editor defaults |
 | `test_scoring.py` | Isolated scoring: score_numeric (searchsorted), score_categorical (dict lookup), edge cases, fallbacks |
 | `test_workflow.py` | Project JSON/validation, prep steps, univariate, leakage report on planted leaks, build_design overrides, run_model (metrics, exactness, adjustments, CV), diagnostics, exported script executed in a subprocess and compared |
+| `test_d3_d4_compare_report.py` | D3/D4: `relativity_diff` (identical runs, one known adjustment, moved knots, a variable only one model has, the base rate, the tolerance), `to_report_html` (self-contained, one section per predictor, compare section only with a challenger, size, headless render), the Compare page / sidebar challenger / Export report button through AppTest |
 | `test_w2_pages.py` | W2 pages: interaction section, linear editor, kind selector, A/E-by-pair, pair search, cell/band edits via `app.grids`, break-it (empty project, missing file, removed predictor) |
-| `tests/e2e/` | Playwright persona runs (actuary rate review, data-scientist comparison); opt-in `EASY_GLM_E2E=1`, server from `EASY_GLM_SERVER_PYTHON` |
+| `tests/e2e/` | Playwright persona runs (actuary rate review, data-scientist comparison incl. the Compare page and the downloaded HTML report); opt-in `EASY_GLM_E2E=1`, server from `EASY_GLM_SERVER_PYTHON` |
 | `test_app.py` | AppTest: every workbench page renders (with and without a fit), main entry point, leakage scan action |
 | `test_design_fit_tables.py` | 0.3 core: DesignSpec/encoders, fit_glm (alpha/cv/monotone/validation), exact RateModel reproduction incl. nulls + unseen levels, numeric null row scoring, EasyGLM save/load, A/E masks |
 | `test_easyglm.py` | EasyGLM front door: fit/predict, equivalence with the building blocks, serialization |
