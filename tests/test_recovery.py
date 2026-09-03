@@ -4,10 +4,11 @@ Interactions (piece A): a strong ``Age × Region`` cell is planted; the fitted
 model must reproduce it, thin non-signal cells must stay at 1.0, and the
 A/E-by-pair diagnostic on a model *without* the interaction must expose it.
 
-Piecewise-linear terms (piece B): a log-linear mileage effect with two slope
-changes is planted; the fitted slopes must be recovered, only knots near the
-true bends may carry a slope change, and the curve must be flat beyond the
-training range.
+Piecewise-linear terms (pieces B and B2): a mileage effect with a sloped, a
+**flat** and a second sloped stretch is planted; the fitted band slopes must be
+exactly zero on the flat stretch, recovered within 10% on the sloped ones, the
+whole curve must be close to the truth, and it must be flat beyond the training
+range.
 """
 
 from __future__ import annotations
@@ -185,22 +186,35 @@ class TestPlantedInteraction:
 
 
 # --------------------------------------------------------------------------
-# piece B: planted piecewise-linear effect
+# pieces B / B2: planted piecewise-linear effect
 # --------------------------------------------------------------------------
-TRUE_SLOPES = (0.00010, 0.00003, -0.00004)  # per mile, on the log scale
+#: per mile, on the log scale: up, then **flat**, then down. The flat middle
+#: stretch is what B2 exists for — the basis penalises slopes, so the lasso
+#: must return exactly 0 there.
+TRUE_SLOPES = (0.00030, 0.0, -0.00015)
 TRUE_BENDS = (8_000.0, 20_000.0)
 
 
 @pytest.fixture(scope="module")
 def planted_linear() -> pl.DataFrame:
+    """A book with the planted curve above.
+
+    The size (150k rows) and the base rate (``exp(-0.5)``, ~0.6 claims per
+    exposure year) were raised with the B2 basis change so that a single band's
+    slope is measurable: with the old book the sampling noise on one 2,000-mile
+    band was as large as the planted slope, so no penalty could zero the flat
+    stretch without shrinking the sloped ones by far more than 10%. Measured
+    over eight seeds at the penalty below: every flat band is exactly 0 and the
+    sloped stretches come back at 91.5–95.5% of the truth.
+    """
     rng = np.random.default_rng(23)
-    n = 120_000
+    n = 150_000
     mileage = rng.uniform(0, 30_000, n)
     expo = rng.uniform(0.3, 1.0, n)
     s1, s2, s3 = TRUE_SLOPES
     b1, b2 = TRUE_BENDS
     lp = (
-        -2.2
+        -0.5
         + s1 * np.minimum(mileage, b1)
         + s2 * np.clip(mileage - b1, 0, b2 - b1)
         + s3 * np.maximum(mileage - b2, 0)
@@ -216,20 +230,30 @@ def planted_linear() -> pl.DataFrame:
 
 class TestPlantedLinear:
     KNOTS = [2_000.0 * k for k in range(1, 15)]  # every 2,000 miles
-    ALPHA = 3e-5
+    ALPHA = 0.02
 
-    def test_slopes_recovered_and_bends_are_sparse(self, planted_linear):
-        """At a moderate penalty the *average* slope of each true segment is
-        recovered within 10% (the local slope of a single 2,000-mile band is a
-        noisy statistic and is not asserted), the whole fitted curve is within
-        0.06 of the true log relativity everywhere on [0, 30000] (the property
-        an actuary cares about, and robust to where the lasso puts the bends),
-        and the slope changes concentrate at the two true bends: within two knot
-        spacings of each bend the fitted change has the right sign and 60–140%
-        of the true size, and the changes everywhere else sum to less than those
-        at the bends. The two-spacing window is an observed property of the
-        lasso on this data (it smears a bend over its neighbours), not a
-        tolerance the feature promises."""
+    def test_flat_stretch_is_exactly_flat_and_slopes_are_recovered(
+        self, planted_linear
+    ):
+        """The point of the B2 basis (actuary's answer to Q3): each coefficient
+        is the slope *inside* one band, so the lasso makes a band **exactly
+        flat** rather than merely bend-free.
+
+        Asserted here: every band that lies inside the planted flat stretch
+        [8,000, 20,000) comes back as a slope of exactly 0.0; the average slope
+        of each sloped stretch is within 10% of the truth and has the right
+        sign; no band anywhere has a slope of the wrong sign; and the whole
+        fitted curve is within 0.25 of the true log relativity on a 100-point
+        grid (the true curve spans 2.4 in log, so that is the ~7% lasso
+        shrinkage the two segment checks also see). Measured over eight seeds:
+        flat bands exactly 0 on all of them, segment ratios 0.915–0.955, worst
+        grid gap 0.209.
+
+        The old test's "slope changes concentrate at the two true bends" check
+        is gone: with this basis there are no change-of-slope coefficients to
+        count. Sparsity now lives in the slopes themselves and is asserted
+        directly by the exactly-zero flat bands.
+        """
         spec = DesignSpec.from_data(
             planted_linear,
             ["Mileage"],
@@ -238,6 +262,21 @@ class TestPlantedLinear:
             clamp={"Mileage": (0.0, 30_000.0)},
         )
         fit = fit_glm(planted_linear, spec, "ClaimNb", alpha=self.ALPHA, **FIT)
+        enc = spec["Mileage"]
+        beta = fit.coef[fit.spec.slices()["Mileage"]][: enc.n_bands]
+        starts = np.asarray(enc.band_starts())
+        ends = np.asarray(enc.band_edges()[1:])
+        b1, b2 = TRUE_BENDS
+
+        # 1. the planted flat stretch comes back exactly flat
+        flat = (starts >= b1) & (ends <= b2)
+        assert flat.sum() == 6
+        assert list(beta[flat]) == [0.0] * int(flat.sum()), beta[flat]
+
+        # 2. no band has a slope of the wrong sign
+        assert (beta[ends <= b1] >= 0).all() and (beta[starts >= b2] <= 0).all()
+
+        # 3. the average slope of each sloped stretch, within 10%
         probe = pl.DataFrame(
             {"Mileage": [0.0, *TRUE_BENDS, 30_000.0], "Exposure": [1.0] * 4}
         )
@@ -245,43 +284,36 @@ class TestPlantedLinear:
         edges = [0.0, *TRUE_BENDS, 30_000.0]
         for j, true in enumerate(TRUE_SLOPES):
             avg = (log_rel[j + 1] - log_rel[j]) / (edges[j + 1] - edges[j])
-            assert abs(avg - true) <= 0.1 * abs(true), (edges[j], avg, true)
-        # the curve itself: max |log rel_fitted - log rel_true| on a 100-point grid
+            if true == 0.0:
+                assert abs(avg) <= 1e-12, avg  # flat bands ⇒ a flat stretch
+            else:
+                assert abs(avg - true) <= 0.1 * abs(true), (edges[j], avg, true)
+
+        # 4. the curve itself on a 100-point grid
         m = np.linspace(0.0, 30_000.0, 100)
         grid = pl.DataFrame({"Mileage": m, "Exposure": np.ones(100)})
         fitted_log = np.log(fit.predict(grid))
         fitted_log -= fitted_log[0]
         s1, s2, s3 = TRUE_SLOPES
-        b1, b2 = TRUE_BENDS
         true_log = (
             s1 * np.minimum(m, b1)
             + s2 * np.clip(m - b1, 0, b2 - b1)
             + s3 * np.maximum(m - b2, 0)
         )
-        # Measured 0.0525 with this seed; a near-unpenalised fit (alpha 1e-6)
-        # gives 0.058, so the gap is sampling noise of the planted book (the
-        # first segment's slope comes out 5% low at every penalty), not
-        # shrinkage. Tolerance set from that evidence, not from the method.
-        assert np.abs(fitted_log - true_log).max() <= 0.06
-        enc = spec["Mileage"]
-        beta = fit.coef[fit.spec.slices()["Mileage"]][: len(enc.hinges)][1:]  # skip lo
-        knots = np.asarray(enc.knots)
-        near = np.zeros(len(knots), dtype=bool)
-        for bend, before, after in zip(
-            TRUE_BENDS, TRUE_SLOPES[:-1], TRUE_SLOPES[1:], strict=True
-        ):
-            window = np.abs(knots - bend) <= 4_000.0
-            near |= window
-            change, true_change = beta[window].sum(), after - before
-            assert np.sign(change) == np.sign(true_change), (bend, change)
-            assert 0.6 <= change / true_change <= 1.4, (bend, change, true_change)
-        assert np.abs(beta[~near]).sum() <= np.abs(beta[near]).sum()
-        # and the table agrees with the coefficients: slopes are cumulative sums
+        assert np.abs(fitted_log - true_log).max() <= 0.25
+
+        # 5. and the table shows those slopes: beta_j *is* band j's slope
         tab = rate_tables(fit)["Mileage"]
         bands = tab.filter(pl.col("from").is_not_null() & pl.col("to").is_not_null())
-        full = fit.coef[fit.spec.slices()["Mileage"]][: len(enc.hinges)]
+        np.testing.assert_allclose(bands["slope"].to_numpy(), beta, atol=1e-15)
+        # the flat stretch is one relativity, repeated
+        flat_rows = bands.filter((pl.col("from") >= b1) & (pl.col("to") <= b2))
+        assert flat_rows.height == 6
         np.testing.assert_allclose(
-            bands["slope"].to_numpy(), np.cumsum(full), atol=1e-15
+            flat_rows["relativity_to"].to_numpy(),
+            flat_rows["relativity"].to_numpy(),
+            rtol=0,
+            atol=0,
         )
 
     def test_curve_is_flat_beyond_the_training_range(self, planted_linear):

@@ -1,10 +1,11 @@
 """Piecewise-linear (L-dummy) terms — piece B.
 
-Contract (docs/RELEASE_0.4_PLAN.md §R2): ``LinearEncoder`` clips ``x`` to
-``[lo, hi]``, has a hinge at ``lo`` and at every interior knot, is exactly flat
-outside the clamp, treats nulls as the value at ``lo`` times a null factor,
-and its rate table is log-linear inside each band with relativity 1.00 at
-``x_base``; monotone constraints are refused.
+Contract (docs/RELEASE_0.4_PLAN.md §R2 as revised by R10/Q3): ``LinearEncoder``
+clips ``x`` to ``[lo, hi]`` and has one column per band, ``clip(x - k_j, 0,
+width_j)``, so each coefficient is the *slope inside that band* and the lasso
+zeroes slopes (flat sections). The term is exactly flat outside the clamp,
+treats nulls as the value at ``lo`` times a null factor, and its rate table is
+log-linear inside each band with relativity 1.00 at ``x_base``.
 """
 
 from __future__ import annotations
@@ -123,8 +124,16 @@ def _probe(enc: LinearEncoder) -> pl.DataFrame:
 class TestLinearEncoder:
     def test_features_rows_and_clamp(self):
         enc = LinearEncoder("x", [7.0, 3.0], (1.0, 9.0))
-        assert enc.knots == [3.0, 7.0] and enc.hinges == [1.0, 3.0, 7.0]
-        assert [f.kind for f in enc.features()] == ["hinge", "hinge", "hinge", "null"]
+        assert enc.knots == [3.0, 7.0]
+        assert enc.band_starts() == [1.0, 3.0, 7.0]
+        assert enc.band_widths() == [2.0, 4.0, 2.0] and enc.n_bands == 3
+        assert [f.kind for f in enc.features()] == ["band", "band", "band", "null"]
+        assert [f.name for f in enc.features()] == [
+            "x in [1, 3)",
+            "x in [3, 7)",
+            "x in [7, 9)",
+            "x is null",
+        ]
         assert enc.rows() == [
             (None, 1.0),
             (1.0, 3.0),
@@ -145,17 +154,32 @@ class TestLinearEncoder:
         with pytest.raises(ValueError, match="clamp must be"):
             LinearEncoder("x", [], (1.0,))  # type: ignore[arg-type]
 
-    def test_transform_is_clipped_finite_and_null_aware(self):
+    def test_transform_is_the_amount_of_x_inside_each_band(self):
+        """Each column is how much of ``x`` falls in that band: 0 below it, the
+        band width once ``x`` is past it. Coefficient = slope within the band."""
         enc = LinearEncoder("x", [3.0, 7.0], (1.0, 9.0))
         s = pl.Series([-5.0, 1.0, 2.0, None, 3.0, 8.5, 9.0, 12.0])
         mat = enc.transform(s)
         assert np.isfinite(mat).all()
         np.testing.assert_array_equal(mat[0], mat[1])  # below lo == at lo
         np.testing.assert_array_equal(mat[6], mat[7])  # above hi == at hi
-        np.testing.assert_array_equal(mat[3], [0, 0, 0, 1])  # null: hinges 0, flag 1
-        np.testing.assert_allclose(mat[5], [7.5, 5.5, 1.5, 0])
+        np.testing.assert_array_equal(mat[3], [0, 0, 0, 1])  # null: bands 0, flag 1
+        np.testing.assert_allclose(mat[1], [0.0, 0.0, 0.0, 0])  # at lo: nothing yet
+        np.testing.assert_allclose(mat[2], [1.0, 0.0, 0.0, 0])  # 1 unit into band 1
+        np.testing.assert_allclose(mat[4], [2.0, 0.0, 0.0, 0])  # band 1 full at x = 3
+        np.testing.assert_allclose(mat[5], [2.0, 4.0, 1.5, 0])  # 8.5: 1.5 into band 3
+        # every column is capped at its band width, so the row sum is x - lo
+        np.testing.assert_allclose(mat[5, :3].sum(), 8.5 - 1.0)
         idx = enc.row_index(s)
         np.testing.assert_array_equal(idx, [0, 1, 1, 5, 2, 3, 4, 4])
+
+    def test_one_band_when_there_are_no_knots(self):
+        enc = LinearEncoder("x", [], (0.0, 10.0))
+        assert enc.n_bands == 1 and enc.band_edges() == [0.0, 10.0]
+        assert [f.name for f in enc.features()] == ["x in [0, 10)", "x is null"]
+        mat = enc.transform(pl.Series([-1.0, 0.0, 2.5, 10.0, 99.0, None]))
+        np.testing.assert_allclose(mat[:, 0], [0.0, 0.0, 2.5, 10.0, 10.0, 0.0])
+        assert enc.rows() == [(None, 0.0), (0.0, 10.0), (10.0, None), (None, None)]
 
     def test_from_data_rounds_clamp_outward_and_drops_outside_knots(self, book):
         enc = linear_encoder_from_data(
@@ -183,15 +207,14 @@ class TestLinearEncoder:
 # fit: slopes, continuity, monotone
 # --------------------------------------------------------------------------
 class TestFit:
-    def test_slopes_are_cumulative_hinge_coefficients(self, fitted, spec):
+    def test_band_slopes_are_the_coefficients_themselves(self, fitted, spec):
         fit, rm = fitted
         enc = spec["Mileage"]
-        coef = fit.coef[fit.spec.slices()["Mileage"]][: len(enc.hinges)]
+        coef = fit.coef[fit.spec.slices()["Mileage"]][: enc.n_bands]
         tab = rate_tables(fit)["Mileage"]
         sloped = tab.filter(pl.col("from").is_not_null() & pl.col("to").is_not_null())
-        np.testing.assert_allclose(
-            sloped["slope"].to_numpy(), np.cumsum(coef), atol=1e-15
-        )
+        # the basis penalises slopes, so beta_j *is* the slope of band j
+        np.testing.assert_allclose(sloped["slope"].to_numpy(), coef, atol=1e-15)
         # flat end rows and the null row have slope 0
         assert (
             tab.filter(pl.col("from").is_null() | pl.col("to").is_null())["slope"] == 0
