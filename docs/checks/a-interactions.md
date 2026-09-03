@@ -10,11 +10,11 @@
 
 You said: *mains are frozen; interactions are fitted only after offsetting the main effects — finalise the mains, then find and fit interactions as stand-alone adjustments on top of stage 1.* That is exactly how the model below is built.
 
-1. **Stage 1** fits the nine main effects on their own. It is the same fit, number for number, that this model gets with no interaction at all.
+1. **Stage 1** fits the 9 main effects on their own. It is the same fit, number for number, that this model gets with no interaction at all.
 2. Stage 1 is then **frozen**: its rate tables and its base rate are the ones the model ships with, whatever happens next.
 3. **Stage 2** fits the interaction cells with stage 1's prediction as an offset and no intercept of its own, so every cell is a *pure adjustment* to a finished model. Nothing in stage 2 can move a main-effect relativity or the base rate.
 
-The `DrivAge` table below is printed twice — without the interaction and with it — and every row is identical (largest change 7e-16, which is arithmetic rounding, not a difference in the model); the base rate matches to 0e+00. For comparison the table also carries the relativities the **joint fit** (the single fit this replaced) produced from the same data: it moved the same table by up to 21.1% and the base rate by 1.5%, because the split between mains and cells was not unique.
+The `DrivAge` table below is printed twice — without the interaction and with it — and every row is identical (largest change 1e-15, which is arithmetic rounding, not a difference in the model); the base rate matches to 4e-16. For comparison the table also carries the relativities the **joint fit** (the single fit this replaced) produced from the same data: it moved the same table by up to 21.1% and the base rate by 1.5%, because the split between mains and cells was not unique.
 
 ## Defaults in force (from the questions for the actuary)
 

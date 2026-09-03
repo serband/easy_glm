@@ -298,7 +298,8 @@ def main(write: bool) -> None:
         "main effects — finalise the mains, then find and fit interactions as stand-alone "
         "adjustments on top of stage 1.* That is exactly how the model below is built.",
         "",
-        "1. **Stage 1** fits the nine main effects on their own. It is the same fit, "
+        f"1. **Stage 1** fits the {len(PREDICTORS)} main effects on their own. It is "
+        "the same fit, "
         "number for number, that this model gets with no interaction at all.",
         "2. Stage 1 is then **frozen**: its rate tables and its base rate are the ones "
         "the model ships with, whatever happens next.",
