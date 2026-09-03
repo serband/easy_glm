@@ -246,8 +246,8 @@ same = np.allclose(
 )
 print("main tables identical with the interaction added:", same)
 # → True
-print("base rate:", base_rate(fit), base_rate(two_stage_fit))
-# → 0.04340918722561671 0.04340918722561671  (identical to glum's own run-to-run noise)
+print("base rate:", round(base_rate(fit), 5), round(base_rate(two_stage_fit), 5))
+# → base rate: 0.04341 0.04341   (the same number; they differ only by solver noise)
 ```
 
 `t_int["DrivAge×BonusMalus"]` is the cell table: `from_a`/`to_a` (DrivAge's
@@ -335,8 +335,8 @@ rm.to_json(path)   # rm is the adjusted model from §7
 reloaded = RateModel.from_json(path)
 print(np.allclose(reloaded.predict(holdout), rm.predict(holdout)))
 # → True
-print(reloaded.predict(holdout.head(3)))
-# → [0.00153043 0.00649728 0.08165957]
+print(np.round(reloaded.predict(holdout.head(3)), 5))
+# → [0.00172 0.00687 0.08667]
 ```
 
 `rm.predict(data)` multiplies by the exposure column recorded in the model
@@ -708,9 +708,9 @@ print(list(reloaded_project.models))
 original_preds = run.rate_model.predict(df_prepared.head(50), exposure_col=None)
 script_rm = RateModel.from_json("freq.easyglm")   # written by freq_export.py in §11
 script_preds = script_rm.predict(df_prepared.head(50), exposure_col=None)
-print("max diff between the workbench run and the exported script:",
-      np.max(np.abs(original_preds - script_preds)))
-# → max diff between the workbench run and the exported script: 2.5e-16
+print("workbench run and exported script agree to 5 decimals:",
+      np.max(np.abs(original_preds - script_preds)) < 1e-5)
+# → workbench run and exported script agree to 5 decimals: True
 ```
 
 Open `french_motor_demo.easyglm-project.json` in the workbench
