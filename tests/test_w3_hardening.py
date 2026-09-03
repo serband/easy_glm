@@ -340,8 +340,13 @@ def test_breakage_10_column_split_mode_never_auto_picks_or_demotes(workspace):
     at = _run(_script("pages_split", str(workspace["project"])))
     assert any("not in the data" in e for e in _errors(at))
     assert at.session_state["_project"].data.roles["IDpol"] == "id"  # untouched
-    # a text indicator compared with a number: a message, never a traceback
+    # a text indicator compared with a number: a message, never a traceback.
+    # Region is a predictor, so the change now needs one confirming click
+    # (breakage-2 item 10); the pick alone changes nothing.
     at.selectbox(key=wk(at, "split_col")).set_value("Region").run()
+    assert not at.exception
+    assert at.session_state["_project"].data.split.column == "gone"
+    at.button(key=wk(at, "split_role_btn_Region")).click().run()
     assert not at.exception
     assert at.session_state["_project"].data.split.column == "Region"
     assert at.session_state["_project"].data.roles["IDpol"] == "id"
