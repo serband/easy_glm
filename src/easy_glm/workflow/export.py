@@ -244,12 +244,13 @@ def to_script(
                 else []
             ),
             *(
+                # "continuous" is a linear term with no interior knots
                 [f"    linear={linear_vars!r},"]
                 if (
                     linear_vars := [
                         v
                         for v, vd in project.design.variables.items()
-                        if vd.kind == "linear" and v in cfg.predictors
+                        if vd.kind in ("linear", "continuous") and v in cfg.predictors
                     ]
                 )
                 else []
@@ -258,9 +259,14 @@ def to_script(
                 [f"    knots={explicit_knots!r},"]
                 if (
                     explicit_knots := {
-                        v: [float(k) for k in vd.knots]
+                        v: (
+                            []
+                            if vd.kind == "continuous"
+                            else [float(k) for k in vd.knots]
+                        )
                         for v, vd in project.design.variables.items()
-                        if isinstance(vd.knots, list) and v in cfg.predictors
+                        if (vd.kind == "continuous" or isinstance(vd.knots, list))
+                        and v in cfg.predictors
                     }
                 )
                 else []
@@ -271,7 +277,9 @@ def to_script(
                     clamps := {
                         v: (float(vd.clamp[0]), float(vd.clamp[1]))
                         for v, vd in project.design.variables.items()
-                        if vd.kind == "linear" and vd.clamp and v in cfg.predictors
+                        if vd.kind in ("linear", "continuous")
+                        and vd.clamp
+                        and v in cfg.predictors
                     }
                 )
                 else []

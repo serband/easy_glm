@@ -57,7 +57,7 @@ def encoder_for(
     d = project.design.defaults
     numeric = series.dtype in NUMERIC_DTYPES
     kind = vd.kind or ("step" if numeric else "categorical")
-    if kind in ("step", "linear"):
+    if kind in ("step", "linear", "continuous"):
         if not numeric:
             raise ValueError(f"{variable!r} is not numeric; cannot use a {kind} design")
         n_bins = vd.n_bins or d.n_bins
@@ -70,12 +70,13 @@ def encoder_for(
         else:
             knots = quantile_knots(series, n_bins)
         null_ind = d.null_indicator if vd.null_indicator is None else vd.null_indicator
-        if kind == "linear":
+        if kind in ("linear", "continuous"):
             clamp = (float(vd.clamp[0]), float(vd.clamp[1])) if vd.clamp else None
             return linear_encoder_from_data(
                 variable,
                 series,
-                knots=knots or [],
+                # "continuous" = one band, a single slope on the clamped value
+                knots=[] if kind == "continuous" else (knots or []),
                 n_bins=n_bins,
                 clamp=clamp,
                 null_indicator=null_ind,
@@ -120,7 +121,11 @@ def build_design(
     interactions: list[Interaction] | None = None,
 ) -> DesignSpec:
     """A :class:`DesignSpec` for ``predictors`` (and ``interactions`` on top of
-    them) from the project's design config; kept cells are decided on ``train``."""
+    them) from the project's design config; kept cells are decided on ``train``.
+
+    ``kind="continuous"`` builds the same :class:`LinearEncoder` as ``"linear"``
+    with no interior knots, so a continuous term shares the linear term's rate
+    table, editor, Excel sheet and exported script."""
     weights = train[weight_col] if weight_col and weight_col in train.columns else None
     encoders: dict[str, Encoder] = {}
     for var in predictors:

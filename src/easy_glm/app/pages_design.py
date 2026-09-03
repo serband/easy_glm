@@ -26,8 +26,23 @@ from . import state as S
 from . import ui
 
 KNOT_OPTIONS = ["quantile", "integer", "custom"]
-KIND_OPTIONS = ["auto", "step", "linear", "categorical"]
+KIND_OPTIONS = ["auto", "step", "linear", "continuous", "categorical"]
 MONO_OPTIONS = ["none", "increasing", "decreasing"]
+#: one line per kind, shown under the selector and in its help
+KIND_HELP = {
+    "auto": "auto — step for numbers, categorical for text (the default).",
+    "step": "step — bands, each with its own relativity; the curve jumps at the "
+    "band edges.",
+    "linear": "linear — a continuous curve, straight between knots; flat unless "
+    "the data insists on a slope.",
+    "continuous": "continuous — one straight line over the whole range (no "
+    "knots): a single slope on the value itself.",
+    "categorical": "categorical — every value is its own level, plus an Other "
+    "bucket.",
+}
+KIND_TOOLTIP = "\n\n".join(KIND_HELP.values())
+#: kinds that build a LinearEncoder
+LINEAR_KINDS = ("linear", "continuous")
 
 
 def _parse_numbers(text: str) -> list[float]:
@@ -111,7 +126,7 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
         disabled=["variable", "dtype", "inferred"],
         column_config={
             "kind": st.column_config.SelectboxColumn(
-                "kind", options=KIND_OPTIONS, required=True
+                "kind", options=KIND_OPTIONS, required=True, help=KIND_TOOLTIP
             ),
             "knots": st.column_config.SelectboxColumn(
                 "knots",
@@ -170,8 +185,8 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
         if new.monotone and (not numeric or new.kind == "categorical"):
             ui.flash(
                 "error",
-                f"{v}: monotone constraints apply to numeric designs (step or "
-                "linear) only; the constraint was not saved",
+                f"{v}: monotone constraints apply to numeric designs (step, linear "
+                "or continuous) only; the constraint was not saved",
             )
             new.monotone = vd.monotone if numeric and vd.kind != "categorical" else None
         if new != vd:
@@ -197,10 +212,11 @@ def _kind_selector(var: str, vd: VariableDesign, numeric: bool) -> None:
         KIND_OPTIONS,
         index=KIND_OPTIONS.index(current),
         key=S.widget_key(f"kind_{var}"),
-        help="auto = step for numbers, categorical for text",
+        help=KIND_TOOLTIP,
     )
+    st.caption(KIND_HELP[kind])
     if kind != current:
-        if kind in ("step", "linear") and not numeric:
+        if kind in ("step", *LINEAR_KINDS) and not numeric:
             st.error(f"{var} is not numeric; a {kind} design needs numbers")
             return
         vd.kind = None if kind == "auto" else kind
@@ -260,42 +276,54 @@ def _linear_detail(
     train: pl.DataFrame,
     preview: pl.DataFrame,
     divide,
+    *,
+    continuous: bool = False,
 ) -> None:
+    """Editor for a linear term. ``continuous=True`` is the same term with no
+    interior knots (one straight line), so the knot controls are hidden."""
     p = S.project()
     d = p.design.defaults
     s = train[var].drop_nulls().cast(pl.Float64)
     tmin, tmax = float(s.min()), float(s.max())
     rlo, rhi = round_range_outward(tmin, tmax)
     st.markdown(
-        f"**Piecewise-linear** — the relativity curve is continuous, log-linear "
-        f"inside each band, and **flat outside the clamp range**. Training range "
-        f"{tmin:g} – {tmax:g}; default clamp = that range rounded outward to a round "
-        f"number → **{rlo:g} – {rhi:g}**."
+        (
+            "**Continuous** — one straight line on the log scale over the whole "
+            "range (no knots, so the slope never changes), and **flat outside the "
+            "clamp range**. "
+            if continuous
+            else "**Piecewise-linear** — the relativity curve is continuous, "
+            "log-linear inside each band, and **flat outside the clamp range**. "
+        )
+        + f"Training range {tmin:g} – {tmax:g}; default clamp = that range rounded "
+        f"outward to a round number → **{rlo:g} – {rhi:g}**."
     )
     strategy_now = "custom" if isinstance(vd.knots, list) else vd.knots
-    c1, c2, c3 = st.columns([1, 1, 2])
-    strategy = c1.radio(
-        "Knot strategy",
-        KNOT_OPTIONS,
-        index=KNOT_OPTIONS.index(strategy_now),
-        key=S.widget_key(f"lin_strategy_{var}"),
-        help="Where the slope may change. quantile: n_bins quantiles · integer: every integer · custom: your list",
-    )
-    n_bins = c2.number_input(
-        "n_bins (quantile)",
-        2,
-        200,
-        int(vd.n_bins or d.n_bins),
-        key=S.widget_key(f"lin_nbins_{var}"),
-        disabled=strategy != "quantile",
-    )
-    knots_txt = c3.text_area(
-        "Knots (custom)",
-        ", ".join(f"{k:g}" for k in enc.knots),
-        height=70,
-        key=S.widget_key(f"lin_knots_{var}"),
-        disabled=strategy != "custom",
-    )
+    strategy, n_bins, knots_txt = strategy_now, vd.n_bins or d.n_bins, ""
+    if not continuous:
+        c1, c2, c3 = st.columns([1, 1, 2])
+        strategy = c1.radio(
+            "Knot strategy",
+            KNOT_OPTIONS,
+            index=KNOT_OPTIONS.index(strategy_now),
+            key=S.widget_key(f"lin_strategy_{var}"),
+            help="Where the slope may change. quantile: n_bins quantiles · integer: every integer · custom: your list",
+        )
+        n_bins = c2.number_input(
+            "n_bins (quantile)",
+            2,
+            200,
+            int(vd.n_bins or d.n_bins),
+            key=S.widget_key(f"lin_nbins_{var}"),
+            disabled=strategy != "quantile",
+        )
+        knots_txt = c3.text_area(
+            "Knots (custom)",
+            ", ".join(f"{k:g}" for k in enc.knots),
+            height=70,
+            key=S.widget_key(f"lin_knots_{var}"),
+            disabled=strategy != "custom",
+        )
     use_default = st.checkbox(
         "Clamp to the training range (rounded outward)",
         vd.clamp is None,
@@ -321,7 +349,9 @@ def _linear_detail(
         "strictly inside the clamp range."
     )
     if st.button(
-        "Apply linear design", key=S.widget_key(f"apply_lin_{var}"), type="primary"
+        "Apply continuous design" if continuous else "Apply linear design",
+        key=S.widget_key(f"apply_lin_{var}"),
+        type="primary",
     ):
         errors: list[str] = []
         clamp: list[float] | None
@@ -339,7 +369,7 @@ def _linear_detail(
             if not lo_c < hi_c:
                 errors.append("Clamp lo must be below clamp hi")
         knots: list[float] = list(enc.knots)
-        if strategy == "custom":
+        if not continuous and strategy == "custom":
             try:
                 knots = _parse_numbers(knots_txt)
             except ValueError as exc:
@@ -356,9 +386,10 @@ def _linear_detail(
             for e in errors:
                 st.error(e)
         else:
-            vd.kind = "linear"
-            vd.knots = knots if strategy == "custom" else strategy
-            vd.n_bins = int(n_bins) if strategy == "quantile" else vd.n_bins
+            vd.kind = "continuous" if continuous else "linear"
+            if not continuous:
+                vd.knots = knots if strategy == "custom" else strategy
+                vd.n_bins = int(n_bins) if strategy == "quantile" else vd.n_bins
             vd.clamp = clamp
             p.design.variables[var] = vd
             S.touch()
@@ -382,7 +413,12 @@ def _linear_detail(
     st.plotly_chart(
         C.exposure_rate_chart(
             u["table"],
-            title=f"{var}: linear in {enc.n_bands} band(s) between {enc.lo:g} and {enc.hi:g}",
+            title=(
+                f"{var}: one straight line between {enc.lo:g} and {enc.hi:g}"
+                if continuous
+                else f"{var}: linear in {enc.n_bands} band(s) between "
+                f"{enc.lo:g} and {enc.hi:g}"
+            ),
             marks=marks,
         ),
         width="stretch",
@@ -475,7 +511,9 @@ def _detail(train: pl.DataFrame, preview: pl.DataFrame, predictors: list[str]) -
     if isinstance(enc, StepEncoder):
         _step_detail(var, vd, enc, preview, divide)
     elif isinstance(enc, LinearEncoder):
-        _linear_detail(var, vd, enc, train, preview, divide)
+        _linear_detail(
+            var, vd, enc, train, preview, divide, continuous=vd.kind == "continuous"
+        )
     elif isinstance(enc, CategoricalEncoder):
         _categorical_detail(var, vd, enc, preview, divide)
 
@@ -682,10 +720,12 @@ def render() -> None:
         )
     _defaults()
     st.caption(
-        "Numeric predictors become step functions (one 0/1 column per knot, penalised increments → automatic banding) "
-        "or piecewise-linear curves; categoricals become one-hot with the most frequent level as reference and an "
-        "**Other** bucket. Monotone constraints bound the step increments or the piecewise-linear band slopes; they "
-        "are not available for categoricals."
+        "Numeric predictors default to **step** (one 0/1 column per knot, penalised increments → automatic banding); "
+        "the explicit overrides are **linear** (a continuous curve whose slope may change at each knot, flat unless "
+        "the data insists), **continuous** (one straight line, no knots) and **categorical** (each value a level). "
+        "Categoricals become one-hot with the most frequent level as reference and an **Other** bucket. "
+        "Monotone constraints bound the step increments or the band slopes; they are available for every numeric "
+        "kind, not for categoricals."
     )
     _grid(train, predictors)
     total = 0

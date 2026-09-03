@@ -1,4 +1,4 @@
-"""Piecewise-linear (L-dummy) terms — piece B.
+"""Piecewise-linear (L-dummy) terms — pieces B and B2.
 
 Contract (docs/RELEASE_0.4_PLAN.md §R2 as revised by R10/Q3): ``LinearEncoder``
 clips ``x`` to ``[lo, hi]`` and has one column per band, ``clip(x - k_j, 0,
@@ -7,7 +7,7 @@ zeroes slopes (flat sections). The term is exactly flat outside the clamp,
 treats nulls as the value at ``lo`` times a null factor, and its rate table is
 log-linear inside each band with relativity 1.00 at ``x_base``. Monotone
 constraints are sign bounds on the band slopes and are available for linear
-terms.
+terms. ``kind="continuous"`` is the same encoder with no interior knots.
 """
 
 from __future__ import annotations
@@ -176,6 +176,7 @@ class TestLinearEncoder:
         np.testing.assert_array_equal(idx, [0, 1, 1, 5, 2, 3, 4, 4])
 
     def test_one_band_when_there_are_no_knots(self):
+        """``kind="continuous"``: a single slope on the raw clamped value."""
         enc = LinearEncoder("x", [], (0.0, 10.0))
         assert enc.n_bands == 1 and enc.band_edges() == [0.0, 10.0]
         assert [f.name for f in enc.features()] == ["x in [0, 10)", "x is null"]
@@ -801,7 +802,7 @@ class TestWorkflow:
         p.models["freq"].penalty.cv = None
         return p
 
-    def test_validate_accepts_monotone_on_linear(self, project):
+    def test_validate_accepts_monotone_on_linear_and_checks_the_clamp(self, project):
         from easy_glm.workflow import VariableDesign
 
         assert project.validate() == []
@@ -813,9 +814,62 @@ class TestWorkflow:
         assert project.validate("freq") == []
         project.models["freq"].monotone = {}
         project.design.variables["Mileage"] = VariableDesign(
+            kind="continuous", monotone="increasing"
+        )
+        assert project.validate() == []
+        project.design.variables["Mileage"] = VariableDesign(kind="wobbly")
+        assert any("kind must be" in p for p in project.validate())
+        project.design.variables["Mileage"] = VariableDesign(
             kind="linear", clamp=[5.0, 1.0]
         )
         assert any("clamp" in p for p in project.validate())
+
+    def test_continuous_kind_is_a_one_band_linear_term(self, project, book):
+        from easy_glm.workflow import (
+            VariableDesign,
+            build_design,
+            prepare,
+            run_model,
+            to_script,
+        )
+
+        project.design.variables["Mileage"] = VariableDesign(kind="continuous")
+        df = prepare(project)
+        train = df.filter(pl.col("traintest") == 1)
+        spec = build_design(project, train, ["Mileage"], weight_col="Exposure")
+        enc = spec["Mileage"]
+        assert isinstance(enc, LinearEncoder)
+        assert enc.knots == [] and enc.n_bands == 1
+        # the quantile knots that a "linear" term would have used are ignored
+        assert enc.n_features == 2  # one slope + the null column
+        run = run_model(project, df, "freq")
+        cfg = run.rate_model.variables["Mileage"]
+        assert cfg.type == "linear"  # same table type, editor and Excel sheet
+        assert len(cfg.table) == 4  # < lo, the single band, >= hi, null
+        hold = df.filter(pl.col("traintest") == 0)
+        np.testing.assert_allclose(
+            run.rate_model.predict(hold, exposure_col=None),
+            run.fit.predict(hold),
+            rtol=1e-10,
+        )
+        # the exported script round-trips the one-band design both ways
+        src = to_script(project, "freq", run=run, output_prefix="cont_v1")
+        assert "LinearEncoder('Mileage', [], clamp=(" in src
+        no_run = to_script(project, "freq")
+        assert "linear=['Mileage']" in no_run and "knots={'Mileage': []}" in no_run
+
+    def test_monotone_on_a_continuous_term_runs_end_to_end(self, project):
+        from easy_glm.workflow import VariableDesign, prepare, run_model
+
+        project.design.variables["Mileage"] = VariableDesign(
+            kind="continuous", monotone="increasing"
+        )
+        assert project.validate() == []
+        df = prepare(project)
+        run = run_model(project, df, "freq")
+        assert run.fit.monotone["Mileage"] == "increasing"
+        slopes = run.tables["Mileage"]["slope"].to_numpy()
+        assert (slopes >= -1e-14).all()
 
     def test_build_design_clamp_and_integer_knots(self, project, book):
         from easy_glm.workflow import VariableDesign, build_design, prepare

@@ -179,6 +179,26 @@ class TestDesignPage:
         # the linear editor is now shown with the rounding rule
         assert any("rounded outward" in m.value for m in at.markdown)
 
+    def test_kind_selector_offers_continuous_with_one_line_help(self, workspace):
+        at = _run(_script("pages_design", workspace["project"], fit=False))
+        at.selectbox(key=wk(at, "design_detail_var")).set_value("Density").run()
+        kind = at.selectbox(key=wk(at, "kind_Density"))
+        assert kind.options == ["auto", "step", "linear", "continuous", "categorical"]
+        for word in ("step —", "linear —", "continuous —", "categorical —"):
+            assert word in kind.help
+        kind.set_value("continuous").run()
+        assert not at.exception and not _errors(at)
+        vd = at.session_state["_project"].design.variables["Density"]
+        assert vd.kind == "continuous"
+        # the continuous editor has no knot controls and says what it does
+        assert any("one straight line" in m.value for m in at.markdown)
+        assert not [r for r in at.radio if r.key == wk(at, "lin_strategy_Density")]
+        [b for b in at.button if b.label == "Apply continuous design"][0].click().run()
+        assert not at.exception and not _errors(at)
+        assert at.session_state["_project"].design.variables["Density"].kind == (
+            "continuous"
+        )
+
     def test_linear_editor_apply_custom_knots_and_clamp(self, workspace):
         at = _run(_script("pages_design", workspace["project"], fit=False))
         at.selectbox(key=wk(at, "design_detail_var")).set_value("Density").run()
