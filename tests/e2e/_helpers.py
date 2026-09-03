@@ -36,12 +36,25 @@ def wait_text(pg, text: str, timeout: float = 15.0) -> bool:
     return False
 
 
-def edit_grid_cell(pg, grid_index: int, row: int, value: str, *, expect: str) -> None:
-    """Type ``value`` into the **last** (editable) column of data row ``row``
-    (0-based, header excluded) of the ``grid_index``-th data editor on the page,
-    then wait until ``expect`` shows in the main panel; retried up to three times
-    because the editor is a canvas inside a scroller that intercepts pointer
-    events (double-click opens the overlay editor, Enter commits and reruns)."""
+def edit_grid_cell(
+    pg,
+    grid_index: int,
+    row: int,
+    value: str,
+    *,
+    expect: str,
+    column: int | None = None,
+) -> None:
+    """Type ``value`` into data row ``row`` (0-based, header excluded) of the
+    ``grid_index``-th data editor on the page, then wait until ``expect`` shows
+    in the main panel; retried up to three times because the editor is a canvas
+    inside a scroller that intercepts pointer events (double-click opens the
+    overlay editor, Enter commits and reruns).
+
+    The cell is the row's **last** column by default. ``column`` (0-based) picks
+    another one: the grid is a canvas, so there is no element to address — the
+    row's first cell is clicked and the selection is walked right with the arrow
+    keys, then Enter opens the same overlay editor."""
     last_seen = ""
     for attempt in range(3):
         grid = pg.get_by_test_id("stDataFrame").nth(grid_index)
@@ -50,7 +63,16 @@ def edit_grid_cell(pg, grid_index: int, row: int, value: str, *, expect: str) ->
         scroller = grid.locator(".stDataFrameGlideDataEditor").first
         box = scroller.bounding_box()
         assert box, "grid not visible"
-        scroller.dblclick(position={"x": box["width"] - 40, "y": 52 + 35 * row})
+        y = 52 + 35 * row
+        if column is None:
+            scroller.dblclick(position={"x": box["width"] - 40, "y": y})
+        else:
+            scroller.click(position={"x": 40, "y": y})
+            pg.wait_for_timeout(200)
+            for _ in range(column):
+                pg.keyboard.press("ArrowRight")
+            pg.wait_for_timeout(200)
+            pg.keyboard.press("Enter")  # open the editor on the selected cell
         pg.wait_for_timeout(300)
         overlay = pg.locator("#portal input, #portal textarea")
         shots = os.environ.get("EASY_GLM_E2E_SHOTS")  # diagnostics for a flaky edit

@@ -12,6 +12,7 @@ import json
 import math
 import os
 import stat
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +25,8 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 from easy_glm.app import pages_variables as pv  # noqa: E402
 from easy_glm.app import ui  # noqa: E402
 from easy_glm.app.pages_project import open_project_file  # noqa: E402
+from easy_glm.engine import RateModel  # noqa: E402
+from easy_glm.engine.models import level_label  # noqa: E402
 from easy_glm.workflow import (
     Project,
     Split,
@@ -400,7 +403,7 @@ def test_breakage_12_saving_to_a_bad_path_is_a_message(workspace, tmp_path):
     ro_file.write_text("{}")
     os.chmod(ro_file, stat.S_IREAD)
     try:
-        prelude = f"st.session_state.project_path = {str(ro_file)!r}; st.session_state.project_mtime = None"
+        prelude = f"st.session_state.project_path = {str(ro_file)!r}; st.session_state.project_stamp = None"
         at2 = _run(_script("pages_model", str(workspace["project"]), prelude=prelude))
         at2.text_input(key=wk(at2, "notes_freq")).set_value("x").run()
         assert not at2.exception
@@ -540,3 +543,288 @@ def test_misleading_37_monotone_on_a_categorical_is_a_validation_problem(workspa
 def test_cell_text_rules():
     assert pv._cell_text(None) == "" and pv._cell_text(float("nan")) == ""
     assert pv._cell_text("  x ") == "x" and math.isnan(float("nan"))
+
+
+# --------------------------------------------------------------------------
+# W3 review follow-ups (docs/reviews/w3-hardening.md, S1–S5 and item 32)
+# --------------------------------------------------------------------------
+def test_s1_autosave_error_clears_once_saving_works_again(workspace):
+    """S1: the red banner must go when autosave recovers, or the tool lies."""
+    path = workspace["project"]
+    at = _run(_script("pages_model", str(path)))
+    os.chmod(path, stat.S_IREAD)
+    try:
+        at.text_input(key=wk(at, "notes_freq")).set_value("while read-only").run()
+        assert any("Autosave failed" in e for e in _errors(at))
+        assert any("Autosave failed" in e for e in at.session_state["errors"])
+    finally:
+        os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+    at.run()  # settle the rerun the failure triggered (AppTest drops the next
+    # widget value otherwise); the banner is still there, nothing was saved
+    assert any("Autosave failed" in e for e in at.session_state["errors"])
+    assert json.loads(path.read_text())["models"]["freq"]["notes"] == ""
+    at.text_input(key=wk(at, "notes_freq")).set_value("the share came back").run()
+    assert not at.exception
+    assert at.session_state["errors"] == []
+    assert not any("Autosave" in e for e in _errors(at)), _errors(at)
+    saved = json.loads(path.read_text())["models"]["freq"]["notes"]
+    assert saved == "the share came back"
+
+
+def test_s2_rename_follows_into_filters_and_derived_expressions(workspace):
+    """S2: a rename rewrites pl.col('old') in row filters and derived columns
+    (and nothing else in the expression)."""
+    from easy_glm.workflow import Derived, prepare
+
+    p = Project.from_json(workspace["project"])
+    p.data.filters = ["pl.col('Exposure') > 0.02", 'pl.col("Exposure") < 0.99']
+    p.data.derived = [
+        Derived(name="claim_rate", expr="pl.col('ClaimNb') / pl.col('Exposure')"),
+        Derived(name="tag", expr="pl.lit('Exposure')"),  # a text literal, not a column
+    ]
+    assert p.expressions_using("Exposure") == [
+        "pl.col('Exposure') > 0.02",
+        'pl.col("Exposure") < 0.99',
+        "pl.col('ClaimNb') / pl.col('Exposure')",
+    ]
+    p.data.renames["Exposure"] = "exposure_years"
+    assert p.rename_column("Exposure", "exposure_years") == ["freq"]
+    assert p.data.filters == [
+        "pl.col('exposure_years') > 0.02",
+        "pl.col('exposure_years') < 0.99",
+    ]
+    assert [d.expr for d in p.data.derived] == [
+        "pl.col('ClaimNb') / pl.col('exposure_years')",
+        "pl.lit('Exposure')",  # untouched: only pl.col(...) references move
+    ]
+    assert p.data.roles["exposure_years"] == "weight"
+    assert p.expressions_using("Exposure") == []
+    # and the data steps still run after the rename (they used to fail with
+    # "unable to find column Exposure")
+    out = prepare(p, _frame())
+    assert "exposure_years" in out.columns and out.height > 0
+
+
+def test_s2_the_roles_grid_says_which_formulas_it_rewrote(workspace):
+    from easy_glm.workflow import Derived
+
+    p = Project.from_json(workspace["project"])
+    p.data.filters = ["pl.col('Exposure') > 0.02"]
+    p.data.derived = [
+        Derived(name="rate", expr="pl.col('ClaimNb') / pl.col('Exposure')")
+    ]
+    cols = _frame().columns
+    rows = [
+        {
+            "column": c,
+            "rename to": "exposure_years" if c == "Exposure" else "",
+            "role": p.data.roles.get(c, "unassigned"),
+            "type": "auto",
+        }
+        for c in cols
+    ]
+    changed, notices = pv.apply_roles_grid(p, cols, rows)
+    assert changed and not any(kind == "error" for kind, _ in notices)
+    said = "\n".join(text for _, text in notices)
+    assert "row filter / derived formula(s)" in said and "exposure_years" in said
+    assert p.data.filters == ["pl.col('exposure_years') > 0.02"]
+
+
+def test_s3_conflict_check_compares_content_not_only_the_timestamp(workspace):
+    """S3: another session's write with the same mtime (a coarse-timestamp
+    share) must still be seen as a conflict."""
+    path = workspace["project"]
+    p = Project.from_json(path)
+    p.models["freq"].notes = "A" * 12
+    p.to_json(path)
+    at = _run(_script("pages_model", str(path)))
+    seen = os.stat(path)
+    other = json.loads(path.read_text())
+    other["models"]["freq"]["notes"] = "B" * 12  # same number of bytes
+    path.write_text(json.dumps(other, indent=2))
+    os.utime(path, ns=(seen.st_atime_ns, seen.st_mtime_ns))  # a second-granular mount
+    now = os.stat(path)
+    assert (now.st_mtime_ns, now.st_size) == (seen.st_mtime_ns, seen.st_size)
+    at.text_input(key=wk(at, "notes_freq")).set_value("this tab's edit").run()
+    assert not at.exception
+    assert any("changed by another browser tab" in w.value for w in at.warning)
+    assert json.loads(path.read_text())["models"]["freq"]["notes"] == "B" * 12
+
+
+@pytest.mark.skipif(os.name == "nt", reason="chmod does not deny the owner on Windows")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads anything"
+)
+def test_s4_an_unreadable_data_file_keeps_the_persisted_fit(workspace):
+    """S4: a share that blips must not delete the fit (a cross-validated lasso
+    would have to be run again)."""
+    script = _script("pages_model", str(workspace["project"]), fit=True)
+    script += '\nst.session_state["_run"] = S.get_run("freq") is not None\n'
+    at = _run(script, 240)
+    assert at.session_state["_run"] is True
+    runs = workspace["dir"] / "w3.easyglm-runs"
+    persisted = sorted(runs.glob("*.pkl"))
+    assert len(persisted) == 1
+    stamp = persisted[0].stat().st_mtime_ns
+    blind = _script("pages_model", str(workspace["project"]))
+    blind += '\nst.session_state["_run"] = S.get_run("freq") is not None\n'
+    os.chmod(workspace["data"], 0)
+    try:
+        at2 = _run(blind)
+        assert any("Could not load" in e for e in _errors(at2)), _errors(at2)
+        assert at2.session_state["_run"] is False  # nothing claims to be fitted
+        assert sorted(runs.glob("*.pkl")) == persisted  # ... but the fit is kept
+    finally:
+        os.chmod(workspace["data"], stat.S_IREAD | stat.S_IWRITE)
+    at3 = _run(blind)
+    assert at3.session_state["_run"] is True  # restored, not refitted
+    assert persisted[0].stat().st_mtime_ns == stamp
+
+
+def _other_level_frame(n: int = 6000, seed: int = 11) -> pl.DataFrame:
+    """A book whose Area column has a real level called ``Other`` plus rare
+    levels that have to be lumped."""
+    rng = np.random.default_rng(seed)
+    area = rng.choice(["Other", "A", "B"], n, p=[0.4, 0.35, 0.25]).astype(object)
+    rare = rng.random(n) < 0.12
+    area[rare] = [f"Z{i % 40}" for i in range(int(rare.sum()))]
+    expo = rng.uniform(0.2, 1.0, n)
+    mu = np.exp(-2.0 + np.where(area == "A", 0.3, 0.0))
+    return pl.DataFrame(
+        {
+            "ClaimNb": rng.poisson(mu * expo).astype(float),
+            "Exposure": expo,
+            "Area": area,
+            "traintest": (rng.random(n) < 0.7).astype(int),
+        }
+    )
+
+
+def _other_level_project() -> Project:
+    p = Project(name="s5")
+    p.data.roles = {
+        "ClaimNb": "target",
+        "Exposure": "weight",
+        "Area": "predictor",
+        "traintest": "split",
+    }
+    p.data.split.mode = "column"
+    p.data.split.column = "traintest"
+    p.design.defaults.min_level_share = 0.05
+    p.new_model("m", divide_target_by_weight=True)
+    p.models["m"].penalty.alpha = 0.002
+    p.models["m"].penalty.cv = None
+    return p
+
+
+def test_s5_the_lumped_bucket_keeps_the_encoders_own_label():
+    """S5: with a real level called "Other", the leftovers row must read
+    "Other (lumped)" in the rate table, the workbook and the page — not
+    "Other / Unknown" next to a level called "Other"."""
+    from easy_glm.core.excel import rate_model_tables
+    from easy_glm.workflow import run_model
+
+    df = _other_level_frame()
+    run = run_model(_other_level_project(), df, "m")
+    enc = run.spec["Area"]
+    assert enc.other_label == "Other (lumped)"
+    labels = run.tables["Area"]["label"].to_list()
+    assert labels[-1] == "Other (lumped)"
+    assert "Other" in labels  # the real level is still there, and distinct
+    assert "Other / Unknown" not in labels
+    # the same label reaches the Rate tables page and the Excel export
+    cfg = run.rate_model.variables["Area"]
+    assert cfg.other_label == "Other (lumped)"
+    assert rate_model_tables(run.rate_model)["Area"]["label"].to_list() == labels
+    assert level_label(cfg.table[-1], cfg.other_label) == "Other (lumped)"
+    # a round trip through a saved model file keeps it
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "s5.easyglm"
+        run.rate_model.to_json(target)
+        assert RateModel.from_json(target).variables["Area"].other_label == (
+            "Other (lumped)"
+        )
+
+
+def test_s5_the_default_bucket_is_still_other_unknown(workspace):
+    """The wording only changes when the encoder had to rename its bucket."""
+    from easy_glm.core.excel import rate_model_tables
+    from easy_glm.workflow import run_model
+
+    p = Project.from_json(workspace["project"])
+    p.models["freq"].predictors = ["Region"]
+    run = run_model(p, _frame(), "freq")
+    assert run.spec["Region"].other_label == "Other"
+    assert run.tables["Region"]["label"].to_list()[-1] == "Other / Unknown"
+    assert run.rate_model.variables["Region"].other_label is None
+    labels = rate_model_tables(run.rate_model)["Region"]["label"].to_list()
+    assert labels[-1] == "Other / Unknown"
+
+
+def test_item_32_the_seed_box_shows_the_seed_the_project_holds(workspace):
+    """Item 32: the box used to show a number the project did not hold (and an
+    out-of-range seed in the file was a traceback)."""
+    p = Project.from_json(workspace["project"])
+    p.data.split.mode = "random"
+    p.data.split.column = "split_flag"
+    p.data.split.seed = 99_999_999_999
+    p.to_json(workspace["project"])
+    at = _run(_script("pages_split", str(workspace["project"])))
+    assert not at.exception
+    assert at.number_input(key=wk(at, "split_seed")).value == 99_999_999_999
+    assert at.session_state["_project"].data.split.seed == 99_999_999_999
+    assert any("0–10000" in w.value for w in at.warning), _texts(at)
+    # a value the box will not take leaves the project's seed alone
+    at.number_input(key=wk(at, "split_seed")).set_value(-5).run()
+    assert not at.exception
+    assert at.session_state["_project"].data.split.seed == 99_999_999_999
+    assert at.number_input(key=wk(at, "split_seed")).value == 99_999_999_999
+    # a seed in range is accepted, and the box then shows it
+    at.number_input(key=wk(at, "split_seed")).set_value(7).run()
+    assert at.session_state["_project"].data.split.seed == 7
+    assert at.number_input(key=wk(at, "split_seed")).value == 7
+    assert not any("0–10000" in w.value for w in at.warning)
+
+
+def test_project_token_is_stable_while_you_stay_in_one_project(workspace):
+    """Widget keys carry the project token: it must not rotate while you
+    navigate inside one project (or every page would lose its boxes)."""
+    path = str(workspace["project"])
+    script = f"""
+import importlib
+import streamlit as st
+from easy_glm.app import state as S
+from easy_glm.workflow import Project
+
+S.init_state()
+if not st.session_state.get("_loaded"):
+    S.set_project(Project.from_json({path!r}), {path!r})
+    st.session_state._loaded = True
+if st.session_state.get("_open"):
+    from easy_glm.app.pages_project import open_project_file
+
+    st.session_state["_open_error"] = open_project_file(st.session_state.pop("_open"))
+page = st.session_state.get("_page", "pages_variables")
+importlib.import_module("easy_glm.app." + page).render()
+st.session_state.setdefault("_tokens", []).append(st.session_state["project_token"])
+"""
+    at = _run(script)
+    for page in ("pages_explore", "pages_design", "pages_model", "pages_variables"):
+        at.session_state["_page"] = page
+        at.run()
+        assert not at.exception, page
+    # an edit (autosave included) must not rotate it either
+    at.session_state["_page"] = "pages_model"
+    at.run()
+    at.text_input(key=wk(at, "notes_freq")).set_value("a note").run()
+    assert len(set(at.session_state["_tokens"])) == 1, at.session_state["_tokens"]
+    # ... but loading another project does rotate it, so no widget carries a
+    # value from the project that was open before
+    other = workspace["dir"] / "other.easyglm-project.json"
+    Project(name="other").to_json(other)
+    at.session_state["_page"] = "pages_variables"
+    at.session_state["_open"] = str(other)
+    at.run()
+    assert at.session_state["_open_error"] is None
+    tokens = at.session_state["_tokens"]
+    assert len(set(tokens)) == 2 and tokens[-1] != tokens[0]

@@ -12,7 +12,16 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from ._helpers import assert_clean, click, fill, goto_page, settle, tab, wait_text
+from ._helpers import (
+    assert_clean,
+    click,
+    edit_grid_cell,
+    fill,
+    goto_page,
+    settle,
+    tab,
+    wait_text,
+)
 
 
 def _main(pg) -> str:
@@ -79,7 +88,30 @@ def test_breakit(breakit_server, browser, e2e_dir):
     assert_clean(pg, "split after the bad derived column")
     assert wait_text(pg, "train"), _main(pg)[:800]
 
-    # -- 4. a model name with a slash is refused before the model exists
+    # -- 4. the roles grid in a real browser: renaming a column carries the
+    #       role and the model reference *and* rewrites the row filter that
+    #       names it (docs/reviews/w3-hardening.md S2), so the data steps keep
+    #       working instead of "unable to find column Exposure"
+    goto_page(pg, "Variables")
+    assert_clean(pg, "variables before the rename")
+    edit_grid_cell(
+        pg,
+        0,
+        2,  # the Exposure row
+        "exposure_years",
+        column=1,  # the "rename to" column
+        expect="exposure_years",
+    )
+    assert_clean(pg, "roles grid rename")
+    saved = project_path.read_text()
+    assert '"exposure_years"' in saved, saved[:800]
+    assert "pl.col('exposure_years') > 0.02" in saved, "the row filter was not renamed"
+    goto_page(pg, "Split")
+    assert_clean(pg, "split after the rename")
+    assert "unable to find column" not in _main(pg), _main(pg)[:800]
+    assert wait_text(pg, "train"), _main(pg)[:800]
+
+    # -- 5. a model name with a slash is refused before the model exists
     goto_page(pg, "Model")
     assert_clean(pg, "model")
     fill(pg, "New model name", "a/b")
@@ -88,7 +120,7 @@ def test_breakit(breakit_server, browser, e2e_dir):
     assert pg.get_by_role("button", name="Create", exact=True).first.is_disabled()
     assert '"a/b"' not in project_path.read_text()
 
-    # -- 5. two tabs on one project file: the second tab's autosave pauses
+    # -- 6. two tabs on one project file: the second tab's autosave pauses
     #       instead of overwriting the first tab's work; "Reload from disk"
     #       takes the first tab's version and the tab keeps working
     pg2 = browser.new_page(viewport={"width": 1500, "height": 1000})
@@ -113,4 +145,20 @@ def test_breakit(breakit_server, browser, e2e_dir):
         project_path, "tab two after reload"
     ), "autosave stayed paused"
     assert_clean(pg2, "second tab after reload")
+
+    # -- 7. the other branch: the first tab (whose copy is now the stale one)
+    #       overwrites, and its autosave resumes afterwards
+    fill(pg, "Notes", "tab one wins")
+    assert_clean(pg, "first tab edit")
+    assert wait_text(pg, "changed by another browser tab"), _main(pg)[:800]
+    assert "tab one wins" not in project_path.read_text()
+    click(pg, "Overwrite with this tab's version")
+    assert_clean(pg, "overwrite")
+    assert _file_contains(project_path, "tab one wins"), "overwrite did not save"
+    assert not wait_text(pg, "changed by another browser tab", timeout=2)
+    fill(pg, "Notes", "tab one after overwrite")
+    assert _file_contains(
+        project_path, "tab one after overwrite"
+    ), "autosave stayed paused after Overwrite"
+    assert_clean(pg, "first tab after overwrite")
     print(f"break-it run: {time.time() - t0:.0f}s")
