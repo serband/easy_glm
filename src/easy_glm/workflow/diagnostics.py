@@ -21,6 +21,7 @@ import numpy as np
 import polars as pl
 
 from easy_glm.core.design import NUMERIC_DTYPES, quantile_knots
+from easy_glm.core.excel import rate_model_tables
 from easy_glm.core.fit import GLMFit
 from easy_glm.engine.models import NULL_LABEL
 
@@ -758,4 +759,205 @@ def model_metrics(
             "gini": gini(actual, expected, w),
             **dev,
         }
+    return out
+
+
+# --------------------------------------------------------------------------
+# champion vs challenger: which relativities differ
+# --------------------------------------------------------------------------
+#: schema of :func:`relativity_diff` (kept explicit so an empty diff still has
+#: the right columns and dtypes)
+DIFF_SCHEMA = {
+    "variable": pl.Utf8,
+    "kind": pl.Utf8,
+    "band": pl.Utf8,
+    "status": pl.Utf8,
+    "relativity_a": pl.Float64,
+    "relativity_b": pl.Float64,
+    "log_diff": pl.Float64,
+    "abs_log_diff": pl.Float64,
+}
+#: ``band`` of a row that is about a whole variable rather than one of its bands
+WHOLE_VARIABLE = "(all bands)"
+#: ``variable`` / ``band`` of the base-rate row
+BASE_RATE = "(base rate)"
+
+
+def _relativity_rows(run: Any) -> dict[str, tuple[str, dict[str, float]]]:
+    """``{variable: (kind, {band label: current relativity})}`` for a run.
+
+    The labels are the rate-table row labels (:func:`level_label`), i.e. the
+    same strings the tables, the Excel workbook and every A/E diagnostic use,
+    so two models are compared band by band by name. For a piecewise-linear
+    variable the value is the relativity at the **band start** (the node the
+    editor edits); for an interaction it is the cell adjustment.
+    """
+    tables = rate_model_tables(run.rate_model)
+    out: dict[str, tuple[str, dict[str, float]]] = {}
+    for var, table in tables.items():
+        kind = run.rate_model.variables[var].type
+        values = {
+            str(label): float(rel)
+            for label, rel in zip(
+                table["label"].to_list(), table["relativity"].to_list(), strict=True
+            )
+        }
+        out[var] = (kind, values)
+    return out
+
+
+def _log_ratio(a: float, b: float) -> float | None:
+    if a > 0 and b > 0:
+        return float(np.log(b / a))
+    return None
+
+
+def relativity_diff(run_a: Any, run_b: Any, tol: float = 0.01) -> pl.DataFrame:
+    """Which relativities differ between two fitted runs (champion ``run_a``
+    vs challenger ``run_b``), as a long table.
+
+    One row per **band that differs**: a band present in both models whose
+    ``|log(rel_b / rel_a)|`` exceeds ``tol`` (0.01 ≈ a 1 % change in the
+    relativity), a band only one of them has, and a variable only one of them
+    has (one row, ``band = "(all bands)"``). Interactions are compared cell by
+    cell and piecewise-linear terms by their band-start values. The base rates
+    are compared too, as the row ``variable = "(base rate)"`` — two models with
+    the same relativities but a different base rate charge different premiums.
+
+    Bands are matched by their rate-table label, so a model whose knots or
+    levels moved shows its bands as *only in* rows rather than as spurious
+    changes.
+
+    Columns: ``variable``, ``kind`` (``numeric`` / ``categorical`` / ``linear``
+    / ``interaction`` / ``base rate``), ``band``, ``status`` (``changed``,
+    ``only_in_a`` / ``only_in_b`` for a whole variable, ``band_only_in_a`` /
+    ``band_only_in_b``), ``relativity_a``, ``relativity_b``, ``log_diff``
+    (``log(b / a)``) and ``abs_log_diff``. Sorted by ``abs_log_diff``
+    descending, the *only in* rows last. Two identical runs give an empty
+    table.
+    """
+    tol = abs(float(tol))
+    a_rows = _relativity_rows(run_a)
+    b_rows = _relativity_rows(run_b)
+    rows: list[dict[str, Any]] = []
+
+    base_log = _log_ratio(run_a.rate_model.base_rate, run_b.rate_model.base_rate)
+    if base_log is None or abs(base_log) > tol:
+        rows.append(
+            {
+                "variable": BASE_RATE,
+                "kind": "base rate",
+                "band": BASE_RATE,
+                "status": "changed",
+                "relativity_a": float(run_a.rate_model.base_rate),
+                "relativity_b": float(run_b.rate_model.base_rate),
+                "log_diff": base_log,
+                "abs_log_diff": None if base_log is None else abs(base_log),
+            }
+        )
+
+    for var, (kind, values) in a_rows.items():
+        if var not in b_rows:
+            rows.append(
+                {
+                    "variable": var,
+                    "kind": kind,
+                    "band": WHOLE_VARIABLE,
+                    "status": "only_in_a",
+                    "relativity_a": None,
+                    "relativity_b": None,
+                    "log_diff": None,
+                    "abs_log_diff": None,
+                }
+            )
+            continue
+        other = b_rows[var][1]
+        for label, rel_a in values.items():
+            if label not in other:
+                rows.append(
+                    {
+                        "variable": var,
+                        "kind": kind,
+                        "band": label,
+                        "status": "band_only_in_a",
+                        "relativity_a": rel_a,
+                        "relativity_b": None,
+                        "log_diff": None,
+                        "abs_log_diff": None,
+                    }
+                )
+                continue
+            rel_b = other[label]
+            log_diff = _log_ratio(rel_a, rel_b)
+            if log_diff is not None and abs(log_diff) <= tol:
+                continue
+            rows.append(
+                {
+                    "variable": var,
+                    "kind": kind,
+                    "band": label,
+                    "status": "changed",
+                    "relativity_a": rel_a,
+                    "relativity_b": rel_b,
+                    "log_diff": log_diff,
+                    "abs_log_diff": None if log_diff is None else abs(log_diff),
+                }
+            )
+    for var, (kind, values) in b_rows.items():
+        if var not in a_rows:
+            rows.append(
+                {
+                    "variable": var,
+                    "kind": kind,
+                    "band": WHOLE_VARIABLE,
+                    "status": "only_in_b",
+                    "relativity_a": None,
+                    "relativity_b": None,
+                    "log_diff": None,
+                    "abs_log_diff": None,
+                }
+            )
+            continue
+        for label, rel_b in values.items():
+            if label not in a_rows[var][1]:
+                rows.append(
+                    {
+                        "variable": var,
+                        "kind": kind,
+                        "band": label,
+                        "status": "band_only_in_b",
+                        "relativity_a": None,
+                        "relativity_b": rel_b,
+                        "log_diff": None,
+                        "abs_log_diff": None,
+                    }
+                )
+    return pl.DataFrame(rows, schema=DIFF_SCHEMA).sort(
+        ["abs_log_diff", "variable", "band"],
+        descending=[True, False, False],
+        nulls_last=True,
+    )
+
+
+def describe_diff(diff: pl.DataFrame, name_a: str, name_b: str) -> pl.DataFrame:
+    """:func:`relativity_diff` with the statuses in words and the two relativity
+    columns named after the models — what a page or a report shows.
+
+    ``diff`` is not modified. Columns that would collide with an existing name
+    are left alone.
+    """
+    labels = {
+        "changed": "changed",
+        "only_in_a": f"only in {name_a}",
+        "only_in_b": f"only in {name_b}",
+        "band_only_in_a": f"band only in {name_a}",
+        "band_only_in_b": f"band only in {name_b}",
+    }
+    out = diff.with_columns(pl.col("status").replace(labels))
+    rename = {
+        "relativity_a": f"{name_a} relativity",
+        "relativity_b": f"{name_b} relativity",
+    }
+    if len(set(rename.values())) == 2 and not (set(rename.values()) & set(out.columns)):
+        out = out.rename(rename)
     return out
