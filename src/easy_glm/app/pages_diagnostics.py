@@ -134,12 +134,22 @@ def render() -> None:
             + ". Refit on the Model page after fixing the Variables page."
         )
         return
-    fitted = [n for n in S.current_runs() if S.get_run(n) is not None and n != run.name]
+    fitted = [n for n in S.fitted_models() if n != run.name]
+    # the sidebar's "compare with" is the default; picking another one here
+    # overrides it for this page (the widget's key carries the sidebar value, so
+    # moving the sidebar selector re-defaults this one)
+    sidebar = S.challenger()
+    options = ["(none)"] + fitted
+    default = sidebar if sidebar in fitted else "(none)"
     with c2:
         chal_name = st.selectbox(
             "Compare with (challenger)",
-            ["(none)"] + fitted,
-            key=S.widget_key("diag_chal"),
+            options,
+            index=options.index(default),
+            key=S.widget_key(f"diag_chal_{sidebar}"),
+            help="Defaults to the sidebar's *Compare with*; change it here to "
+            "override it on this page. The full side-by-side view is the "
+            "**Compare** page.",
         )
     challenger = S.get_run(chal_name) if chal_name != "(none)" else None
     with c3:

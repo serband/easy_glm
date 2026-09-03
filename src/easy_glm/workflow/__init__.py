@@ -8,12 +8,15 @@ from .diagnostics import (
     ae_by_pair,
     ae_by_variable,
     alpha_path,
+    base_rate_change,
+    describe_diff,
     deviance_stats,
     double_lift,
     gini,
     lift_table,
     model_metrics,
     pearson_dispersion,
+    relativity_diff,
     residual_factor_search,
     residual_pair_search,
     totals,
@@ -46,6 +49,7 @@ from .project import (
     Split,
     VariableDesign,
 )
+from .report import to_report_html
 from .run import (
     AdjustmentError,
     ModelRun,
@@ -102,8 +106,12 @@ __all__ = [
     "ae_by_pair",
     "residual_factor_search",
     "residual_pair_search",
+    "relativity_diff",
+    "base_rate_change",
+    "describe_diff",
     "pearson_dispersion",
     "alpha_path",
     "model_metrics",
     "to_script",
+    "to_report_html",
 ]

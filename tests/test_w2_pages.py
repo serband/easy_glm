@@ -496,6 +496,7 @@ PAGES = [
     "pages_design",
     "pages_model",
     "pages_diagnostics",
+    "pages_compare",
     "pages_tables",
     "pages_export",
 ]
@@ -534,6 +535,7 @@ def test_pages_survive_a_missing_data_file(page, workspace, tmp_path):
         "pages_design",
         "pages_model",
         "pages_diagnostics",
+        "pages_compare",
         "pages_tables",
         "pages_export",
     ],

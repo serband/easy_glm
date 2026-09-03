@@ -79,6 +79,7 @@ PAGES = [
     "pages_design",
     "pages_model",
     "pages_diagnostics",
+    "pages_compare",
     "pages_tables",
     "pages_export",
 ]

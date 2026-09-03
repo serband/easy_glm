@@ -21,8 +21,9 @@ import numpy as np
 import polars as pl
 
 from easy_glm.core.design import NUMERIC_DTYPES, quantile_knots
+from easy_glm.core.excel import rate_model_tables
 from easy_glm.core.fit import GLMFit
-from easy_glm.engine.models import NULL_LABEL
+from easy_glm.engine.models import NULL_LABEL, FromToRow, level_label
 
 from .explore import band_expr
 from .project import ModelConfig
@@ -758,4 +759,365 @@ def model_metrics(
             "gini": gini(actual, expected, w),
             **dev,
         }
+    return out
+
+
+# --------------------------------------------------------------------------
+# champion vs challenger: which relativities differ
+# --------------------------------------------------------------------------
+#: schema of :func:`relativity_diff` (kept explicit so an empty diff still has
+#: the right columns and dtypes)
+DIFF_SCHEMA = {
+    "variable": pl.Utf8,
+    "kind": pl.Utf8,
+    "band": pl.Utf8,
+    "status": pl.Utf8,
+    "relativity_a": pl.Float64,
+    "relativity_b": pl.Float64,
+    "log_diff": pl.Float64,
+    "abs_log_diff": pl.Float64,
+}
+#: ``band`` of a row that is about a whole variable rather than one of its bands
+WHOLE_VARIABLE = "(all bands)"
+#: ``variable`` / ``band`` of the base-rate row
+BASE_RATE = "(base rate)"
+#: ``band`` of a numeric variable whose table has no band edge at all
+ALL_VALUES = "(all values)"
+#: kinds whose relativity is a function of a *number*: two models can be put on
+#: a common grid of band edges even when their own bands do not line up
+NUMERIC_KINDS = ("numeric", "linear")
+
+#: one non-null table row as ``(from, to, relativity at from, log slope)``
+_Band = tuple[float | None, float | None, float, float]
+
+
+def _model_tables(run: Any) -> dict[str, tuple[str, pl.DataFrame]]:
+    """``{variable: (kind, rate table)}`` with the *current* relativities
+    (manual adjustments included)."""
+    tables = rate_model_tables(run.rate_model)
+    return {
+        var: (run.rate_model.variables[var].type, table)
+        for var, table in tables.items()
+    }
+
+
+def _label_values(table: pl.DataFrame) -> dict[str, float]:
+    """``{rate-table row label: current relativity}`` — how categoricals and
+    interaction cells are matched between two models."""
+    return {
+        str(label): float(rel)
+        for label, rel in zip(
+            table["label"].to_list(), table["relativity"].to_list(), strict=True
+        )
+    }
+
+
+def _curve(table: pl.DataFrame) -> tuple[list[_Band], float | None]:
+    """``([(from, to, relativity, slope)], null relativity)`` of a numeric or
+    piecewise-linear table, in band order. ``slope`` is 0 for a step table, so
+    both kinds are evaluated by the same rule."""
+    bands: list[_Band] = []
+    null_relativity: float | None = None
+    has_slope = "slope" in table.columns
+    for row in table.iter_rows(named=True):
+        lo, hi = row["from"], row["to"]
+        relativity = float(row["relativity"])
+        if lo is None and hi is None:
+            null_relativity = relativity
+            continue
+        slope = float(row["slope"]) if has_slope and row["slope"] is not None else 0.0
+        bands.append(
+            (
+                None if lo is None else float(lo),
+                None if hi is None else float(hi),
+                relativity,
+                slope,
+            )
+        )
+    bands.sort(key=lambda b: (b[0] is not None, b[0] if b[0] is not None else 0.0))
+    return bands, null_relativity
+
+
+def _value_at(bands: list[_Band], x: float) -> float | None:
+    """The curve's relativity at ``x``: the band containing ``x`` (bands are
+    ``[from, to)``), with the piecewise-linear rule
+    ``relativity * exp(slope * (x - from))`` inside it."""
+    for lo, hi, relativity, slope in bands:
+        if (lo is None or x >= lo) and (hi is None or x < hi):
+            if slope and lo is not None:
+                return float(relativity * np.exp(slope * (x - lo)))
+            return relativity
+    return None
+
+
+def _common_grid(
+    a: list[_Band], b: list[_Band]
+) -> list[tuple[float | None, float | None]]:
+    """The union of both curves' band edges, as ``[from, to)`` intervals. Every
+    interval lies inside one band of *each* model, so the two curves can be
+    compared on it whatever their own bands are."""
+    edges = sorted(
+        {
+            edge
+            for bands in (a, b)
+            for lo, hi, _r, _s in bands
+            for edge in (lo, hi)
+            if edge is not None
+        }
+    )
+    if not edges:
+        return [(None, None)]
+    return [
+        (None, edges[0]),
+        *((edges[i], edges[i + 1]) for i in range(len(edges) - 1)),
+        (edges[-1], None),
+    ]
+
+
+def _grid_point(lo: float | None, hi: float | None) -> float:
+    """Where a common-grid interval is evaluated: its **start**, and one unit
+    below the lowest edge for the open bottom interval (both curves are flat
+    there, so any point below it gives the same answer)."""
+    if lo is not None:
+        return lo
+    return (hi - 1.0) if hi is not None else 0.0
+
+
+def _log_ratio(a: float, b: float) -> float | None:
+    if a > 0 and b > 0:
+        return float(np.log(b / a))
+    return None
+
+
+def _difference(rel_a: float, rel_b: float, tol: float) -> tuple[bool, float | None]:
+    """``(list this band?, log(b / a))``.
+
+    Two identical values are never a change — including two zeros or two
+    negatives, whose log ratio does not exist. A value that changed but whose
+    log ratio does not exist (a relativity crossing zero) is always listed.
+    """
+    if rel_a == rel_b:
+        return False, 0.0
+    log_diff = _log_ratio(rel_a, rel_b)
+    if log_diff is None:
+        return True, None
+    return abs(log_diff) > tol, log_diff
+
+
+def base_rate_change(run_a: Any, run_b: Any) -> float | None:
+    """``base_rate_b / base_rate_a - 1`` — the change in the **overall level**
+    between two runs, which multiplies every band's relativity change into a
+    premium change. ``None`` when either base rate is not positive."""
+    base_a = float(run_a.rate_model.base_rate)
+    base_b = float(run_b.rate_model.base_rate)
+    if base_a <= 0 or base_b <= 0:
+        return None
+    return base_b / base_a - 1.0
+
+
+def relativity_diff(run_a: Any, run_b: Any, tol: float = 0.01) -> pl.DataFrame:
+    """Which relativities differ between two fitted runs (champion ``run_a``
+    vs challenger ``run_b``), as a long table.
+
+    One row per **band that differs**: a band whose ``|log(rel_b / rel_a)|``
+    exceeds ``tol`` (0.01 ≈ a 1 % change in the relativity), a band only one of
+    them has, and a variable only one of them has (one row,
+    ``band = "(all bands)"``). The base rates are compared too, as the row
+    ``variable = "(base rate)"`` — two models with the same relativities but a
+    different base rate charge different premiums; :func:`base_rate_change`
+    gives that overall level change on its own.
+
+    How two models are lined up depends on the kind of the factor:
+
+    * **numeric and piecewise-linear** terms are compared on a **common grid**:
+      the union of both models' band edges. Every interval of that grid lies
+      inside one band of each model, so a model whose knots moved — or that
+      represents the factor as a straight line while the other bands it — is
+      compared like for like instead of by band name. Each interval is
+      evaluated at its start (for a linear term that is the node the editor
+      edits; a step term is flat across the interval anyway).
+    * **categorical** terms and **interaction cells** are matched by their
+      rate-table label, the same string the tables, the Excel workbook and
+      every A/E diagnostic use. A level or cell only one model has becomes a
+      ``band_only_in_*`` row.
+
+    When the two models represent a factor differently the ``kind`` column
+    reads ``"numeric → linear"``, so no row can be mistaken for a like-for-like
+    comparison of the same design.
+
+    Columns: ``variable``, ``kind``, ``band``, ``status`` (``changed``,
+    ``only_in_a`` / ``only_in_b`` for a whole variable, ``band_only_in_a`` /
+    ``band_only_in_b``), ``relativity_a``, ``relativity_b``, ``log_diff``
+    (``log(b / a)``) and ``abs_log_diff``. Sorted by ``abs_log_diff``
+    descending, the *only in* rows last. Two identical runs give an empty
+    table, and the result is exactly symmetric: swapping the runs swaps the
+    statuses and negates every ``log_diff``.
+    """
+    tol = abs(float(tol))
+    a_tables = _model_tables(run_a)
+    b_tables = _model_tables(run_b)
+    rows: list[dict[str, Any]] = []
+
+    def _row(var: str, kind: str, band: str, status: str, **rest: Any) -> None:
+        rows.append(
+            {
+                "variable": var,
+                "kind": kind,
+                "band": band,
+                "status": status,
+                "relativity_a": rest.get("relativity_a"),
+                "relativity_b": rest.get("relativity_b"),
+                "log_diff": rest.get("log_diff"),
+                "abs_log_diff": (
+                    None
+                    if rest.get("log_diff") is None
+                    else abs(float(rest["log_diff"]))
+                ),
+            }
+        )
+
+    base_a = float(run_a.rate_model.base_rate)
+    base_b = float(run_b.rate_model.base_rate)
+    listed, base_log = _difference(base_a, base_b, tol)
+    if listed:
+        _row(
+            BASE_RATE,
+            "base rate",
+            BASE_RATE,
+            "changed",
+            relativity_a=base_a,
+            relativity_b=base_b,
+            log_diff=base_log,
+        )
+
+    for var, (kind_a, table_a) in a_tables.items():
+        if var not in b_tables:
+            _row(var, kind_a, WHOLE_VARIABLE, "only_in_a")
+            continue
+        kind_b, table_b = b_tables[var]
+        kind = kind_a if kind_a == kind_b else f"{kind_a} → {kind_b}"
+        if kind_a in NUMERIC_KINDS and kind_b in NUMERIC_KINDS:
+            _numeric_diff(_row, var, kind, table_a, table_b, tol)
+        else:
+            _label_diff(_row, var, kind, table_a, table_b, tol)
+
+    for var, (kind_b, _table_b) in b_tables.items():
+        if var not in a_tables:
+            _row(var, kind_b, WHOLE_VARIABLE, "only_in_b")
+
+    return pl.DataFrame(rows, schema=DIFF_SCHEMA).sort(
+        ["abs_log_diff", "variable", "band"],
+        descending=[True, False, False],
+        nulls_last=True,
+    )
+
+
+def _numeric_diff(
+    emit: Any,
+    var: str,
+    kind: str,
+    table_a: pl.DataFrame,
+    table_b: pl.DataFrame,
+    tol: float,
+) -> None:
+    """Compare two numeric / piecewise-linear tables on the union of their band
+    edges (see :func:`relativity_diff`)."""
+    bands_a, null_a = _curve(table_a)
+    bands_b, null_b = _curve(table_b)
+    for lo, hi in _common_grid(bands_a, bands_b):
+        band = (
+            ALL_VALUES
+            if lo is None and hi is None
+            else level_label(FromToRow(lo, hi, 0.0))
+        )
+        x = _grid_point(lo, hi)
+        rel_a = _value_at(bands_a, x)
+        rel_b = _value_at(bands_b, x)
+        if rel_a is None or rel_b is None:  # pragma: no cover - grid covers both
+            continue
+        listed, log_diff = _difference(rel_a, rel_b, tol)
+        if listed:
+            emit(
+                var,
+                kind,
+                band,
+                "changed",
+                relativity_a=rel_a,
+                relativity_b=rel_b,
+                log_diff=log_diff,
+            )
+    _compare_pair(emit, var, kind, NULL_LABEL, null_a, null_b, tol)
+
+
+def _label_diff(
+    emit: Any,
+    var: str,
+    kind: str,
+    table_a: pl.DataFrame,
+    table_b: pl.DataFrame,
+    tol: float,
+) -> None:
+    """Compare two tables row by row on their rate-table labels (categoricals
+    and interaction cells)."""
+    values_a = _label_values(table_a)
+    values_b = _label_values(table_b)
+    for label, rel_a in values_a.items():
+        _compare_pair(emit, var, kind, label, rel_a, values_b.get(label), tol)
+    for label, rel_b in values_b.items():
+        if label not in values_a:
+            _compare_pair(emit, var, kind, label, None, rel_b, tol)
+
+
+def _compare_pair(
+    emit: Any,
+    var: str,
+    kind: str,
+    band: str,
+    rel_a: float | None,
+    rel_b: float | None,
+    tol: float,
+) -> None:
+    """One band that either model may lack."""
+    if rel_a is None and rel_b is None:
+        return
+    if rel_b is None:
+        emit(var, kind, band, "band_only_in_a", relativity_a=rel_a)
+        return
+    if rel_a is None:
+        emit(var, kind, band, "band_only_in_b", relativity_b=rel_b)
+        return
+    listed, log_diff = _difference(rel_a, rel_b, tol)
+    if listed:
+        emit(
+            var,
+            kind,
+            band,
+            "changed",
+            relativity_a=rel_a,
+            relativity_b=rel_b,
+            log_diff=log_diff,
+        )
+
+
+def describe_diff(diff: pl.DataFrame, name_a: str, name_b: str) -> pl.DataFrame:
+    """:func:`relativity_diff` with the statuses in words and the two relativity
+    columns named after the models — what a page or a report shows.
+
+    ``diff`` is not modified. Columns that would collide with an existing name
+    are left alone.
+    """
+    labels = {
+        "changed": "changed",
+        "only_in_a": f"only in {name_a}",
+        "only_in_b": f"only in {name_b}",
+        "band_only_in_a": f"band only in {name_a}",
+        "band_only_in_b": f"band only in {name_b}",
+    }
+    out = diff.with_columns(pl.col("status").replace(labels))
+    rename = {
+        "relativity_a": f"{name_a} relativity",
+        "relativity_b": f"{name_b} relativity",
+    }
+    if len(set(rename.values())) == 2 and not (set(rename.values()) & set(out.columns)):
+        out = out.rename(rename)
     return out

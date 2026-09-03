@@ -12,6 +12,7 @@ from pathlib import Path
 import streamlit as st
 
 from easy_glm.app import (
+    pages_compare,
     pages_design,
     pages_diagnostics,
     pages_explore,
@@ -89,6 +90,12 @@ pages = [
         url_path="diagnostics",
     ),
     st.Page(
+        pages_compare.render,
+        title="Compare",
+        icon=":material/compare_arrows:",
+        url_path="compare",
+    ),
+    st.Page(
         pages_tables.render,
         title="Rate tables",
         icon=":material/table_chart:",
@@ -122,6 +129,27 @@ with st.sidebar:
             "Models: "
             + ", ".join(f"**{n}**" if n == p.champion else n for n in p.models)
         )
+    # one "compare with" choice for the whole session: the Compare, Diagnostics
+    # and Rate tables pages default to it (each still allows a page-level
+    # override, which sticks until this selector moves)
+    fitted = S.fitted_models()
+    champion = p.champion if p.champion in fitted else (fitted[0] if fitted else None)
+    options = ["(none)"] + [n for n in fitted if n != champion]
+    if len(options) > 1:
+        current = S.challenger()
+        choice = st.selectbox(
+            "Compare with",
+            options,
+            index=options.index(current) if current in options else 0,
+            key=S.widget_key("sidebar_challenger"),
+            help="The challenger overlaid on Diagnostics and Rate tables, and "
+            "the default challenger of the Compare page.",
+        )
+        S.set_challenger(None if choice == "(none)" else choice)
+    # when fewer than two models are fitted the selector is not drawn; the
+    # stored choice is left alone (editing the design stales the fits for a
+    # moment, and the challenger must survive the refit). `S.challenger()`
+    # ignores a name that is no longer a model of the project.
     if st.button("Save project", width="stretch"):
         path = st.session_state.project_path or S.default_project_path(p)
         err = S.save_project(path)
