@@ -247,7 +247,8 @@ out["files"] = [f.name for f in sorted(S.runs_dir().glob("*.pkl"))] if S.runs_di
     def test_run_is_restored_after_a_reload_with_identical_predictions(self, workspace):
         at = self._fit_and_persist(workspace)
         o = at.session_state["out"]
-        assert len(o["persisted"]) == 1 and o["persisted"][0].startswith("freq-")
+        assert len(o["persisted"]) == 1
+        assert o["persisted"][0].startswith(S._model_tag("freq") + "-")
         assert (
             o["sidecar"]
             and json.loads((workspace["runs"] / o["sidecar"][0]).read_text())["model"]
@@ -260,7 +261,8 @@ out["files"] = [f.name for f in sorted(S.runs_dir().glob("*.pkl"))] if S.runs_di
         self._fit_and_persist(workspace)
         _frame(seed=9).write_parquet(workspace["data"])  # new content, new size/mtime
         o = self._reload(workspace)
-        assert o["restored"] is False and o["files"] == []
+        # not restored; the old file stays until a newer run of the model is saved
+        assert o["restored"] is False and len(o["files"]) == 1
 
     def test_touching_only_the_mtime_invalidates(self, workspace):
         self._fit_and_persist(workspace)
@@ -286,13 +288,20 @@ out["files_after_refit"] = [f.name for f in sorted(S.runs_dir().glob("*.pkl"))]
             and len(o["files_after_refit"]) == 1
         )
 
-    def test_spec_change_invalidates_and_cleans_the_folder(self, workspace):
+    def test_spec_change_invalidates_and_a_new_fit_replaces_the_file(self, workspace):
         self._fit_and_persist(workspace)
         p = Project.from_json(workspace["project"])
         p.models["freq"].penalty.alpha = 0.01
         p.to_json(workspace["project"])
-        o = self._reload(workspace)
-        assert o["restored"] is False and o["files"] == []
+        o = self._reload(
+            workspace,
+            extra="""
+S.fit_model("freq")
+out["files_after_refit"] = [f.name for f in sorted(S.runs_dir().glob("*.pkl"))]
+""",
+        )
+        assert o["restored"] is False and len(o["files"]) == 1  # kept until replaced
+        assert len(o["files_after_refit"]) == 1 and o["files_after_refit"] != o["files"]
 
     def test_version_change_invalidates(self, workspace):
         self._fit_and_persist(workspace)
@@ -329,31 +338,37 @@ out["adjustments_on_run"] = len(S.get_run("freq").config.adjustments)
 
     def test_two_models_persist_independently_latest_only(self, workspace):
         body = """
-p.new_model("freq2", divide_target_by_weight=True, predictors=["DrivAge", "Region"])
-p.models["freq2"].penalty.alpha = 0.003
-p.models["freq2"].penalty.cv = None
+p.new_model("freq-2", divide_target_by_weight=True, predictors=["DrivAge", "Region"])
+p.models["freq-2"].penalty.alpha = 0.003
+p.models["freq-2"].penalty.cv = None
 S.touch()
 S.fit_model("freq")
-S.fit_model("freq2")
+S.fit_model("freq-2")
 first = sorted(f.name for f in S.runs_dir().glob("*.pkl"))
 p.models["freq"].penalty.alpha = 0.004
 S.touch()
 S.fit_model("freq")
 second = sorted(f.name for f in S.runs_dir().glob("*.pkl"))
+st.session_state.runs = {}
 out["first"] = first
 out["second"] = second
-out["both"] = S.get_run("freq") is not None and S.get_run("freq2") is not None
+out["both"] = S.get_run("freq") is not None and S.get_run("freq-2") is not None
+out["tag_freq"] = S._model_tag("freq")
+out["tag_freq2"] = S._model_tag("freq-2")
+out["tmp_left"] = [f.name for f in S.runs_dir().glob("*.tmp")]
 """
         at = _run(_script(workspace["project"], body))
         o = at.session_state["out"]
+        t1, t2 = o["tag_freq"], o["tag_freq2"]
         assert len(o["first"]) == 2 and len(o["second"]) == 2
-        assert [f for f in o["first"] if f.startswith("freq2-")] == [
-            f for f in o["second"] if f.startswith("freq2-")
+        # the prefix-sharing model keeps its file across the other model's refit
+        assert [f for f in o["first"] if f.startswith(t2)] == [
+            f for f in o["second"] if f.startswith(t2)
         ]
-        assert [f for f in o["first"] if f.startswith("freq-")] != [
-            f for f in o["second"] if f.startswith("freq-")
+        assert [f for f in o["first"] if f.startswith(t1)] != [
+            f for f in o["second"] if f.startswith(t1)
         ]
-        assert o["both"]
+        assert o["both"] and o["tmp_left"] == []
 
     def test_unsaved_project_persists_nothing(self, workspace):
         body = """
@@ -385,6 +400,130 @@ out["r3"] = {str(r.from_): r.relativity for r in rm.variables["Region"].table}["
 """,
         )
         assert o["restored"] and o["r3"] == pytest.approx(0.5)
+
+
+class TestReviewFollowUps:
+    def test_derived_preview_works_with_and_without_a_sample(self, workspace):
+        for sample in (0, 60):
+            body = f"""
+from easy_glm.app import pages_variables
+p.data.sample_rows = {sample} or None
+S.touch()
+pages_variables.render()
+"""
+            script = _script(workspace["project"], body)
+            at = AppTest.from_string(script, default_timeout=180)
+            at.run()
+            assert not at.exception
+            at.text_input(key="derived_name").set_value("AgeSq")
+            at.text_input(key="derived_expr").set_value("pl.col('DrivAge') ** 2")
+            at.button(key="derived_preview").click().run()
+            assert not at.exception, [e.value for e in at.exception]
+            assert not at.error, [e.value for e in at.error]
+            assert at.dataframe or at.markdown  # a preview appeared
+
+    def test_sample_widget_does_not_leak_into_another_project(
+        self, workspace, tmp_path
+    ):
+        other = tmp_path / "other.easyglm-project.json"
+        q = Project.from_json(workspace["project"])
+        q.name = "other"
+        q.to_json(other)
+        body = f"""
+from easy_glm.app import pages_project
+if st.session_state.get("phase", 0) == 0:
+    p.data.sample_rows = 60
+    S.touch()
+    pages_project.render()
+else:
+    if st.session_state.phase == 1:
+        S.set_project(Project.from_json({str(other)!r}), {str(other)!r})
+    pages_project.render()
+    out["other_sample"] = S.project().data.sample_rows
+    out["on_disk"] = Project.from_json({str(other)!r}).data.sample_rows
+    out["widget"] = st.session_state.get("sample_rows")
+"""
+        script = _script(workspace["project"], body)
+        at = AppTest.from_string(script, default_timeout=180)
+        at.run()
+        assert not at.exception
+        assert at.session_state["sample_rows"] == 60
+        for phase in (1, 2):  # open the other project, then one more rerun
+            at.session_state["phase"] = phase
+            at.run()
+            assert not at.exception, [e.value for e in at.exception]
+            o = at.session_state["out"]
+            assert o["other_sample"] is None and o["on_disk"] is None
+            assert o["widget"] in (None, 0)
+
+    def test_transient_spec_edit_does_not_erase_the_persisted_fit(self, workspace):
+        body = """
+run = S.fit_model("freq")
+files = [f.name for f in S.runs_dir().glob("*.pkl")]
+p.models["freq"].penalty.alpha = 0.01   # look at a different alpha ...
+S.touch()
+st.session_state.runs = {}
+out["while_edited"] = S.get_run("freq") is not None
+out["files_kept"] = [f.name for f in S.runs_dir().glob("*.pkl")] == files
+p.models["freq"].penalty.alpha = 0.002  # ... and change your mind
+S.touch()
+out["after_revert"] = S.get_run("freq") is not None
+"""
+        at = _run(_script(workspace["project"], body))
+        o = at.session_state["out"]
+        assert o["while_edited"] is False and o["files_kept"] and o["after_revert"]
+
+    def test_refused_adjustment_is_dropped_on_load_not_refitted(self, workspace):
+        body = """
+run = S.fit_model("freq")
+"""
+        _run(_script(workspace["project"], body))
+        p = Project.from_json(workspace["project"])
+        from easy_glm.workflow import Adjustment
+
+        p.models["freq"].adjustments.append(Adjustment("Region", "R2", "R2", 1.3))
+        p.models["freq"].adjustments.append(Adjustment("Region", "NOPE", "NOPE", 1.1))
+        p.to_json(workspace["project"])
+        body = """
+run = S.get_run("freq")
+out["restored"] = run is not None
+out["adjustments"] = [a.from_ for a in p.models["freq"].adjustments]
+out["r2"] = {str(r.from_): r.relativity for r in run.rate_model.variables["Region"].table}["R2"]
+out["files"] = len(list(S.runs_dir().glob("*.pkl")))
+"""
+        at = _run(_script(workspace["project"], body))
+        o = at.session_state["out"]
+        assert (
+            o["restored"]
+            and o["adjustments"] == ["R2"]
+            and o["r2"] == pytest.approx(1.3)
+        )
+        assert o["files"] == 1 and at.error  # the refused entry was reported
+
+    def test_orphaned_model_files_are_removed_on_save(self, workspace):
+        body = """
+p.new_model("temp", divide_target_by_weight=True, predictors=["DrivAge"])
+p.models["temp"].penalty.alpha = 0.003
+p.models["temp"].penalty.cv = None
+S.touch()
+S.fit_model("temp")
+S.fit_model("freq")
+before = len(list(S.runs_dir().glob("*.pkl")))
+p.models.pop("temp")
+S.touch()
+S.refresh_adjustments("freq")  # any save of a live model tidies the folder
+out["before"] = before
+out["after"] = len(list(S.runs_dir().glob("*.pkl")))
+"""
+        at = _run(_script(workspace["project"], body))
+        o = at.session_state["out"]
+        assert o["before"] == 2 and o["after"] == 1
+
+    def test_persist_format_is_part_of_the_key(self, workspace, monkeypatch):
+        p = Project.from_json(workspace["project"])
+        k0 = S.run_key(p, "freq")
+        monkeypatch.setattr(S, "PERSIST_FORMAT", 99)
+        assert S.run_key(p, "freq") != k0
 
 
 def test_easyglm_summary_exposes_offset(workspace):

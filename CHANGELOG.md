@@ -17,7 +17,12 @@
   specification, the data file (path, size, last-modified time) and the
   library versions all match; anything else is discarded and refitted.
   Manual adjustments and the base-rate override are re-applied from the
-  project file on load. The folder holds pickles — trusted local content, like
+  project file on load (an entry the model refuses is dropped with a message).
+  A file whose key no longer matches is kept until a newer fit of the same
+  model is saved, so looking at a different setting never erases the last fit;
+  only unreadable files are removed. File names use a hash of the model name,
+  so models whose names share a prefix (`freq`, `freq-2`) never touch each
+  other's files. The folder holds pickles — trusted local content, like
   derived-column expressions. Unsaved projects persist nothing (the sidebar
   says so). Add `*.easyglm-runs/` to version-control ignores.
 - `EasyGLM.summary()` reports the offset column; `easy_glm.__version__`.

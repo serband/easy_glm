@@ -20,7 +20,7 @@
 | Fit restored after a simulated reload | yes (0.04 s) |
 | Max difference in restored holdout predictions | 0 (identical) |
 | Fit restored after the data file changed | no |
-| Persisted fit files after the data change | 0 |
+| Persisted fit files after the data change | 1 |
 
 ## What to check yourself
 

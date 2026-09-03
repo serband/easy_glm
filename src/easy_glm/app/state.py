@@ -18,22 +18,26 @@ Two data frames live in the session:
   only ever size that sample; changing it never invalidates a fit.
 
 Fitted runs are **persisted** next to the project file
-(``<project>.easyglm-runs/<model>-<key>.pkl``) so a browser reload or reopening
-the project restores them instead of refitting. The key combines the sample-free
-spec hash, the identity of the data file (path, size, mtime) and the library
-versions; anything that fails to load is treated as a cache miss and removed.
-The folder holds pickles: trusted local content, like derived-column
-expressions. The pickle stores the fitted run; adjustments and the base-rate
-override are re-applied from the *current* project when it is loaded, so the
-project file stays the truth.
+(``<project>.easyglm-runs/<model-tag>-<key>.pkl``) so a browser reload or
+reopening the project restores them instead of refitting. The key combines the
+sample-free spec hash, the identity of the data file (path, size, mtime), the
+library versions and :data:`PERSIST_FORMAT`; a file that cannot be loaded is
+removed, a file whose key merely differs is left alone until a newer run of the
+same model is saved. The folder holds pickles: trusted local content, like
+derived-column expressions. The pickle stores the fitted run; adjustments and
+the base-rate override are re-applied from the *current* project when it is
+loaded, so the project file stays the truth.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pickle
+import re
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -57,6 +61,13 @@ from easy_glm.workflow import (
 PROJECT_SUFFIX = ".easyglm-project.json"
 RUNS_SUFFIX = ".easyglm-runs"
 _SAMPLE_KEYS = ("sample_rows", "sample_seed")
+#: Bump whenever the shape of a pickled class (ModelRun, GLMFit, RateModel,
+#: DesignSpec, ...) changes, so older pickles are treated as cache misses even
+#: in a development checkout where the installed version number does not move.
+PERSIST_FORMAT = 1
+#: Project-page widgets whose keyed value must not leak into another project.
+_PROJECT_PAGE_WIDGETS = ("sample_rows", "src_path", "proj_name", "proj_path")
+_KEY_RE = re.compile(r"[0-9a-f]{16}")
 
 
 # --------------------------------------------------------------------------
@@ -140,6 +151,10 @@ def set_project(p: Project, path: str | None = None) -> None:
     for key in ("raw", "prepared", "sample", "raw_sample", "leakage"):
         st.session_state[key] = None
     st.session_state.runs = {}
+    for (
+        widget
+    ) in _PROJECT_PAGE_WIDGETS:  # a keyed widget keeps its value across projects
+        st.session_state.pop(widget, None)
 
 
 def touch() -> None:
@@ -290,14 +305,26 @@ def _data_identity(p: Project) -> dict[str, Any]:
 
 
 def run_key(p: Project, model: str) -> str:
-    """Identity of a fit on disk: spec (sample-free), data file, library versions."""
+    """Identity of a fit on disk: spec (sample-free), data file, library
+    versions and the pickle format constant."""
     return spec_hash(
         {
             "model_hash": model_hash(p, model),
             "data": _data_identity(p),
             "versions": _versions(),
+            "format": PERSIST_FORMAT,
         }
     )
+
+
+def _model_tag(model: str) -> str:
+    """Unambiguous, file-name-safe tag for a model name (names may contain any
+    character; two names never share a tag prefix)."""
+    return hashlib.sha1(model.encode()).hexdigest()[:10]
+
+
+def run_file(folder: Path, model: str, key: str) -> Path:
+    return folder / f"{_model_tag(model)}-{key}.pkl"
 
 
 def runs_dir() -> Path | None:
@@ -316,7 +343,16 @@ def runs_dir() -> Path | None:
 
 
 def _run_files(folder: Path, model: str) -> list[Path]:
-    return sorted(folder.glob(f"{model}-*.pkl"))
+    """Persisted files of exactly this model (tag + 16-hex key), never of a
+    model whose name merely shares a prefix."""
+    prefix = f"{_model_tag(model)}-"
+    return sorted(
+        f
+        for f in folder.iterdir()
+        if f.suffix == ".pkl"
+        and f.name.startswith(prefix)
+        and _KEY_RE.fullmatch(f.stem[len(prefix) :]) is not None
+    )
 
 
 def persist_run(model: str, run: ModelRun, key: str | None = None) -> Path | None:
@@ -329,14 +365,21 @@ def persist_run(model: str, run: ModelRun, key: str | None = None) -> Path | Non
     key = key or run_key(p, model)
     try:
         folder.mkdir(parents=True, exist_ok=True)
-        target = folder / f"{model}-{key}.pkl"
-        tmp = target.with_suffix(".pkl.tmp")
-        with tmp.open("wb") as fh:
-            pickle.dump(run, fh, protocol=pickle.HIGHEST_PROTOCOL)
-        tmp.replace(target)
+        target = run_file(folder, model, key)
+        # unique temp name per process/write, then an atomic replace, so two
+        # sessions persisting the same model never truncate each other's file
+        tmp = folder / f"{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+        try:
+            with tmp.open("wb") as fh:
+                pickle.dump(run, fh, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp, target)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
         sidecar = {
             "model": model,
             "key": key,
+            "format": PERSIST_FORMAT,
             "model_hash": model_hash(p, model),
             "data": _data_identity(p),
             "versions": _versions(),
@@ -345,13 +388,24 @@ def persist_run(model: str, run: ModelRun, key: str | None = None) -> Path | Non
             "holdout_rows": run.holdout_rows,
         }
         target.with_suffix(".json").write_text(json.dumps(sidecar, indent=2))
+        # "latest run per model" is enforced here, on a successful save only
         for old in _run_files(folder, model):
             if old != target:
                 _remove_run_file(old)
+        _remove_orphans(folder, p)
         return target
     except OSError as exc:  # pragma: no cover - surfaced in the UI
         st.session_state.errors.append(f"Could not persist the fit: {exc}")
         return None
+
+
+def _remove_orphans(folder: Path, p: Project) -> None:
+    """Drop persisted files of models that no longer exist in the project."""
+    live = {_model_tag(m) for m in p.models}
+    for f in folder.glob("*.pkl"):
+        tag = f.name.split("-", 1)[0]
+        if len(tag) == 10 and tag not in live:
+            _remove_run_file(f)
 
 
 def _remove_run_file(path: Path) -> None:
@@ -386,19 +440,19 @@ def _design_matches(p: Project, model: str, run: ModelRun) -> bool:
 
 def load_persisted_run(model: str) -> ModelRun | None:
     """Load the persisted run for ``model`` when its key matches the current
-    spec, data file and library versions; otherwise None. Unreadable or stale
-    files are deleted."""
+    spec, data file, library versions and pickle format; otherwise None.
+
+    Reading never deletes a file whose key merely differs (a transient spec
+    edit must not erase the last fit); only a file that cannot be loaded is
+    removed. Stale files go when a newer run is saved (:func:`persist_run`).
+    """
     folder = runs_dir()
     if folder is None or not folder.exists():
         return None
     p = project()
     if model not in p.models:
         return None
-    key = run_key(p, model)
-    target = folder / f"{model}-{key}.pkl"
-    for f in _run_files(folder, model):
-        if f != target:
-            _remove_run_file(f)  # stale: spec, data or versions changed
+    target = run_file(folder, model, run_key(p, model))
     if not target.exists():
         return None
     try:
@@ -413,11 +467,21 @@ def load_persisted_run(model: str) -> ModelRun | None:
         df = prepared_frame()
         if df is None:
             raise ValueError("data not available")
-        # the project is the truth for adjustments / base-rate override
-        run = rebuild_rate_model(p, run, df)
     except Exception:  # noqa: BLE001 - any problem is a cache miss
         _remove_run_file(target)
         return None
+    # the project is the truth for adjustments / base-rate override; an entry
+    # the model refuses is dropped with a message, like everywhere else
+    cfg = p.models[model]
+    while True:
+        try:
+            run = rebuild_rate_model(p, run, df)
+            break
+        except AdjustmentError as exc:
+            _drop_refused_adjustment(cfg, exc)
+        except Exception:  # noqa: BLE001 - shape mismatch etc.: cache miss
+            _remove_run_file(target)
+            return None
     st.session_state.runs[model] = (model_hash(p, model), run)
     return run
 

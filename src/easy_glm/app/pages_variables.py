@@ -270,7 +270,10 @@ def _derived(raw: pl.DataFrame) -> None:
     b1, b2 = st.columns([1, 1])
     if b1.button("Preview", key="derived_preview") and name and expr:
         try:
-            base = apply_variables((S.raw_sample() or raw).head(2000), p.data)
+            sample = S.raw_sample()
+            base = apply_variables(
+                (raw if sample is None else sample).head(2000), p.data
+            )
             prev = base.with_columns(eval_expr(expr).alias(name)).select(name)
             st.write(
                 prev.describe()
