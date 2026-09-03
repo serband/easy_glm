@@ -16,9 +16,11 @@ from .diagnostics import (
     lift_table,
     model_metrics,
     pearson_dispersion,
+    rate_model_diff,
     relativity_diff,
     residual_factor_search,
     residual_pair_search,
+    snapshot_diff,
     totals,
     unit_values,
 )
@@ -47,6 +49,7 @@ from .project import (
     Project,
     Recode,
     Split,
+    TableSnapshot,
     VariableDesign,
 )
 from .report import to_report_html
@@ -58,6 +61,7 @@ from .run import (
     encoder_for,
     exposure_for,
     monotone_for,
+    rate_model_for,
     rebuild_rate_model,
     run_model,
 )
@@ -75,6 +79,7 @@ __all__ = [
     "ModelConfig",
     "Penalty",
     "Adjustment",
+    "TableSnapshot",
     "Interaction",
     "load_source",
     "infer_source_type",
@@ -94,6 +99,7 @@ __all__ = [
     "AdjustmentError",
     "UnusableColumnError",
     "rebuild_rate_model",
+    "rate_model_for",
     "exposure_for",
     "ModelRun",
     "totals",
@@ -107,6 +113,8 @@ __all__ = [
     "residual_factor_search",
     "residual_pair_search",
     "relativity_diff",
+    "rate_model_diff",
+    "snapshot_diff",
     "base_rate_change",
     "describe_diff",
     "pearson_dispersion",

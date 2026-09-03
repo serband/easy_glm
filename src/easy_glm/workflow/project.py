@@ -230,6 +230,25 @@ class Adjustment:
 
 
 @dataclass
+class TableSnapshot:
+    """The rate tables of one model as they stood at a moment, by name.
+
+    A snapshot is a **named copy of the model's manual adjustments**, not of the
+    tables themselves: the fit plus a list of adjustments *is* the tables (that
+    is what ``rebuild_rate_model`` recompiles, without refitting), so storing the
+    adjustments keeps the project the single source of truth and lets a snapshot
+    survive a reload, a refit and a rebuilt rate model. Restoring one is putting
+    its adjustments back; comparing two is comparing the tables each one gives.
+    """
+
+    name: str
+    created_at: str = ""
+    adjustments: list[Adjustment] = field(default_factory=list)
+    #: the base-rate override in force when the snapshot was taken
+    base_rate_override: float | None = None
+
+
+@dataclass
 class Interaction:
     """A two-way interaction ``a × b`` on top of the mains ``a`` and ``b``."""
 
@@ -258,7 +277,55 @@ class ModelConfig:
     base: str = "modal"
     base_rate_override: float | None = None
     adjustments: list[Adjustment] = field(default_factory=list)
+    #: named copies of the adjustments (see :class:`TableSnapshot`); like the
+    #: adjustments themselves they are applied after the fit, so they never
+    #: invalidate one
+    snapshots: list[TableSnapshot] = field(default_factory=list)
     notes: str = ""
+
+
+def _adjustment_to_dict(a: dict[str, Any]) -> dict[str, Any]:
+    """One adjustment (already an ``asdict`` mapping) in the project's JSON
+    shape: ``from`` / ``to`` rather than the dataclass's ``from_`` / ``to_``,
+    and the cell keys only for an interaction cell."""
+    return {
+        "variable": a["variable"],
+        "from": a["from_"],
+        "to": a["to_"],
+        "relativity": a["relativity"],
+        **(
+            {"from_b": a["from_b"], "to_b": a["to_b"], "cell": True}
+            if a["cell"]
+            else {}
+        ),
+    }
+
+
+def _adjustment_from_dict(a: dict[str, Any], where: str) -> Adjustment:
+    _warn_unknown(
+        a,
+        {
+            "variable",
+            "from",
+            "to",
+            "from_",
+            "to_",
+            "relativity",
+            "from_b",
+            "to_b",
+            "cell",
+        },
+        where,
+    )
+    return Adjustment(
+        a["variable"],
+        a.get("from", a.get("from_")),
+        a.get("to", a.get("to_")),
+        a["relativity"],
+        from_b=a.get("from_b"),
+        to_b=a.get("to_b"),
+        cell=bool(a.get("cell", False)),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -398,7 +465,8 @@ class Project:
                 if it.b == old:
                     it.b = new
                     hit = True
-            for adj in cfg.adjustments:
+            snapshot_adjustments = [a for s in cfg.snapshots for a in s.adjustments]
+            for adj in [*cfg.adjustments, *snapshot_adjustments]:
                 parts = adj.variable.split(INTERACTION_SEP)
                 if old in parts:
                     adj.variable = INTERACTION_SEP.join(
@@ -578,20 +646,11 @@ class Project:
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         for m in d["models"].values():
-            m["adjustments"] = [
-                {
-                    "variable": a["variable"],
-                    "from": a["from_"],
-                    "to": a["to_"],
-                    "relativity": a["relativity"],
-                    **(
-                        {"from_b": a["from_b"], "to_b": a["to_b"], "cell": True}
-                        if a["cell"]
-                        else {}
-                    ),
-                }
-                for a in m["adjustments"]
-            ]
+            m["adjustments"] = [_adjustment_to_dict(a) for a in m["adjustments"]]
+            for snap in m.get("snapshots", []):
+                snap["adjustments"] = [
+                    _adjustment_to_dict(a) for a in snap["adjustments"]
+                ]
         return d
 
     @classmethod
@@ -636,32 +695,28 @@ class Project:
         for name, m in raw.get("models", {}).items():
             m = dict(m)
             penalty = _build(Penalty, m.pop("penalty", {}), f"models[{name!r}].penalty")
-            adjustments = []
-            for a in m.pop("adjustments", []):
+            adjustments = [
+                _adjustment_from_dict(a, f"models[{name!r}].adjustments")
+                for a in m.pop("adjustments", [])
+            ]
+            snapshots = []
+            for snap in m.pop("snapshots", []):
                 _warn_unknown(
-                    a,
-                    {
-                        "variable",
-                        "from",
-                        "to",
-                        "from_",
-                        "to_",
-                        "relativity",
-                        "from_b",
-                        "to_b",
-                        "cell",
-                    },
-                    f"models[{name!r}].adjustments",
+                    snap,
+                    {f.name for f in fields(TableSnapshot)},
+                    f"models[{name!r}].snapshots",
                 )
-                adjustments.append(
-                    Adjustment(
-                        a["variable"],
-                        a.get("from", a.get("from_")),
-                        a.get("to", a.get("to_")),
-                        a["relativity"],
-                        from_b=a.get("from_b"),
-                        to_b=a.get("to_b"),
-                        cell=bool(a.get("cell", False)),
+                snapshots.append(
+                    TableSnapshot(
+                        name=str(snap.get("name", "snapshot")),
+                        created_at=str(snap.get("created_at", "")),
+                        adjustments=[
+                            _adjustment_from_dict(
+                                a, f"models[{name!r}].snapshots.adjustments"
+                            )
+                            for a in snap.get("adjustments", [])
+                        ],
+                        base_rate_override=snap.get("base_rate_override"),
                     )
                 )
             interactions = [
@@ -674,6 +729,7 @@ class Project:
                     **m,
                     "penalty": penalty,
                     "adjustments": adjustments,
+                    "snapshots": snapshots,
                     "interactions": interactions,
                 },
                 f"models[{name!r}]",

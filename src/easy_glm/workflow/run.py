@@ -4,7 +4,7 @@ fit, compile the RateModel, apply manual adjustments, compute metrics."""
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -29,6 +29,9 @@ from easy_glm.engine.rate_model import RateModel
 from .diagnostics import model_metrics
 from .prep import train_holdout
 from .project import Adjustment, Interaction, ModelConfig, Project, VariableDesign
+
+#: sentinel for "keep the model config's own base-rate override"
+_KEEP: Any = object()
 
 
 # --------------------------------------------------------------------------
@@ -377,20 +380,48 @@ def exposure_for(project: Project, cfg: ModelConfig) -> str | None:
     return project.exposure or (cfg.weight if cfg.divide_target_by_weight else None)
 
 
+def rate_model_for(
+    project: Project,
+    run: ModelRun,
+    adjustments: list[Adjustment] | None = None,
+    *,
+    base_rate_override: float | None = _KEEP,
+) -> RateModel:
+    """The RateModel the run's fit gives with ``adjustments`` applied — a fresh
+    model, with nothing on the run touched and no refit.
+
+    ``adjustments`` defaults to the model's current ones; pass a snapshot's list
+    to see (or compare against) the tables as they stood then. This is the one
+    place that turns "a fit plus a list of adjustments" into tables, so the
+    editor, a snapshot and a snapshot diff can never disagree about what a set
+    of adjustments means.
+    """
+    cfg = project.models[run.name]
+    rm = to_rate_model(
+        run.fit,
+        base=cfg.base,  # type: ignore[arg-type]
+        base_rate_override=(
+            cfg.base_rate_override
+            if base_rate_override is _KEEP
+            else base_rate_override
+        ),
+        exposure_col=exposure_for(project, cfg),
+        train_test_col=project.data.split.column,
+        model_type=cfg.family,
+    )
+    if adjustments is None:
+        apply_adjustments(rm, cfg)
+    else:
+        apply_adjustments(rm, replace(cfg, adjustments=list(adjustments)))
+    return rm
+
+
 def rebuild_rate_model(project: Project, run: ModelRun, df: pl.DataFrame) -> ModelRun:
     """Recompile the run's RateModel from its fit (no refit) — used after the
     manual adjustments or base-rate override of its model config change —
     and refresh tables and metrics in place."""
     cfg = project.models[run.name]
-    rm = to_rate_model(
-        run.fit,
-        base=cfg.base,  # type: ignore[arg-type]
-        base_rate_override=cfg.base_rate_override,
-        exposure_col=exposure_for(project, cfg),
-        train_test_col=project.data.split.column,
-        model_type=cfg.family,
-    )
-    apply_adjustments(rm, cfg)
+    rm = rate_model_for(project, run)
     train, holdout = train_holdout(df, project.data.split)
     frames = {
         k: v
