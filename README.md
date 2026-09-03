@@ -56,7 +56,8 @@ Families: `"Poisson"`, `"Gamma"`, `"Tweedie"`, `"Gaussian"` (all log link),
 ### View relativities
 
 Per-variable tables are on **`eglm.relativities`** — a dict of Polars frames with
-`from` / `to` (bin edges or level), `label`, `coef`, `relativity` and `is_base`.
+`from` / `to` (bin edges or level), `label`, `coef`, `relativity`, `exposure`
+(the training exposure in that band) and `is_base`.
 Relativity 1.0 sits on the most exposed bin of each variable; the null / `Other`
 row is last. `eglm.coef_table(drop_zero=True)` lists the knots and levels the
 lasso kept.
@@ -195,7 +196,7 @@ An Emblem-style GUI over the same engine. Ten pages, one project file:
 | Model | family, target/weight/offset, penalty (fixed alpha or CV), predictors; fit; coefficients kept; regularisation path |
 | Diagnostics | A/E by any variable (in or out of the model, champion vs challenger), lift & Gini, double lift vs a challenger or a premium column, residual factor search |
 | Compare | two fitted models side by side: metrics on train and holdout, A/E with both expected lines, lift, double lift, **which relativities differ**, make champion |
-| Rate tables | relativities with A/E (challenger overlaid), inline edits saved as adjustments (no refit), Excel / `.easyglm` download |
+| Rate tables | relativities with A/E (challenger overlaid) and training exposure per band, inline edits saved as adjustments (no refit), **tools** (smooth in log space — moving average or isotonic — cap/floor, round), **undo/redo**, named **snapshots** with a diff between any two, Excel / `.easyglm` download |
 | Export | the whole workflow as a **runnable Python script** (explicit knots, levels, resolved alpha, adjustments), a **self-contained HTML report**, project JSON, artefacts |
 
 Everything the GUI does edits a `Project` spec (`easy_glm.workflow`) that is autosaved

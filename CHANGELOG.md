@@ -2,6 +2,51 @@
 
 ## 0.4.0 (unreleased)
 
+### Relativity tooling in the rate-table editor (D5)
+- **A *Tools* panel above the editor**: smooth a curve (moving average over a
+  window of bands, or an isotonic fit that will not let it turn back), cap and
+  floor it, or round it to decimals or to a step such as 0.05. Every tool shows
+  what it would do — the curve before and after, the bands that would change and
+  the level check — before anything is applied, and writes the result as
+  **ordinary manual adjustments**, so the project file stays the truth and the
+  tables are rebuilt from the fit without refitting.
+- **Smoothing preserves the exposure-weighted mean of the *log* relativities**
+  (plan §R6), to 1e-12: the base rate is not refitted when a table is edited, so
+  a smoothing that moved that mean would move every premium the factor touches.
+  The moving average is re-centred to achieve it; the weighted isotonic fit
+  preserves it by construction. A cap, a floor and a rounding move the level on
+  purpose, and the panel says by how much.
+- **Rate-table rows now carry their training exposure** (`FromToRow.exposure`,
+  `BandRow.exposure`, from the new `GLMFit.row_exposure` — the count
+  `_modal_bins` already took its argmax of). It is what the tools weight a band
+  by, it is a column in the editor, in `rate_tables` and in the Excel export, and
+  it tells "no data" apart from "no effect" when a relativity reads 1.00. Older
+  files load with 0 and the tools then weigh every band the same, and say so.
+- **The null / Other row is never touched by any tool**, and a **categorical**
+  factor is not smoothed until the user confirms that its levels read in order
+  (they are listed most-exposed first, which is not an order of the risk). A
+  **piecewise-linear** table is smoothed at its *nodes* and the slopes are
+  re-derived, so the curve stays continuous.
+- **Undo / Redo** on the Rate tables page: 50 steps per model per session, one
+  step per edit, tool, reset or restored snapshot; a step is the whole set of
+  adjustments, so undo restores the previous tables exactly.
+- **Snapshots**: *Snapshot as…* names the tables as they stand and keeps them in
+  the **project file** (a named list of adjustments, `ModelConfig.snapshots`), so
+  they survive a reload and a refit; snapshots can be restored, deleted and
+  **compared** — the same table the Compare page shows for two models
+  (`workflow.rate_model_diff` / `snapshot_diff`, and `RateModel.diff` for two
+  versions of one model).
+- Engine: `easy_glm.engine.tooling` (pure functions on one `VariableConfig`,
+  returning the relativities a tool would set); `workflow.rate_model_for`
+  compiles "this fit plus this list of adjustments" into tables, which is what a
+  snapshot, a restore and a diff all use. `app.state.PERSIST_FORMAT` 4 → 5
+  (rate-table rows changed shape), so runs cached by an earlier 0.4 build are
+  refitted.
+- Tests: `tests/test_d5_tooling.py` (engine unit tests per tool, the exposure
+  plumbing from fit to JSON, exactness after a tool, and the page's apply / undo
+  / redo / snapshot / diff through AppTest); plain-language page in
+  `docs/checks/d5-tooling.md` (`scripts/checks/d5_tooling.py --write`).
+
 ### The persisted-run folder is shared state (W4) — the second breaker session
 - **No tab may throw away another tab's fit.** Fits live in
   `<project>.easyglm-runs/` next to the project file, and every browser tab with

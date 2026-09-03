@@ -107,7 +107,8 @@ src/easy_glm/
 │   ├── diagnostics.py      # deviance, lift, gini, double lift, ae_by_variable,
 │   │                       #   residual_factor_search, alpha_path, model_metrics,
 │   │                       #   relativity_diff / describe_diff (champion vs challenger)
-│   ├── run.py              # build_design, run_model -> ModelRun, rebuild_rate_model
+│   ├── run.py              # build_design, run_model -> ModelRun, rate_model_for /
+│   │                       #   rebuild_rate_model (a fit + a list of adjustments = tables)
 │   ├── export.py           # to_script (self-contained Python; tested by execution)
 │   ├── report.py           # to_report_html — ONE self-contained HTML file
 │   └── _svg.py             # the report's charts as plain SVG (no JS, no library)
@@ -120,6 +121,9 @@ src/easy_glm/
 │   └── pages_*.py          # one module per page: project, variables, explore, split,
 │                           #   design, model, diagnostics, compare, tables, export
 ├── engine/
+│   ├── tooling.py          # relativity tools: smooth (moving average / isotonic in
+│   │                       #   log space), cap/floor, round — pure functions on one
+│   │                       #   VariableConfig, returning the new relativities
 │   ├── rate_model.py       # RateModel — the core model representation
 │   │                       #   Key methods:
 │   │                       #   - predict(data)          → np.ndarray
@@ -285,6 +289,32 @@ User edits relativity in table
   values are never a change, zeros included. The base rate is both a row of the
   table and, through `base_rate_change`, the headline above it — a band's premium
   change is its relativity change times the level change.
+- **Relativity tooling (D5)**: `engine/tooling.py` computes, the page applies. Every
+  tool returns a `ToolResult` (one relativity per table row, in table order) that the
+  page previews and then hands to `grids.apply_row_edits`, so a tool writes the same
+  band adjustments a typed cell does — no third way for a number to reach the tables.
+  Rules: the null / Other row is in no group and is never touched; a categorical is
+  refused by both smoothers unless the caller passes `ordered=True` (levels are listed
+  most-exposed first, which is not an order of the risk); a linear table is smoothed at
+  its **nodes** (the `(None, lo)` row and the first band are one node) and
+  `rate_model.derive_slopes` re-derives the slopes; smoothing preserves the
+  exposure-weighted mean of the **log** relativities (re-centred for the moving
+  average, by construction for the weighted PAVA) and cap/floor/round are idempotent
+  and deliberately *not* re-centred.
+- **Exposure per band** rides on the table rows (`FromToRow.exposure` /
+  `BandRow.exposure`), filled by `to_rate_model` from `GLMFit.row_exposure`
+  (`core/fit.py::row_exposures`, the same count `_modal_bins` takes its argmax of). It
+  is what the tools weight by and what tells "no data" from "no effect"; a table
+  without it (hand-built, or a pre-0.4 file) weighs every band the same and the page
+  says so.
+- **Undo / redo and snapshots are lists of adjustments**, never copies of tables: the
+  undo stack (`state.record_undo` / `undo` / `redo`, 50 steps per model, session-only)
+  and `ModelConfig.snapshots` (`TableSnapshot`, in the project file) both store the
+  adjustments, and `workflow.rate_model_for(project, run, adjustments)` turns any of
+  them back into tables without refitting. That is why `RateModel.create_snapshot` is
+  *not* what the workbench uses: `rebuild_rate_model` builds a fresh RateModel on every
+  edit, so its snapshots do not survive one. `model_hash` excludes `snapshots` for the
+  same reason it excludes `adjustments`.
 - Champion vs challenger: the sidebar (`main.py`) owns one "compare with" model in
   `state.CHALLENGER_KEY` (`S.challenger()` / `S.set_challenger()`; not an app-state
   key, so another project never inherits it). Diagnostics, Rate tables, Compare and
@@ -369,6 +399,7 @@ User edits relativity in table
 | `test_workflow.py` | Project JSON/validation, prep steps, univariate, leakage report on planted leaks, build_design overrides, run_model (metrics, exactness, adjustments, CV), diagnostics, exported script executed in a subprocess and compared |
 | `test_w4_runs_folder.py` | W4: the shared runs folder (two AppTest sessions per two-tab case) and every finding of `docs/reviews/w3-breakage-2.md` |
 | `test_d3_d4_compare_report.py` | D3/D4: `relativity_diff` (identical runs, one known adjustment, a moved knot on the common grid, step-vs-linear, symmetry, the base rate, the tolerance boundary, two zeros), `to_report_html` (self-contained, **no `<script>` at all**, one section per predictor, an accessible name per chart, compare section only with a challenger — and an explanation when the challenger cannot be scored, size), `_svg` (ticks, degenerate charts, escaping), the Compare page / sidebar challenger / Export report button through AppTest. **D4's "opens in a browser with no console error"**: the static half (no script, no external `src`/`href`) is proved here on every run; the browser half is `test_it_opens_in_a_headless_browser_without_console_errors`, which *skips* where Playwright is absent (the default venv) and runs in the Playwright venv and in `tests/e2e/test_persona_data_scientist.py` — CI must run one of those two for the criterion to be covered |
+| `test_d5_tooling.py` | D5: `engine.tooling` per tool (weighted log mean preserved to 1e-12, isotonic monotone, cap/round idempotent, the null row untouched, linear nodes and continuity, a categorical refused without a confirmed order), exposure from the fit through the tables / JSON / Excel, exactness after a tool, and the Rate tables page's apply / undo / redo / snapshot / snapshot-diff through AppTest |
 | `test_w2_pages.py` | W2 pages: interaction section, linear editor, kind selector, A/E-by-pair, pair search, cell/band edits via `app.grids`, break-it (empty project, missing file, removed predictor) |
 | `tests/e2e/` | Playwright persona runs (actuary rate review, data-scientist comparison incl. the Compare page and the downloaded HTML report); opt-in `EASY_GLM_E2E=1`, server from `EASY_GLM_SERVER_PYTHON` |
 | `test_app.py` | AppTest: every workbench page renders (with and without a fit), main entry point, leakage scan action |
