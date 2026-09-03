@@ -248,19 +248,21 @@ def _config(name: str) -> None:
             key=S.widget_key(f"alpha_{name}"),
             disabled=mode != "fixed",
         )
-        cv_value, cv_problem = ui.repair_number(cfg.penalty.cv, 5, "cv", integer=True)
+        cv_value, cv_problem = ui.repair_number(
+            cfg.penalty.cv, 5, "cv", integer=True, lo=2, hi=10
+        )
         if cv_problem:
             ui.flash("warning", cv_problem)
         cv = c3.number_input(
             "CV folds",
             2,
             10,
-            min(10, max(2, int(cv_value) or 5)),
+            int(cv_value),
             key=S.widget_key(f"cv_{name}"),
             disabled=mode != "cross-validated",
         )
         n_alphas_value, n_alphas_problem = ui.repair_number(
-            cfg.penalty.n_alphas, 20, "n_alphas", integer=True
+            cfg.penalty.n_alphas, 20, "n_alphas", integer=True, lo=3, hi=100
         )
         if n_alphas_problem:
             ui.flash("warning", n_alphas_problem)
@@ -268,18 +270,20 @@ def _config(name: str) -> None:
             "alphas on path",
             3,
             100,
-            min(100, max(3, int(n_alphas_value))),
+            int(n_alphas_value),
             key=S.widget_key(f"nalpha_{name}"),
             disabled=mode != "cross-validated",
         )
-        l1_value, l1_problem = ui.repair_number(cfg.penalty.l1_ratio, 1.0, "l1_ratio")
+        l1_value, l1_problem = ui.repair_number(
+            cfg.penalty.l1_ratio, 1.0, "l1_ratio", lo=0.0, hi=1.0
+        )
         if l1_problem:
             ui.flash("warning", l1_problem)
         l1 = c5.slider(
             "l1_ratio (1 = lasso)",
             0.0,
             1.0,
-            min(1.0, max(0.0, l1_value)),
+            l1_value,
             0.05,
             key=S.widget_key(f"l1_{name}"),
         )

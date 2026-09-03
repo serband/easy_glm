@@ -94,8 +94,22 @@ def safe_int(value: Any, default: int) -> int:
         return default
 
 
+def _range_text(lo: float | None, hi: float | None) -> str:
+    if lo is not None and hi is not None:
+        return f"between {lo:g} and {hi:g}"
+    if lo is not None:
+        return f"{lo:g} or more"
+    return f"{hi:g} or less"  # callers never give both lo and hi as None
+
+
 def repair_number(
-    value: Any, default: float, label: str, *, integer: bool = False
+    value: Any,
+    default: float,
+    label: str,
+    *,
+    integer: bool = False,
+    lo: float | None = None,
+    hi: float | None = None,
 ) -> tuple[float, str | None]:
     """``(value or default, message)`` for a numeric project field that a
     page both displays *and* writes straight back to the project once the
@@ -111,6 +125,14 @@ def repair_number(
     these fields (``base_rate_override``, ``penalty.alpha``, an interaction's
     ``alpha``) use it as "not set", and the caller's own ``default`` is the
     right value to show in that case.
+
+    ``lo``/``hi`` catch the other way a hand-edited value goes wrong: a real,
+    finite number that is simply outside the field's allowed range
+    (``l1_ratio: 5.0``, ``n_alphas: -5``). A page whose own widget bounds
+    would otherwise silently clamp this (or, for ``number_in_range``, loop
+    forever re-proposing the same out-of-range value — see that function)
+    needs the same explanation as the not-a-number case, not a second,
+    silent kind of repair.
     """
     if value is None:
         return default, None
@@ -119,13 +141,32 @@ def repair_number(
         and not isinstance(value, bool)
         and math.isfinite(value)
     )
-    fixed = safe_int(value, int(default)) if integer else safe_float(value, default)
-    if usable:
-        return fixed, None
+    if not usable:
+        fixed = safe_int(value, int(default)) if integer else safe_float(value, default)
+        return (
+            fixed,
+            f"{label} in the project file ({value!r}) is not a usable number; "
+            f"using {fixed:g} instead.",
+        )
+    # already a real, in-range-or-not number: clamp without touching its type
+    # unless a clamp actually happens — ``number_in_range``'s own callers pass
+    # an int ``value`` together with an int ``step``/``min_value`` (the Split
+    # page's seed box), and Streamlit refuses mixed int/float widget
+    # arguments, so casting an already-fine value to float here would trade
+    # one crash for another.
+    clamped = value
+    if lo is not None:
+        clamped = max(clamped, lo)
+    if hi is not None:
+        clamped = min(clamped, hi)
+    if clamped == value:
+        return value, None
+    if integer:
+        clamped = int(clamped)
     return (
-        fixed,
-        f"{label} in the project file ({value!r}) is not a usable number; "
-        f"using {fixed:g} instead.",
+        clamped,
+        f"{label} in the project file ({value:g}) must be {_range_text(lo, hi)}; "
+        f"using {clamped:g} instead.",
     )
 
 
@@ -148,7 +189,20 @@ def number_in_range(
     number the fit did not use. This widget takes whatever is typed, and when
     it falls outside ``lo``–``hi`` it says so, puts the stored value back in the
     box and redraws the page.
+
+    ``value`` itself — the number the project *currently holds*, not
+    something just typed — can also be outside ``lo``–``hi`` (a hand-edited
+    file: ``alpha: 50`` with ``hi=10``). Building the widget around such a
+    value would fail the same range check the moment it is drawn, and the
+    repair below resets it to that very same out-of-range ``value`` again —
+    an infinite rerun loop, not a message, confirmed by an ``AppTest`` that
+    never returns. So ``value`` is repaired *before* the widget exists, the
+    same "say what was wrong and what replaced it" way :func:`repair_number`
+    handles every other hand-edited field.
     """
+    value, problem = repair_number(value, value, what, lo=lo, hi=hi)
+    if problem:
+        flash("warning", problem)
     # a correction from the previous run has to be applied before the widget
     # exists — Streamlit refuses to set a widget's key afterwards. Dropping the
     # key (rather than assigning to it) makes the box fall back to ``value``,
@@ -159,17 +213,11 @@ def number_in_range(
     typed = container.number_input(label, value=value, key=key, **kwargs)
     if typed is None or ((lo is None or typed >= lo) and (hi is None or typed <= hi)):
         return typed
-    if lo is not None and hi is not None:
-        allowed = f"between {lo:g} and {hi:g}"
-    elif lo is not None:
-        allowed = f"{lo:g} or more"
-    else:
-        allowed = f"{hi:g} or less"
     st.session_state[repair] = True
     flash(
         "error",
-        f"{what} must be {allowed}: {typed:g} was not used, and the box is back "
-        f"to {value:g}.",
+        f"{what} must be {_range_text(lo, hi)}: {typed:g} was not used, and the "
+        f"box is back to {value:g}.",
     )
     st.rerun()
 

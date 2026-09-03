@@ -20,9 +20,11 @@ this session actually found belongs to the first of those.
 
 ## 1. Summary
 
-**Findings: 1 crash class (8 call sites) plus 1 follow-on "autosave of a bad
-state" it uncovered once fixed, both severity crash / data-loss and both
-fixed, with a reproducing test per site.** No wrong-number findings; a broad
+**Findings: 1 crash class (8 call sites), 1 follow-on "autosave of a bad
+state" it uncovered once fixed, and (round 2, an independent review) 2 more
+in the same family — one blocking data-loss, one should-fix hang — all
+severity crash / data-loss, all fixed, with a reproducing test per finding.**
+No wrong-number findings; a broad
 sweep of Compare, the HTML report, the Tools panel, rate-change, penalty
 weights, Tweedie/binomial, cells alpha, the CLI and the 250k-row compact path
 found nothing else (§3).
@@ -176,33 +178,84 @@ covered:
 
 | | before | after |
 |---|---|---|
-| `pytest -q tests` (repo venv, Streamlit 1.57) | 776 passed, 1 skipped, 1 deselected | 811 passed, 1 skipped, 1 deselected |
-| `pytest -q tests/test_app*.py tests/test_w*.py tests/test_d*.py` (Streamlit 1.63 venv) | 339 passed, 1 skipped | 370 passed, 1 skipped |
-| `tests/e2e` (Playwright, `EASY_GLM_E2E=1`) | 3 passed | 3 passed |
+| `pytest -q tests` (repo venv, Streamlit 1.57) | 776 passed, 1 skipped, 1 deselected | 817 passed, 1 skipped, 1 deselected |
+| `pytest -q tests/test_app*.py tests/test_w*.py tests/test_d*.py` (Streamlit 1.63 venv) | 339 passed, 1 skipped | 376 passed, 1 skipped |
+| `tests/e2e` (Playwright, `EASY_GLM_E2E=1`) | 3 passed | 3 passed (round 1; not re-run in round 2, no e2e-covered surface changed) |
 
 Gates: `black .`, `ruff check .`, `mypy src/easy_glm/core src/easy_glm/workflow
 --ignore-missing-imports` all clean; `git diff release-0.4 -- tests/test_golden.py
 tests/fixtures` empty (no golden number touched).
 
-## 5. Left open
+## 5. Round 2 — independent review findings, fixed
 
-Nothing from this session is left open — every finding was a crash, all
-eight call sites were fixed, and every fix has a reproducing test that fails
-on the pre-fix tree. Two smaller, related observations that are **not** filed
-as findings because they are pre-existing, deliberately-scoped behaviour, not
-new breakage:
+An independent review (`docs/reviews/w5-breakage-3-review.md`, not committed
+— it is a review artefact, not a piece of the codebase) verified all five
+round-1 findings fix cleanly and found two more in the same family, one
+blocking:
+
+**B1 (blocking, data loss).** `pages_model.py`'s `cv`, `n_alphas` and
+`l1_ratio` widgets took a hand-edited value that is a real, finite number but
+outside the widget's declared UI range (`l1_ratio: 5.0`, `n_alphas: -5`,
+`cv: 999`) and clamped it with a bare `min(hi, max(lo, ...))` and no message
+— and `_config`'s reconciliation loop then autosaved that clamped value over
+the original with no trace of what happened. This is finding 5's exact class
+on three fields finding 5 did not touch, and the round-1 report's own "Left
+open" section asserted the opposite ("Fit still reads the project's stored
+value, not the clamped display value, so no number silently changes") — that
+sentence was wrong; the *stored* value was overwritten. For `l1_ratio` this
+is also a genuine regression from `release-0.4`, where `st.slider` never
+enforced its `min_value`/`max_value` against a stored `value=`, so the same
+hand-edited `l1_ratio: 5.0` neither crashed nor changed on disk before this
+session's own fix started saving over it.
+
+Fix: `ui.repair_number` gained `lo`/`hi` — a real number outside that range
+now gets the identical "say what was wrong and what replaced it" treatment as
+a non-numeric one, clamped without changing its type unless a clamp actually
+happens (so an already-valid int stays an int for widgets, like the Split
+page's seed box, that pair an int `value` with an int `step`). `cv`,
+`n_alphas` and `l1_ratio` in `pages_model.py` now pass their widget's own
+`lo`/`hi` through the same call that already caught the non-numeric case, and
+`Project.validate()` gained the three missing checks (`l1_ratio` in `[0, 1]`,
+`cv` a whole number ≥ 2 or `None`, `n_alphas` a whole number ≥ 2) so the same
+question answers the same way independent of what any page happens to do
+with the field.
+
+**S1 (should-fix, pre-existing, fixed anyway).** `ui.number_in_range` itself
+(used for `alpha` and `base_rate_override`, and not touched by round 1)
+hangs indefinitely — confirmed with `AppTest`'s own timeout, `RuntimeError`
+after 8s — when the *stored* value it is asked to show is a legal number
+outside `lo`/`hi` (`alpha: 1e9`, `hi=10`). Its repair path reset the widget to
+that same out-of-range `value` on every rerun, which failed the same range
+check again, forever: worse than any of the five round-1 crashes, since a
+crash fails cleanly and this does not fail at all. Reproduces identically on
+`release-0.4` (no line there was touched by this piece).
+
+Fix: `number_in_range` now runs the *stored* `value` through
+`repair_number(value, value, what, lo=lo, hi=hi)` before the widget is ever
+built, so a value that is already out of range is clamped and explained once,
+up front — the widget is never constructed around a value that would fail
+its own check, which is what made the loop possible.
+
+Tests: `tests/test_w5_breakage.py` findings 5 and 6 — three `l1_ratio`/
+`n_alphas`/`cv` cases (each asserting the warning names the field, the old
+value and the new one, and that the *saved* value is the repaired one, not
+silently something else), a direct `Project.validate()` case for the three
+new checks, and two `AppTest`-with-`default_timeout=8` cases (`alpha: 1e9`,
+`base_rate_override: -1.0`) that raise `RuntimeError: ... timed out`
+pre-fix and return in well under a second after. All six fail with the round-
+1 source restored (`git stash` of `ui.py`/`pages_model.py`/`project.py`) and
+pass on this branch.
+
+## 6. Left open
+
+Nothing is left open after round 2. One smaller, related observation that is
+**not** filed as a finding because it is pre-existing, deliberately-scoped
+behaviour, not new breakage:
 
 * `design.min_level_share` and a handful of other `VariableDesign` fields
   still have no type check in `validate()` at all (not just "crashes on a bad
   type" — they are simply not validated), unlike `penalty_weight`, `clamp`,
-  `alpha` and `tweedie_power`, which this session made robust because they
-  were the ones that actually crashed a page. Worth a follow-up pass if
-  another hand-edited-file scenario surfaces a crash through one of them.
-* `l1_ratio` and `cv` values that are numeric but out of the widget's declared
-  range (e.g. `l1_ratio: 5`) are now clamped into range for display rather
-  than crashing `st.slider`/`st.number_input` — a slightly different fallback
-  from `ui.number_in_range`'s "show the number, name the problem, keep the
-  old value" pattern used elsewhere, chosen here because these two widgets
-  have no free-standing "problem" message of their own to attach to; `Fit`
-  still reads the *project's* stored value, not the clamped display value, so
-  no number silently changes.
+  `alpha`, `tweedie_power`, `cv`, `n_alphas` and `l1_ratio`, which this
+  session made robust because they were the ones that actually crashed a page
+  or silently rewrote the project. Worth a follow-up pass if another
+  hand-edited-file scenario surfaces a crash through one of them.

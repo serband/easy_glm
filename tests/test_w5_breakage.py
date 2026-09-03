@@ -277,6 +277,125 @@ def test_finding_4c_a_legitimate_none_alpha_is_never_reported_as_a_problem(works
 
 
 # --------------------------------------------------------------------------
+# finding 5 (review round 2, blocking B1): a real number outside the
+# widget's UI range must be repaired-and-explained, not silently autosaved
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "mutate,field,bad,repaired",
+    [
+        (
+            lambda raw: raw["models"]["m1"]["penalty"].__setitem__("l1_ratio", 5.0),
+            "l1_ratio",
+            "5",
+            1.0,
+        ),
+        (
+            lambda raw: (
+                raw["models"]["m1"]["penalty"].__setitem__("alpha", None),
+                raw["models"]["m1"]["penalty"].__setitem__("cv", 5),
+                raw["models"]["m1"]["penalty"].__setitem__("n_alphas", -5),
+            ),
+            "n_alphas",
+            "-5",
+            3,
+        ),
+        (
+            lambda raw: (
+                raw["models"]["m1"]["penalty"].__setitem__("alpha", None),
+                raw["models"]["m1"]["penalty"].__setitem__("cv", 999),
+            ),
+            "cv",
+            "999",
+            10,
+        ),
+    ],
+    ids=["l1_ratio_above_1", "n_alphas_negative", "cv_above_widget_range"],
+)
+def test_finding_5_an_out_of_range_penalty_field_is_explained_not_silent(
+    workspace, mutate, field, bad, repaired
+):
+    """A hand-edited ``l1_ratio``/``n_alphas``/``cv`` that is a real, finite
+    number but outside the widget's declared UI range used to be clamped by a
+    bare ``min(hi, max(lo, ...))`` with no message, and the reconciliation
+    loop then autosaved that clamped value over the original — silent data
+    loss, and for ``l1_ratio`` specifically a regression from release-0.4
+    (``st.slider`` never enforced its own bounds, so the hand-edited value
+    used to round-trip unchanged)."""
+    _edit(workspace["project"], mutate)
+    at = AppTest.from_string(
+        _script("pages_model", workspace["project"], autosave=True),
+        default_timeout=120,
+    )
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert any(
+        field in w.value and bad in w.value and f"{repaired:g}" in w.value
+        for w in at.warning
+    ), [w.value for w in at.warning]
+    saved = json.loads(workspace["project"].read_text())
+    assert saved["models"]["m1"]["penalty"][field] == repaired
+
+
+def test_finding_5_validate_reports_an_out_of_range_penalty_field(workspace):
+    """``Project.validate()`` itself must catch these three, independent of
+    what any page happens to do with them (a project validated by the CLI, or
+    a page that stops reading a field through the repairing helper, must
+    still refuse to fit)."""
+    p = Project.from_json(workspace["project"])
+    p.models["m1"].penalty.l1_ratio = 5.0
+    assert any("l1_ratio" in m for m in p.validate("m1"))
+    p.models["m1"].penalty.l1_ratio = 1.0
+
+    p.models["m1"].penalty.n_alphas = -5
+    assert any("n_alphas" in m for m in p.validate("m1"))
+    p.models["m1"].penalty.n_alphas = 20
+
+    p.models["m1"].penalty.cv = 1
+    assert any("cv" in m for m in p.validate("m1"))
+    p.models["m1"].penalty.cv = None
+
+    assert p.validate("m1") == []
+
+
+# --------------------------------------------------------------------------
+# finding 6 (review round 2, should-fix S1): ui.number_in_range must not
+# loop forever when the *stored* value is a legal number outside lo/hi
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "mutate,field",
+    [
+        (
+            lambda raw: raw["models"]["m1"]["penalty"].__setitem__("alpha", 1e9),
+            "alpha",
+        ),
+        (
+            lambda raw: raw["models"]["m1"].__setitem__("base_rate_override", -1.0),
+            "base rate override",
+        ),
+    ],
+    ids=["alpha", "base_rate_override"],
+)
+def test_finding_6_number_in_range_repairs_an_out_of_range_stored_value_once(
+    workspace, mutate, field
+):
+    """``ui.number_in_range`` used to rebuild the widget around the stored
+    value on every rerun, including a repair rerun, so a legal-but-out-of-
+    range stored value (``alpha: 1e9``, ``lo=0, hi=10``) reproposed the same
+    invalid value forever — an infinite rerun loop, confirmed by an
+    ``AppTest`` that never returns within a short timeout. A short
+    ``default_timeout`` here is the point: this test times out (raises)
+    before the fix and returns well within it after."""
+    _edit(workspace["project"], mutate)
+    at = AppTest.from_string(
+        _script("pages_model", workspace["project"], autosave=True),
+        default_timeout=8,
+    )
+    at.run()  # must return, not raise "AppTest script run timed out"
+    assert not at.exception, [e.value for e in at.exception]
+    assert any(field in w.value for w in at.warning)
+
+
+# --------------------------------------------------------------------------
 # finding 3: the CLI must never let this reach the user as a traceback
 # --------------------------------------------------------------------------
 def test_finding_3_cli_validate_reports_a_message_not_a_traceback(workspace):

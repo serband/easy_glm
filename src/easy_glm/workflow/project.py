@@ -770,6 +770,32 @@ class Project:
                     f"{name}: alpha must be > 0 (alpha = 0 is an unpenalised fit "
                     "that the solver cannot handle; use a small value such as 1e-4)"
                 )
+            if cfg.penalty.cv is not None and not (
+                _is_finite_number(cfg.penalty.cv)
+                and cfg.penalty.cv == int(cfg.penalty.cv)
+                and cfg.penalty.cv >= 2
+            ):
+                problems.append(
+                    f"{name}: cv must be a whole number of 2 or more folds (or "
+                    f"unset, to use a fixed alpha), got {cfg.penalty.cv!r}"
+                )
+            if not (
+                _is_finite_number(cfg.penalty.n_alphas)
+                and cfg.penalty.n_alphas == int(cfg.penalty.n_alphas)
+                and cfg.penalty.n_alphas >= 2
+            ):
+                problems.append(
+                    f"{name}: n_alphas must be a whole number of 2 or more, got "
+                    f"{cfg.penalty.n_alphas!r}"
+                )
+            if not (
+                _is_finite_number(cfg.penalty.l1_ratio)
+                and 0.0 <= cfg.penalty.l1_ratio <= 1.0
+            ):
+                problems.append(
+                    f"{name}: l1_ratio must be between 0 (ridge) and 1 (lasso), "
+                    f"got {cfg.penalty.l1_ratio!r}"
+                )
             if not cfg.predictors:
                 problems.append(f"{name}: no predictors")
             bad = [p for p in cfg.predictors if self.data.roles.get(p) != "predictor"]
