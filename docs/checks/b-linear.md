@@ -98,4 +98,4 @@ would charge, either set the clamp for this factor to where the data runs out
 ## Questions for you
 
 - **Q10.** For a linear term, should the default upper clamp be the training maximum (the current default; the curve follows the data through thin tails) or a high quantile such as the 99.5th percentile (thin tails are pooled flat, as a step design would)? *Default until you answer: the training maximum, rounded outward; you can set the clamp per factor on the Design page.*
-- Q9 — which of the bike book's variables should be piecewise-linear — still stands; the default is mileage only.
+- Q9 — whether any variable should default to piecewise-linear — still stands; the default is step for every numeric variable, switched per variable on the Design page.

@@ -278,7 +278,7 @@ def main(write: bool) -> None:
         "high quantile such as the 99.5th percentile (thin tails are pooled flat, as a step "
         "design would)? *Default until you answer: the training maximum, rounded outward; "
         "you can set the clamp per factor on the Design page.*",
-        "- Q9 — which of the bike book's variables should be piecewise-linear — still stands; "
+        "- Q9 — whether any variable should default to piecewise-linear — still stands; "
         "the default is mileage only.",
         "",
     ]

@@ -263,7 +263,7 @@ must refuse to multiply by exposure. Add `link` to the metadata bump in B1 or mo
 
 ### S9. Sequencing: fit the release to what the actuary asked for first
 
-The plan puts G (open-ended, riskiest) before A and B (the two features the bike model
+The plan puts G (open-ended, riskiest) before A and B (the two features real rating models
 needs). Interaction cells are exactly the block that tabmat stores cheaply, so A does not
 need G first. Suggested order: C (+ B1/B5 format bump) → A core/engine → B core/engine →
 D2 → D1 → G (with the spike) → A/B workbench and export → D3 → D7 → E1–E2 → the rest.
@@ -359,7 +359,7 @@ read code-review threads to find their questions. Keep "reviewer may not edit co
 - **Q6 Rate-change export.** With offset = log(current premium), should the export read as "multiplier on current premium" (base rate ≈ overall change, relativities = differential changes)? *Default: yes.*
 - **Q7 Binomial tables.** Odds relativities with a label, or probabilities by band? *Default: odds relativities; the scorer returns probabilities.*
 - **Q8 A/E for counts.** Confirm actual = Σ claims / Σ exposure and expected = Σ fitted claims / Σ exposure for frequency models. *Default: yes; the rate/count flag will be stored in the model file so the editor stops guessing.*
-- **Q9 Which bike variables are linear.** *Default: mileage only, as in the original script; everything else step.*
+- **Q9 Which variables are linear.** *Default: none by default; the user switches individual variables (e.g. mileage) to linear.*
 
 ---
 
