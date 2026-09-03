@@ -343,6 +343,30 @@
   driven end to end through `subprocess`. Plain-language replay:
   `docs/checks/e-f-extras-cli.md` (`scripts/checks/e_f_extras_cli.py --write`).
 
+### Hand-edited project files (W5) — the third breaker session
+- The third break-it session targeted the surfaces added late in 0.4: Compare,
+  the HTML report, the rate-table tools and snapshots, the rate-change flow,
+  penalty weights, Tweedie and binomial models, the cells alpha, the CLI and the
+  compact-matrix path. Those all held. What broke was **a project file edited by
+  hand**: a non-numeric or out-of-range `alpha`, `tweedie_power`, `l1_ratio`,
+  `cv`, `n_alphas`, `clamp`, `split.fraction` or an interaction's `alpha` /
+  `penalty_weight` / `min_cell_exposure` crashed `Project.validate()`, the CLI
+  (raw traceback), and the Model and Design pages — and once the pages rendered,
+  they **silently autosaved a fallback number over the value in the file**. A
+  legal number outside a widget's range (`alpha: 1e9`) made the Model page rerun
+  forever.
+- Fixed: `Project.validate()` reports every such field as a problem string
+  instead of raising (`l1_ratio` must be in [0, 1], `cv` ≥ 2 or absent,
+  `n_alphas` ≥ 2); the CLI prints them and exits 1; the pages **repair and say
+  so** — a notice names the field, the value found and the value used, before
+  anything is saved (`ui.repair_number`, the pattern the Split page already used
+  for its seed); `ui.number_in_range` repairs the stored value before building
+  the widget, so it cannot loop. Nothing a model computes changed
+  (`core`/`engine` untouched; golden green).
+- Tests: `tests/test_w5_breakage.py` (36); record in
+  `docs/reviews/w5-breakage-3.md`, independent review in
+  `docs/reviews/w5-breakage-3-review.md`.
+
 ### The persisted-run folder is shared state (W4) — the second breaker session
 - **No tab may throw away another tab's fit.** Fits live in
   `<project>.easyglm-runs/` next to the project file, and every browser tab with
