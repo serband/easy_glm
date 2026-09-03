@@ -125,14 +125,18 @@ def relativity_chart(
     title: str = "",
     height: int = 340,
     working: pl.DataFrame | None = None,
+    name: str = "fitted",
+    working_name: str = "working",
 ) -> go.Figure:
-    """Fitted relativities (and an optional working copy) by band."""
+    """Fitted relativities (and an optional second table) by band. The two
+    series are named so the same chart can show *fitted vs working* and
+    *now vs after this tool* (the relativity tooling's preview)."""
     fig = go.Figure()
     labels = table["label"].to_list()
     fig.add_scatter(
         x=labels,
         y=table["relativity"],
-        name="fitted",
+        name=name,
         mode="lines+markers",
         line=dict(color=BLUE, width=2.5),
     )
@@ -140,7 +144,7 @@ def relativity_chart(
         fig.add_scatter(
             x=working["label"].to_list(),
             y=working["relativity"],
-            name="working",
+            name=working_name,
             mode="lines+markers",
             line=dict(color=ORANGE, width=2.5),
         )
@@ -391,6 +395,8 @@ def linear_curve_chart(
     x_base: float | None = None,
     height: int = 360,
     log_x: bool = False,
+    name: str = "fitted",
+    working_name: str = "working",
 ) -> go.Figure:
     """Continuous relativity curve of a piecewise-linear table
     (``from``, ``to``, ``relativity`` at the band start, ``relativity_to`` at
@@ -416,12 +422,16 @@ def linear_curve_chart(
 
     xs, ys = _polyline(table)
     fig.add_scatter(
-        x=xs, y=ys, name="fitted", mode="lines", line=dict(color=BLUE, width=2.5)
+        x=xs, y=ys, name=name, mode="lines", line=dict(color=BLUE, width=2.5)
     )
     if working is not None:
         wx, wy = _polyline(working)
         fig.add_scatter(
-            x=wx, y=wy, name="working", mode="lines", line=dict(color=ORANGE, width=2.5)
+            x=wx,
+            y=wy,
+            name=working_name,
+            mode="lines",
+            line=dict(color=ORANGE, width=2.5),
         )
     fig.add_hline(y=1.0, line=dict(color=GREY, dash="dot"))
     if clamp is not None:

@@ -1,19 +1,43 @@
-"""Page 9 — Rate tables: inspect, adjust relativities (rows or cells), export."""
+"""Page 9 — Rate tables: inspect, adjust relativities (rows or cells), smooth /
+cap / round them, undo, snapshot and compare snapshots, export."""
 
 from __future__ import annotations
+
+import copy
+from datetime import datetime, timezone
 
 import pandas as pd
 import polars as pl
 import streamlit as st
 
-from easy_glm.core.excel import rate_model_tables
+from easy_glm.core.excel import rate_model_tables, variable_frame
+from easy_glm.engine import tooling as T
 from easy_glm.engine.models import level_label
-from easy_glm.workflow import ae_by_pair, ae_by_variable, totals
+from easy_glm.workflow import (
+    TableSnapshot,
+    ae_by_pair,
+    ae_by_variable,
+    describe_diff,
+    rate_model_diff,
+    rate_model_for,
+    totals,
+)
 
 from . import charts as C
 from . import grids as G
 from . import state as S
 from . import ui
+
+#: the tools offered above the editor, in the order they are listed
+TOOLS = [
+    "Smooth (moving average)",
+    "Smooth (isotonic)",
+    "Cap / floor",
+    "Round",
+]
+#: what the two snapshot-diff selectors offer besides the named snapshots
+FITTED_OPTION = "(fitted — no adjustments)"
+CURRENT_OPTION = "(the tables now)"
 
 
 def _knots_and_levels(run) -> tuple[dict, dict]:
@@ -55,13 +79,19 @@ def _challenger_selector(column, model: str):
     return S.get_run(name) if name != "(none)" else None
 
 
-def _apply(run_name: str, changed: bool, errors: list[str]) -> None:
+def _apply(
+    run_name: str, changed: bool, errors: list[str], before: list | None = None
+) -> None:
+    """Save an edit: record one undo step (``before`` = the adjustments as they
+    were), autosave, re-apply to the cached run and redraw."""
     for e in errors:
         if changed:
             ui.flash("error", e)  # the rerun below would discard it otherwise
         else:
             st.error(e + " (retype the cell to clear this message)")
     if changed:
+        if before is not None:
+            S.record_undo(run_name, before)
         S.touch()
         S.refresh_adjustments(run_name)
         st.rerun()
@@ -151,14 +181,16 @@ def _main_effect(run, var: str, df: pl.DataFrame, challenger=None) -> pl.DataFra
             grid = pd.DataFrame(
                 {
                     "band": [level_label(r, other) for r in rows],
+                    "exposure": [r.exposure for r in rows],
                     "fitted": fitted["relativity"].to_list(),
                     "working": [r.relativity for r in rows],
                     "at band end": working["relativity_to"].to_list(),
                     "slope": working["slope"].to_list(),
                 }
             )
-            disabled = ["band", "fitted", "at band end", "slope"]
+            disabled = ["band", "exposure", "fitted", "at band end", "slope"]
             col_cfg = {
+                "exposure": st.column_config.NumberColumn(format="%.0f"),
                 "fitted": st.column_config.NumberColumn(format="%.4f"),
                 "working": st.column_config.NumberColumn(
                     "working (at band start)",
@@ -178,12 +210,18 @@ def _main_effect(run, var: str, df: pl.DataFrame, challenger=None) -> pl.DataFra
             grid = pd.DataFrame(
                 {
                     "bin": [level_label(r, other) for r in rows],
+                    "exposure": [r.exposure for r in rows],
                     "fitted": fitted["relativity"].to_list(),
                     "working": [r.relativity for r in rows],
                 }
             )
-            disabled = ["bin", "fitted"]
+            disabled = ["bin", "exposure", "fitted"]
             col_cfg = {
+                "exposure": st.column_config.NumberColumn(
+                    format="%.0f",
+                    help="Training exposure in this row — what the tools weight "
+                    "a band by, and what tells 'no data' from 'no effect'.",
+                ),
                 "fitted": st.column_config.NumberColumn(format="%.4f"),
                 "working": st.column_config.NumberColumn(format="%.4f", min_value=1e-4),
             }
@@ -196,6 +234,7 @@ def _main_effect(run, var: str, df: pl.DataFrame, challenger=None) -> pl.DataFra
             column_config=col_cfg,
             key=S.widget_key(f"rel_editor_{run.name}_{var}"),
         )
+        before = list(cfg.adjustments)
         changed, errors = G.apply_row_edits(
             cfg,
             var,
@@ -205,7 +244,7 @@ def _main_effect(run, var: str, df: pl.DataFrame, challenger=None) -> pl.DataFra
             require_positive=is_linear,
             other_label=other,
         )
-        _apply(run.name, changed, errors)
+        _apply(run.name, changed, errors, before)
     return working
 
 
@@ -299,14 +338,369 @@ def _interaction(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
             },
             key=S.widget_key(f"cell_editor_{run.name}_{var}"),
         )
+        before = list(cfg.adjustments)
         changed, errors = G.apply_cell_edits(cfg, var, grid, edited.values.tolist())
-        _apply(run.name, changed, errors)
+        _apply(run.name, changed, errors, before)
         with st.expander("Fitted cells (before adjustments)"):
             st.dataframe(
                 pd.DataFrame(grid["fitted"], index=grid["rows"], columns=grid["cols"]),
                 width="stretch",
             )
     return rate_model_tables(rm)[var]
+
+
+# --------------------------------------------------------------------------
+# tools: smooth / cap / floor / round
+# --------------------------------------------------------------------------
+def _tool_result(var_cfg, var: str, tool: str, kwargs: dict) -> T.ToolResult:
+    """Run one tool on the variable's current table (nothing is changed)."""
+    if tool == TOOLS[0]:
+        return T.smooth_moving_average(var_cfg, var, **kwargs)
+    if tool == TOOLS[1]:
+        return T.smooth_isotonic(var_cfg, var, **kwargs)
+    if tool == TOOLS[2]:
+        return T.cap_floor(var_cfg, var, **kwargs)
+    return T.round_relativities(var_cfg, var, **kwargs)
+
+
+def _tool_parameters(tool: str, var_cfg, key) -> dict:
+    """The parameter widgets of ``tool``, as keyword arguments for the engine."""
+    c1, c2 = st.columns(2)
+    kwargs: dict = {}
+    if tool == TOOLS[0]:
+        kwargs["window"] = int(
+            c1.number_input(
+                "Window (bands)",
+                min_value=3,
+                max_value=25,
+                value=T.DEFAULT_WINDOW,
+                step=2,
+                key=key("window"),
+                help="How many bands each average covers: 3 is the band and its "
+                "two neighbours. Odd numbers only, so the average stays centred "
+                "on the band it replaces.",
+            )
+        )
+    elif tool == TOOLS[1]:
+        kwargs["direction"] = c1.selectbox(
+            "Direction",
+            ["increasing", "decreasing"],
+            key=key("direction"),
+            help="The relativity may not turn back as the factor rises. Bands "
+            "that break the direction are pooled with their neighbours.",
+        )
+    elif tool == TOOLS[2]:
+        kwargs["floor"] = c1.number_input(
+            "Floor (empty = none)",
+            value=None,
+            min_value=0.0001,
+            step=0.05,
+            format="%.4f",
+            key=key("floor"),
+        )
+        kwargs["cap"] = c2.number_input(
+            "Cap (empty = none)",
+            value=None,
+            min_value=0.0001,
+            step=0.05,
+            format="%.4f",
+            key=key("cap"),
+        )
+    else:
+        how = c1.radio(
+            "Round to",
+            ["decimals", "a step"],
+            horizontal=True,
+            key=key("round_to"),
+        )
+        if how == "decimals":
+            kwargs["decimals"] = int(
+                c2.number_input(
+                    "Decimal places",
+                    min_value=0,
+                    max_value=6,
+                    value=2,
+                    key=key("decimals"),
+                )
+            )
+        else:
+            kwargs["step"] = float(
+                c2.number_input(
+                    "Step",
+                    value=0.05,
+                    min_value=0.0001,
+                    step=0.01,
+                    format="%.4f",
+                    key=key("step"),
+                    help="0.05 rounds 1.083 to 1.10 — the way a published rate "
+                    "table is printed.",
+                )
+            )
+    if var_cfg.type == "categorical" and tool in (TOOLS[0], TOOLS[1]):
+        kwargs["ordered"] = st.checkbox(
+            "The levels of this factor are in a meaningful order",
+            value=False,
+            key=key("ordered"),
+            help="Levels are listed most-exposed first, which is not an order of "
+            "the risk. Tick this only when the table really does read in order "
+            "(a banded or graded factor), because smoothing averages each level "
+            "with the ones next to it.",
+        )
+    return kwargs
+
+
+def _tools(run, var: str, fitted: pl.DataFrame, working: pl.DataFrame) -> None:
+    """The Tools expander above the editor: pick a tool, see what it would do,
+    apply it as ordinary adjustments."""
+    cfg = S.project().models[run.name]
+    var_cfg = run.rate_model.variables[var]
+    is_linear = var_cfg.type == "linear"
+
+    def key(name: str) -> str:
+        return S.widget_key(f"tool_{name}_{run.name}_{var}")
+
+    with st.expander("Tools — smooth, cap / floor, round"):
+        st.caption(
+            "Each tool works on the bands of **this** table, never on the "
+            "*Other / Unknown* row, and is saved as ordinary adjustments (no "
+            "refit). **Smoothing keeps the exposure-weighted mean of the log "
+            "relativities exactly where it is**, so the shape of the factor "
+            "changes and the premium level does not; a cap or a rounding moves "
+            "the level on purpose, and the number below says by how much."
+        )
+        tool = st.selectbox("Tool", TOOLS, key=key("which"))
+        kwargs = _tool_parameters(tool, var_cfg, key)
+        try:
+            result = _tool_result(var_cfg, var, tool, kwargs)
+        except T.ToolingError as exc:
+            st.info(str(exc))
+            return
+        ui.metric_row(
+            [
+                ("bands that would change", str(result.changed), None),
+                (
+                    "mean log relativity now",
+                    ui.fmt(result.log_mean_before, digits=6),
+                    "Exposure-weighted mean of the log relativities — the "
+                    "average premium effect of this factor. A smoothing must "
+                    "leave it alone, because the base rate is not refitted.",
+                ),
+                (
+                    "after this tool",
+                    ui.fmt(result.log_mean_after, digits=6),
+                    None,
+                ),
+                (
+                    "overall level",
+                    (
+                        "no change"
+                        if abs(result.level_shift) < 5e-5
+                        else f"{result.level_shift:+.2%}"
+                    ),
+                    "How much every risk's premium would move from this factor "
+                    "alone, before its own band changes.",
+                ),
+            ]
+        )
+        preview = variable_frame(T.apply_values(var_cfg, result.values))
+        if is_linear:
+            enc = run.spec[var]
+            chart = C.linear_curve_chart(
+                working,
+                title=f"{var} — now and after this tool",
+                working=preview,
+                clamp=(enc.lo, enc.hi),
+                x_base=var_cfg.x_base,
+                log_x=enc.lo > 0 and enc.hi / enc.lo > 100,
+                name="now",
+                working_name="after this tool",
+            )
+        else:
+            chart = C.relativity_chart(
+                working,
+                title=f"{var} — now and after this tool",
+                working=preview,
+                name="now",
+                working_name="after this tool",
+            )
+        st.plotly_chart(chart, width="stretch")
+        st.caption(result.note)
+        if result.uniform_weights:
+            st.warning(
+                "This table carries no training exposure (it was built by hand "
+                "or read from a file written before 0.4), so every band counted "
+                "the same in the average and in the level check above."
+            )
+        if not result.changed:
+            st.caption("Nothing would change: the table already looks like that.")
+        if st.button(
+            "Apply to the table",
+            key=key("apply"),
+            type="primary",
+            disabled=not result.changed,
+        ):
+            before = list(cfg.adjustments)
+            changed, errors = G.apply_row_edits(
+                cfg,
+                var,
+                var_cfg.table,
+                fitted["relativity"].to_list(),
+                result.values,
+                require_positive=is_linear,
+                other_label=var_cfg.other_label,
+            )
+            if changed:
+                ui.flash(
+                    "success",
+                    f"**{result.tool}** applied to **{var}**: "
+                    f"{result.changed} band(s) changed. {result.note}",
+                )
+            _apply(run.name, changed, errors, before)
+
+
+# --------------------------------------------------------------------------
+# snapshots
+# --------------------------------------------------------------------------
+def _snapshot_version(cfg, choice: str) -> tuple[list, float | None] | None:
+    """The ``(adjustments, base-rate override)`` a snapshot selector stands for:
+    nothing at all for the model as fitted, the model's own for "the tables
+    now", else the snapshot's. ``None`` when the name is not one of them."""
+    if choice == FITTED_OPTION:
+        return [], None
+    if choice == CURRENT_OPTION:
+        return list(cfg.adjustments), cfg.base_rate_override
+    for snap in cfg.snapshots:
+        if snap.name == choice:
+            return list(snap.adjustments), snap.base_rate_override
+    return None
+
+
+def _snapshots(run) -> None:
+    """Create, list, restore and compare named snapshots of the tables."""
+    p = S.project()
+    cfg = p.models[run.name]
+
+    def key(name: str) -> str:
+        return S.widget_key(f"snap_{name}_{run.name}")
+
+    with st.expander(f"Snapshots ({len(cfg.snapshots)})"):
+        st.caption(
+            "A snapshot names the tables as they stand now — the fit plus this "
+            "model's adjustments — and is kept in the project file, so it "
+            "survives a reload and a refit. Restoring one puts those "
+            "adjustments back; comparing two lists every band that moved "
+            "between them."
+        )
+        c1, c2 = st.columns([3, 1])
+        name = c1.text_input(
+            "Name",
+            key=key("name"),
+            placeholder="before smoothing DrivAge",
+            label_visibility="collapsed",
+        )
+        if c2.button("Snapshot as…", key=key("create")):
+            clean = name.strip()
+            if not clean:
+                st.error("Give the snapshot a name first.")
+            elif any(sn.name == clean for sn in cfg.snapshots):
+                st.error(f"This model already has a snapshot called {clean!r}.")
+            else:
+                cfg.snapshots.append(
+                    TableSnapshot(
+                        name=clean,
+                        created_at=datetime.now(timezone.utc).isoformat(
+                            timespec="seconds"
+                        ),
+                        adjustments=copy.deepcopy(cfg.adjustments),
+                        base_rate_override=cfg.base_rate_override,
+                    )
+                )
+                S.touch()
+                ui.flash(
+                    "success",
+                    f"Snapshot **{clean}** taken "
+                    f"({len(cfg.adjustments)} adjustment(s)).",
+                )
+                st.rerun()
+        if not cfg.snapshots:
+            st.caption("No snapshots yet.")
+            return
+        ui.polars_table(
+            pl.DataFrame(
+                [
+                    {
+                        "snapshot": sn.name,
+                        "taken": sn.created_at,
+                        "adjustments": len(sn.adjustments),
+                    }
+                    for sn in cfg.snapshots
+                ]
+            )
+        )
+        names = [sn.name for sn in cfg.snapshots]
+        c1, c2, c3 = st.columns([3, 1, 1])
+        chosen = c1.selectbox(
+            "Snapshot", names, key=key("chosen"), label_visibility="collapsed"
+        )
+        if c2.button("Restore", key=key("restore")):
+            before = list(cfg.adjustments)
+            snap = next(sn for sn in cfg.snapshots if sn.name == chosen)
+            cfg.adjustments = copy.deepcopy(snap.adjustments)
+            cfg.base_rate_override = snap.base_rate_override
+            ui.flash("success", f"Restored the tables of snapshot **{chosen}**.")
+            _apply(run.name, True, [], before)
+        if c3.button("Delete", key=key("delete")):
+            cfg.snapshots = [sn for sn in cfg.snapshots if sn.name != chosen]
+            S.touch()
+            ui.flash("success", f"Snapshot **{chosen}** deleted.")
+            st.rerun()
+
+        st.markdown("**Compare two snapshots**")
+        options = [FITTED_OPTION, CURRENT_OPTION, *names]
+        c1, c2, c3 = st.columns([2, 2, 2])
+        left = c1.selectbox("Compare", options, index=0, key=key("diff_a"))
+        right = c2.selectbox(
+            "with", options, index=min(1, len(options) - 1), key=key("diff_b")
+        )
+        tol = c3.number_input(
+            "Report a band when |Δ log relativity| exceeds",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.01,
+            step=0.005,
+            format="%.3f",
+            key=key("diff_tol"),
+        )
+        if left == right:
+            st.caption("Pick two different versions to see the differences.")
+            return
+        versions = [_snapshot_version(cfg, name) for name in (left, right)]
+        if any(v is None for v in versions):  # a snapshot deleted in another tab
+            st.info("Pick two versions that still exist.")
+            return
+        diff = ui.guarded(
+            lambda: rate_model_diff(
+                *[
+                    rate_model_for(p, run, adj, base_rate_override=override)
+                    for adj, override in versions
+                ],
+                tol,
+            ),
+            "Comparing the snapshots",
+        )
+        if diff is None:
+            return
+        if diff.is_empty():
+            st.success("The two versions charge exactly the same premium.")
+            return
+        shown = describe_diff(diff, left, right)
+        ui.polars_table(shown)
+        st.download_button(
+            "Download the differences (.csv)",
+            ui.frame_bytes(shown),
+            file_name=f"{ui.safe_filename(run.name)}_snapshot_diff.csv",
+            key=key("diff_dl"),
+        )
 
 
 # --------------------------------------------------------------------------
@@ -367,25 +761,38 @@ def render() -> None:
                 "**Compare** page."
             )
     else:
+        _tools(run, var, run.tables[var], rate_model_tables(run.rate_model)[var])
         working = _main_effect(run, var, df, challenger)
 
-    b1, b2 = st.columns(2)
+    b1, b2, b3, b4 = st.columns(4)
     if b1.button(
+        "Undo",
+        key=S.widget_key("tables_undo"),
+        disabled=not S.can_undo(run.name),
+        help="Step back through this session's edits to the tables of this "
+        "model — one step per edit, tool or reset.",
+    ):
+        S.undo(run.name)
+        st.rerun()
+    if b2.button(
+        "Redo", key=S.widget_key("tables_redo"), disabled=not S.can_redo(run.name)
+    ):
+        S.redo(run.name)
+        st.rerun()
+    if b3.button(
         "Reset this variable",
         key=S.widget_key("tables_reset_var"),
         disabled=not any(a.variable == var for a in cfg.adjustments),
     ):
+        before = list(cfg.adjustments)
         cfg.adjustments = [a for a in cfg.adjustments if a.variable != var]
-        S.touch()
-        S.refresh_adjustments(run.name)
-        st.rerun()
-    if b2.button(
+        _apply(run.name, True, [], before)
+    if b4.button(
         "Reset all", key=S.widget_key("tables_reset_all"), disabled=not cfg.adjustments
     ):
+        before = list(cfg.adjustments)
         cfg.adjustments = []
-        S.touch()
-        S.refresh_adjustments(run.name)
-        st.rerun()
+        _apply(run.name, True, [], before)
     if cfg.adjustments:
         with st.expander(f"{len(cfg.adjustments)} adjustment(s)"):
             ui.polars_table(
@@ -404,6 +811,8 @@ def render() -> None:
                     ]
                 )
             )
+
+    _snapshots(run)
 
     st.subheader("Export")
     c1, c2, c3 = st.columns(3)

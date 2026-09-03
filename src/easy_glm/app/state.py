@@ -49,6 +49,7 @@ instead of vanishing (:func:`interrupted_fits`).
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -65,6 +66,7 @@ import polars as pl
 import streamlit as st
 
 from easy_glm.workflow import (
+    Adjustment,
     AdjustmentError,
     ModelRun,
     Project,
@@ -92,7 +94,11 @@ _SAMPLE_KEYS = ("sample_rows", "sample_seed")
 #: as if its numbers were slopes.
 #: 4 — merge of W4 (per-session .fitting markers, pruning rules) and B2 above;
 #: both bumped 2 → 3 independently, so the merged tree moves on to 4.
-PERSIST_FORMAT = 4
+#: 5 — D5: rate-table rows carry the training exposure that fell in them
+#: (``FromToRow.exposure`` / ``BandRow.exposure``, from the new
+#: ``GLMFit.row_exposure``). An older pickle has rows without the attribute at
+#: all, and the relativity tooling weights bands by it.
+PERSIST_FORMAT = 5
 #: A marker left by *another* session is only removed once it is this old:
 #: younger than this it may belong to a fit that is still running in another
 #: tab, and taking its marker away would cost that tab its own warning.
@@ -165,6 +171,7 @@ def model_hash(project: Project, model: str) -> str:
     d = project.to_dict()
     cfg = dict(d["models"][model])
     cfg.pop("adjustments", None)  # applied post-fit, never require a refit
+    cfg.pop("snapshots", None)  # named copies of the adjustments; same reason
     cfg.pop("base_rate_override", None)
     cfg.pop("notes", None)
     design = {v: d["design"]["variables"].get(v) for v in cfg["predictors"]}
@@ -1032,6 +1039,73 @@ def refresh_adjustments(model: str) -> ModelRun | None:
             _drop_refused_adjustment(cfg, exc)
     persist_run(model, run)
     return run
+
+
+# --------------------------------------------------------------------------
+# undo / redo of the rate-table edits
+# --------------------------------------------------------------------------
+#: session key of the per-model undo stacks. Not an app-state key, so
+#: :func:`set_project` drops it: another project's edits must never be undone
+#: into this one.
+UNDO_KEY = "undo_stacks"
+#: how many steps back each model remembers (per browser session; the stack is
+#: not part of the project file)
+UNDO_LIMIT = 50
+
+
+def _stacks(model: str) -> dict[str, list[list[Adjustment]]]:
+    init_state()
+    store = st.session_state.setdefault(UNDO_KEY, {})
+    return store.setdefault(model, {"past": [], "future": []})
+
+
+def record_undo(model: str, previous: list[Adjustment]) -> None:
+    """Remember ``previous`` — the model's adjustments *before* the change the
+    caller is about to make (or has just made) — as one undo step.
+
+    A step is a whole list of adjustments, not a single edit, so undo restores
+    exactly the tables that were there: the adjustments are the tables (they are
+    re-applied to the fit by ``rebuild_rate_model``). Recording a new step drops
+    the redo history, as everywhere else.
+    """
+    st_ = _stacks(model)
+    st_["past"].append(copy.deepcopy(previous))
+    del st_["past"][:-UNDO_LIMIT]
+    st_["future"].clear()
+
+
+def can_undo(model: str) -> bool:
+    return bool(_stacks(model)["past"])
+
+
+def can_redo(model: str) -> bool:
+    return bool(_stacks(model)["future"])
+
+
+def undo(model: str) -> bool:
+    """Put the previous set of adjustments back (autosave + rebuild included).
+    Returns False when there is nothing to undo."""
+    return _move(model, "past", "future")
+
+
+def redo(model: str) -> bool:
+    """Re-apply the set of adjustments the last undo took away."""
+    return _move(model, "future", "past")
+
+
+def _move(model: str, take: str, keep: str) -> bool:
+    st_ = _stacks(model)
+    if not st_[take]:
+        return False
+    cfg = project().models.get(model)
+    if cfg is None:
+        return False
+    st_[keep].append(copy.deepcopy(cfg.adjustments))
+    del st_[keep][:-UNDO_LIMIT]
+    cfg.adjustments = st_[take].pop()
+    touch()
+    refresh_adjustments(model)
+    return True
 
 
 def current_runs() -> dict[str, ModelRun]:
