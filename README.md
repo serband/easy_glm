@@ -103,7 +103,7 @@ around 10–20 seconds; peak memory is ~1 GB (the design matrix is dense float64
 | Step | Function | What it does |
 |------|----------|--------------|
 | 1 | `DesignSpec.from_data(train_df, predictors)` | Quantile knots per numeric, frequency-ordered levels per categorical — **train only**. JSON round-trip; edit by hand. |
-| 2 | `fit_glm(train_df, spec, target, ...)` | glum L1/elastic-net fit on `spec.build(train_df)`; `alpha=` or `cv=`; `monotone=` |
+| 2 | `fit_glm(train_df, spec, target, ...)` | glum L1/elastic-net fit on `spec.build(train_df)`; `alpha=` or `cv=`; `monotone=` (step increments or piecewise-linear band slopes) |
 | 3 | `rate_tables(fit)` / `to_rate_model(fit)` | Exact relativities + base rate from the coefficients |
 
 ```python
@@ -191,7 +191,7 @@ An Emblem-style GUI over the same engine. Nine pages, one project file:
 | Variables | roles (target, weight, exposure, offset, split, id, predictor, ignore), renames, type overrides, **level recodes**, derived columns (polars expressions), row filters |
 | Explore | exposure & observed rate by band; **leakage report** (single-factor deviance explained, target proxies, identifier-like columns, post-outcome names) with one-click ignore / acknowledge |
 | Split | indicator column or seeded random split; train/holdout balance |
-| Design | per-predictor knots (quantile / integer / custom), null column, level share, monotone direction; exposure + rate preview per bin |
+| Design | per-predictor kind (**step** by default · **linear** piecewise curve · **continuous** one straight line · **categorical**), knots (quantile / integer / custom), clamp range, null column, level share, monotone direction; exposure + rate preview per bin |
 | Model | family, target/weight/offset, penalty (fixed alpha or CV), predictors; fit; coefficients kept; regularisation path |
 | Diagnostics | A/E by any variable (in or out of the model, champion vs challenger), lift & Gini, double lift vs a challenger or a premium column, residual factor search |
 | Rate tables | relativities with A/E, inline edits saved as adjustments (no refit), Excel / `.easyglm` download |
@@ -254,7 +254,7 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 - [x] Monotone constraints (`monotone={"DrivAge": "decreasing"}`)
 - [x] Configurable knots / levels per variable (`DesignSpec`)
 - [ ] Two-way interactions (`A × B` tables)
-- [ ] Piecewise-linear (L-dummy) terms
+- [x] Piecewise-linear terms (`kind="linear"` / `"continuous"`: one penalised slope per band, so the curve is flat unless the data insists; monotone constraints supported)
 - [ ] CLI (`python -m easy_glm build ...`)
 - [ ] Drag-to-edit relativities (GAMChanger-style)
 - [ ] Multi-model A/E comparison in the editor

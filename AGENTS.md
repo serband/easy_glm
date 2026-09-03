@@ -87,7 +87,8 @@ Key invariant of the 0.3 core: `to_rate_model(fit).predict(data, exposure_col=No
 src/easy_glm/
 ├── __init__.py             # Public API exports
 ├── core/
-│   ├── design.py           # DesignSpec, StepEncoder (1{x>=k} + null col), LinearEncoder (hinges + clamp),
+│   ├── design.py           # DesignSpec, StepEncoder (1{x>=k} + null col), LinearEncoder (one slope
+│   │                       #   column per band + clamp; no knots = "continuous"),
 │   │                       #   InteractionEncoder (A×B cells), CategoricalEncoder (one-hot + Other),
 │   │                       #   Feature metadata, quantile_knots, frequent_levels; JSON round-trip
 │   ├── fit.py              # fit_glm -> GLMFit (glum wrapper: families/links,
@@ -207,12 +208,23 @@ User edits relativity in table
   see `DesignSpec.slices()`.
 - Step columns are `1{x >= knot}`; nulls are all-zero step columns (lowest bin)
   plus an `is null` column. Bin `j` relativity = `exp(cumsum(step coefs)[:j])`.
+- **Linear (piecewise-linear) columns are per-band amounts**
+  `clip(x_clipped - k_j, 0, k_{j+1} - k_j)`, one per band of
+  `[lo, k1, ..., km, hi]`, so coefficient `beta_j` **is** band `j`'s slope and the
+  lasso zeroes *slopes* (flat sections), not bends — the actuary's answer to Q3.
+  Never reintroduce hinge (`max(x-k, 0)`) columns: the table's `slope` column is
+  read straight off the coefficients and `log_rel_at_from` accumulates from `lo`,
+  so continuity is automatic. Nulls are all-zero band columns plus `is null`.
+  A `LinearEncoder` with no interior knots is the `continuous` kind (one band).
 - Categorical reference level = `levels[0]` (most frequent, no column); `Other`
   column catches lumped, unseen and null values.
 - `fit_glm` requires `alpha=` or `cv=`; never let glum's `alpha_search` pick
   (its `coef_` is the least-regularised end of the path).
-- Monotone constraints are coefficient sign bounds on step columns (work with L1;
-  glum's own `monotonic_constraints` does not).
+- Monotone constraints are coefficient sign bounds on the step columns of a step
+  term or the band-slope columns of a linear/continuous term (work with L1; glum's
+  own `monotonic_constraints` does not). Bounding slopes makes the curve monotone
+  without forcing convexity, which is why linear terms may be constrained.
+  Categoricals and interactions cannot.
 - Numeric `VariableConfig` tables may end with a `FromToRow(None, None, rel)` null
   row; `_precompute_variables` stores it as `null_relativity` and `score_numeric`
   applies it to NaN. Without that row NaN still raises (legacy behaviour).
@@ -277,7 +289,7 @@ User edits relativity in table
 | `test_engine.py` | RateModel: from_rate_tables (0.3 table format, null/Other rows, validation), from_glm_model, predict (numeric/categorical/multi), update_relativity, snapshots (+ metrics), switch_to, clone, JSON roundtrip, exposure, column mapping, metadata |
 | `test_golden.py` | Golden French-motor numbers on the checked-in 50k subsample (runs in CI) |
 | `test_invariants.py` | RateModel == GLM, JSON and Excel round-trips over step / categorical (string and integer) / mixed / offset / interaction / piecewise-linear designs with nulls and unseen levels |
-| `test_linear.py` | Piece B: `LinearEncoder` (clamp, hinges, nulls), slopes = cumulative hinge coefficients, continuity, exactness at/beyond the clamp, band-edit rule, snapshots/JSON/Excel/`from_rate_tables`, interaction with a linear parent, project validation, script round trip, workbench pages |
+| `test_linear.py` | Pieces B / B2: `LinearEncoder` (clamp, per-band slope columns, nulls, the one-band `continuous` kind), band slope = the coefficient itself, continuity, monotone as a sign bound on slopes, exactness at/beyond the clamp, band-edit rule, snapshots/JSON/Excel/`from_rate_tables`, interaction with a linear parent, project validation, script round trip, workbench pages |
 | `test_c1_foundations.py` | 0.3 bug regressions, format versions and migrations, editor defaults |
 | `test_scoring.py` | Isolated scoring: score_numeric (searchsorted), score_categorical (dict lookup), edge cases, fallbacks |
 | `test_workflow.py` | Project JSON/validation, prep steps, univariate, leakage report on planted leaks, build_design overrides, run_model (metrics, exactness, adjustments, CV), diagnostics, exported script executed in a subprocess and compared |

@@ -1,11 +1,13 @@
-"""Actuarial check for piece B — piecewise-linear (L-dummy) terms.
+"""Actuarial check for pieces B / B2 — piecewise-linear (L-dummy) terms.
 
-Fits the French-motor frequency model twice — with ``Density`` as a step
-function (0.3 behaviour) and as a piecewise-linear term — and prints (or, with
-``--write``, regenerates ``docs/checks/b-linear.md``) what an actuary needs to
-judge the feature: the two curves side by side at round values of Density,
-the clamp points, holdout deviance / Gini for each, and the exactness of the
-rate tables at and beyond the clamp.
+Fits the French-motor frequency model several times — with the factor as a step
+function (0.3 behaviour), as a piecewise-linear term (B2 basis: one penalised
+slope per band, so flat sections come out exactly flat), as a piecewise-linear
+term with a monotone constraint, and as a single straight line
+(``kind="continuous"``) — and prints (or, with ``--write``, regenerates
+``docs/checks/b-linear.md``) what an actuary needs to judge the feature: the
+curves side by side at round values, the clamp points, holdout deviance / Gini
+for each, and the exactness of the rate tables at and beyond the clamp.
 
 Run from the repository root::
 
@@ -63,13 +65,20 @@ def split(df: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
     return df.filter(pl.col("traintest") == 1), df.filter(pl.col("traintest") == 0)
 
 
-def fit(train: pl.DataFrame, linear: list[str] | None):
+def fit(
+    train: pl.DataFrame,
+    linear: list[str] | None,
+    *,
+    knots: dict[str, list[float]] | None = None,
+    monotone: dict[str, str] | None = None,
+):
     spec = DesignSpec.from_data(
         train,
         PREDICTORS,
         categorical=["VehPower"],
         weight_col="Exposure",
         linear=linear,
+        knots=knots,
     )
     return fit_glm(
         train,
@@ -79,7 +88,15 @@ def fit(train: pl.DataFrame, linear: list[str] | None):
         weight_col="Exposure",
         divide_target_by_weight=True,
         alpha=ALPHA,
+        monotone=monotone,
     )
+
+
+def flat_bands(fitted, var: str) -> tuple[int, int]:
+    """``(bands whose fitted slope is exactly zero, bands in total)``."""
+    enc = fitted.spec[var]
+    beta = fitted.coef[fitted.spec.slices()[var]][: enc.n_bands]
+    return int((beta == 0.0).sum()), int(enc.n_bands)
 
 
 def metrics(fitted, holdout: pl.DataFrame) -> dict[str, float]:
@@ -122,6 +139,10 @@ def main(write: bool) -> None:
     train, holdout = split(df)
     step_fit, lin_fit = fit(train, None), fit(train, [LINEAR_VAR])
     lin2_fit = fit(train, [SECOND_VAR])
+    # B2: the same term with a monotone constraint (a sign bound on the slopes)
+    mono_fit = fit(train, [LINEAR_VAR], monotone={LINEAR_VAR: "increasing"})
+    # B2: kind="continuous" — the linear encoder with no interior knots
+    cont_fit = fit(train, [SECOND_VAR], knots={SECOND_VAR: []})
     step_rm, lin_rm, lin2_rm = (
         to_rate_model(step_fit),
         to_rate_model(lin_fit),
@@ -132,6 +153,15 @@ def main(write: bool) -> None:
         metrics(lin_fit, holdout),
         metrics(lin2_fit, holdout),
     )
+    m_mono, m_cont = metrics(mono_fit, holdout), metrics(cont_fit, holdout)
+    mono_rm, cont_rm = to_rate_model(mono_fit), to_rate_model(cont_fit)
+    zero_lin, n_lin = flat_bands(lin_fit, LINEAR_VAR)
+    zero_lin2, n_lin2 = flat_bands(lin2_fit, SECOND_VAR)
+    mono_curve = curve(mono_rm, LINEAR_VAR, PROBE)
+    cont_curve = curve(cont_rm, SECOND_VAR, PROBE_2)
+    mono_slopes = mono_fit.coef[mono_fit.spec.slices()[LINEAR_VAR]][
+        : mono_fit.spec[LINEAR_VAR].n_bands
+    ]
     enc = lin_fit.spec[LINEAR_VAR]
     lo, hi = enc.clamp
     enc2 = lin2_fit.spec[SECOND_VAR]
@@ -172,8 +202,16 @@ def main(write: bool) -> None:
         "per band, jumping at the band edges. A **piecewise-linear** term lets the",
         "relativity change *smoothly* with the value — straight-line segments on the log",
         "scale between knots — which suits quantities like mileage, population density,",
-        "sum insured or vehicle value. The lasso still decides where the slope changes:",
-        "most knots carry no change, so the curve has few bends.",
+        "sum insured or vehicle value.",
+        "",
+        "**Flat unless the data insists.** Following your answer to Q3, the model now",
+        "fits one number per band — the *slope inside that band* — and the penalty pushes",
+        "each of them to exactly zero. A band whose data does not demand a slope comes",
+        "back perfectly flat, so the curve is a few sloped stretches joined by level ones",
+        "rather than a line that is always drifting somewhere. (Before this change the",
+        "fitted numbers were the *changes* of slope, so the penalty produced long straight",
+        "runs instead of flat ones.) The curve is still continuous everywhere: the bands",
+        "join up by construction.",
         "",
         "Three conventions, all from the plan review (questions Q1–Q3):",
         "",
@@ -187,9 +225,13 @@ def main(write: bool) -> None:
         "data stops. Set the clamp yourself on the Design page when the exact edge matters.",
         "2. **Relativity 1.00 sits at the lower edge of the most exposed band**, so the base "
         f"risk is a round, visible number (here `{LINEAR_VAR}` = {base_row['from'][0]:g}).",
-        "3. **Few bends, not few slopes.** Each fitted number is a *change of slope*; the "
-        "penalty removes changes, so long straight stretches are the norm. Monotone "
-        "constraints are not offered on these terms in this release.",
+        "3. **Few slopes, not few bends** (your Q3 answer). Each fitted number is the "
+        "slope of one band and the penalty removes slopes, so flat stretches are the "
+        f"norm: of the {n_lin} bands of the `{LINEAR_VAR}` curve below, {zero_lin} came "
+        f"back exactly flat, and of the {n_lin2} bands of `{SECOND_VAR}`, {zero_lin2}. "
+        "**Monotone constraints are available on these terms**: a direction bounds every "
+        "band slope to one sign, which keeps the curve rising (or falling) throughout "
+        "without forcing any particular shape on it.",
         "",
         f"## `{LINEAR_VAR}`: step versus piecewise-linear",
         "",
@@ -208,9 +250,8 @@ def main(write: bool) -> None:
         lines.append(f"| {v:,}{note} | {s_:.4f} | {l_:.4f} |")
     lines += [
         "",
-        f"The linear curve has {len(enc.knots)} candidate knots; the fit kept "
-        f"{m_lin['terms'][LINEAR_VAR]} non-zero `{LINEAR_VAR}` terms (the hinge at the "
-        "clamp plus the bends it needed), against "
+        f"The linear curve has {len(enc.knots)} candidate knots, so {n_lin} bands; the "
+        f"fit gave {n_lin - zero_lin} of them a slope and left {zero_lin} flat, against "
         f"{m_step['terms'][LINEAR_VAR]} non-zero step increments.",
         "",
         f"## Holdout comparison (everything else identical; only `{LINEAR_VAR}` changes)",
@@ -222,9 +263,11 @@ def main(write: bool) -> None:
         f"| Deviance explained | {m_step['dev_explained']:.2%} | {m_lin['dev_explained']:.2%} |",
         f"| Non-zero coefficients (whole model) | {m_step['non_zero']} | {m_lin['non_zero']} |",
         "",
-        "The bonus-malus effect is close to log-linear, so the straight-line description",
-        "fits the holdout slightly better with fewer numbers. That is the typical case for",
-        "a linear term; it is not a general predictive gain.",
+        "The bonus-malus effect is close to log-linear, so a description made of sloped",
+        f"stretches fits the holdout a little better (Gini {m_step['gini']:.4f} → "
+        f"{m_lin['gini']:.4f}, deviance explained {m_step['dev_explained']:.2%} → "
+        f"{m_lin['dev_explained']:.2%}) for about the same number of fitted numbers.",
+        "That is the typical case for a linear term; it is not a general predictive gain.",
         "",
         "**One thing to look at before shipping such a curve.** Above about 120 the data",
         "is thin. The step design pooled everything from 100 upwards into one band; the",
@@ -234,23 +277,57 @@ def main(write: bool) -> None:
         "would charge, either set the clamp for this factor to where the data runs out",
         "(e.g. 150 — the curve is then flat above it) or keep the step design. See Q10.",
         "",
-        f"## A second example: `{SECOND_VAR}` (skewed, one straight line)",
+        f"## Keeping a curve monotone: `{LINEAR_VAR}` increasing",
+        "",
+        "Ask for a direction on the Design page and every band slope is bounded to that "
+        "sign, so the curve can never turn round. Nothing else about the fit changes: "
+        "flat bands are still allowed (a bound of zero), so the constraint costs you "
+        "nothing where the data already agrees.",
+        "",
+        f"| {LINEAR_VAR} | piecewise-linear | same, forced increasing |",
+        "|---:|---:|---:|",
+        *[
+            f"| {v:,} | {l_:.4f} | {m_:.4f} |"
+            for v, l_, m_ in zip(PROBE, lin_curve, mono_curve, strict=True)
+        ],
+        "",
+        f"Every band slope is at least zero ({int((mono_slopes >= 0).sum())} of "
+        f"{len(mono_slopes)}, {int((mono_slopes == 0).sum())} of them exactly flat); "
+        f"holdout Gini {m_lin['gini']:.4f} unconstrained vs {m_mono['gini']:.4f} "
+        f"constrained, deviance explained {m_lin['dev_explained']:.2%} vs "
+        f"{m_mono['dev_explained']:.2%}.",
+        "",
+        f"## A second example: `{SECOND_VAR}` (skewed) — and the **continuous** option",
         "",
         f"`{SECOND_VAR}` is heavily skewed (most policies below 5,000). Asked for a linear "
-        f"term, the lasso kept {m_lin2['terms'][SECOND_VAR]} of {len(enc2.hinges)} hinges — "
-        "a single straight line on the log scale from "
-        f"{enc2.lo:g} to {enc2.hi:g} — where the step design used "
+        f"term with {len(enc2.knots)} candidate knots, the fit left {zero_lin2} of its "
+        f"{n_lin2} bands flat and gave {n_lin2 - zero_lin2} a slope, between "
+        f"{enc2.lo:g} and {enc2.hi:g}, where the step design used "
         f"{m_step['terms'][SECOND_VAR]} increments. Holdout Gini {m_step['gini']:.4f} (step) "
         f"vs {m_lin2['gini']:.4f} (linear), deviance explained {m_step['dev_explained']:.2%} "
         f"vs {m_lin2['dev_explained']:.2%}: here the step design describes the low end "
-        "better. Which shape to use is a judgement per factor; both are available.",
+        "better. Which shape to use is a judgement per factor; all of them are available.",
         "",
-        f"| {SECOND_VAR} | step (0.3) | piecewise-linear |",
-        "|---:|---:|---:|",
+        "There is now a third choice for a numeric factor, **continuous**: one straight "
+        "line over the whole range, no knots at all, so the relativity is a single rate "
+        "per unit. It is the same machinery as a linear term with one band — same rate "
+        "table, same editor, same Excel sheet, same exported script — and it is the "
+        "shortest honest description of a factor you believe simply trends. Numeric "
+        "factors still default to **step** (your Q9 answer); linear, continuous and "
+        "categorical are the explicit overrides, one per factor, on the Design page.",
+        "",
+        f"| {SECOND_VAR} | step (0.3) | piecewise-linear | continuous |",
+        "|---:|---:|---:|---:|",
         *[
-            f"| {v:,}{' (above clamp → flat)' if v > enc2.hi else ''} | {s_:.4f} | {l_:.4f} |"
-            for v, s_, l_ in zip(PROBE_2, step_curve2, lin_curve2, strict=True)
+            f"| {v:,}{' (above clamp → flat)' if v > enc2.hi else ''} | {s_:.4f} | "
+            f"{l_:.4f} | {c_:.4f} |"
+            for v, s_, l_, c_ in zip(
+                PROBE_2, step_curve2, lin_curve2, cont_curve, strict=True
+            )
         ],
+        "",
+        f"Holdout for the continuous version: Gini {m_cont['gini']:.4f}, deviance "
+        f"explained {m_cont['dev_explained']:.2%}, A/E {m_cont['ae']:.4f}.",
         "",
         "## Guarantees (tested on every change)",
         "",
@@ -266,6 +343,10 @@ def main(write: bool) -> None:
         "  two in the middle — so the curve never jumps, not even at the clamp points. The",
         "  missing-value row is not on the curve and edits on its own. Relativities must be",
         "  above 0 (the editor refuses 0 and says so).",
+        "- A monotone direction bounds every band slope to one sign, so the curve cannot",
+        "  turn round; the penalty may still flatten a band to zero, which both directions",
+        "  allow. A **continuous** factor is a linear factor with a single band: identical",
+        "  table type, editor, Excel sheet and exported script.",
         "- Excel and the exported script carry the slopes and the base point; a model rebuilt",
         "  from either scores identically. A table typed or rounded by hand (four decimals) reads",
         "  back as a continuous curve, because the slopes are re-derived from the row values;",
@@ -278,8 +359,9 @@ def main(write: bool) -> None:
         "high quantile such as the 99.5th percentile (thin tails are pooled flat, as a step "
         "design would)? *Default until you answer: the training maximum, rounded outward; "
         "you can set the clamp per factor on the Design page.*",
-        "- Q9 — whether any variable should default to piecewise-linear — still stands; "
-        "the default is mileage only.",
+        "- Q3 (few slopes rather than few bends) and Q9 (numeric factors default to step, "
+        "with `linear` and `continuous` as explicit overrides) are answered and built; "
+        "they need nothing further from you.",
         "",
     ]
     text = "\n".join(lines)

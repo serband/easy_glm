@@ -8,14 +8,22 @@ Until now every numeric rating factor was a **step** function: one relativity
 per band, jumping at the band edges. A **piecewise-linear** term lets the
 relativity change *smoothly* with the value — straight-line segments on the log
 scale between knots — which suits quantities like mileage, population density,
-sum insured or vehicle value. The lasso still decides where the slope changes:
-most knots carry no change, so the curve has few bends.
+sum insured or vehicle value.
+
+**Flat unless the data insists.** Following your answer to Q3, the model now
+fits one number per band — the *slope inside that band* — and the penalty pushes
+each of them to exactly zero. A band whose data does not demand a slope comes
+back perfectly flat, so the curve is a few sloped stretches joined by level ones
+rather than a line that is always drifting somewhere. (Before this change the
+fitted numbers were the *changes* of slope, so the penalty produced long straight
+runs instead of flat ones.) The curve is still continuous everywhere: the bands
+join up by construction.
 
 Three conventions, all from the plan review (questions Q1–Q3):
 
 1. **Flat outside the data.** The curve is clamped at the training range — for `BonusMalus` here `50` to `230` — and stays level beyond it, so a value far outside anything seen in training gets the relativity at the nearer edge, never an extrapolated one. The default clamp is the training minimum and maximum **rounded outward to a round number** (each end moves by less than 1 % of the range: 17.65–29,857 becomes 0–29,900; 18–80 stays 18–80) and the end bands keep their fitted slope up to that number, so the curve does not stop exactly where the data stops. Set the clamp yourself on the Design page when the exact edge matters.
 2. **Relativity 1.00 sits at the lower edge of the most exposed band**, so the base risk is a round, visible number (here `BonusMalus` = 50).
-3. **Few bends, not few slopes.** Each fitted number is a *change of slope*; the penalty removes changes, so long straight stretches are the norm. Monotone constraints are not offered on these terms in this release.
+3. **Few slopes, not few bends** (your Q3 answer). Each fitted number is the slope of one band and the penalty removes slopes, so flat stretches are the norm: of the 9 bands of the `BonusMalus` curve below, 2 came back exactly flat, and of the 20 bands of `Density`, 9. **Monotone constraints are available on these terms**: a direction bounds every band slope to one sign, which keeps the curve rising (or falling) throughout without forcing any particular shape on it.
 
 ## `BonusMalus`: step versus piecewise-linear
 
@@ -25,32 +33,32 @@ Relativity of the `BonusMalus` factor alone (base 1.00 at the base row of each t
 |---:|---:|---:|
 | 40 (below clamp → flat) | 1.0000 | 1.0000 |
 | 50 | 1.0000 | 1.0000 |
-| 55 | 1.5613 | 1.4122 |
-| 60 | 2.7730 | 1.9942 |
-| 70 | 2.1094 | 2.2760 |
-| 80 | 2.3797 | 2.4432 |
-| 90 | 2.4669 | 2.9880 |
-| 100 | 4.6981 | 3.9935 |
-| 120 | 4.6981 | 6.5645 |
-| 150 | 4.6981 | 13.8348 |
-| 200 | 4.6981 | 47.9279 |
-| 230 | 4.6981 | 101.0084 |
-| 300 (above clamp → flat) | 4.6981 | 101.0084 |
+| 55 | 1.5613 | 1.6035 |
+| 60 | 2.7730 | 2.4118 |
+| 70 | 2.1094 | 2.3345 |
+| 80 | 2.3797 | 2.4399 |
+| 90 | 2.4669 | 3.0481 |
+| 100 | 4.6981 | 4.2800 |
+| 120 | 4.6981 | 6.8322 |
+| 150 | 4.6981 | 13.7795 |
+| 200 | 4.6981 | 44.3628 |
+| 230 | 4.6981 | 89.4727 |
+| 300 (above clamp → flat) | 4.6981 | 89.4727 |
 
-The linear curve has 8 candidate knots; the fit kept 5 non-zero `BonusMalus` terms (the hinge at the clamp plus the bends it needed), against 8 non-zero step increments.
+The linear curve has 8 candidate knots, so 9 bands; the fit gave 7 of them a slope and left 2 flat, against 8 non-zero step increments.
 
 ## Holdout comparison (everything else identical; only `BonusMalus` changes)
 
 | | step | piecewise-linear |
 |---|---:|---:|
-| A/E | 1.0191 | 1.0198 |
-| Gini | 0.3072 | 0.3091 |
-| Deviance explained | 4.79% | 4.88% |
-| Non-zero coefficients (whole model) | 71 | 69 |
+| A/E | 1.0191 | 1.0199 |
+| Gini | 0.3072 | 0.3106 |
+| Deviance explained | 4.79% | 4.97% |
+| Non-zero coefficients (whole model) | 71 | 72 |
 
-The bonus-malus effect is close to log-linear, so the straight-line description
-fits the holdout slightly better with fewer numbers. That is the typical case for
-a linear term; it is not a general predictive gain.
+The bonus-malus effect is close to log-linear, so a description made of sloped
+stretches fits the holdout a little better (Gini 0.3072 → 0.3106, deviance explained 4.79% → 4.97%) for about the same number of fitted numbers.
+That is the typical case for a linear term; it is not a general predictive gain.
 
 **One thing to look at before shipping such a curve.** Above about 120 the data
 is thin. The step design pooled everything from 100 upwards into one band; the
@@ -60,23 +68,49 @@ range the curve follows the data it has, however little. If that is not what you
 would charge, either set the clamp for this factor to where the data runs out
 (e.g. 150 — the curve is then flat above it) or keep the step design. See Q10.
 
-## A second example: `Density` (skewed, one straight line)
+## Keeping a curve monotone: `BonusMalus` increasing
 
-`Density` is heavily skewed (most policies below 5,000). Asked for a linear term, the lasso kept 1 of 20 hinges — a single straight line on the log scale from 0 to 27000 — where the step design used 11 increments. Holdout Gini 0.3072 (step) vs 0.3062 (linear), deviance explained 4.79% vs 4.77%: here the step design describes the low end better. Which shape to use is a judgement per factor; both are available.
+Ask for a direction on the Design page and every band slope is bounded to that sign, so the curve can never turn round. Nothing else about the fit changes: flat bands are still allowed (a bound of zero), so the constraint costs you nothing where the data already agrees.
 
-| Density | step (0.3) | piecewise-linear |
+| BonusMalus | piecewise-linear | same, forced increasing |
 |---:|---:|---:|
-| 1 | 0.6835 | 0.9971 |
-| 25 | 0.7312 | 0.9972 |
-| 100 | 0.8060 | 0.9973 |
-| 500 | 0.9214 | 0.9982 |
-| 1,000 | 1.0000 | 0.9993 |
-| 2,500 | 1.0424 | 1.0026 |
-| 5,000 | 1.0715 | 1.0082 |
-| 10,000 | 1.0715 | 1.0194 |
-| 20,000 | 1.0715 | 1.0422 |
-| 27,000 | 1.0715 | 1.0584 |
-| 40,000 (above clamp → flat) | 1.0715 | 1.0584 |
+| 40 | 1.0000 | 1.0000 |
+| 50 | 1.0000 | 1.0000 |
+| 55 | 1.6035 | 1.6045 |
+| 60 | 2.4118 | 2.3792 |
+| 70 | 2.3345 | 2.3792 |
+| 80 | 2.4399 | 2.4410 |
+| 90 | 3.0481 | 3.0502 |
+| 100 | 4.2800 | 4.2841 |
+| 120 | 6.8322 | 6.8381 |
+| 150 | 13.7795 | 13.7895 |
+| 200 | 44.3628 | 44.3857 |
+| 230 | 89.4727 | 89.5074 |
+| 300 | 89.4727 | 89.5074 |
+
+Every band slope is at least zero (9 of 9, 3 of them exactly flat); holdout Gini 0.3106 unconstrained vs 0.3106 constrained, deviance explained 4.97% vs 4.96%.
+
+## A second example: `Density` (skewed) — and the **continuous** option
+
+`Density` is heavily skewed (most policies below 5,000). Asked for a linear term with 19 candidate knots, the fit left 9 of its 20 bands flat and gave 11 a slope, between 0 and 27000, where the step design used 11 increments. Holdout Gini 0.3072 (step) vs 0.3069 (linear), deviance explained 4.79% vs 4.78%: here the step design describes the low end better. Which shape to use is a judgement per factor; all of them are available.
+
+There is now a third choice for a numeric factor, **continuous**: one straight line over the whole range, no knots at all, so the relativity is a single rate per unit. It is the same machinery as a linear term with one band — same rate table, same editor, same Excel sheet, same exported script — and it is the shortest honest description of a factor you believe simply trends. Numeric factors still default to **step** (your Q9 answer); linear, continuous and categorical are the explicit overrides, one per factor, on the Design page.
+
+| Density | step (0.3) | piecewise-linear | continuous |
+|---:|---:|---:|---:|
+| 1 | 0.6835 | 0.6973 | 1.0000 |
+| 25 | 0.7312 | 0.7234 | 1.0001 |
+| 100 | 0.8060 | 0.8200 | 1.0002 |
+| 500 | 0.9214 | 0.9339 | 1.0011 |
+| 1,000 | 1.0000 | 1.0000 | 1.0022 |
+| 2,500 | 1.0424 | 1.0587 | 1.0055 |
+| 5,000 | 1.0715 | 1.0719 | 1.0111 |
+| 10,000 | 1.0715 | 1.0719 | 1.0223 |
+| 20,000 | 1.0715 | 1.0719 | 1.0452 |
+| 27,000 | 1.0715 | 1.0719 | 1.0614 |
+| 40,000 (above clamp → flat) | 1.0715 | 1.0719 | 1.0614 |
+
+Holdout for the continuous version: Gini 0.3062, deviance explained 4.77%, A/E 1.0189.
 
 ## Guarantees (tested on every change)
 
@@ -90,6 +124,10 @@ would charge, either set the clamp for this factor to where the data runs out
   two in the middle — so the curve never jumps, not even at the clamp points. The
   missing-value row is not on the curve and edits on its own. Relativities must be
   above 0 (the editor refuses 0 and says so).
+- A monotone direction bounds every band slope to one sign, so the curve cannot
+  turn round; the penalty may still flatten a band to zero, which both directions
+  allow. A **continuous** factor is a linear factor with a single band: identical
+  table type, editor, Excel sheet and exported script.
 - Excel and the exported script carry the slopes and the base point; a model rebuilt
   from either scores identically. A table typed or rounded by hand (four decimals) reads
   back as a continuous curve, because the slopes are re-derived from the row values;
@@ -98,4 +136,4 @@ would charge, either set the clamp for this factor to where the data runs out
 ## Questions for you
 
 - **Q10.** For a linear term, should the default upper clamp be the training maximum (the current default; the curve follows the data through thin tails) or a high quantile such as the 99.5th percentile (thin tails are pooled flat, as a step design would)? *Default until you answer: the training maximum, rounded outward; you can set the clamp per factor on the Design page.*
-- Q9 — whether any variable should default to piecewise-linear — still stands; the default is step for every numeric variable, switched per variable on the Design page.
+- Q3 (few slopes rather than few bends) and Q9 (numeric factors default to step, with `linear` and `continuous` as explicit overrides) are answered and built; they need nothing further from you.
