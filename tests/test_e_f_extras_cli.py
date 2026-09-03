@@ -1074,3 +1074,25 @@ class TestWorkbenchPages:
         grid = at.session_state[_wk(at, "design_grid")]
         assert grid is not None  # the editor exists; its rules are unit-tested above
         assert any("penalty weight" in c.value.lower() for c in at.caption)
+
+    def test_unassigning_the_premium_role_clears_the_offset(self, data_path):
+        from easy_glm.app.pages_variables import apply_roles_grid
+
+        p = rate_change_project(data_path)
+        rows = [
+            {"column": "Premium", "rename to": "", "role": "unassigned", "type": "auto"}
+        ]
+        changed, notices = apply_roles_grid(p, ["Premium"], rows)
+        assert changed
+        assert p.models["change"].offset is None
+        assert any("log_Premium" in text for _, text in notices)
+
+    def test_the_html_report_says_what_the_numbers_are(self, data_path):
+        from easy_glm.workflow import to_report_html
+
+        p = rate_change_project(data_path)
+        df = prepare(p)
+        run = run_model(p, df, "change")
+        html = to_report_html(p, {"change": run}, df, champion="change")
+        assert "multiplier on current premium" in html
+        assert "differential" in html

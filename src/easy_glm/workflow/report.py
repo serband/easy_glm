@@ -270,14 +270,21 @@ def _summary_section(
             f"{int((run.fit.coef != 0).sum()):,} of {len(run.fit.coef):,}",
         ),
         ("base rate", _num(run.rate_model.base_rate, 6)),
+        ("each table entry is", run.rate_model.relativity_label),
         ("manual adjustments", f"{len(cfg.adjustments)}"),
     ]
+    note = (
+        f'<p class="muted">{_esc(run.rate_model.relativity_note)}</p>'
+        if run.rate_model.relativity_label != "relativity"
+        else ""
+    )
     return (
         '<section id="summary"><h2>1. Summary</h2>'
         '<div class="cols">'
         f"<div><h3>Data</h3>{_pairs_table(data_pairs)}</div>"
         f"<div><h3>Model</h3>{_pairs_table(model_pairs)}</div>"
         "</div>"
+        f"{note}"
         "<h3>Metrics</h3>"
         '<p class="muted">A/E is actual over expected on totals — 1.00 means the '
         "model charges exactly what happened. Gini is normalised (1.00 = the best "

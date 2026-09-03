@@ -238,7 +238,7 @@ the Excel summary label them "odds relativity" so they cannot be read as
 probabilities. On a synthetic lapse model here the age bands run from
 **0.709** to **1.722** times the base odds of
 **0.2637**, and the scorer converts back: it returns probabilities between
-**0.138** and **0.395**, matching the GLM to 1.1e-16. A
+**0.138** and **0.395**, matching the GLM to 5.6e-17. A
 probability is not an amount, so such a model **refuses** to be multiplied by
 exposure — asking for it is an error message, not a silently meaningless number.
 

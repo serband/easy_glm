@@ -116,6 +116,10 @@ def apply_roles_grid(
                 old_role = p.data.roles.pop(final)
                 if old_role == "predictor":
                     notices.extend(("warning", n) for n in _drop_from_models(p, final))
+                elif old_role == "current_premium":
+                    notices.extend(
+                        ("warning", n) for n in _drop_premium_offset(p, final)
+                    )
                 changed = True
         elif p.data.roles.get(final) != role:
             notices.extend(("warning", n) for n in p.apply_role_change(final, role))
@@ -129,6 +133,21 @@ def apply_roles_grid(
             p.data.types[final] = kind
             changed = True
     return changed, notices
+
+
+def _drop_premium_offset(p: Project, column: str) -> list[str]:
+    """The derived ``log(premium)`` column goes with the role, so a model still
+    offsetting on it would fail at the next fit."""
+    gone = premium_offset_column(column)
+    notes: list[str] = []
+    for name, cfg in p.models.items():
+        if cfg.offset == gone:
+            cfg.offset = None
+            notes.append(
+                f"Model {name} no longer offsets on {gone!r}: {column} is not the "
+                "current premium any more"
+            )
+    return notes
 
 
 def _drop_from_models(p: Project, column: str) -> list[str]:
