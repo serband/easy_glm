@@ -11,7 +11,10 @@ project on disk could delete the fit that belonged to it. Tests named
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -142,6 +145,22 @@ def _texts(at: AppTest) -> str:
 
 def _files(folder: Path) -> list[str]:
     return sorted(f.name for f in folder.glob("*")) if folder.exists() else []
+
+
+def _snap(folder: Path) -> dict[str, tuple[int, int, str]]:
+    """Every file in the folder by name, size, modification time in
+    nanoseconds and a hash of the contents — markers included, so "nothing was
+    written and nothing was deleted" is checked byte for byte."""
+    if not folder.exists():
+        return {}
+    return {
+        f.name: (
+            f.stat().st_size,
+            f.stat().st_mtime_ns,
+            hashlib.sha1(f.read_bytes()).hexdigest(),
+        )
+        for f in sorted(folder.glob("*"))
+    }
 
 
 def _button(at: AppTest, label: str):
@@ -382,23 +401,30 @@ def test_breakage2_28_an_interrupted_fit_is_reported_not_forgotten(workspace):
     next session simply said "Not fitted yet."."""
     path = str(workspace["project"])
     # a fit that is started and never saved leaves a marker ...
-    started = _run(_script("pages_model", path, body='S._mark_fit_started("freq")'))
+    body = 'S._mark_fit_started("freq", S.run_key(S.project(), "freq"))'
+    started = _run(_script("pages_model", path, body=body))
     markers = list(workspace["runs"].glob("*.fitting"))
     assert len(markers) == 1
     assert json.loads(markers[0].read_text())["model"] == "freq"
     assert "Not fitted yet." in _texts(started)
 
-    # ... which the next session turns into a sentence, once
+    # ... which the next session turns into a sentence
     at = _run(_script("pages_model", path))
     assert "was interrupted" in _texts(at)
-    assert not list(workspace["runs"].glob("*.fitting"))
+    # the marker is left where it is: from here it is indistinguishable from a
+    # fit running in another tab, and taking it away would cost that tab its
+    # own warning (W4 review S3). It is still true, so it is said again ...
+    assert list(workspace["runs"].glob("*.fitting"))
     again = _run(_script("pages_model", path))
-    assert "was interrupted" not in _texts(again)
+    assert "was interrupted" in _texts(again)
 
-    # a fit that finishes leaves no marker and no notice
+    # ... until the fit is actually done: that clears this session's marker and
+    # tidies the stale one, whose result is now on disk
     done = _run(_script("pages_model", path, fit=True), 240)
     assert not list(workspace["runs"].glob("*.fitting"))
     assert "was interrupted" not in _texts(done)
+    after = _run(_script("pages_model", path))
+    assert "was interrupted" not in _texts(after)
 
 
 def test_breakage2_30_windows_device_names_are_refused(workspace):
@@ -569,3 +595,149 @@ def test_w4_state_helpers_are_documented_rules():
     assert "conflict" in (S.runs_write_paused.__doc__ or "")
     assert "in step with" in (S.runs_delete_paused.__doc__ or "")
     assert "saved on disk" in (S._prune_runs.__doc__ or "")
+
+
+# --------------------------------------------------------------------------
+# the W4 review's should-fix items and missing tests
+# --------------------------------------------------------------------------
+def _foreign_marker(workspace, session: str = "deadbeef") -> Path:
+    """A "fit in progress" marker as another browser session would leave it —
+    a key nothing was ever saved under, so it reads as a live fit."""
+    workspace["runs"].mkdir(exist_ok=True)
+    marker = workspace["runs"] / f"{S._model_tag('freq')}-{'a' * 16}-{session}.fitting"
+    marker.write_text(json.dumps({"model": "freq", "session": session, "pid": 1}))
+    return marker
+
+
+def test_breakage2_s1_markers_obey_the_same_pause_rules(workspace):
+    """W4 review S1: a paused tab unlinked another tab's "fit in progress"
+    marker, so the folder moved after all — and the tab that really was
+    fitting lost its own warning."""
+    path = str(workspace["project"])
+    tab_a = _run(_script("pages_model", path, fit=True), 240)
+    marker = _foreign_marker(workspace)
+    tab_b = _run(_script("pages_model", path))
+
+    tab_a.text_input(key=wk(tab_a, "notes_freq")).set_value("A wins").run()
+    tab_b.text_input(key=wk(tab_b, "notes_freq")).set_value("B loses").run()
+    assert any("changed by another browser tab" in w.value for w in tab_b.warning)
+    before = _snap(workspace["runs"])  # everything tab A did is now in place
+    tab_b.button(key=wk(tab_b, "fit_freq")).click().run()
+    assert not tab_b.exception
+    assert _snap(workspace["runs"]) == before  # markers included
+
+    # a tab that *is* in step reports the fit it can see, but still leaves a
+    # marker that may belong to a fit running somewhere else
+    fresh = _run(_script("pages_model", path))
+    assert "was interrupted" in _texts(fresh)
+    assert marker.exists()
+
+    # ... once it is older than the grace period, it is tidied away
+    old = time.time() - S.MARKER_GRACE_SECONDS - 10
+    os.utime(marker, (old, old))
+    later = _run(_script("pages_model", path))
+    assert "was interrupted" in _texts(later)
+    assert not marker.exists()
+
+
+def test_breakage2_s1_a_finished_fit_leaves_only_its_own_marker_behind(workspace):
+    """A fit clears the marker it wrote, not every marker of that model."""
+    path = str(workspace["project"])
+    marker = _foreign_marker(workspace)
+    at = _run(_script("pages_model", path), 240)
+    at.button(key=wk(at, "fit_freq")).click().run()
+    assert not at.exception
+    assert marker.exists()  # another session's marker is not this fit's to clear
+    mine = [
+        f
+        for f in workspace["runs"].glob("*.fitting")
+        if f != marker  # this session's own marker went with the saved run
+    ]
+    assert mine == []
+
+
+def test_breakage2_s2_delete_says_so_before_the_conflict_notice_is_up(workspace):
+    """W4 review S2: with the file changed but no notice showing yet, Delete
+    was refused on disk (right) and said nothing (wrong) — touch() reran before
+    the flash was queued."""
+    path = str(workspace["project"])
+    tab_a = _run(_script("pages_model", path, fit=True), 240)
+    tab_b = _run(_script("pages_model", path))
+    tab_a.text_input(key=wk(tab_a, "notes_freq")).set_value("A wins").run()
+    before = _snap(workspace["runs"])  # tab B has no conflict notice yet
+
+    _button(tab_b, "Delete").click().run()
+    assert not tab_b.exception
+    assert _snap(workspace["runs"]) == before
+    assert "removed from this tab only" in _texts(tab_b)
+    assert any("changed by another browser tab" in w.value for w in tab_b.warning)
+    assert "freq" in json.loads(workspace["project"].read_text())["models"]
+
+
+@pytest.mark.parametrize("resolution", ["conflict_reload", "conflict_overwrite"])
+def test_breakage2_s3_deleting_resumes_once_the_conflict_is_resolved(
+    workspace, resolution
+):
+    """The other half of the rule: the pause must lift. After Reload or
+    Overwrite a Delete really removes the model and its fit."""
+    path = str(workspace["project"])
+    tab_a = _run(_script("pages_model", path, fit=True), 240)
+    tab_b = _run(_script("pages_model", path))
+    tab_a.text_input(key=wk(tab_a, "notes_freq")).set_value("A wins").run()
+    tab_b.text_input(key=wk(tab_b, "notes_freq")).set_value("B loses").run()
+    assert any("changed by another browser tab" in w.value for w in tab_b.warning)
+
+    tab_b.button(key=resolution).click().run()
+    assert not tab_b.exception
+    assert not any("changed by another" in w.value for w in tab_b.warning)
+    _button(tab_b, "Delete").click().run()
+    assert not tab_b.exception
+    assert "removed from this tab only" not in _texts(tab_b)
+    assert not [f for f in _files(workspace["runs"]) if f.endswith(".pkl")]
+    assert json.loads(workspace["project"].read_text())["models"] == {}
+
+
+def test_breakage2_03b_delete_moves_the_picker_too(workspace):
+    """The companion of finding 3: after Delete the picker must be on a model
+    that still exists (and on nothing when the last one goes)."""
+    path = str(workspace["project"])
+    at = _run(_script("pages_model", path))
+    at.text_input(key=wk(at, "model_new_name")).set_value("freq_v2").run()
+    _button(at, "Create").click().run()
+    assert at.selectbox(key=wk(at, "model_select")).value == "freq_v2"
+
+    _button(at, "Delete").click().run()  # deletes the selected freq_v2
+    assert not at.exception
+    assert at.session_state["model_current"] == "freq"
+    assert at.selectbox(key=wk(at, "model_select")).value == "freq"
+    assert list(at.session_state["_project"].models) == ["freq"]
+
+    _button(at, "Delete").click().run()  # ... and the last one
+    assert not at.exception
+    assert at.session_state["model_current"] is None
+    assert at.session_state["_project"].models == {}
+    assert "Create a model to start" in _texts(at)
+
+
+def test_breakage2_nit_number_boxes_take_whole_seeds_and_refuse_negatives(workspace):
+    """W4 review nit 1 and missing test 5: a fractional seed keeps the box and
+    the project in step (whole numbers only, said in the box's help), and a
+    negative base-rate override is refused like a negative seed."""
+    p = Project.from_json(workspace["project"])
+    p.data.split.mode = "random"
+    p.data.split.column = "split_flag"
+    p.data.split.seed = 7
+    p.to_json(workspace["project"])
+    at = _run(_script("pages_split", str(workspace["project"])))
+    assert "whole number" in at.number_input(key=wk(at, "split_seed")).help
+    at.number_input(key=wk(at, "split_seed")).set_value(2.5).run()
+    assert not at.exception
+    shown = at.number_input(key=wk(at, "split_seed")).value
+    assert shown == at.session_state["_project"].data.split.seed == 2
+
+    at2 = _run(_script("pages_model", str(workspace["project"])))
+    at2.number_input(key=wk(at2, "bro_freq")).set_value(-1.0).run()
+    assert not at2.exception
+    assert any("must be 0 or more" in e.value for e in at2.error), _texts(at2)
+    assert at2.number_input(key=wk(at2, "bro_freq")).value == 0.0
+    assert at2.session_state["_project"].models["freq"].base_rate_override is None
