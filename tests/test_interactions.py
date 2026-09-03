@@ -1015,3 +1015,24 @@ class TestStageTwoPenalty:
         light, heavy = _fit(1.0), _fit(20.0)
         assert np.abs(heavy.stage2.coef).max() < np.abs(light.stage2.coef).max()
         np.testing.assert_allclose(heavy.stage1.coef, light.stage1.coef, rtol=1e-12)
+
+    def test_zero_interaction_penalty_weight_is_unpenalised(self, book):
+        spec = DesignSpec.from_data(
+            book,
+            ["DrivAge", "Region"],
+            knots={"DrivAge": [25, 40, 60]},
+            min_level_share=0.02,
+            weight_col="Exposure",
+            interactions=[("DrivAge", "Region")],
+            min_cell_exposure=0.005,
+            interaction_penalty_weight=0.0,
+        )
+        cells = spec.interactions_spec()
+        design = cells.build(book)
+        p1 = penalty_weights(
+            cells,
+            design,
+            book["Exposure"].to_numpy(),
+            scale_predictors=False,
+        )
+        assert (p1 == 0.0).all()

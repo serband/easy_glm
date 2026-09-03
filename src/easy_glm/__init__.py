@@ -30,6 +30,8 @@ main-effect table or the base rate and every cell is a pure adjustment.
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
+from .engine.rate_model import RateModel
+
 try:
     __version__ = _pkg_version("easy_glm")
 except PackageNotFoundError:  # pragma: no cover - source checkout without metadata
@@ -44,6 +46,7 @@ from .core import (
     LinearEncoder,
     StepEncoder,
     TwoStageFit,
+    add_train_test_split,
     base_rate,
     fit_glm,
     fit_two_stage,
@@ -58,7 +61,9 @@ from .core import (
 __all__ = [
     # High-level pipeline (start here)
     "EasyGLM",
+    "RateModel",
     "load_external_dataframe",
+    "add_train_test_split",
     # Building blocks
     "DesignSpec",
     "StepEncoder",

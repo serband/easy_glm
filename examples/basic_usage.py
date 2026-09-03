@@ -1,48 +1,38 @@
-"""First frequency model: fit, interpret, validate and save a scorer.
-
-Run this first in the example curriculum:
-
-    python examples/basic_usage.py
-
-It writes ``my_model.easyglm``. Pass that file to ``exploring_fit.py`` for
-post-fit review or ``scoring_editor.py`` to score new business.
-"""
-
-from pathlib import Path
-
-import numpy as np
-import polars as pl
+"""Fit a Poisson model for annual claim frequency."""
 
 import easy_glm
 
-# One policy period per row. ClaimNb is the claim count; Exposure is time on
-# risk. Dividing the target by exposure therefore fits claim frequency.
-DATA = Path(__file__).resolve().parents[1] / "tests/fixtures/french_motor_50k.parquet"
-df = pl.read_parquet(DATA)
-rng = np.random.default_rng(42)
-df = df.with_columns(pl.Series("traintest", rng.random(len(df)) < 0.7, dtype=pl.Int64))
+# Download the public French motor data once; later runs use the local cache.
+df = easy_glm.load_external_dataframe().sample(n=50_000, seed=42)
 
-PREDICTORS = ["DrivAge", "Region", "BonusMalus", "Density"]
+# Use 70% of the data to fit the model. The remaining 30% are kept unseen so
+# that the fitted model can be checked on separate test data.
+df = easy_glm.add_train_test_split(df, train_fraction=0.7, seed=42)
+
 model = easy_glm.EasyGLM.fit(
     data=df,
     target="ClaimNb",
     model_type="Poisson",
-    predictors=PREDICTORS,
+    predictors=["DrivAge", "Region", "BonusMalus", "Density"],
     weight_col="Exposure",
     train_test_col="traintest",
+    # ClaimNb divided by Exposure is the annual claim frequency.
     divide_target_by_weight=True,
-    alpha=0.001,  # use cv=5 when choosing a production penalty
+    # Five-fold cross-validation chooses the penalty strength.
+    cv=5,
 )
 
-print(model)
-print("\nBonus-malus table:")
+print("Fitted relativities")
+print(f"Base claim frequency: {model.base_rate:.5f} claims per policy-year")
+print("\nBonusMalus")
 print(model.relativities["BonusMalus"].select("label", "relativity", "exposure"))
+print("\nRegion")
+print(model.relativities["Region"].select("label", "relativity", "exposure"))
 
-holdout = df.filter(pl.col("traintest") == 0)
-expected = model.rate_model.predict(holdout)
-ae = holdout["ClaimNb"].sum() / expected.sum()
-print(f"\nHoldout A/E: {ae:.3f}")
-print("A/E near 1 is an overall check. Review each factor before changing a price.")
+# These plots show the factor shapes fitted by the model.
+easy_glm.plot_all_ratetables(model.relativities)
 
-model.rate_model.to_json("my_model.easyglm")
-print("\nWrote my_model.easyglm")
+print("\nActual and model-expected claim frequency")
+# These charts check actual and model-expected claim frequency by fitted band
+# or level, separately for the training and test data. Exposure is shown below.
+model.plot_actual_vs_expected(df)

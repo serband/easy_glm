@@ -1,0 +1,67 @@
+<svg class="chart" viewBox="0 0 900 340" width="100%" height="340" role="img" xmlns="http://www.w3.org/2000/svg"><title>Region: actual versus expected rate (Training)</title><rect x="0" y="0" width="900" height="340" fill="#ffffff"/><line x1="834.0" y1="244.0" x2="66.0" y2="244.0" stroke="#e8ecef" stroke-width="1"/><text x="840.0" y="248.0" text-anchor="start" class="ax">0.000</text><line x1="834.0" y1="158.1" x2="66.0" y2="158.1" stroke="#e8ecef" stroke-width="1"/><text x="840.0" y="162.1" text-anchor="start" class="ax">0.050</text><line x1="834.0" y1="72.1" x2="66.0" y2="72.1" stroke="#e8ecef" stroke-width="1"/><text x="840.0" y="76.1" text-anchor="start" class="ax">0.100</text><text x="880.0" y="136.0" text-anchor="middle" class="ax" transform="rotate(90 880.0 136.0)">Claim frequency</text><text x="60.0" y="248.0" text-anchor="end" class="ax">0.000</text><text x="60.0" y="169.9" text-anchor="end" class="ax">2,000</text><text x="60.0" y="91.8" text-anchor="end" class="ax">4,000</text><text x="20.0" y="136.0" text-anchor="middle" class="ax" transform="rotate(-90 20.0 136.0)">Exposure</text><rect x="71.2" y="40.2" width="24.4" height="203.8" fill="#c9cfd6" opacity="0.7"/><rect x="106.1" y="153.7" width="24.4" height="90.3" fill="#c9cfd6" opacity="0.7"/><rect x="141.1" y="172.3" width="24.4" height="71.7" fill="#c9cfd6" opacity="0.7"/><rect x="176.0" y="182.4" width="24.4" height="61.6" fill="#c9cfd6" opacity="0.7"/><rect x="210.9" y="187.6" width="24.4" height="56.4" fill="#c9cfd6" opacity="0.7"/><rect x="245.8" y="201.0" width="24.4" height="43.0" fill="#c9cfd6" opacity="0.7"/><rect x="280.7" y="214.7" width="24.4" height="29.3" fill="#c9cfd6" opacity="0.7"/><rect x="315.6" y="215.7" width="24.4" height="28.3" fill="#c9cfd6" opacity="0.7"/><rect x="350.5" y="221.3" width="24.4" height="22.7" fill="#c9cfd6" opacity="0.7"/><rect x="385.4" y="221.6" width="24.4" height="22.4" fill="#c9cfd6" opacity="0.7"/><rect x="420.3" y="227.0" width="24.4" height="17.0" fill="#c9cfd6" opacity="0.7"/><rect x="455.2" y="229.5" width="24.4" height="14.5" fill="#c9cfd6" opacity="0.7"/><rect x="490.1" y="230.7" width="24.4" height="13.3" fill="#c9cfd6" opacity="0.7"/><rect x="525.1" y="234.8" width="24.4" height="9.2" fill="#c9cfd6" opacity="0.7"/><rect x="560.0" y="235.8" width="24.4" height="8.2" fill="#c9cfd6" opacity="0.7"/><rect x="594.9" y="237.5" width="24.4" height="6.5" fill="#c9cfd6" opacity="0.7"/><rect x="629.8" y="239.2" width="24.4" height="4.8" fill="#c9cfd6" opacity="0.7"/><rect x="664.7" y="239.8" width="24.4" height="4.2" fill="#c9cfd6" opacity="0.7"/><rect x="699.6" y="240.3" width="24.4" height="3.7" fill="#c9cfd6" opacity="0.7"/><rect x="734.5" y="241.6" width="24.4" height="2.4" fill="#c9cfd6" opacity="0.7"/><rect x="769.4" y="241.7" width="24.4" height="2.3" fill="#c9cfd6" opacity="0.7"/><rect x="804.3" y="242.8" width="24.4" height="1.2" fill="#c9cfd6" opacity="0.7"/><line x1="66.0" y1="244.0" x2="834.0" y2="244.0" stroke="#5b6570" stroke-width="1"/><polyline points="83.5,143.2 118.4,56.0 153.3,90.4 188.2,82.6 223.1,134.5 258.0,100.4 292.9,129.6 327.8,108.8 362.7,123.0 397.6,127.1 432.5,173.0 467.5,174.8 502.4,102.6 537.3,134.5 572.2,40.2 607.1,140.2 642.0,118.7 676.9,163.3 711.8,189.0 746.7,77.3 781.6,214.5 816.5,73.3" fill="none" stroke="#c0392b" stroke-width="2.5" stroke-linejoin="round"/><circle cx="83.5" cy="143.2" r="3" fill="#c0392b"/><circle cx="118.4" cy="56.0" r="3" fill="#c0392b"/><circle cx="153.3" cy="90.4" r="3" fill="#c0392b"/><circle cx="188.2" cy="82.6" r="3" fill="#c0392b"/><circle cx="223.1" cy="134.5" r="3" fill="#c0392b"/><circle cx="258.0" cy="100.4" r="3" fill="#c0392b"/><circle cx="292.9" cy="129.6" r="3" fill="#c0392b"/><circle cx="327.8" cy="108.8" r="3" fill="#c0392b"/><circle cx="362.7" cy="123.0" r="3" fill="#c0392b"/><circle cx="397.6" cy="127.1" r="3" fill="#c0392b"/><circle cx="432.5" cy="173.0" r="3" fill="#c0392b"/><circle cx="467.5" cy="174.8" r="3" fill="#c0392b"/><circle cx="502.4" cy="102.6" r="3" fill="#c0392b"/><circle cx="537.3" cy="134.5" r="3" fill="#c0392b"/><circle cx="572.2" cy="40.2" r="3" fill="#c0392b"/><circle cx="607.1" cy="140.2" r="3" fill="#c0392b"/><circle cx="642.0" cy="118.7" r="3" fill="#c0392b"/><circle cx="676.9" cy="163.3" r="3" fill="#c0392b"/><circle cx="711.8" cy="189.0" r="3" fill="#c0392b"/><circle cx="746.7" cy="77.3" r="3" fill="#c0392b"/><circle cx="781.6" cy="214.5" r="3" fill="#c0392b"/><circle cx="816.5" cy="73.3" r="3" fill="#c0392b"/><polyline points="83.5,139.9 118.4,59.7 153.3,94.6 188.2,85.9 223.1,131.8 258.0,105.9 292.9,122.8 327.8,115.7 362.7,128.6 397.6,119.3 432.5,164.0 467.5,165.1 502.4,112.8 537.3,130.2 572.2,53.2 607.1,126.0 642.0,135.7 676.9,145.0 711.8,169.3 746.7,101.4 781.6,189.5 816.5,107.8" fill="none" stroke="#1f5f99" stroke-width="2.5" stroke-linejoin="round"/><circle cx="83.5" cy="139.9" r="3" fill="#1f5f99"/><circle cx="118.4" cy="59.7" r="3" fill="#1f5f99"/><circle cx="153.3" cy="94.6" r="3" fill="#1f5f99"/><circle cx="188.2" cy="85.9" r="3" fill="#1f5f99"/><circle cx="223.1" cy="131.8" r="3" fill="#1f5f99"/><circle cx="258.0" cy="105.9" r="3" fill="#1f5f99"/><circle cx="292.9" cy="122.8" r="3" fill="#1f5f99"/><circle cx="327.8" cy="115.7" r="3" fill="#1f5f99"/><circle cx="362.7" cy="128.6" r="3" fill="#1f5f99"/><circle cx="397.6" cy="119.3" r="3" fill="#1f5f99"/><circle cx="432.5" cy="164.0" r="3" fill="#1f5f99"/><circle cx="467.5" cy="165.1" r="3" fill="#1f5f99"/><circle cx="502.4" cy="112.8" r="3" fill="#1f5f99"/><circle cx="537.3" cy="130.2" r="3" fill="#1f5f99"/><circle cx="572.2" cy="53.2" r="3" fill="#1f5f99"/><circle cx="607.1" cy="126.0" r="3" fill="#1f5f99"/><circle cx="642.0" cy="135.7" r="3" fill="#1f5f99"/><circle cx="676.9" cy="145.0" r="3" fill="#1f5f99"/><circle cx="711.8" cy="169.3" r="3" fill="#1f5f99"/><circle cx="746.7" cy="101.4" r="3" fill="#1f5f99"/><circle cx="781.6" cy="189.5" r="3" fill="#1f5f99"/><circle cx="816.5" cy="107.8" r="3" fill="#1f5f99"/><rect x="66.0" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Centre
+Exposure: 5,219
+Actual: 0.0586
+Expected: 0.0605</title></rect><rect x="100.9" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Rhone-Alpes
+Exposure: 2,313
+Actual: 0.1094
+Expected: 0.1073</title></rect><rect x="135.8" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Provence-Alpes-Cotes-D&#x27;Azur
+Exposure: 1,836
+Actual: 0.0893
+Expected: 0.0869</title></rect><rect x="170.7" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Ile-de-France
+Exposure: 1,576
+Actual: 0.0939
+Expected: 0.0920</title></rect><rect x="205.6" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Bretagne
+Exposure: 1,444
+Actual: 0.0637
+Expected: 0.0653</title></rect><rect x="240.5" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Pays-de-la-Loire
+Exposure: 1,101
+Actual: 0.0836
+Expected: 0.0803</title></rect><rect x="275.5" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Languedoc-Roussillon
+Exposure: 750.9
+Actual: 0.0666
+Expected: 0.0705</title></rect><rect x="310.4" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Aquitaine
+Exposure: 724.7
+Actual: 0.0787
+Expected: 0.0746</title></rect><rect x="345.3" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Poitou-Charentes
+Exposure: 582.6
+Actual: 0.0704
+Expected: 0.0671</title></rect><rect x="380.2" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Nord-Pas-de-Calais
+Exposure: 573.6
+Actual: 0.0680
+Expected: 0.0725</title></rect><rect x="415.1" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Lorraine
+Exposure: 435.9
+Actual: 0.0413
+Expected: 0.0465</title></rect><rect x="450.0" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Midi-Pyrenees
+Exposure: 372.6
+Actual: 0.0403
+Expected: 0.0459</title></rect><rect x="484.9" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Basse-Normandie
+Exposure: 340.4
+Actual: 0.0823
+Expected: 0.0763</title></rect><rect x="519.8" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Bourgogne
+Exposure: 235.4
+Actual: 0.0637
+Expected: 0.0662</title></rect><rect x="554.7" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Picardie
+Exposure: 210.9
+Actual: 0.1186
+Expected: 0.1110</title></rect><rect x="589.6" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Haute-Normandie
+Exposure: 165.6
+Actual: 0.0604
+Expected: 0.0687</title></rect><rect x="624.5" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Auvergne
+Exposure: 123.4
+Actual: 0.0729
+Expected: 0.0630</title></rect><rect x="659.5" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Limousin
+Exposure: 106.6
+Actual: 0.0469
+Expected: 0.0576</title></rect><rect x="694.4" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Corse
+Exposure: 93.7
+Actual: 0.0320
+Expected: 0.0434</title></rect><rect x="729.3" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Alsace
+Exposure: 61.8
+Actual: 0.0970
+Expected: 0.0830</title></rect><rect x="764.2" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Champagne-Ardenne
+Exposure: 58.3
+Actual: 0.0172
+Expected: 0.0317</title></rect><rect x="799.1" y="28.0" width="34.9" height="216.0" fill="transparent"><title>Other / Unknown
+Exposure: 30.2
+Actual: 0.0993
+Expected: 0.0792</title></rect><text x="83.5" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 83.5 258.0)">Centre</text><text x="118.4" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 118.4 258.0)">Rhone-Alpes</text><text x="153.3" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 153.3 258.0)">Provence-Alpes-Cotes-…</text><text x="188.2" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 188.2 258.0)">Ile-de-France</text><text x="223.1" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 223.1 258.0)">Bretagne</text><text x="258.0" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 258.0 258.0)">Pays-de-la-Loire</text><text x="292.9" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 292.9 258.0)">Languedoc-Roussillon</text><text x="327.8" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 327.8 258.0)">Aquitaine</text><text x="362.7" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 362.7 258.0)">Poitou-Charentes</text><text x="397.6" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 397.6 258.0)">Nord-Pas-de-Calais</text><text x="432.5" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 432.5 258.0)">Lorraine</text><text x="467.5" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 467.5 258.0)">Midi-Pyrenees</text><text x="502.4" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 502.4 258.0)">Basse-Normandie</text><text x="537.3" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 537.3 258.0)">Bourgogne</text><text x="572.2" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 572.2 258.0)">Picardie</text><text x="607.1" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 607.1 258.0)">Haute-Normandie</text><text x="642.0" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 642.0 258.0)">Auvergne</text><text x="676.9" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 676.9 258.0)">Limousin</text><text x="711.8" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 711.8 258.0)">Corse</text><text x="746.7" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 746.7 258.0)">Alsace</text><text x="781.6" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 781.6 258.0)">Champagne-Ardenne</text><text x="816.5" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 816.5 258.0)">Other / Unknown</text><rect x="66.0" y="9.0" width="16" height="10" fill="#c9cfd6"/><text x="87.0" y="18.0" class="lg">Exposure</text><line x1="148.8" y1="14.0" x2="164.8" y2="14.0" stroke="#c0392b" stroke-width="2.5"/><text x="169.8" y="18.0" class="lg">Actual</text><line x1="218.4" y1="14.0" x2="234.4" y2="14.0" stroke="#1f5f99" stroke-width="2.5"/><text x="239.4" y="18.0" class="lg">Expected</text></svg>

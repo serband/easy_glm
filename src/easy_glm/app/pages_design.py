@@ -20,6 +20,7 @@ from easy_glm.core.design import (
     row_label,
 )
 from easy_glm.workflow import Interaction, VariableDesign, encoder_for, univariate
+from easy_glm.workflow.project import FAMILIES, validate_model_name
 
 from . import charts as C
 from . import state as S
@@ -45,6 +46,249 @@ KIND_TOOLTIP = "\n\n".join(KIND_HELP.values())
 LINEAR_KINDS = ("linear", "continuous")
 
 
+# --------------------------------------------------------------------------
+# model definition
+# --------------------------------------------------------------------------
+def _model_picker() -> str | None:
+    """Create, select or delete the model whose design is being edited."""
+    p = S.project()
+    names = list(p.models)
+    if st.session_state.pop("model_pending", False):
+        st.session_state.pop(S.widget_key("model_select"), None)
+        st.session_state.pop(S.widget_key("model_new_name"), None)
+    c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
+    current = st.session_state.get("model_current")
+    if current not in names:
+        current = p.champion if p.champion in names else (names[0] if names else None)
+    selected = c1.selectbox(
+        "Model",
+        names or ["(none)"],
+        index=names.index(current) if current in names else 0,
+        key=S.widget_key("model_select"),
+    )
+    new_name = c2.text_input(
+        "New model name (required to enable Create)",
+        key=S.widget_key("model_new_name"),
+        placeholder="e.g. frequency",
+    ).strip()
+    name_problem = validate_model_name(new_name, names) if new_name else None
+
+    def create_model() -> None:
+        """Button callbacks run before the next script render.
+
+        Updating the Model selectbox here matters: setting it after that
+        selectbox has already been instantiated only changes the explanatory
+        message, leaving the old model selected.  That made a newly created
+        ``v2`` appear selected while **Fit model** silently fitted frequency.
+        """
+        candidate = str(
+            st.session_state.get(S.widget_key("model_new_name"), "")
+        ).strip()
+        problem = validate_model_name(candidate, list(p.models)) if candidate else None
+        if problem:
+            return
+        p.new_model(candidate)
+        st.session_state.model_current = candidate
+        st.session_state[S.widget_key("model_select")] = candidate
+        st.session_state[S.widget_key("model_new_name")] = ""
+        S.touch()
+        ui.flash("success", f"Model {candidate!r} created and selected")
+
+    c3.button(
+        "Create",
+        disabled=not new_name or bool(name_problem),
+        help="Enter a valid new model name to enable Create.",
+        on_click=create_model,
+    )
+    if name_problem:
+        c2.caption(f"⚠ {name_problem}")
+    if names and c4.button("Delete"):
+        p.models.pop(selected, None)
+        kept = S.remove_model_runs(selected)
+        if p.champion == selected:
+            p.champion = next(iter(p.models), None)
+        st.session_state.model_current = next(iter(p.models), None)
+        st.session_state["model_pending"] = True
+        ui.flash("warning" if kept else "info", kept or f"Model {selected!r} deleted")
+        S.touch()
+        st.rerun()
+    if not names:
+        st.info(
+            "Define a model to start: enter a valid model name above to enable "
+            "Create. It is pre-filled from the roles on the Variables page."
+        )
+        return None
+    st.session_state.model_current = selected
+    return selected
+
+
+def _column_pick(
+    column,
+    label: str,
+    current: str | None,
+    options: list[str],
+    *,
+    key: str,
+    none: bool,
+    help: str | None = None,
+) -> str | None:
+    """Select a numeric model column without silently changing an invalid one."""
+    choices = (["(none)"] if none else []) + options
+    if current is None and none:
+        index: int | None = 0
+    elif current in choices:
+        index = choices.index(current)
+    else:
+        index = None
+    picked = column.selectbox(
+        label,
+        choices,
+        index=index,
+        key=key,
+        placeholder="choose a numeric column",
+        help=help,
+    )
+    if index is None:
+        column.error(f"{label}: {current!r} is not a numeric column of the data")
+        return current
+    return None if picked == "(none)" else picked
+
+
+def _model_definition(name: str, df: pl.DataFrame) -> None:
+    """Editable family, scale and predictors — the definition, not the fit."""
+    p = S.project()
+    cfg = p.models[name]
+    numeric_cols = [
+        column for column, dtype in df.schema.items() if dtype in NUMERIC_DTYPES
+    ]
+    with st.container(border=True):
+        st.subheader("Model definition")
+        c1, c2, c3, c4 = st.columns(4)
+        family = c1.selectbox(
+            "Family",
+            list(FAMILIES),
+            index=list(FAMILIES).index(cfg.family) if cfg.family in FAMILIES else 0,
+            key=S.widget_key(f"fam_{name}"),
+            help="The distribution for the outcome: Poisson for claim counts, Gamma for positive severity.",
+        )
+        power, power_problem = ui.repair_number(cfg.tweedie_power, 1.5, "tweedie_power")
+        if power_problem:
+            ui.flash("warning", power_problem)
+        if family == "tweedie":
+            power = float(
+                ui.number_in_range(
+                    c1,
+                    "Tweedie power",
+                    value=power,
+                    lo=1.001,
+                    hi=1.999,
+                    step=0.05,
+                    what="The Tweedie power",
+                    format="%.3f",
+                    key=S.widget_key(f"tw_{name}"),
+                )
+            )
+        if family == "binomial":
+            c1.caption(
+                "Binomial models probabilities; tables are odds relativities and "
+                "predictions are never multiplied by exposure."
+            )
+        target = _column_pick(
+            c2,
+            "Target",
+            cfg.target,
+            numeric_cols,
+            key=S.widget_key(f"tgt_{name}"),
+            none=False,
+        )
+        weight = _column_pick(
+            c3,
+            "Weight",
+            cfg.weight,
+            numeric_cols,
+            key=S.widget_key(f"wgt_{name}"),
+            none=True,
+        )
+        offset = _column_pick(
+            c4,
+            "Offset (linear scale)",
+            cfg.offset,
+            numeric_cols,
+            key=S.widget_key(f"off_{name}"),
+            none=True,
+            help="A known adjustment already on the log scale, such as log(current premium).",
+        )
+        divide_key = S.widget_key(f"div_{name}")
+        if weight is None and st.session_state.get(divide_key):
+            st.session_state.pop(divide_key, None)
+        divide = st.checkbox(
+            "Divide target by weight (model a rate, e.g. claims / exposure)",
+            cfg.divide_target_by_weight and weight is not None,
+            key=divide_key,
+            disabled=weight is None,
+            help="For a count with exposure, fit claims divided by exposure so predictions are rates.",
+        )
+        missing = [
+            predictor for predictor in cfg.predictors if predictor not in p.predictors
+        ]
+        if missing:
+            st.error(
+                "Predictor(s) no longer available (role changed or column gone): "
+                + ", ".join(missing)
+                + " — the model keeps them until you change the list below."
+            )
+        predictors = st.multiselect(
+            "Predictors",
+            sorted(set(p.predictors) | set(cfg.predictors)),
+            default=list(cfg.predictors),
+            format_func=lambda value: (
+                value if value in p.predictors else f"{value} (missing)"
+            ),
+            key=S.widget_key(f"preds_{name}"),
+            help="Rating factors included in this model. Their shared design is edited below.",
+        )
+        if cfg.interactions:
+            missing_parents = sorted(
+                {
+                    parent
+                    for interaction in cfg.interactions
+                    for parent in (interaction.a, interaction.b)
+                    if parent not in predictors
+                }
+            )
+            st.info(
+                "Interactions in this design: "
+                + ", ".join(
+                    f"**{interaction.name}**" for interaction in cfg.interactions
+                )
+                + ". Edit their cells and penalties in the Interactions section below."
+            )
+            if missing_parents:
+                st.warning(
+                    "Interaction parent(s) no longer among the predictors: "
+                    + ", ".join(missing_parents)
+                    + ". Put them back before fitting."
+                )
+
+    changed = False
+    values = {
+        "family": family,
+        "tweedie_power": power,
+        "target": target,
+        "weight": weight,
+        "offset": offset,
+        "divide_target_by_weight": bool(divide) and weight is not None,
+        "predictors": list(predictors),
+    }
+    for field, value in values.items():
+        if getattr(cfg, field) != value:
+            setattr(cfg, field, value)
+            changed = True
+    if changed:
+        S.touch()
+        st.rerun()
+
+
 def _parse_numbers(text: str) -> list[float]:
     """Comma / newline separated numbers; raises ValueError naming the bad token."""
     out: list[float] = []
@@ -67,13 +311,33 @@ def _defaults() -> None:
     d = p.design.defaults
     with st.expander("Defaults for every predictor", expanded=False):
         c1, c2, c3, c4 = st.columns(4)
-        n_bins = c1.number_input("Quantile knots (n_bins)", 2, 200, int(d.n_bins))
-        share = c2.number_input(
-            "Min level share", 0.0, 0.5, float(d.min_level_share), 0.0005, format="%.4f"
+        n_bins = c1.number_input(
+            "Quantile knots (n_bins)",
+            2,
+            200,
+            int(d.n_bins),
+            help="How many equal-exposure bands to propose for numeric predictors using quantile knots.",
         )
-        null_ind = c3.checkbox("Null indicator column", bool(d.null_indicator))
+        share = c2.number_input(
+            "Min level share",
+            0.0,
+            0.5,
+            float(d.min_level_share),
+            0.0005,
+            format="%.4f",
+            help="Categorical levels below this share of training exposure are grouped into Other.",
+        )
+        null_ind = c3.checkbox(
+            "Null indicator column",
+            bool(d.null_indicator),
+            help="Lets the model give missing values their own effect instead of treating them as the reference.",
+        )
         max_int = c4.number_input(
-            "Max integer knots", 10, 1000, int(d.max_integer_knots)
+            "Max integer knots",
+            10,
+            1000,
+            int(d.max_integer_knots),
+            help="Above this many distinct integers, use quantile rather than one knot per integer.",
         )
         if (n_bins, share, null_ind, max_int) != (
             d.n_bins,
@@ -136,18 +400,29 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
                 help="quantile: n_bins quantiles · integer: every integer · custom: edit below",
             ),
             "n_bins": st.column_config.NumberColumn(
-                "n_bins (0 = default)", min_value=0, max_value=200, step=1
+                "n_bins (0 = default)",
+                min_value=0,
+                max_value=200,
+                step=1,
+                help="Quantile knot count for this predictor; 0 uses the defaults above.",
             ),
-            "null col": st.column_config.CheckboxColumn("null col"),
+            "null col": st.column_config.CheckboxColumn(
+                "null col",
+                help="Give null values their own fitted effect.",
+            ),
             "min share": st.column_config.NumberColumn(
                 "min level share",
                 min_value=0.0,
                 max_value=0.5,
                 step=0.0005,
                 format="%.4f",
+                help="Categorical levels below this training-exposure share become Other.",
             ),
             "monotone": st.column_config.SelectboxColumn(
-                "monotone", options=MONO_OPTIONS, required=True
+                "monotone",
+                options=MONO_OPTIONS,
+                required=True,
+                help="Require a numeric factor to only rise or only fall; it constrains band changes, not their size.",
             ),
             "penalty": st.column_config.NumberColumn(
                 "penalty weight",
@@ -273,6 +548,8 @@ def _step_detail(
     enc: StepEncoder,
     train: pl.DataFrame,
     preview: pl.DataFrame,
+    target: str | None,
+    weight: str | None,
     divide,
 ) -> None:
     p = S.project()
@@ -281,6 +558,7 @@ def _step_detail(
         ", ".join(f"{k:g}" for k in enc.knots),
         height=90,
         key=S.widget_key(f"knots_{var}"),
+        help="Band edges. Each band receives its own relativity; use values with enough exposure.",
     )
     if st.button("Apply knots", key=S.widget_key(f"apply_knots_{var}")):
         try:
@@ -299,8 +577,8 @@ def _step_detail(
     u = univariate(
         preview,
         var,
-        target=p.target,
-        weight=p.weight,
+        target=target,
+        weight=weight,
         divide_target_by_weight=divide,
         knots=enc.knots,
     )
@@ -323,6 +601,8 @@ def _linear_detail(
     enc: LinearEncoder,
     train: pl.DataFrame,
     preview: pl.DataFrame,
+    target: str | None,
+    weight: str | None,
     divide,
     *,
     continuous: bool = False,
@@ -364,6 +644,7 @@ def _linear_detail(
             int(vd.n_bins or d.n_bins),
             key=S.widget_key(f"lin_nbins_{var}"),
             disabled=strategy != "quantile",
+            help="Number of equal-exposure bands when using quantile knots.",
         )
         knots_txt = c3.text_area(
             "Knots (custom)",
@@ -371,11 +652,13 @@ def _linear_detail(
             height=70,
             key=S.widget_key(f"lin_knots_{var}"),
             disabled=strategy != "custom",
+            help="Interior band edges where the fitted slope may change.",
         )
     use_default = st.checkbox(
         "Clamp to the training range (rounded outward)",
         vd.clamp is None,
         key=S.widget_key(f"lin_defaultclamp_{var}"),
+        help="Keep extreme values at the fitted end-point instead of extending the curve beyond the training data.",
     )
     c1, c2, c3 = st.columns([1, 1, 2])
     has_clamp = isinstance(vd.clamp, (list, tuple)) and len(vd.clamp) == 2
@@ -447,8 +730,8 @@ def _linear_detail(
     u = univariate(
         preview,
         var,
-        target=p.target,
-        weight=p.weight,
+        target=target,
+        weight=weight,
         divide_target_by_weight=divide,
         knots=edges,
     )
@@ -480,7 +763,13 @@ def _linear_detail(
 
 
 def _categorical_detail(
-    var: str, vd: VariableDesign, enc: CategoricalEncoder, preview, divide
+    var: str,
+    vd: VariableDesign,
+    enc: CategoricalEncoder,
+    preview,
+    target: str | None,
+    weight: str | None,
+    divide,
 ) -> None:
     p = S.project()
     st.markdown(
@@ -491,6 +780,7 @@ def _categorical_detail(
         ", ".join(enc.levels),
         height=90,
         key=S.widget_key(f"levels_{var}"),
+        help="Levels not listed are grouped into Other; the first listed level is the 1.00 reference.",
     )
     if st.button("Apply levels", key=S.widget_key(f"apply_levels_{var}")):
         levels = [
@@ -506,8 +796,8 @@ def _categorical_detail(
     u = univariate(
         preview,
         var,
-        target=p.target,
-        weight=p.weight,
+        target=target,
+        weight=weight,
         divide_target_by_weight=divide,
         max_levels=len(enc.levels),
     )
@@ -519,7 +809,15 @@ def _categorical_detail(
     )
 
 
-def _detail(train: pl.DataFrame, preview: pl.DataFrame, predictors: list[str]) -> None:
+def _detail(
+    train: pl.DataFrame,
+    preview: pl.DataFrame,
+    predictors: list[str],
+    *,
+    target: str | None,
+    weight: str | None,
+    divide_target_by_weight: bool,
+) -> None:
     p = S.project()
     st.subheader("Variable detail")
     c1, c2 = st.columns([2, 1])
@@ -529,9 +827,7 @@ def _detail(train: pl.DataFrame, preview: pl.DataFrame, predictors: list[str]) -
     with c2:
         _kind_selector(var, vd, numeric)
     vd = p.design.variables.get(var, VariableDesign())
-    weights = train[p.weight] if p.weight and p.weight in train.columns else None
-    cfg = p.models.get(p.champion) if p.champion else None
-    divide = cfg.divide_target_by_weight if cfg else bool(p.weight)
+    weights = train[weight] if weight and weight in train.columns else None
     try:
         enc = encoder_for(var, train[var], vd, p, weights=weights)
     except Exception as exc:  # noqa: BLE001
@@ -558,36 +854,31 @@ def _detail(train: pl.DataFrame, preview: pl.DataFrame, predictors: list[str]) -
                     st.rerun()
         return
     if isinstance(enc, StepEncoder):
-        _step_detail(var, vd, enc, train, preview, divide)
+        _step_detail(
+            var, vd, enc, train, preview, target, weight, divide_target_by_weight
+        )
     elif isinstance(enc, LinearEncoder):
         _linear_detail(
-            var, vd, enc, train, preview, divide, continuous=vd.kind == "continuous"
+            var,
+            vd,
+            enc,
+            train,
+            preview,
+            target,
+            weight,
+            divide_target_by_weight,
+            continuous=vd.kind == "continuous",
         )
     elif isinstance(enc, CategoricalEncoder):
-        _categorical_detail(var, vd, enc, preview, divide)
+        _categorical_detail(
+            var, vd, enc, preview, target, weight, divide_target_by_weight
+        )
 
 
 # --------------------------------------------------------------------------
 # interactions
 # --------------------------------------------------------------------------
-def _interaction_model_name() -> str | None:
-    p = S.project()
-    names = list(p.models)
-    if not names:
-        return None
-    current = st.session_state.get("model_current")
-    if current not in names:
-        current = p.champion if p.champion in names else names[0]
-    return st.selectbox(
-        "Model",
-        names,
-        index=names.index(current),
-        key=S.widget_key("design_inter_model"),
-        help="Interactions belong to a model (its predictors must include both parents)",
-    )
-
-
-def _interactions(train: pl.DataFrame) -> None:
+def _interactions(train: pl.DataFrame, name: str) -> None:
     p = S.project()
     st.subheader("Interactions")
     st.caption(
@@ -595,62 +886,21 @@ def _interactions(train: pl.DataFrame) -> None:
         "main effects; cells with too little exposure get no adjustment (1.00). "
         "Add them here, fit on the Model page, see the cells on the Rate tables page."
     )
-    name = _interaction_model_name()
-    if name is None:
-        st.info("Create a model on the Model page first.")
-        return
     cfg = p.models[name]
     if cfg.interactions:
         st.caption(
-            "The cells are fitted in a **second stage**, on top of the frozen main "
-            "effects. *Cells alpha* is that stage's penalty: leave it at 0 to use the "
-            "same alpha as the mains (a cell then costs what a main effect that half "
-            "the exposure shares costs). The second stage is one fit, so if several "
-            "interactions set it the largest is used — to shrink one interaction "
-            "harder than another, use its penalty weight."
+            "Main effects stay fixed; interaction cells are selected automatically by "
+            "the model's CV setup (or its fixed alpha)."
         )
         for i, it in enumerate(list(cfg.interactions)):
-            c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 2, 1])
+            c1, c2, c3 = st.columns([3, 3, 1])
             c1.markdown(f"**{it.name}**")
-            # A hand-edited project may carry any of these as the wrong type
-            # (validate() reports it); render the raw value rather than crash
-            # the page the user needs in order to fix it.
             c2.caption(
-                f"min cell exposure {it.min_cell_exposure:.2%}"
+                f"Minimum cell exposure: {it.min_cell_exposure:.2%}"
                 if ui.safe_float(it.min_cell_exposure, None) is not None
-                else f"min cell exposure {it.min_cell_exposure!r} (invalid)"
+                else f"Minimum cell exposure: {it.min_cell_exposure!r} (invalid)"
             )
-            c3.caption(
-                f"penalty weight {it.penalty_weight:g}"
-                if ui.safe_float(it.penalty_weight, None) is not None
-                else f"penalty weight {it.penalty_weight!r} (invalid)"
-            )
-            # A hand-edited project may carry an alpha outside the widget's
-            # usual range; Streamlit raises if the value is out of bounds, so
-            # widen the bounds to the stored value rather than crash the page
-            # the user needs in order to fix it (validate() reports it). A
-            # value that is not a number at all (text, NaN) is reported here,
-            # the way the Split page's seed box reports a bad seed, rather
-            # than silently saved over on the very next autosave.
-            current_alpha, alpha_problem = ui.repair_number(it.alpha, 0.0, "alpha")
-            if alpha_problem:
-                ui.flash("warning", f"{it.name}: {alpha_problem}")
-            new_alpha = c4.number_input(
-                "Cells alpha (0 = as mains)",
-                min(0.0, current_alpha),
-                max(10.0, current_alpha),
-                current_alpha,
-                0.0001,
-                format="%.5f",
-                key=S.widget_key(f"inter_alpha_{name}_{i}"),
-                help="Penalty of the second stage, which fits this interaction's cells",
-            )
-            wanted = float(new_alpha) or None
-            if wanted != it.alpha:
-                it.alpha = wanted
-                S.touch()
-                st.rerun()
-            if c5.button("Remove", key=S.widget_key(f"rm_inter_{name}_{i}")):
+            if c3.button("Remove", key=S.widget_key(f"rm_inter_{name}_{i}")):
                 cfg.interactions.pop(i)
                 # the cells are gone for good, so their adjustments go with them
                 # — out of the working set *and* out of every snapshot, which
@@ -664,6 +914,48 @@ def _interactions(train: pl.DataFrame) -> None:
                     )
                 S.touch()
                 st.rerun()
+            with st.expander(f"Advanced interaction settings — {it.name}"):
+                weight, problem = ui.repair_number(
+                    it.penalty_weight, 1.0, "penalty weight", lo=0.0, hi=100.0
+                )
+                if problem:
+                    st.warning(problem)
+                new_weight = st.number_input(
+                    "Penalty weight",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=weight,
+                    step=0.1,
+                    key=S.widget_key(f"inter_w_{name}_{i}"),
+                    help=(
+                        "Relative L1 shrinkage for this interaction: 1 is normal, "
+                        "higher values shrink it more, and 0 leaves its cells unpenalised."
+                    ),
+                )
+                if new_weight != it.penalty_weight:
+                    it.penalty_weight = float(new_weight)
+                    S.touch()
+                    st.rerun()
+                if it.alpha is not None:
+                    usable_alpha = (
+                        isinstance(it.alpha, (int, float))
+                        and not isinstance(it.alpha, bool)
+                        and math.isfinite(it.alpha)
+                        and it.alpha > 0
+                    )
+                    if not usable_alpha:
+                        st.warning(
+                            f"{it.name}: legacy cell-alpha override {it.alpha!r} "
+                            "is not a usable number; using automatic model-level "
+                            "selection instead."
+                        )
+                        it.alpha = None
+                        S.touch()
+                    else:
+                        st.caption(
+                            "Legacy cell-alpha override retained from this project file. "
+                            "New interactions select their penalty automatically."
+                        )
     else:
         st.caption("No interactions in this model yet.")
     preds = list(cfg.predictors)
@@ -671,7 +963,7 @@ def _interactions(train: pl.DataFrame) -> None:
         st.info("The model needs at least two predictors before adding an interaction.")
         return
     with st.container(border=True):
-        c1, c2, c3, c4, c5 = st.columns([2, 2, 1, 1, 1])
+        c1, c2, c3 = st.columns([2, 2, 1])
         a = c1.selectbox("First variable", preds, key=S.widget_key(f"inter_a_{name}"))
         b = c2.selectbox(
             "Second variable",
@@ -686,21 +978,24 @@ def _interactions(train: pl.DataFrame) -> None:
             0.5,
             0.1,
             key=S.widget_key(f"inter_share_{name}"),
-            help="Cells below this share of the pair's training exposure get no adjustment",
+            help=(
+                "Credibility threshold: cells below this share of the pair's training "
+                "exposure keep a 1.00 adjustment."
+            ),
         )
-        weight = c4.number_input(
-            "Penalty weight", 0.1, 100.0, 1.0, 0.1, key=S.widget_key(f"inter_w_{name}")
-        )
-        alpha = c5.number_input(
-            "Cells alpha (0 = as mains)",
-            0.0,
-            10.0,
-            0.0,
-            0.0001,
-            format="%.5f",
-            key=S.widget_key(f"inter_alpha_new_{name}"),
-            help="Penalty of the second stage, which fits the cells on top of the mains",
-        )
+        with st.expander("Advanced interaction settings"):
+            weight = st.number_input(
+                "Penalty weight",
+                min_value=0.0,
+                max_value=100.0,
+                value=1.0,
+                step=0.1,
+                key=S.widget_key(f"inter_w_{name}"),
+                help=(
+                    "Relative L1 shrinkage for this interaction: 1 is normal, higher "
+                    "values shrink it more, and 0 leaves its cells unpenalised."
+                ),
+            )
         errors: list[str] = []
         if a == b:
             errors.append("Pick two different variables.")
@@ -785,7 +1080,6 @@ def _interactions(train: pl.DataFrame) -> None:
                     b,
                     min_cell_exposure=float(share) / 100.0,
                     penalty_weight=float(weight),
-                    alpha=float(alpha) or None,
                 )
             )
             S.touch()
@@ -794,26 +1088,32 @@ def _interactions(train: pl.DataFrame) -> None:
 
 
 # --------------------------------------------------------------------------
-def render() -> None:
-    st.title("Design")
-    ui.status_bar()
+def render_contents() -> str | None:
+    """Draw the definition and factor-design portions of the Model workflow."""
     p = S.project()
     df = ui.require_data()
     if df is None:
-        return
-    predictors = p.predictors
+        return None
+    name = _model_picker()
+    if name is None:
+        return None
+    _model_definition(name, df)
+    cfg = p.models[name]
+    predictors = list(cfg.predictors)
     if not predictors:
-        st.info("Assign **predictor** roles on the Variables page first.")
-        return
+        st.info(
+            "Choose one or more predictor roles above to define this model's design."
+        )
+        return name
     train = S.train_frame()  # knots and levels always come from the full training rows
     preview = (
         S.train_sample()
     )  # exposure / rate previews may use the exploration sample
     if train is None or preview is None:
-        return
+        return None
     if train.is_empty():
         st.error("There are no training rows; check the split on the Split page.")
-        return
+        return None
     missing = [v for v in predictors if v not in train.columns]
     if missing:
         st.error(
@@ -823,14 +1123,15 @@ def render() -> None:
         )
         predictors = [v for v in predictors if v in train.columns]
         if not predictors:
-            return
-    for m in [m for m in p.validate() if m.startswith("design[")]:
+            return None
+    for m in [m for m in p.validate(name) if m.startswith("design[")]:
         st.error(m)
     if S.is_sampled():
         st.caption(
             f"Knots and levels are derived from all {train.height:,} training rows; "
             f"the preview charts use the exploration sample ({preview.height:,} rows)."
         )
+    st.header("Factor design")
     _defaults()
     st.caption(
         "Numeric predictors default to **step** (one 0/1 column per knot, penalised increments → automatic banding); "
@@ -855,5 +1156,40 @@ def render() -> None:
         f"Design matrix: **{total}** main-effect columns across {len(predictors)} predictors "
         f"on {train.height:,} training rows (interaction cells come on top)."
     )
-    _detail(train, preview, predictors)
-    _interactions(train)
+    _detail(
+        train,
+        preview,
+        predictors,
+        # A hand-edited model may point target/weight at a text column. The
+        # definition card reports that problem; previews must still render.
+        target=(
+            cfg.target
+            if cfg.target in train.columns and train[cfg.target].dtype in NUMERIC_DTYPES
+            else None
+        ),
+        weight=(
+            cfg.weight
+            if cfg.weight in train.columns and train[cfg.weight].dtype in NUMERIC_DTYPES
+            else None
+        ),
+        divide_target_by_weight=(
+            cfg.divide_target_by_weight
+            and cfg.weight in train.columns
+            and train[cfg.weight].dtype in NUMERIC_DTYPES
+        ),
+    )
+    _interactions(train, name)
+    return name
+
+
+def render() -> None:
+    """Compatibility route for an old direct ``/design`` URL.
+
+    The sidebar now presents one combined Model workflow; keeping this small
+    route avoids a broken saved browser URL without adding another navigation
+    decision for new users.
+    """
+    st.title("Model design and fit")
+    ui.status_bar()
+    st.info("Model design now lives on the **Model** page in the sidebar.")
+    render_contents()

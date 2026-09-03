@@ -8,12 +8,15 @@ from pathlib import Path
 
 import streamlit as st
 
+import easy_glm
 from easy_glm.workflow import Project, column_summary, infer_source_type
 
 from . import state as S
 from . import ui
 
 DATA_SUFFIX = ".easyglm-data"
+FRENCH_MOTOR_SAMPLE = "french_motor_sample.parquet"
+FRENCH_MOTOR_ROWS = 50_000
 
 
 def open_project_file(path: str) -> str | None:
@@ -73,6 +76,61 @@ def _data_folder() -> tuple[Path, bool]:
     return Path(tempfile.mkdtemp(prefix="easy_glm_upload_")), True
 
 
+def _load_french_motor_sample(p: Project) -> str | None:
+    """Load the cached public sample and make it this project's file source.
+
+    The workbench deliberately stores a Parquet copy because projects persist
+    a file path, not an in-memory frame. It lets the project be saved, reopened
+    and used by every workbench page without downloading again.
+    """
+    try:
+        frame = easy_glm.load_external_dataframe()
+        sample = frame.sample(n=min(FRENCH_MOTOR_ROWS, frame.height), seed=42)
+        folder, _temporary = _data_folder()
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / FRENCH_MOTOR_SAMPLE
+        sample.write_parquet(path)
+    except Exception as exc:  # noqa: BLE001 - show a friendly page message
+        return (
+            "Could not load the French motor sample. Check your internet connection "
+            f"and try again. Details: {exc}"
+        )
+
+    p.data.source.path = str(path)
+    p.data.source.type = "parquet"
+    p.data.roles = {
+        "ClaimNb": "target",
+        "Exposure": "weight",
+        "IDpol": "id",
+        "DrivAge": "predictor",
+        "Region": "predictor",
+        "BonusMalus": "predictor",
+        "Density": "predictor",
+    }
+    p.data.split.mode = "random"
+    p.data.split.column = "traintest"
+    p.data.split.fraction = 0.7
+    p.data.split.seed = 42
+    # Give first-time users a complete, editable model specification, but never
+    # fit it here. ``new_model`` deliberately inherits the just-assigned roles
+    # (target and weight); spelling out the other values keeps the sample's
+    # starter configuration obvious and independent of future defaults.
+    if not p.models:
+        p.new_model(
+            "frequency",
+            family="poisson",
+            divide_target_by_weight=True,
+            predictors=["DrivAge", "Region", "BonusMalus", "Density"],
+        )
+        st.session_state.model_current = "frequency"
+    S.touch()
+    if S.raw_frame(force=True) is None:
+        return st.session_state.get(
+            "load_error", "Could not open the saved French motor sample."
+        )
+    return None
+
+
 def _project_section(p: Project) -> None:
     with st.container(border=True):
         st.subheader("Project")
@@ -117,12 +175,24 @@ def _project_section(p: Project) -> None:
                 S.set_project(Project(name="untitled"), None)
                 ui.flash("info", "New unsaved project — save it under a new name.")
                 st.rerun()
+        st.info(
+            "Resuming previous work? Open an **EasyGLM project file** here. New to "
+            "EasyGLM? You do not need one: use the French motor sample below or "
+            "choose a data file instead."
+        )
+        st.caption(
+            "A project file saves the workbench setup: the data-file location, "
+            "column roles and types, renames, recodes, derived columns and filters, "
+            "the train/test split, design choices, model definitions and rate-table "
+            "adjustments (including named snapshots). It does not contain the data "
+            "itself or fitted results."
+        )
         uploaded = st.file_uploader(
-            "…or drop a project JSON here",
+            "Open an existing EasyGLM project",
             type=["json"],
             key=S.widget_key("proj_upload"),
         )
-        if uploaded is not None and st.button("Load uploaded project"):
+        if uploaded is not None and st.button("Open EasyGLM project"):
             tmp = Path(tempfile.mkdtemp(prefix="easy_glm_project_")) / uploaded.name
             tmp.write_bytes(uploaded.getvalue())
             err = open_project_file(str(tmp))
@@ -143,6 +213,34 @@ def _project_section(p: Project) -> None:
 def _data_section(p: Project) -> None:
     with st.container(border=True):
         st.subheader("Data source")
+        if not p.data.source.path:
+            st.info(
+                "New here? Start with the French motor sample: 50,000 policies, "
+                "a claim count and exposure, plus four common rating factors."
+            )
+            if st.button(
+                "Use the French motor sample",
+                type="primary",
+                key=S.widget_key("french_motor_sample_btn"),
+            ):
+                err = _load_french_motor_sample(p)
+                if err:
+                    st.error(err)
+                else:
+                    ui.flash(
+                        "success",
+                        "French motor sample loaded. Review the preview, then visit "
+                        "Variables and Split when you are ready. A frequency model is "
+                        "also prepared on the Model page; review it there, then click "
+                        "Fit model when you want to run it.",
+                    )
+                    st.rerun()
+        elif Path(p.data.source.path).name == FRENCH_MOTOR_SAMPLE:
+            st.caption(
+                "French motor sample: ClaimNb is the claim count; Exposure is the "
+                "weight; DrivAge, Region, BonusMalus and Density are predictors. "
+                "A 70/30 random train/test split (seed 42) is ready to review."
+            )
         st.caption(
             "Point at a local file (fastest for large data) or upload one. "
             "Supported: parquet, csv, sas7bdat, xlsx, arrow/ipc."

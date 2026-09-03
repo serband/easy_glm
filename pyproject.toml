@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easy_glm"
-version = "0.4.1"
+version = "0.4.2"
 description = "LASSO-regularised GLMs for insurance pricing: exact rate tables, a browser workbench and a portable scoring model. Built on glum."
 readme = "README.md"
 authors = [
@@ -36,6 +36,10 @@ dependencies = [
     "rdata>=0.9.0",        # load_external_dataframe (French motor .rda), imported lazily
     "joblib>=1.0.0",       # EasyGLM.save / load
     "xlsxwriter>=3.0.0",   # Excel rate-table export
+    "streamlit>=1.45.0",   # graphical workbench
+    "plotly>=5.15.0",      # workbench charts
+    "matplotlib>=3.7.0",   # rate-table plots
+    "seaborn>=0.12.0",     # rate-table plots
 ]
 
 
@@ -62,8 +66,6 @@ Issues = "https://github.com/serband/easy_glm/issues"
 
 [project.optional-dependencies]
 dev = [
-    "streamlit>=1.45.0",   # workbench + editor tests (AppTest)
-    "plotly>=5.15.0",
     "fastexcel>=0.12.0",   # read Excel back in tests (polars engine)
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
@@ -74,15 +76,6 @@ dev = [
     "ipykernel>=6.0.0",
     "build>=0.10.0",
     "twine>=4.0.0",
-]
-ui = [
-    "streamlit>=1.45.0",   # workbench uses st.navigation, badges, width="stretch"
-    "plotly>=5.15.0",
-]
-viz = [
-    "matplotlib>=3.7.0",   # plot_all_ratetables
-    "seaborn>=0.12.0",
-    "plotnine>=0.14.0",
 ]
 benchmark = [
     "statsmodels>=0.14.0",

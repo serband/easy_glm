@@ -13,7 +13,6 @@ import streamlit as st
 
 from easy_glm.app import (
     pages_compare,
-    pages_design,
     pages_diagnostics,
     pages_explore,
     pages_export,
@@ -75,12 +74,6 @@ pages = [
         url_path="split",
     ),
     st.Page(
-        pages_design.render,
-        title="Design",
-        icon=":material/stacked_bar_chart:",
-        url_path="design",
-    ),
-    st.Page(
         pages_model.render, title="Model", icon=":material/function:", url_path="model"
     ),
     st.Page(
@@ -109,49 +102,70 @@ nav = st.navigation({"Workflow": pages})
 
 with st.sidebar:
     p = S.project()
-    st.markdown(f"### {p.name}")
-    st.caption(st.session_state.project_path or "unsaved project")
-    s = S.status()
-    st.markdown(
-        "\n".join(
-            f"- {'✅' if ok else '⬜'} {label}"
-            for label, ok in [
-                ("data loaded", s["data"]),
-                ("target & predictors", s["roles"]),
-                ("prepared & split", s["split"]),
-                ("model defined", s["model"]),
-                ("fitted", s["fitted"]),
-            ]
+    project_path = st.session_state.project_path
+    st.markdown("### Current project")
+    st.markdown(f"**{p.name}**")
+    if project_path:
+        st.caption(f"Saved setup · {Path(project_path).name}")
+    else:
+        st.warning("Not saved yet")
+        st.caption("Name and save it on Project & data.")
+        st.page_link(
+            pages[0],
+            label="Open Project & data",
+            icon=":material/edit:",
+            help="Name the project and choose where to save its setup.",
         )
-    )
+    s = S.status()
+    st.markdown("#### Setup progress")
+    st.caption("Work down this checklist before reviewing results.")
+    for label, ok in [
+        ("Data loaded", s["data"]),
+        ("Target and predictors chosen", s["roles"]),
+        ("Data prepared and split", s["split"]),
+        ("Model defined", s["model"]),
+        ("Model fitted", s["fitted"]),
+    ]:
+        st.caption(f"{'✅' if ok else '⬜'} {label}")
     if p.models:
         st.caption(
             "Models: "
             + ", ".join(f"**{n}**" if n == p.champion else n for n in p.models)
         )
-    # one "compare with" choice for the whole session: the Compare, Diagnostics
-    # and Rate tables pages default to it (each still allows a page-level
-    # override, which sticks until this selector moves)
+    # One comparison choice for the whole session: the Compare, Diagnostics and
+    # Rate tables pages default to it (each can still have a page-level override).
     fitted = S.fitted_models()
     champion = p.champion if p.champion in fitted else (fitted[0] if fitted else None)
     options = ["(none)"] + [n for n in fitted if n != champion]
     if len(options) > 1:
         current = S.challenger()
         choice = st.selectbox(
-            "Compare with",
+            "Default comparison model",
             options,
             index=options.index(current) if current in options else 0,
             key=S.widget_key("sidebar_challenger"),
-            help="The challenger overlaid on Diagnostics and Rate tables, and "
-            "the default challenger of the Compare page.",
+            help=(
+                "The fitted incumbent or challenger used by Diagnostics, Compare, "
+                "Rate tables and reports. Choose (none) for no model comparison; "
+                "Diagnostics then uses a null-model benchmark where needed."
+            ),
         )
         S.set_challenger(None if choice == "(none)" else choice)
-    # when fewer than two models are fitted the selector is not drawn; the
-    # stored choice is left alone (editing the design stales the fits for a
-    # moment, and the challenger must survive the refit). `S.challenger()`
-    # ignores a name that is no longer a model of the project.
-    if st.button("Save project", width="stretch"):
-        path = st.session_state.project_path or S.default_project_path(p)
+    else:
+        st.caption("Default comparison model")
+        st.caption("Fit two models to compare them.")
+    # With fewer than two fitted models the selector is not drawn; the stored
+    # choice survives a momentary stale fit and is ignored once no longer valid.
+    st.caption(
+        "Saving keeps your setup and adjustments. Fitted models are stored "
+        "separately and restored when their data and setup still match."
+    )
+    if st.button(
+        "Save project setup",
+        width="stretch",
+        help="Save the project name, data setup, model definitions and adjustments.",
+    ):
+        path = project_path or S.default_project_path(p)
         err = S.save_project(path)
         if err:
             st.error(err)

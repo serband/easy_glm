@@ -14,13 +14,13 @@ Two things are checked:
    A block fenced ```python skip-test`` needs a browser or the workbench
    server and is not run here; at most a handful of those are allowed, so a
    block cannot be quietly exempted from the gate by mislabelling it.
-2. Every ``examples/*.py`` runs standalone, via ``subprocess``, exit code 0.
+2. The actuarial lessons run in curriculum order. Later lessons use the saved
+   model, rate tables and project produced by earlier lessons.
 
-Both run from a temporary working directory with ``tests/fixtures`` linked in,
-so the README's own ``DATA = "tests/fixtures/french_motor_50k.parquet"`` line
-resolves without touching the repository checkout, and every file a block or
-an example writes (a project JSON, an exported script, a `.easyglm`, an
-`.xlsx`) lands in a directory pytest cleans up.
+Both run from a temporary working directory with ``tests/fixtures`` linked in.
+The tests replace the public-data loader with that local fixture, so no lesson
+downloads during the build; every artifact lands in a directory pytest cleans
+up.
 
 Runtime budget: the whole module — README blocks plus every example — is
 comfortably under the ~3 minute budget on the checked-in 50k-row fixture and
@@ -36,15 +36,25 @@ import sys
 import time
 from pathlib import Path
 
+import polars as pl
 import pytest
+
+import easy_glm
 
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
-EXAMPLES = sorted((ROOT / "examples").glob("*.py"))
+BASIC_EXAMPLE = ROOT / "examples" / "basic_usage.py"
+CURRICULUM = (
+    ROOT / "examples" / "advanced_pipeline.py",
+    ROOT / "examples" / "export_rate_tables.py",
+    ROOT / "examples" / "score_new_data.py",
+    ROOT / "examples" / "easy_glm_demo.py",
+)
 
 #: ```python fences, with an optional " skip-test" flag right after the
 #: language tag (never inside the code, so this can't be spoofed by a comment).
 _BLOCK_RE = re.compile(r"```python( skip-test)?\n(.*?)```", re.DOTALL)
+_IMAGE_RE = re.compile(r"!\[[^]]*\]\((docs/images/[^)]+)\)")
 
 #: How many ```python skip-test blocks the README is allowed to have. Small on
 #: purpose: a block should only be exempted from running because it needs a
@@ -82,11 +92,29 @@ def test_readme_has_at_most_a_few_skip_test_blocks(readme_blocks):
     )
 
 
+def test_readme_embedded_images_exist():
+    """GitHub-rendered first-lesson charts must be checked in with the README."""
+    images = _IMAGE_RE.findall(README.read_text(encoding="utf-8"))
+    assert images, "README has no embedded first-lesson chart assets"
+    missing = [image for image in images if not (ROOT / image).is_file()]
+    assert not missing, f"README references missing image assets: {missing}"
+
+
 def test_readme_code_blocks_all_run(readme_blocks, tmp_path, monkeypatch):
     """Every non-skip block runs, in order, in one namespace, exactly as a
     reader copy-pasting the page top to bottom would run it."""
     _link_fixtures(tmp_path)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        easy_glm,
+        "load_external_dataframe",
+        lambda: pl.read_parquet(ROOT / "tests/fixtures/french_motor_50k.parquet"),
+    )
+    import matplotlib.pyplot as plt
+    import plotly.graph_objects as go
+
+    monkeypatch.setattr(plt, "show", lambda: None)
+    monkeypatch.setattr(go.Figure, "show", lambda self: None)
 
     namespace: dict = {}
     t0 = time.perf_counter()
@@ -103,52 +131,89 @@ def test_readme_code_blocks_all_run(readme_blocks, tmp_path, monkeypatch):
                 f"{exc}\n\n--- block {i} source ---\n{code}"
             ) from exc
     elapsed = time.perf_counter() - t0
+    plt.close("all")
     print(f"\n{run_count} README blocks ran in {elapsed:.1f}s")
     assert elapsed < 120, f"README blocks took {elapsed:.1f}s (budget: 120s)"
 
 
-@pytest.mark.parametrize("example", EXAMPLES, ids=[p.name for p in EXAMPLES])
-def test_example_runs(example, tmp_path):
-    """Every examples/*.py runs standalone (subprocess, exit code 0). Each
-    example resolves its own data file from ``__file__``, so it needs no
-    fixtures linked into the working directory — only a clean place to write
-    the files it produces (a saved model, a `.easyglm`, a spec JSON)."""
+def _run_lesson(script: Path, tmp_path: Path, *, use_local_public_data: bool) -> None:
+    """Run one real curriculum script, with non-interactive local test data."""
+    setup = (
+        "import matplotlib.pyplot as plt\n"
+        "import plotly.graph_objects as go\n"
+        "plt.show = lambda: None\n"
+        "go.Figure.show = lambda self: None\n"
+    )
+    if use_local_public_data:
+        setup += (
+            "import polars as pl\n"
+            "import easy_glm\n"
+            f"easy_glm.load_external_dataframe = lambda: pl.read_parquet({str(ROOT / 'tests/fixtures/french_motor_50k.parquet')!r})\n"
+        )
+    setup += f"import runpy\nrunpy.run_path({str(script)!r}, run_name='__main__')\n"
     result = subprocess.run(
-        [sys.executable, str(example)],
+        [sys.executable, "-c", setup],
         cwd=tmp_path,
         capture_output=True,
         text=True,
         timeout=180,
     )
     assert result.returncode == 0, (
-        f"{example.name} exited {result.returncode}\n"
+        f"{script.name} exited {result.returncode}\n"
         f"--- stdout ---\n{result.stdout[-4000:]}\n"
         f"--- stderr ---\n{result.stderr[-4000:]}"
     )
 
 
-def test_post_fit_examples_use_the_saved_scorer(tmp_path):
-    """The review and scoring lessons consume the first lesson's artefact."""
-    basic = ROOT / "examples" / "basic_usage.py"
-    review = ROOT / "examples" / "exploring_fit.py"
-    scoring = ROOT / "examples" / "scoring_editor.py"
+def test_basic_example_runs_with_local_public_data(tmp_path):
+    """The beginner script stays linear; the test supplies its cached dataset."""
+    code = (
+        "import runpy\n"
+        "import matplotlib.pyplot as plt\n"
+        "import polars as pl\n"
+        "import plotly.graph_objects as go\n"
+        "import easy_glm\n"
+        "plt.show = lambda: None\n"
+        "go.Figure.show = lambda self: None\n"
+        f"easy_glm.load_external_dataframe = lambda: pl.read_parquet({str(ROOT / 'tests/fixtures/french_motor_50k.parquet')!r})\n"
+        f"runpy.run_path({str(BASIC_EXAMPLE)!r}, run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, (
+        f"basic_usage.py exited {result.returncode}\n"
+        f"--- stdout ---\n{result.stdout[-4000:]}\n"
+        f"--- stderr ---\n{result.stderr[-4000:]}"
+    )
 
-    for example, args in (
-        (basic, []),
-        (review, ["my_model.easyglm"]),
-        (scoring, ["my_model.easyglm"]),
-    ):
-        result = subprocess.run(
-            [sys.executable, str(example), *args],
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
-        assert result.returncode == 0, (
-            f"{example.name} exited {result.returncode}\n"
-            f"--- stdout ---\n{result.stdout[-4000:]}\n"
-            f"--- stderr ---\n{result.stderr[-4000:]}"
-        )
 
-    assert (tmp_path / "review_copy.easyglm").exists()
+def test_actuarial_examples_run_in_curriculum_order(tmp_path):
+    """Each lesson consumes the real artifacts produced by the earlier ones."""
+    advanced, export, score, demo = CURRICULUM
+    _run_lesson(advanced, tmp_path, use_local_public_data=True)
+
+    fitted = tmp_path / "french_motor_model"
+    assert fitted.is_dir()
+    assert (fitted / "config.json").is_file()
+    assert (fitted / "spec.json").is_file()
+    assert (fitted / "glm_model.joblib").is_file()
+    assert (fitted / "rate_model.json").is_file()
+    assert (fitted / "rate_tables").is_dir()
+    assert (tmp_path / "french_motor.easyglm").is_file()
+
+    _run_lesson(export, tmp_path, use_local_public_data=False)
+    assert (tmp_path / "french_motor_rate_tables.xlsx").is_file()
+
+    _run_lesson(score, tmp_path, use_local_public_data=False)
+
+    _run_lesson(demo, tmp_path, use_local_public_data=True)
+    project_path = tmp_path / "french_motor_project.json"
+    assert project_path.is_file()
+    from easy_glm.workflow import Project
+
+    assert Project.from_json(project_path).validate("Frequency") == []

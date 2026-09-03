@@ -623,7 +623,7 @@ class InteractionEncoder(Encoder):
         be kept (recorded for the record and for scripts).
     penalty_weight : float
         Multiplier on the L1 penalty of the cell columns (1.0 = same as the
-        mains, on the unstandardised scale).
+        mains, on the unstandardised scale; 0 = unpenalised).
     """
 
     kind: ClassVar[str] = "interaction"
@@ -669,8 +669,7 @@ class InteractionEncoder(Encoder):
         self.exposure = exp.tolist()
         if not 0.0 <= float(self.min_cell_exposure) < 1.0:
             raise ValueError("min_cell_exposure must be in [0, 1)")
-        if float(self.penalty_weight) <= 0:
-            raise ValueError("penalty_weight must be positive")
+        _check_penalty_weight(self)
 
     # -- construction --------------------------------------------------------
     @classmethod

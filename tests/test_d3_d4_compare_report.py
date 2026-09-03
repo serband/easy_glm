@@ -36,6 +36,7 @@ from easy_glm.workflow import (
     relativity_diff,
     run_model,
     to_report_html,
+    totals,
 )
 
 MODEL_A = "freq_a"
@@ -589,6 +590,7 @@ class TestComparePage:
             + [s.value for s in at.subheader]
         )
         assert MODEL_A in text and MODEL_B in text
+        assert not any("same predictions" in message.value for message in at.info)
         assert at.selectbox(key=wk(at, "cmp_a")).value == MODEL_A
         assert at.selectbox(key=wk(at, "cmp_b_freq_a_None")).value == MODEL_B
         # the metrics table and, on the last tab, the relativity diff
@@ -666,6 +668,105 @@ class TestComparePage:
         assert at.error or at.info or at.warning
 
 
+@needs_streamlit
+class TestRateTablesChallengerAE:
+    @pytest.mark.parametrize("subset", ["train", "holdout"])
+    def test_numeric_factor_uses_current_bands_for_a_challenger_without_it(
+        self, workspace, subset
+    ):
+        """A challenger need not contain Density to be compared by Density."""
+        from easy_glm.app import charts
+        from easy_glm.app.pages_tables import _main_effect_ae_tables
+
+        current = workspace["runs"][MODEL_B]
+        challenger = workspace["runs"][MODEL_A]
+        frame = workspace["frame"].filter(
+            pl.col("traintest") == (1 if subset == "train" else 0)
+        )
+        actual, expected, weight = totals(frame, current.config, current.predict(frame))
+        table, compare, problem = _main_effect_ae_tables(
+            current, "Density", frame, actual, expected, weight, challenger
+        )
+
+        assert problem is None and compare is not None
+        labels = current.tables["Density"]["label"].to_list()
+        assert table["label"].to_list() == labels
+        assert compare["label"].to_list() == labels
+        chart = charts.ae_chart(table, compare=compare, compare_name=challenger.name)
+        assert [trace.name for trace in chart.data] == [
+            "exposure",
+            "actual",
+            "expected",
+            f"expected ({MODEL_A})",
+        ]
+        assert list(chart.data[-1].x) == labels
+
+    def test_categorical_factor_uses_current_levels_for_a_challenger_without_it(
+        self, workspace
+    ):
+        from easy_glm.app.pages_tables import _main_effect_ae_tables
+
+        project = copy.deepcopy(workspace["project"])
+        project.new_model("without_region", divide_target_by_weight=True)
+        config = project.models["without_region"]
+        config.predictors = [v for v in PREDICTORS_B if v != "Region"]
+        config.penalty.alpha = 0.002
+        config.penalty.cv = None
+        challenger = run_model(project, workspace["frame"], "without_region")
+        current = workspace["runs"][MODEL_B]
+        frame = workspace["frame"].filter(pl.col("traintest") == 0)
+        actual, expected, weight = totals(frame, current.config, current.predict(frame))
+        table, compare, problem = _main_effect_ae_tables(
+            current, "Region", frame, actual, expected, weight, challenger
+        )
+
+        assert problem is None and compare is not None
+        labels = current.tables["Region"]["label"].to_list()
+        assert table["label"].to_list() == labels
+        assert compare["label"].to_list() == labels
+
+    def test_unscorable_challenger_is_a_specific_page_message(self, workspace):
+        from easy_glm.app.pages_tables import _main_effect_ae_tables
+
+        current = workspace["runs"][MODEL_B]
+        challenger = workspace["runs"][MODEL_A]
+        frame = workspace["frame"].filter(pl.col("traintest") == 0)
+        actual, expected, weight = totals(frame, current.config, current.predict(frame))
+        table, compare, problem = _main_effect_ae_tables(
+            current,
+            "Density",
+            frame.drop("BonusMalus"),
+            actual,
+            expected,
+            weight,
+            challenger,
+        )
+
+        assert table["label"].to_list() == current.tables["Density"]["label"].to_list()
+        assert compare is None
+        assert problem == (
+            f"Cannot draw {MODEL_A}'s expected line: it needs missing column(s) "
+            "BonusMalus."
+        )
+
+    def test_rate_tables_no_longer_claims_the_challenger_needs_the_term(
+        self, workspace
+    ):
+        at = _run(_script("pages_tables", workspace["project_path"], fit=True))
+        at.selectbox(key=wk(at, "tables_run")).set_value(MODEL_B).run()
+        at.selectbox(key=wk(at, f"tables_chal_{MODEL_B}_None")).set_value(MODEL_A).run()
+        variable = at.selectbox(key=wk(at, "tables_var"))
+        density = next(
+            option for option in variable.options if option.startswith("Density")
+        )
+        variable.set_value(density).run()
+        assert not at.exception, [exception.value for exception in at.exception]
+        assert not any(
+            f"{MODEL_A} has no **Density** term" in caption.value
+            for caption in at.caption
+        )
+
+
 @pytest.fixture(scope="module")
 def saved_project(tmp_path_factory) -> str:
     """A project whose two fits are persisted next to it, so opening it (as
@@ -724,7 +825,7 @@ class TestSidebarChallenger:
         assert at.selectbox(key=key).value == MODEL_B
 
     def test_the_main_page_offers_the_selector(self, saved_project):
-        """The sidebar's "compare with" appears once two models are fitted (the
+        """The sidebar's default comparison choice appears once two models are fitted (the
         runs are restored from the project's persisted folder)."""
         import sys
 
@@ -740,7 +841,9 @@ class TestSidebarChallenger:
         finally:
             sys.argv = argv
         assert not at.exception, [e.value for e in at.exception]
-        boxes = [b for b in at.sidebar.selectbox if b.label == "Compare with"]
+        boxes = [
+            b for b in at.sidebar.selectbox if b.label == "Default comparison model"
+        ]
         assert boxes, [b.label for b in at.sidebar.selectbox]
         assert MODEL_B in boxes[0].options
 

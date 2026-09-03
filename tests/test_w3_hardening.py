@@ -118,7 +118,8 @@ if not st.session_state.get("_loaded"):
 if {fit!r} and not st.session_state.get("_fitted"):
     S.fit_model("freq")
     st.session_state._fitted = True
-importlib.import_module("easy_glm.app." + {page!r}).render()
+page_name = st.session_state.get("_page", {page!r})
+importlib.import_module("easy_glm.app." + page_name).render()
 st.session_state["_project"] = S.project()
 st.session_state["_path"] = st.session_state.get("project_path")
 """
@@ -455,7 +456,7 @@ def test_breakage_13_model_names_are_file_safe(workspace):
 # --------------------------------------------------------------------------
 def test_misleading_14_target_and_weight_must_be_numeric(workspace):
     prelude = 'S.project().models["freq"].weight = "IDpol"; S.touch()'
-    at = _run(_script("pages_model", str(workspace["project"]), prelude=prelude))
+    at = _run(_script("pages_design", str(workspace["project"]), prelude=prelude))
     assert any("IDpol" in e and "numeric" in e for e in _errors(at))
     assert (
         at.session_state["_project"].models["freq"].weight == "IDpol"
@@ -521,7 +522,7 @@ def test_misleading_29_target_weight_and_alpha_rules(workspace):
 
 def test_misleading_31_divide_box_is_unticked_without_a_weight(workspace):
     prelude = 'S.project().models["freq"].weight = None; S.touch()'
-    at = _run(_script("pages_model", str(workspace["project"]), prelude=prelude))
+    at = _run(_script("pages_design", str(workspace["project"]), prelude=prelude))
     box = at.checkbox(key=wk(at, "div_freq"))
     assert box.value is False and box.disabled
 
@@ -530,6 +531,8 @@ def test_misleading_36_deleting_a_model_removes_its_persisted_fit(workspace):
     at = _run(_script("pages_model", str(workspace["project"]), fit=True), 240)
     runs = workspace["dir"] / "w3.easyglm-runs"
     assert list(runs.glob("*.pkl"))
+    at.session_state["_page"] = "pages_design"
+    at.run()
     delete = [b for b in at.button if b.label == "Delete"][0]
     delete.click().run()
     assert not at.exception

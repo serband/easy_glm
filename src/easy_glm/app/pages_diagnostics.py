@@ -7,6 +7,7 @@ import numpy as np
 import polars as pl
 import streamlit as st
 
+from easy_glm.core.design import NUMERIC_DTYPES
 from easy_glm.workflow import (
     ModelRun,
     ae_by_pair,
@@ -15,10 +16,13 @@ from easy_glm.workflow import (
     double_lift,
     gini,
     lift_table,
+    null_model_predict,
     pearson_dispersion,
+    predictions_effectively_equal,
     residual_factor_search,
     residual_pair_search,
     totals,
+    train_holdout,
 )
 
 from . import charts as C
@@ -78,6 +82,55 @@ def _knots_and_levels(run: ModelRun) -> tuple[dict, dict]:
     return knots, levels
 
 
+def _ae_grouping(run: ModelRun, variable: str) -> dict:
+    """The model's own rows are the diagnostic groups for a fitted factor."""
+    if variable not in run.spec.main_effects:
+        return {}
+    enc = run.spec[variable]
+    knots = enc.band_edges() if hasattr(enc, "band_edges") else None
+    levels = list(enc.levels) if hasattr(enc, "levels") else None
+    var_cfg = run.rate_model.variables[variable]
+    return {
+        "knots": knots,
+        "fitted_labels": run.tables[variable]["label"].to_list(),
+        "fitted_levels": levels,
+        "other_label": var_cfg.other_label,
+    }
+
+
+def _variable_ae(
+    run: ModelRun,
+    challenger: ModelRun | None,
+    frame: pl.DataFrame,
+    variable: str,
+    n_bins: int,
+) -> tuple[pl.DataFrame, pl.DataFrame | None, str | None]:
+    """A/E tables on one common grouping, including an optional challenger."""
+    actual, expected, weight = totals(frame, run.config, run.predict(frame))
+    grouping = _ae_grouping(run, variable)
+    table = ae_by_variable(
+        frame, variable, actual, expected, weight, n_bins=n_bins, **grouping
+    )
+    if challenger is None:
+        return table, None, None
+    try:
+        challenger_expected = totals(
+            frame, challenger.config, challenger.predict(frame)
+        )[1]
+        compare = ae_by_variable(
+            frame,
+            variable,
+            actual,
+            challenger_expected,
+            weight,
+            n_bins=n_bins,
+            **grouping,
+        )
+    except Exception as exc:  # noqa: BLE001 - a page message, never a traceback
+        return table, None, f"Cannot score {challenger.name} on these rows: {exc}"
+    return table, compare, None
+
+
 def _pair_heatmap(
     frame, a, b, actual, expected, w, knots, levels, *, title, n_bins=10
 ) -> pl.DataFrame:
@@ -135,7 +188,7 @@ def render() -> None:
         )
         return
     fitted = [n for n in S.fitted_models() if n != run.name]
-    # the sidebar's "compare with" is the default; picking another one here
+    # the sidebar's "default comparison model" is the default; picking another one here
     # overrides it for this page (the widget's key carries the sidebar value, so
     # moving the sidebar selector re-defaults this one)
     sidebar = S.challenger()
@@ -147,10 +200,20 @@ def render() -> None:
             options,
             index=options.index(default),
             key=S.widget_key(f"diag_chal_{sidebar}"),
-            help="Defaults to the sidebar's *Compare with*; change it here to "
+            help="Defaults to the sidebar's *Default comparison model*; change it here to "
             "override it on this page. The full side-by-side view is the "
             "**Compare** page.",
         )
+        unfitted = [
+            name for name in p.models if name != run.name and name not in fitted
+        ]
+        if unfitted:
+            names = ", ".join(unfitted)
+            verb = "is" if len(unfitted) == 1 else "are"
+            st.caption(
+                f"{names} {verb} defined but not fitted; fit "
+                f"{'it' if len(unfitted) == 1 else 'them'} before comparing models."
+            )
     challenger = S.get_run(chal_name) if chal_name != "(none)" else None
     with c3:
         which = st.radio(
@@ -158,16 +221,23 @@ def render() -> None:
             ["holdout", "train", "all"],
             horizontal=True,
             key=S.widget_key("diag_subset"),
+            help="Holdout rows were not used to fit the model, so they are the best independent check.",
         )
     frame = _subset(df, which)
-    if frame.is_empty():
-        st.warning("No rows in this subset.")
-        return
+    no_global_rows = frame.is_empty()
+    if no_global_rows:
+        st.warning(
+            "No rows in this subset. A/E by variable still shows every available "
+            "train and holdout set below."
+        )
     cfg = run.config
-    pred = run.predict(frame)
-    actual, expected, w = totals(frame, cfg, pred)
+    actual = expected = w = np.array([], dtype=float)
+    if not no_global_rows:
+        pred = run.predict(frame)
+        actual, expected, w = totals(frame, cfg, pred)
     exp_chal = None
-    if challenger is not None:
+    chal_predictions = None
+    if challenger is not None and not no_global_rows:
         chal_missing = [
             c for c in challenger.spec.required_columns if c not in df.columns
         ]
@@ -178,7 +248,8 @@ def render() -> None:
             )
             challenger = None
         else:
-            exp_chal = totals(frame, challenger.config, challenger.predict(frame))[1]
+            chal_predictions = challenger.predict(frame)
+            exp_chal = totals(frame, challenger.config, chal_predictions)[1]
     knots, levels = _knots_and_levels(run)
     reserved = {cfg.target, cfg.weight, cfg.offset, p.data.split.column} - {None}
     variables = [c for c in frame.columns if c not in reserved]
@@ -206,33 +277,56 @@ def render() -> None:
             format_func=lambda v: v if v in mains else f"{v} (not in model)",
             key=S.widget_key("diag_var"),
         )
-        n_bins = c2.slider(
-            "Bands (numeric, not in model)", 5, 50, 20, key=S.widget_key("diag_bins")
-        )
-        kn = knots.get(var)
-        tbl = ae_by_variable(frame, var, actual, expected, w, n_bins=n_bins, knots=kn)
-        cmp_tbl = (
-            ae_by_variable(frame, var, actual, exp_chal, w, n_bins=n_bins, knots=kn)
-            if exp_chal is not None
-            else None
-        )
-        st.plotly_chart(
-            C.ae_chart(
-                tbl,
-                title=f"{var} — actual vs expected ({which})",
-                compare=cmp_tbl,
-                compare_name=chal_name,
-            ),
-            width="stretch",
-        )
-        with st.expander("Table"):
-            ui.polars_table(tbl)
+        numeric = df.schema[var] in NUMERIC_DTYPES
+        uses_fitted_groups = var in mains and numeric
+        n_bins = 20
+        if numeric and not uses_fitted_groups:
+            n_bins = c2.slider(
+                "Temporary groups",
+                5,
+                50,
+                20,
+                key=S.widget_key("diag_bins"),
+                help="How many equal-frequency groups to use for this numeric column. "
+                "These groups are for this diagnostic only; they do not change the model.",
+            )
+        elif numeric:
+            c2.caption("Using this model's fitted bands.")
+
+        train, holdout = train_holdout(df, p.data.split)
+        ae_sets = [("train", train)]
+        if not holdout.is_empty():
+            ae_sets.append(("holdout", holdout))
+        else:
+            st.info(
+                "There are no holdout rows, so this view shows training experience only."
+            )
+        for subset_name, subset_frame in ae_sets:
+            tbl, cmp_tbl, challenger_problem = _variable_ae(
+                run, challenger, subset_frame, var, n_bins
+            )
+            st.plotly_chart(
+                C.ae_chart(
+                    tbl,
+                    title=f"{var} — actual vs expected ({subset_name})",
+                    compare=cmp_tbl,
+                    compare_name=chal_name,
+                ),
+                width="stretch",
+            )
+            if challenger_problem:
+                st.warning(challenger_problem)
+            with st.expander(f"{subset_name.title()} table"):
+                ui.polars_table(tbl)
+
+    if no_global_rows:
+        return
 
     with tabs[1]:
         st.caption(
             "Actual / expected in every **cell** of two variables. With both mains "
             "in the model, a block of red or blue cells with real exposure is an "
-            "interaction the model is missing — add it on the Design page."
+            "interaction the model is missing — add it on the Model page."
         )
         options = in_model + others
         c1, c2, c3 = st.columns([2, 2, 1])
@@ -249,7 +343,14 @@ def render() -> None:
             format_func=lambda v: v if v in mains else f"{v} (not in model)",
             key=S.widget_key("pair_b"),
         )
-        nb = c3.slider("Bands (not in model)", 3, 20, 8, key=S.widget_key("pair_bins"))
+        nb = c3.slider(
+            "Bands (not in model)",
+            3,
+            20,
+            8,
+            key=S.widget_key("pair_bins"),
+            help="Temporary equal-frequency groups for a numeric factor not already banded by this model.",
+        )
         if a == b:
             st.error("Pick two different variables.")
         else:
@@ -269,7 +370,14 @@ def render() -> None:
                 ui.polars_table(tbl)
 
     with tabs[2]:
-        n = st.slider("Bins", 5, 20, 10, key=S.widget_key("lift_bins"))
+        n = st.slider(
+            "Bins",
+            5,
+            20,
+            10,
+            key=S.widget_key("lift_bins"),
+            help="Equal-exposure groups ordered from lowest to highest predicted rate. More bins show more detail but are noisier.",
+        )
         lt = lift_table(actual, expected, w, n_bins=n)
         g = gini(actual, expected, w)
         st.caption(
@@ -291,41 +399,36 @@ def render() -> None:
 
     with tabs[3]:
         st.caption(
-            "Sort policies by the ratio of two predictions; the model whose A/E stays closer to 1 across the bins wins."
-        )
-        options = (["challenger"] if exp_chal is not None else []) + [
-            "a column (e.g. current premium)"
-        ]
-        pick = st.radio(
-            "Benchmark", options, horizontal=True, key=S.widget_key("dl_pick")
+            "Bins run from the selected model being cheapest relative to the incumbent "
+            "or null model, to most expensive. A pattern where one A/E line stays "
+            "closer to 1 is extra discrimination, not just a different overall level."
         )
         exp_b, name_b = None, ""
-        if pick == "challenger":
+        if exp_chal is not None and challenger is not None:
             exp_b, name_b = exp_chal, chal_name
         else:
-            numeric_cols = [
-                c
-                for c, t in frame.schema.items()
-                if t in (pl.Float32, pl.Float64, pl.Int32, pl.Int64)
-            ]
-            if not numeric_cols:
-                st.info("No numeric column to use as a benchmark.")
-            else:
-                col = st.selectbox(
-                    "Benchmark column (already on the same total scale, or per unit × weight)",
-                    numeric_cols,
-                    key=S.widget_key("dl_col"),
+            train, _holdout = train_holdout(df, p.data.split)
+            try:
+                null_prediction = null_model_predict(p, cfg, train, frame)
+                exp_b = totals(frame, cfg, null_prediction)[1]
+                name_b = "null model"
+                st.caption(
+                    "No challenger selected — benchmark is an intercept-only model calibrated on training rows."
                 )
-                per_unit = st.checkbox(
-                    "Column is per unit of weight (multiply by weight)",
-                    True,
-                    key=S.widget_key("dl_unit"),
+            except Exception as exc:  # noqa: BLE001 - page errors are messages
+                st.warning(
+                    f"Could not fit the training-calibrated null benchmark: {exc}"
                 )
-                exp_b = frame[col].cast(pl.Float64).to_numpy() * (
-                    w if per_unit else 1.0
-                )
-                name_b = col
         if exp_b is not None and np.nansum(exp_b) > 0:
+            if (
+                challenger is not None
+                and chal_predictions is not None
+                and predictions_effectively_equal(pred, chal_predictions)
+            ):
+                st.info(
+                    "These models make the same predictions on the selected rows "
+                    "(within numerical precision), so their A/E lines overlap."
+                )
             dl = double_lift(actual, expected, exp_b, w, n_bins=10)
             st.plotly_chart(
                 C.double_lift_chart(dl, name_a=run.name, name_b=name_b), width="stretch"
@@ -383,7 +486,7 @@ def render() -> None:
             "after re-fitting the two margins, as a z-score (numerics in 8 coarse "
             "bands, cells with fewer than 3 expected ignored; many small noisy cells "
             "do not outrank one large real effect). The top pairs are the "
-            "interactions worth trying on the Design page."
+            "interactions worth trying on the Model page."
             + (
                 ""
                 if counts

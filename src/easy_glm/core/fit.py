@@ -1107,10 +1107,10 @@ def fit_two_stage(
 
     * ``stage2_alpha`` if given (an explicit strength for the cells, which
       overrides cross-validation for this stage);
-    * otherwise the alpha stage 1 used — the cross-validated one if stage 1
-      cross-validated *and* ``cv`` is not repeated below;
-    * if stage 1 used ``cv``, so does stage 2, on its own path over its own
-      columns.
+    * otherwise, when stage 1 used ``cv``, stage 2 independently uses the same
+      number of folds and path points on its *own* cell columns; it does not
+      reuse the main-effects alpha;
+    * otherwise (a fixed-alpha main fit), stage 2 uses that fixed alpha.
 
     Per-interaction differences in strength belong in
     ``InteractionEncoder.penalty_weight``, which multiplies that interaction's

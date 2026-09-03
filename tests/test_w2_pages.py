@@ -251,32 +251,82 @@ class TestDesignPage:
         )
         assert any("monotone" in e.lower() for e in _errors(at_bad))
 
-    def test_model_page_lists_a_monotone_constraint_on_a_linear_term(self, workspace):
-        """The caption is the only place the Model page shows a design-level
-        constraint; the linear path through it is new in B2."""
+    def test_model_page_includes_design_controls(self, workspace):
+        """The single Model workflow includes the factor-design controls."""
         prelude = 'S.project().design.variables["Density"] = __import__("easy_glm.workflow", fromlist=["VariableDesign"]).VariableDesign(kind="continuous", monotone="increasing")'
         at = _run(
             _script("pages_model", workspace["project"], fit=False, prelude=prelude)
         )
-        assert any(
-            "Monotone constraints from the Design page" in c.value
-            and "Density increasing" in c.value
-            for c in at.caption
-        ), [c.value for c in at.caption]
+        assert at.selectbox(key=wk(at, "fam_freq")).value == "poisson"
+        at.selectbox(key=wk(at, "design_detail_var")).set_value("Density").run()
+        assert at.selectbox(key=wk(at, "kind_Density")).value == "continuous"
 
 
 # --------------------------------------------------------------------------
 # Model page
 # --------------------------------------------------------------------------
-def test_model_page_lists_interactions(workspace):
-    at = _run(_script("pages_model", workspace["project"], fit=False))
-    assert any("DrivAge×Region" in c.value for c in at.caption)
+def test_design_page_lists_interactions(workspace):
+    at = _run(_script("pages_design", workspace["project"], fit=False))
+    assert any("DrivAge×Region" in message.value for message in at.info)
+
+
+def test_model_page_explains_independent_interaction_cv(workspace):
+    """The one set of CV controls configures both stages, but each picks its
+    own alpha from its own columns."""
+    prelude = (
+        'S.project().models["freq"].penalty.alpha = None\n'
+        'S.project().models["freq"].penalty.cv = 2\n'
+        'S.project().models["freq"].penalty.n_alphas = 4'
+    )
+    at = _run(_script("pages_model", workspace["project"], fit=True, prelude=prelude))
+    assert any(
+        "Stage 2 independently selected that alpha by 2-fold CV over 4 penalties"
+        in message.value
+        for message in at.info
+    ), [message.value for message in at.info]
 
 
 # --------------------------------------------------------------------------
 # Diagnostics page
 # --------------------------------------------------------------------------
 class TestDiagnosticsPage:
+    def test_variable_ae_uses_both_sets_and_only_offers_temporary_groups_when_needed(
+        self, workspace
+    ):
+        # BonusMalus is still a numeric raw column but deliberately not a term.
+        # That makes the three UI states explicit: categorical, fitted numeric,
+        # and numeric diagnostic-only groups.
+        at = _run(
+            _script(
+                "pages_diagnostics",
+                workspace["project"],
+                fit=True,
+                prelude="S.project().models['freq'].predictors.remove('BonusMalus')",
+            )
+        )
+        variable = at.selectbox(key=wk(at, "diag_var"))
+
+        variable.set_value("Region").run()
+        assert not any(slider.label == "Temporary groups" for slider in at.slider)
+
+        variable.set_value("DrivAge").run()
+        assert not any(slider.label == "Temporary groups" for slider in at.slider)
+
+        variable.set_value("BonusMalus").run()
+        groups = next(
+            slider for slider in at.slider if slider.label == "Temporary groups"
+        )
+        groups.set_value(8).run()
+        assert at.slider(key=wk(at, "diag_bins")).value == 8
+        assert any(expander.label == "Train table" for expander in at.expander)
+        assert any(expander.label == "Holdout table" for expander in at.expander)
+
+    def test_double_lift_has_no_raw_column_benchmark(self, workspace):
+        at = _run(_script("pages_diagnostics", workspace["project"], fit=True))
+        assert not any(select.label == "Benchmark" for select in at.selectbox)
+        assert not any("Benchmark column" in select.label for select in at.selectbox)
+        assert not any("Column is per unit" in check.label for check in at.checkbox)
+
     def test_pair_tab_and_pair_search(self, workspace):
         at = _run(_script("pages_diagnostics", workspace["project"], fit=True))
         assert at.selectbox(key=wk(at, "pair_a")) is not None
@@ -324,6 +374,73 @@ class TestDiagnosticsPage:
 # Rate tables page
 # --------------------------------------------------------------------------
 class TestTablesPage:
+    def test_ae_keeps_fitted_expected_beside_adjusted_tables_and_can_reset(
+        self, workspace
+    ):
+        from easy_glm.app import charts
+        from easy_glm.app.pages_tables import _main_effect_ae_tables
+        from easy_glm.workflow import rate_model_for, rebuild_rate_model
+
+        at = _run(_script("pages_tables", workspace["project"], fit=True))
+        run = at.session_state["runs"]["freq"][1]
+        project = at.session_state["_project"]
+        cfg = project.models["freq"]
+        df = pl.read_parquet(workspace["data"])
+        frame = df.filter(pl.col("traintest") == 0)
+
+        fitted = rate_model_for(project, run, [], base_rate_override=None)
+        actual, fitted_expected, weight = totals(
+            frame, cfg, fitted.predict(frame, exposure_col=None)
+        )
+        fitted_table, _compare, _problem = _main_effect_ae_tables(
+            run, "DrivAge", frame, actual, fitted_expected, weight
+        )
+
+        rows = run.rate_model.variables["DrivAge"].table
+        values = [row.relativity for row in rows]
+        change = next(i for i, row in enumerate(rows) if row.from_ is not None)
+        values[change] *= 1.4
+        changed, errors = grids.apply_row_edits(
+            cfg,
+            "DrivAge",
+            rows,
+            run.tables["DrivAge"]["relativity"].to_list(),
+            values,
+            require_positive=False,
+            other_label=run.rate_model.variables["DrivAge"].other_label,
+        )
+        assert changed and not errors
+        rebuild_rate_model(project, run, df)
+        adjusted_expected = totals(frame, cfg, run.predict(frame))[1]
+        assert not np.allclose(adjusted_expected, fitted_expected)
+        adjusted_table, _compare, _problem = _main_effect_ae_tables(
+            run, "DrivAge", frame, actual, adjusted_expected, weight
+        )
+        chart = charts.ae_chart(
+            fitted_table,
+            expected_name="fitted model",
+            adjusted=adjusted_table,
+        )
+        assert [trace.name for trace in chart.data] == [
+            "exposure",
+            "actual",
+            "fitted model",
+            "adjusted tables",
+        ]
+
+        # A fresh fitted RateModel remains independent of the current edits,
+        # and clearing them restores the current prediction to that line.
+        assert fitted.predict(frame, exposure_col=None) == pytest.approx(
+            rate_model_for(project, run, [], base_rate_override=None).predict(
+                frame, exposure_col=None
+            )
+        )
+        cfg.adjustments = []
+        rebuild_rate_model(project, run, df)
+        assert run.predict(frame) == pytest.approx(
+            fitted.predict(frame, exposure_col=None)
+        )
+
     def test_interaction_and_linear_tables_render(self, workspace):
         at = _run(_script("pages_tables", workspace["project"], fit=True))
 

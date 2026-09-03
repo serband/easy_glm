@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 import polars as pl
+from glum import GeneralizedLinearRegressor
 
 from easy_glm.core.design import (
     NUMERIC_DTYPES,
@@ -23,7 +24,13 @@ from easy_glm.core.design import (
     linear_encoder_from_data,
     quantile_knots,
 )
-from easy_glm.core.fit import GLMFit, TwoStageFit, fit_glm, fit_two_stage
+from easy_glm.core.fit import (
+    GLMFit,
+    TwoStageFit,
+    fit_glm,
+    fit_two_stage,
+    resolve_family,
+)
 from easy_glm.core.tables import rate_tables, to_rate_model
 from easy_glm.engine.rate_model import RateModel
 
@@ -479,6 +486,64 @@ def link_for(cfg: ModelConfig) -> str:
     """The link this model will be fitted with: its own if it names one, else
     the family default (logit for binomial, log for everything else)."""
     return cfg.link or ("logit" if cfg.family == "binomial" else "log")
+
+
+def null_model_predict(
+    project: Project,
+    cfg: ModelConfig,
+    train: pl.DataFrame,
+    data: pl.DataFrame,
+) -> np.ndarray:
+    """Score ``data`` with an intercept-only version of ``cfg``.
+
+    The intercept is fitted on ``train`` only.  This is deliberately a real
+    GLM fit rather than an average of the observed target: it keeps the
+    selected family, link, weight, target-per-weight convention and offset.
+    Consequently it is safe to score a holdout frame without looking at its
+    outcomes, and is the honest fallback benchmark for double lift.
+    """
+    if not cfg.target:
+        raise ValueError("A null model needs a target column")
+    family, _name, default_link = resolve_family(
+        cfg.family, float(cfg.tweedie_power) if cfg.family == "tweedie" else None
+    )
+    link = link_for(cfg) or default_link
+    y = train[cfg.target].cast(pl.Float64).to_numpy()
+    weight = train[cfg.weight].cast(pl.Float64).to_numpy() if cfg.weight else None
+    if cfg.divide_target_by_weight:
+        if weight is None:
+            raise ValueError("divide_target_by_weight=True needs a weight column")
+        y = y / weight
+    train_offset = train[cfg.offset].cast(pl.Float64).to_numpy() if cfg.offset else None
+    # glum rejects a zero-column matrix.  A permanently zero column is exactly
+    # equivalent to no predictor, while letting its intercept fitter handle all
+    # supported families and links.  Its coefficient has no possible effect.
+    model = GeneralizedLinearRegressor(
+        family=family,
+        link=link,
+        alpha=0.0,
+        l1_ratio=1.0,
+        scale_predictors=False,
+    ).fit(
+        np.zeros((train.height, 1), dtype=np.float64),
+        np.asarray(y, dtype=np.float64),
+        sample_weight=None if weight is None else np.asarray(weight, dtype=np.float64),
+        offset=(
+            None if train_offset is None else np.asarray(train_offset, dtype=np.float64)
+        ),
+    )
+    score_offset = data[cfg.offset].cast(pl.Float64).to_numpy() if cfg.offset else None
+    return np.asarray(
+        model.predict(
+            np.zeros((data.height, 1), dtype=np.float64),
+            offset=(
+                None
+                if score_offset is None
+                else np.asarray(score_offset, dtype=np.float64)
+            ),
+        ),
+        dtype=float,
+    )
 
 
 def exposure_for(project: Project, cfg: ModelConfig) -> str | None:

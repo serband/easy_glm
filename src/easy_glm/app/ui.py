@@ -113,7 +113,7 @@ def repair_number(
 ) -> tuple[float, str | None]:
     """``(value or default, message)`` for a numeric project field that a
     page both displays *and* writes straight back to the project once the
-    page has finished rendering (``pages_model._config``'s "did anything
+    page has finished rendering (``pages_model._fit_options``'s "did anything
     change" reconciliation, the Design page's interaction ``alpha`` box).
 
     ``safe_float``/``safe_int`` alone stop the crash, but the page would then
@@ -334,16 +334,30 @@ def require_target() -> str | None:
 
 
 def run_selector(label: str = "Model", key: str = "run_select") -> ModelRun | None:
-    runs = S.current_runs()
-    fitted = {name: r for name, r in runs.items() if S.get_run(name) is not None}
-    if not fitted:
+    # ``current_runs`` only knows what this browser session happened to fit.
+    # A page navigation, restored project, or persisted second fit must still
+    # be selectable immediately, so use the state layer's authoritative list
+    # (which resolves both session and on-disk fits) for the widget options.
+    names = S.fitted_models()
+    if not names:
         st.info("No fitted model yet — fit one on the **Model** page.")
         return None
     p = S.project()
-    default = p.champion if p.champion in fitted else next(iter(fitted))
-    names = list(fitted)
-    name = st.selectbox(label, names, index=names.index(default), key=key)
-    return fitted[name]
+    default = p.champion if p.champion in names else names[0]
+    name = st.selectbox(
+        label,
+        names,
+        index=names.index(default),
+        key=key,
+        help="Choose a fitted model to view or edit. A model must be refitted after changes to its definition.",
+    )
+    run = S.get_run(name)
+    if run is None:
+        # The list is built from get_run(), so this only covers a data/source
+        # change between widget construction and scoring. Do not imply that
+        # the selected model remains fitted in that case.
+        st.warning(f"{name} is no longer fitted for the current project data.")
+    return run
 
 
 def frame_bytes(df: pl.DataFrame, kind: str = "csv") -> bytes:

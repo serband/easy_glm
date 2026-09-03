@@ -1234,7 +1234,7 @@ class TestWorkbenchPages:
 
     def test_the_tweedie_power_box_appears_only_for_tweedie(self, rate_change_on_disk):
         at = _run_app(
-            _app_script("pages_model", rate_change_on_disk, fit=False, model="change")
+            _app_script("pages_design", rate_change_on_disk, fit=False, model="change")
         )
         assert not [i for i in at.number_input if i.key == _wk(at, "tw_change")]
         at.selectbox(key=_wk(at, "fam_change")).set_value("tweedie").run()

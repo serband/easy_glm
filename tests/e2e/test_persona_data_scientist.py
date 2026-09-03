@@ -51,8 +51,8 @@ def test_data_scientist_model_comparison(scientist_server, browser, e2e_dir):
     assert_clean(pg, "create v2")
     assert "freq_v2" in pg.get_by_test_id("stSidebar").inner_text()
 
-    # -- Design: interaction + linear Density for freq_v2
-    goto_page(pg, "Design")
+    # -- Model: interaction + linear Density for freq_v2
+    goto_page(pg, "Model")
     select(pg, "Variable", "Density")
     select(pg, "Kind", "linear")
     select(pg, "Model", "freq_v2")
@@ -76,7 +76,7 @@ def test_data_scientist_model_comparison(scientist_server, browser, e2e_dir):
 
     # -- Diagnostics: challenger overlay + pair search on v1. The challenger is
     #    chosen once in the sidebar; Diagnostics, Rate tables and Compare follow it
-    select_sidebar(pg, "Compare with", "freq_v2")
+    select_sidebar(pg, "Default comparison model", "freq_v2")
     goto_page(pg, "Diagnostics")
     select(pg, "Model", "freq_v1")
     assert_clean(pg, "challenger")

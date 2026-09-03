@@ -7,92 +7,201 @@ import streamlit as st
 
 from easy_glm.core.design import NUMERIC_DTYPES
 from easy_glm.workflow import alpha_path, solve_base_rate, train_holdout
-from easy_glm.workflow.project import FAMILIES, validate_model_name
+from easy_glm.workflow.project import FAMILIES
 
 from . import charts as C
+from . import pages_design as D
 from . import state as S
 from . import ui
 
 
-def _model_picker() -> str | None:
-    p = S.project()
-    names = list(p.models)
-    # Create / Delete on the previous run asked for another model to be shown.
-    # The selectbox keeps whatever its key holds, and Streamlit refuses to
-    # touch a widget's key once the widget exists, so the keys are dropped here
-    # — before the picker is drawn — and the boxes fall back to their defaults
-    # (``model_current`` below). Without this, Create says "created" and the
-    # page underneath goes on editing and fitting the model that was selected.
-    if st.session_state.pop("model_pending", False):
-        st.session_state.pop(S.widget_key("model_select"), None)
-        st.session_state.pop(S.widget_key("model_new_name"), None)
-    c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
-    current = st.session_state.get("model_current")
-    if current not in names:
-        current = p.champion if p.champion in names else (names[0] if names else None)
-    sel = c1.selectbox(
-        "Model",
-        names or ["(none)"],
-        index=names.index(current) if current in names else 0,
-        key=S.widget_key("model_select"),
-    )
-    new_name = c2.text_input(
-        "New model name", key=S.widget_key("model_new_name"), placeholder="freq_v2"
-    ).strip()
-    name_problem = validate_model_name(new_name, names) if new_name else None
-    if c3.button("Create", disabled=not new_name or bool(name_problem)):
-        p.new_model(new_name)
-        if len(p.models) == 1:
-            p.champion = new_name
-        st.session_state.model_current = new_name
-        st.session_state["model_pending"] = True  # show what was created
-        S.touch()
-        ui.flash("success", f"Model {new_name!r} created and selected")
-        st.rerun()
-    if name_problem:
-        c2.caption(f"⚠ {name_problem}")
-    if names and c4.button("Delete", disabled=len(names) == 0):
-        p.models.pop(sel, None)
-        kept = S.remove_model_runs(sel)
-        if p.champion == sel:
-            p.champion = next(iter(p.models), None)
-        st.session_state.model_current = next(iter(p.models), None)
-        st.session_state["model_pending"] = True
-        # queued *before* the save: touch() reruns the moment it finds the file
-        # changed on disk, and this sentence — "nothing was written" — is
-        # exactly the one the user needs in that case
-        ui.flash("warning" if kept else "info", kept or f"Model {sel!r} deleted")
-        S.touch()
-        st.rerun()
-    if not names:
-        st.info(
-            "Create a model to start. It is pre-filled from the roles on the Variables page."
-        )
-        return None
-    st.session_state.model_current = sel
-    return sel
-
-
 def _column_pick(
-    col, label: str, current: str | None, options: list[str], *, key: str, none: bool
+    column, label: str, current: str | None, options: list[str], *, key: str, none: bool
 ) -> str | None:
-    """A column selector that never silently re-points a model: when the
-    stored column is not among the options the box shows a placeholder and an
-    error, and the stored value is kept until the user picks one."""
-    opts = (["(none)"] if none else []) + options
-    if current is None and none:
-        index: int | None = 0
-    elif current in opts:
-        index = opts.index(current)
-    else:
-        index = None
-    picked = col.selectbox(
-        label, opts, index=index, key=key, placeholder="choose a numeric column"
+    """Compatibility helper for the legacy private configuration routine."""
+    choices = (["(none)"] if none else []) + options
+    index = (
+        0
+        if current is None and none
+        else choices.index(current) if current in choices else None
     )
+    picked = column.selectbox(label, choices, index=index, key=key)
     if index is None:
-        col.error(f"{label}: {current!r} is not a numeric column of the data")
+        column.error(f"{label}: {current!r} is not a numeric column of the data")
         return current
     return None if picked == "(none)" else picked
+
+
+def _fit_model_selector() -> str | None:
+    """Choose an existing definition to fit without offering design edits."""
+    p = S.project()
+    names = list(p.models)
+    if not names:
+        st.info(
+            "No model has been defined yet. Open the **Design** page to name a "
+            "model and choose its family, target, weight and predictors."
+        )
+        return None
+    current = st.session_state.get("model_current")
+    if current not in names:
+        current = p.champion if p.champion in names else names[0]
+    name = st.selectbox(
+        "Model to fit",
+        names,
+        index=names.index(current),
+        key=S.widget_key("fit_model_select"),
+    )
+    st.session_state.model_current = name
+    return name
+
+
+def _fit_options(name: str) -> None:
+    """Fitting and table-level options; the model definition lives on Design."""
+    p = S.project()
+    cfg = p.models[name]
+    if st.session_state.pop("solved_base_rate", None) == name:
+        st.session_state.pop(S.widget_key(f"bro_{name}"), None)
+    with st.container(border=True):
+        st.subheader("Fit settings")
+        st.markdown("**Penalty**")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        mode = c1.radio(
+            "alpha",
+            ["cross-validated", "fixed"],
+            index=0 if cfg.penalty.alpha is None else 1,
+            key=S.widget_key(f"pmode_{name}"),
+            horizontal=True,
+            help=(
+                "The strength of regularisation. Cross-validated lets holdout folds "
+                "choose it; fixed uses the number entered beside it."
+            ),
+        )
+        alpha_value, alpha_problem = ui.repair_number(cfg.penalty.alpha, 0.001, "alpha")
+        if alpha_problem:
+            ui.flash("warning", alpha_problem)
+        alpha = ui.number_in_range(
+            c2,
+            "alpha",
+            value=alpha_value or 0.001,
+            lo=0.0,
+            hi=10.0,
+            what="alpha",
+            format="%.5f",
+            key=S.widget_key(f"alpha_{name}"),
+            disabled=mode != "fixed",
+            help="Fixed regularisation strength. Larger values shrink more effects to 1.00.",
+        )
+        cv_value, cv_problem = ui.repair_number(
+            cfg.penalty.cv, 5, "cv", integer=True, lo=2, hi=10
+        )
+        if cv_problem:
+            ui.flash("warning", cv_problem)
+        cv = c3.number_input(
+            "CV folds",
+            2,
+            10,
+            int(cv_value),
+            key=S.widget_key(f"cv_{name}"),
+            disabled=mode != "cross-validated",
+            help="How many held-out folds are used to choose regularisation strength.",
+        )
+        n_alphas_value, n_alphas_problem = ui.repair_number(
+            cfg.penalty.n_alphas, 20, "n_alphas", integer=True, lo=3, hi=100
+        )
+        if n_alphas_problem:
+            ui.flash("warning", n_alphas_problem)
+        n_alphas = c4.number_input(
+            "alphas on path",
+            3,
+            100,
+            int(n_alphas_value),
+            key=S.widget_key(f"nalpha_{name}"),
+            disabled=mode != "cross-validated",
+            help="How many candidate regularisation strengths cross-validation tests.",
+        )
+        l1_value, l1_problem = ui.repair_number(
+            cfg.penalty.l1_ratio, 1.0, "l1_ratio", lo=0.0, hi=1.0
+        )
+        if l1_problem:
+            ui.flash("warning", l1_problem)
+        l1 = c5.slider(
+            "l1_ratio (1 = lasso)",
+            0.0,
+            1.0,
+            l1_value,
+            0.05,
+            key=S.widget_key(f"l1_{name}"),
+            help="1 keeps a sparse lasso model; lower values retain more, smaller effects.",
+        )
+        c1, c2, c3, c4 = st.columns(4)
+        base = c1.radio(
+            "Base risk for tables",
+            ["modal", "reference"],
+            index=0 if cfg.base == "modal" else 1,
+            horizontal=True,
+            key=S.widget_key(f"base_{name}"),
+            help="The 1.00 point used to display the rate tables: most-exposed band or reference level.",
+        )
+        bro_value, bro_problem = ui.repair_number(
+            cfg.base_rate_override, 0.0, "base_rate_override"
+        )
+        if bro_problem:
+            ui.flash("warning", bro_problem)
+        bro = ui.number_in_range(
+            c2,
+            "Base rate override (0 = exact)",
+            value=bro_value or 0.0,
+            lo=0.0,
+            what="The base rate override",
+            format="%.6f",
+            key=S.widget_key(f"bro_{name}"),
+            help="An overall multiplier on every prediction. Leave at 0 for the fitted level.",
+        )
+        run_now = S.get_run(name)
+        if bro and run_now is not None:
+            fitted_base = run_now.rate_model.base_rate
+            snapshots = run_now.rate_model.snapshots
+            fitted_base = (
+                snapshots[0].metadata.get("base_rate", fitted_base)
+                if snapshots
+                else fitted_base
+            )
+            if fitted_base and not 0.01 <= bro / fitted_base <= 100:
+                c2.warning(
+                    f"Override is {bro / fitted_base:,.0f}× the fitted base rate "
+                    f"({fitted_base:.6g}); every prediction is scaled by that much."
+                )
+        _target_loss_ratio(c3, name, cfg, run_now)
+        notes = c4.text_input("Notes", cfg.notes, key=S.widget_key(f"notes_{name}"))
+
+    penalty = {
+        "alpha": float(alpha) if mode == "fixed" else None,
+        "cv": int(cv) if mode == "cross-validated" else None,
+        "n_alphas": int(n_alphas),
+        "l1_ratio": float(l1),
+    }
+    values = {
+        "base": base,
+        "base_rate_override": float(bro) or None,
+        "notes": notes,
+    }
+    changed = False
+    rebuild_only = False
+    for field, value in values.items():
+        if getattr(cfg, field) != value:
+            setattr(cfg, field, value)
+            changed = True
+            rebuild_only = True
+    for field, value in penalty.items():
+        if getattr(cfg.penalty, field) != value:
+            setattr(cfg.penalty, field, value)
+            changed = True
+    if changed:
+        S.touch()
+        if rebuild_only and S.get_run(name) is not None:
+            S.refresh_adjustments(name)
+        else:
+            st.rerun()
 
 
 def _config(name: str) -> None:
@@ -557,6 +666,19 @@ def _fit_and_results(name: str) -> None:
         ]
     )
     if two_stage:
+        stage2_model = run.fit.stage2.model
+        stage2_cv = getattr(stage2_model, "cv", None)
+        stage2_n_alphas = getattr(stage2_model, "n_alphas", None)
+        selection = (
+            f" Stage 2 independently selected that alpha by {stage2_cv}-fold CV "
+            f"over {stage2_n_alphas} penalties on the interaction cells."
+            if stage2_cv is not None
+            else (
+                " Stage 2 honoured a preserved legacy cell-alpha override."
+                if any(it.alpha is not None for it in run.config.interactions)
+                else " Stage 2 used the model's fixed alpha."
+            )
+        )
         st.info(
             f"**Fitted in two stages.** Stage 1 fitted the {len(run.spec.main_effects)} "
             f"main effects at alpha {ui.fmt(s['alpha'], digits=5)} — exactly the fit "
@@ -567,8 +689,14 @@ def _fit_and_results(name: str) -> None:
             f"{s['cells_kept']} cell(s) had enough exposure to be rated on their own. "
             "Each is an adjustment to the frozen mains (1.00 = none), including any "
             "small overall re-levelling stage 2 wants — with the mains fixed it has "
-            "nowhere to put that but in the cells."
+            "nowhere to put that but in the cells." + selection
         )
+        if stage2_cv is not None and not (run.fit.stage2.coef != 0).any():
+            st.info(
+                "Stage 2's separate CV found no cell adjustment that improved its "
+                "validation score, so every interaction cell is 1.00 and this model "
+                "makes the same predictions as its frozen mains."
+            )
     elif run.config.interactions and not run.cells_kept:
         st.info(
             "**No second stage.** No cell of "
@@ -615,12 +743,16 @@ def _fit_and_results(name: str) -> None:
 
 
 def render() -> None:
-    st.title("Model")
+    st.title("Model design and fit")
     ui.status_bar()
-    if ui.require_data() is None or ui.require_target() is None:
-        return
-    name = _model_picker()
+    name = D.render_contents()
     if name is None:
         return
-    _config(name)
+    st.header("Fit and results")
+    if S.get_run(name) is None:
+        st.info(
+            f"**{name}** is ready to fit. Review or adjust the settings below, then "
+            "use the blue **Fit model** button to run it. Fitting is never automatic."
+        )
+    _fit_options(name)
     _fit_and_results(name)

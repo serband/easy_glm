@@ -29,11 +29,13 @@ from easy_glm.engine.models import NULL_LABEL, FromToRow, level_label
 from .explore import band_expr
 from .project import ModelConfig
 
+ScaleConfig = ModelConfig | GLMFit
+
 
 # --------------------------------------------------------------------------
 # scale helpers
 # --------------------------------------------------------------------------
-def target_column(cfg: ModelConfig) -> str:
+def target_column(cfg: ScaleConfig) -> str:
     """The model's target column, or a message: every scale helper below needs
     one, and a project with no target reaches them through the workbench."""
     if not cfg.target:
@@ -41,29 +43,51 @@ def target_column(cfg: ModelConfig) -> str:
     return cfg.target
 
 
-def unit_values(df: pl.DataFrame, cfg: ModelConfig) -> tuple[np.ndarray, np.ndarray]:
+def unit_values(df: pl.DataFrame, cfg: ScaleConfig) -> tuple[np.ndarray, np.ndarray]:
     """``(y_per_unit, weight)`` as the GLM saw them."""
     y = df[target_column(cfg)].cast(pl.Float64).to_numpy()
-    w = df[cfg.weight].cast(pl.Float64).to_numpy() if cfg.weight else np.ones(df.height)
+    weight_col = getattr(cfg, "weight", None) or getattr(cfg, "weight_col", None)
+    w = df[weight_col].cast(pl.Float64).to_numpy() if weight_col else np.ones(df.height)
     if cfg.divide_target_by_weight:
         y = y / w
     return y, w
 
 
 def totals(
-    df: pl.DataFrame, cfg: ModelConfig, pred_unit: np.ndarray
+    df: pl.DataFrame, cfg: ScaleConfig, pred_unit: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """``(actual_total, expected_total, weight)`` for ``df`` given per-unit predictions."""
     y = df[target_column(cfg)].cast(pl.Float64).to_numpy()
     pred_unit = np.asarray(pred_unit, dtype=float)
-    if cfg.weight:
-        w = df[cfg.weight].cast(pl.Float64).to_numpy()
+    weight_col = getattr(cfg, "weight", None) or getattr(cfg, "weight_col", None)
+    if weight_col:
+        w = df[weight_col].cast(pl.Float64).to_numpy()
         actual = y if cfg.divide_target_by_weight else y * w
         expected = pred_unit * w
     else:
         w = np.ones(df.height)
         actual, expected = y, pred_unit
     return actual, expected, w
+
+
+def predictions_effectively_equal(
+    first: np.ndarray,
+    second: np.ndarray,
+    *,
+    rtol: float = 1e-9,
+    atol: float = 1e-12,
+) -> bool:
+    """Whether two model prediction vectors are indistinguishable in practice.
+
+    The tolerance is deliberately much tighter than a chart's displayed
+    precision.  Its purpose is to explain a genuinely overlapping A/E pair,
+    not to hide a small but meaningful pricing difference.
+    """
+    a = np.asarray(first, dtype=float)
+    b = np.asarray(second, dtype=float)
+    return a.shape == b.shape and bool(
+        np.allclose(a, b, rtol=rtol, atol=atol, equal_nan=True)
+    )
 
 
 def expected_claims(rm: Any, df: pl.DataFrame, cfg: ModelConfig) -> float:
@@ -263,9 +287,17 @@ def ae_by_variable(
     n_bins: int = 20,
     knots: list[float] | None = None,
     max_levels: int = 30,
+    fitted_labels: list[str] | None = None,
+    fitted_levels: list[str] | None = None,
+    other_label: str | None = None,
 ) -> pl.DataFrame:
     """Actual, expected and A/E by band (numeric) or level (categorical) of
-    ``variable`` — works for variables in or out of the model."""
+    ``variable`` — works for variables in or out of the model.
+
+    ``fitted_labels`` preserves the order and empty rows of an existing rate
+    table. For a fitted categorical, also supply its kept ``fitted_levels`` so
+    lumped, unseen and null values are grouped into ``other_label``.
+    """
     w = np.ones(df.height) if weight is None else np.asarray(weight, float)
     frame = df.select(variable).with_columns(
         pl.Series("__a__", np.asarray(actual_total, float)),
@@ -297,9 +329,18 @@ def ae_by_variable(
             )
         )
     else:
-        frame = frame.with_columns(
-            pl.col(variable).cast(pl.Utf8).fill_null(NULL_LABEL).alias("label")
-        )
+        if fitted_levels is None:
+            frame = frame.with_columns(
+                pl.col(variable).cast(pl.Utf8).fill_null(NULL_LABEL).alias("label")
+            )
+        else:
+            fallback = other_label or NULL_LABEL
+            frame = frame.with_columns(
+                pl.when(pl.col(variable).cast(pl.Utf8).is_in(fitted_levels))
+                .then(pl.col(variable).cast(pl.Utf8))
+                .otherwise(pl.lit(fallback))
+                .alias("label")
+            )
         grouped = frame.group_by("label").agg(
             pl.col("__w__").sum().alias("exposure"),
             pl.col("__a__").sum().alias("actual"),
@@ -325,6 +366,16 @@ def ae_by_variable(
         grouped = grouped.with_columns(
             pl.arange(0, pl.len()).cast(pl.Float64).alias("order")
         )
+    if fitted_labels is not None:
+        ordering = pl.DataFrame(
+            {
+                "label": fitted_labels,
+                "order": np.arange(len(fitted_labels), dtype=float),
+            }
+        )
+        grouped = ordering.join(
+            grouped.drop("order"), on="label", how="left"
+        ).with_columns(pl.col("exposure", "actual", "expected").fill_null(0.0))
     return (
         grouped.sort("order")
         .with_columns(

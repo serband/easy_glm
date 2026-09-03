@@ -270,6 +270,7 @@ def render() -> None:
             "random": "Random split (seeded)",
         }[m],
         key=S.widget_key("split_mode"),
+        help="Holdout rows are kept out of fitting and are the fairest check of how the model generalises.",
     )
     changed = mode != sp.mode
     if changed:
@@ -294,6 +295,6 @@ def render() -> None:
         return
     ui.guarded(lambda: _balance(df), "Train / holdout balance")
     st.caption(
-        "Design knots, level lumping and the fit all use **training rows only**; "
+        "Model bands, level lumping and the fit all use **training rows only**; "
         "the holdout is used for diagnostics."
     )

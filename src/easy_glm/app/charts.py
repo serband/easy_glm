@@ -76,6 +76,12 @@ def ae_chart(
     height: int = 380,
     compare: pl.DataFrame | None = None,
     compare_name: str = "challenger",
+    expected_name: str = "expected",
+    adjusted: pl.DataFrame | None = None,
+    adjusted_name: str = "adjusted tables",
+    actual_color: str = BLUE,
+    expected_color: str = ORANGE,
+    volume_label: str = "exposure",
 ) -> go.Figure:
     """Actual vs expected rates with exposure bars (``ae_by_variable`` table)."""
     fig = _fig(height)
@@ -83,7 +89,7 @@ def ae_chart(
     fig.add_bar(
         x=labels,
         y=table["exposure"],
-        name="exposure",
+        name=volume_label,
         marker_color=GREY,
         opacity=0.7,
         secondary_y=False,
@@ -93,17 +99,26 @@ def ae_chart(
         y=table["actual_rate"],
         name="actual",
         mode="lines+markers",
-        line=dict(color=BLUE, width=2.5),
+        line=dict(color=actual_color, width=2.5),
         secondary_y=True,
     )
     fig.add_scatter(
         x=labels,
         y=table["expected_rate"],
-        name="expected",
+        name=expected_name,
         mode="lines+markers",
-        line=dict(color=ORANGE, width=2.5),
+        line=dict(color=expected_color, width=2.5),
         secondary_y=True,
     )
+    if adjusted is not None:
+        fig.add_scatter(
+            x=adjusted["label"].to_list(),
+            y=adjusted["expected_rate"],
+            name=adjusted_name,
+            mode="lines+markers",
+            line=dict(color=RED, width=2, dash="dot"),
+            secondary_y=True,
+        )
     if compare is not None:
         fig.add_scatter(
             x=compare["label"].to_list(),
@@ -113,7 +128,7 @@ def ae_chart(
             line=dict(color=GREEN, width=2, dash="dash"),
             secondary_y=True,
         )
-    fig.update_yaxes(title_text="exposure", secondary_y=False, showgrid=False)
+    fig.update_yaxes(title_text=volume_label, secondary_y=False, showgrid=False)
     fig.update_yaxes(title_text="rate", secondary_y=True, rangemode="tozero")
     fig.update_layout(title=title, xaxis=dict(type="category", tickangle=-45))
     return fig

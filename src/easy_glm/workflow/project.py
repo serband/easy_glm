@@ -312,15 +312,12 @@ class TableSnapshot:
 class Interaction:
     """A two-way interaction ``a × b`` on top of the mains ``a`` and ``b``.
 
-    ``alpha`` is the penalty strength of the **second stage** — the fit of the
-    interaction cells on top of the frozen mains. The default ``None`` means
-    "the same alpha as the mains", which is the honest starting point: a cell
-    column costs the same per unit of log adjustment as a main effect that half
-    the exposure shares. Set it only to penalise cells differently from the
-    mains as a whole; to make one interaction shrink harder than another, use
-    ``penalty_weight`` instead, because the second stage is a single fit with a
-    single alpha. When several interactions of one model set ``alpha``, the
-    **largest** is used (the most cautious of the requests).
+    New interactions leave ``alpha`` unset: stage 2 then independently uses the
+    model's cross-validation configuration, or the model's fixed alpha. A
+    non-``None`` value is a preserved legacy override for old project files;
+    when several interactions carry one, the largest is used. ``penalty_weight``
+    is the supported expert control for shrinking one interaction more or less
+    than another (0 = unpenalised).
     """
 
     a: str
@@ -833,14 +830,19 @@ class Project:
                     problems.append(
                         f"{name}: {it.name} min_cell_exposure not in [0, 1)"
                     )
-                if not (_is_finite_number(it.penalty_weight) and it.penalty_weight > 0):
-                    problems.append(f"{name}: {it.name} penalty_weight must be > 0")
+                if not (
+                    _is_finite_number(it.penalty_weight) and it.penalty_weight >= 0
+                ):
+                    problems.append(
+                        f"{name}: {it.name} penalty_weight must be >= 0 "
+                        "(0 = unpenalised)"
+                    )
                 if it.alpha is not None and not (
                     _is_finite_number(it.alpha) and it.alpha > 0
                 ):
                     problems.append(
-                        f"{name}: {it.name} alpha must be > 0 (leave it unset to "
-                        "use the mains' alpha)"
+                        f"{name}: {it.name} alpha must be > 0 (leave it unset for "
+                        "automatic model-level selection)"
                     )
         if self.champion is not None and self.champion not in self.models:
             problems.append(f"champion {self.champion!r} is not a model")

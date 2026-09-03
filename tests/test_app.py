@@ -184,9 +184,8 @@ def test_pages_with_an_interaction_that_kept_no_cell(page, project_file, tmp_pat
         assert "TwoStageFit" not in code and "spec.interactions_spec()" not in code
 
 
-def test_design_page_offers_the_cells_alpha(project_file, tmp_path):
-    """`Interaction.alpha` drives the second stage, so the page that owns
-    interactions has to show it."""
+def test_design_page_hides_legacy_cells_alpha(project_file, tmp_path):
+    """Old project fields still load, but new work uses model-level selection."""
     from easy_glm.workflow import Interaction
 
     p = Project.from_json(project_file)
@@ -198,9 +197,17 @@ def test_design_page_offers_the_cells_alpha(project_file, tmp_path):
     )
     at.run()
     assert not at.exception, [e.value for e in at.exception]
-    boxes = [n for n in at.number_input if n.label.startswith("Cells alpha")]
-    assert len(boxes) == 2  # the existing interaction's, and the one being added
-    assert 0.25 in [n.value for n in boxes]
+    assert not [n for n in at.number_input if n.label.startswith("Cells alpha")]
+    assert any("Legacy cell-alpha override retained" in c.value for c in at.caption)
+    assert any(
+        "Main effects stay fixed; interaction cells are selected automatically"
+        in c.value
+        for c in at.caption
+    )
+    assert any(
+        expander.label.startswith("Advanced interaction settings")
+        for expander in at.expander
+    )
 
 
 @pytest.mark.parametrize("alpha", [12.0, -1.0])
@@ -220,8 +227,7 @@ def test_design_page_survives_an_out_of_range_cells_alpha(
     )
     at.run()
     assert not at.exception, [e.value for e in at.exception]
-    boxes = [n for n in at.number_input if n.label.startswith("Cells alpha")]
-    assert alpha in [n.value for n in boxes]
+    assert not [n for n in at.number_input if n.label.startswith("Cells alpha")]
 
 
 def test_main_entry_point_renders(project_file):
@@ -239,6 +245,49 @@ def test_main_entry_point_renders(project_file):
         sys.argv = argv
     assert not at.exception, [e.value for e in at.exception]
     assert any("apptest" in m.value for m in at.sidebar.markdown)
+    assert any("Current project" in m.value for m in at.sidebar.markdown)
+    assert any("Setup progress" in m.value for m in at.sidebar.markdown)
+    assert any(b.label == "Save project setup" for b in at.sidebar.button)
+    assert any("Saving keeps your setup" in c.value for c in at.sidebar.caption)
+
+
+def test_main_sidebar_explains_an_unsaved_project():
+    import sys
+
+    import easy_glm.app as app_pkg
+
+    argv = sys.argv
+    sys.argv = ["main.py"]
+    try:
+        at = AppTest.from_file(
+            str(Path(app_pkg.__file__).with_name("main.py")), default_timeout=120
+        )
+        at.run()
+    finally:
+        sys.argv = argv
+    assert not at.exception, [e.value for e in at.exception]
+    assert any(w.value == "Not saved yet" for w in at.sidebar.warning)
+    assert any("Name and save it" in c.value for c in at.sidebar.caption)
+    assert any(b.label == "Save project setup" for b in at.sidebar.button)
+
+
+def test_fit_and_design_controls_explain_technical_choices(project_file):
+    model = AppTest.from_string(
+        _script("pages_model", project_file, fit=False), default_timeout=180
+    )
+    model.run()
+    assert not model.exception, [e.value for e in model.exception]
+    alpha = next(r for r in model.radio if r.label == "alpha")
+    assert "regularisation" in alpha.help
+    l1 = next(s for s in model.slider if s.label == "l1_ratio (1 = lasso)")
+    assert "sparse lasso" in l1.help
+    design = AppTest.from_string(
+        _script("pages_design", project_file, fit=False), default_timeout=180
+    )
+    design.run()
+    assert not design.exception, [e.value for e in design.exception]
+    share = next(n for n in design.number_input if n.label == "Min level share")
+    assert "Other" in share.help
 
 
 def test_leakage_page_actions(project_file):

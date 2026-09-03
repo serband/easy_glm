@@ -27,11 +27,14 @@ from easy_glm.workflow import (
     gini,
     leakage_report,
     lift_table,
+    null_model_predict,
+    predictions_effectively_equal,
     prepare,
     residual_factor_search,
     run_model,
     to_script,
     totals,
+    train_holdout,
     univariate,
 )
 
@@ -255,7 +258,10 @@ class TestProject:
 
         it = cfg.interactions[0]
         it.penalty_weight = "abc"
-        assert any("penalty_weight must be > 0" in p for p in project.validate("freq"))
+        assert any("penalty_weight must be >= 0" in p for p in project.validate("freq"))
+        it.penalty_weight = 1.0
+        it.penalty_weight = 0.0
+        assert project.validate("freq") == []
         it.penalty_weight = 1.0
         it.min_cell_exposure = "abc"
         assert any("min_cell_exposure" in p for p in project.validate("freq"))
@@ -590,7 +596,11 @@ class TestRun:
             sub = path.filter(pl.col("stage") == stage)
             assert sub.height == 4 and sub["selected"].sum() == 1
             assert sub["cv_deviance"].null_count() == 0
-        # stage 2 cross-validates on its own path over its own columns
+        # Stage 2 cross-validates on its own path over its own columns, with
+        # exactly the user's CV configuration rather than stage 1's alpha.
+        assert run.fit.stage1.model.cv == run.fit.stage2.model.cv == 2
+        assert run.fit.stage1.model.n_alphas == run.fit.stage2.model.n_alphas == 4
+        assert run.alpha_stage2 != pytest.approx(run.alpha)
         assert run.alpha_stage2 is not None
         assert run.summary()["alpha_stage2"] == run.alpha_stage2
 
@@ -604,6 +614,31 @@ class TestRun:
 # diagnostics
 # --------------------------------------------------------------------------
 class TestDiagnostics:
+    def test_prediction_equivalence_detects_exact_near_and_different_vectors(self):
+        prediction = np.array([0.0, 0.02, 1.5, 100.0])
+        assert predictions_effectively_equal(prediction, prediction.copy())
+        assert predictions_effectively_equal(
+            prediction, prediction + np.array([1e-13, 1e-12, 1e-10, 1e-8])
+        )
+        assert not predictions_effectively_equal(
+            prediction, prediction + np.array([0.0, 0.0, 0.0, 1e-4])
+        )
+
+    def test_null_benchmark_is_calibrated_on_train_and_does_not_read_holdout_target(
+        self, project
+    ):
+        df = prepare(project)
+        train, holdout = train_holdout(df, project.data.split)
+        cfg = project.models["freq"]
+        pred = null_model_predict(project, cfg, train, holdout)
+        changed_outcomes = holdout.with_columns(pl.lit(999.0).alias(cfg.target))
+        assert null_model_predict(
+            project, cfg, train, changed_outcomes
+        ) == pytest.approx(pred)
+        train_pred = null_model_predict(project, cfg, train, train)
+        actual, expected, _weight = totals(train, cfg, train_pred)
+        assert expected.sum() == pytest.approx(actual.sum(), rel=1e-8)
+
     def test_lift_gini_double_lift(self):
         rng = np.random.default_rng(0)
         n = 5000
@@ -668,6 +703,16 @@ class TestExport:
         # this model has an interaction, so the fit is the two-stage one (which
         # stage-by-stage form the script takes is asserted below)
         assert "fit_two_stage(" in src
+
+    def test_unfitted_cv_interaction_script_preserves_stage_two_cv(self, project):
+        cfg = project.models["freq"]
+        cfg.penalty.alpha = None
+        cfg.penalty.cv = 2
+        cfg.penalty.n_alphas = 4
+        src = to_script(project, "freq")
+        assert "fit = fit_two_stage(" in src
+        assert "cv=2, n_alphas=4" in src
+        assert "second stage independently evaluates the same folds" in src
         assert (
             "replace_strict" in src
             and "Exp_Q" in src

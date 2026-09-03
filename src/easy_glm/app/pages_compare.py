@@ -19,6 +19,7 @@ from easy_glm.workflow import (
     double_lift,
     gini,
     lift_table,
+    predictions_effectively_equal,
     relativity_diff,
     totals,
 )
@@ -168,7 +169,7 @@ def render() -> None:
             rest,
             index=rest.index(default_b) if default_b in rest else 0,
             key=S.widget_key(f"cmp_b_{name_a}_{sidebar}"),
-            help="Defaults to the sidebar's *Compare with*, else the most "
+            help="Defaults to the sidebar's *Default comparison model*, else the most "
             "recently fitted other model.",
         )
     run_a, run_b = S.get_run(name_a), S.get_run(name_b)
@@ -218,13 +219,16 @@ def render() -> None:
         ["holdout", "train", "all"],
         horizontal=True,
         key=S.widget_key("cmp_subset"),
+        help="Holdout rows were not used to fit either model, so they are the best independent comparison.",
     )
     frame = _subset(df, which)
     if frame.is_empty():
         st.warning("No rows in this subset.")
         return
-    actual, expected_a, w = totals(frame, run_a.config, run_a.predict(frame))
-    expected_b = totals(frame, run_b.config, run_b.predict(frame))[1]
+    predictions_a = run_a.predict(frame)
+    predictions_b = run_b.predict(frame)
+    actual, expected_a, w = totals(frame, run_a.config, predictions_a)
+    expected_b = totals(frame, run_b.config, predictions_b)[1]
 
     tabs = st.tabs(
         ["A/E by variable", "Lift", "Double lift", "Relativities that differ"]
@@ -277,7 +281,14 @@ def render() -> None:
             ui.polars_table(cmp_tbl)
 
     with tabs[1]:
-        n = st.slider("Bins", 5, 20, 10, key=S.widget_key("cmp_lift_bins"))
+        n = st.slider(
+            "Bins",
+            5,
+            20,
+            10,
+            key=S.widget_key("cmp_lift_bins"),
+            help="Equal-exposure groups ordered from lowest to highest predicted rate. More bins show more detail but are noisier.",
+        )
         g_a = gini(actual, expected_a, w)
         g_b = gini(actual, expected_b, w)
         st.caption(
@@ -299,6 +310,11 @@ def render() -> None:
             "challenger; the model whose A/E stays closer to 1.00 across the bins "
             "is the one getting those policies right."
         )
+        if predictions_effectively_equal(predictions_a, predictions_b):
+            st.info(
+                "These models make the same predictions on the selected rows "
+                "(within numerical precision), so their A/E lines overlap."
+            )
         dl = double_lift(actual, expected_a, expected_b, w, n_bins=10)
         st.plotly_chart(
             C.double_lift_chart(dl, name_a=name_a, name_b=name_b), width="stretch"

@@ -58,7 +58,7 @@ def test_breakit(breakit_server, browser, e2e_dir):
     bad.write_text('{"name": "x", "data": {')
     pg.locator('input[type="file"]').first.set_input_files(str(bad))
     settle(pg)
-    click(pg, "Load uploaded project")
+    click(pg, "Open EasyGLM project")
     assert_clean(pg, "bad project upload")
     assert wait_text(pg, "Not a valid easy_glm project"), _main(pg)[:800]
     assert "breakit" in pg.get_by_test_id("stSidebar").inner_text()

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.2 (2026-09-03)
+
+### A complete browser-workbench path
+
+- The normal `pip install easy-glm` installation now includes the browser
+  workbench, charts and rate-table plotting dependencies. There is no separate
+  UI or visualisation extra to remember.
+- `easy-glm-workbench` opens the workbench in the browser (normally at
+  `http://localhost:8501`). The README now says to keep the terminal open,
+  explains how to reopen a saved project and points first-time users to the
+  in-app French motor sample, which downloads once and is cached locally.
+- The Project & data page offers that sample as a guided starting point and
+  the workbench now explains the project state, setup progress, comparison
+  defaults, fitted versus working tables, and common modelling controls in
+  pricing language.
+- The public examples and README were streamlined around the frequency-model
+  workflow; the release gate continues to execute their runnable examples.
+
 ## 0.4.1 (2026-09-03)
 
 ### A shorter path from first model to review

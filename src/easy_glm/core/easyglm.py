@@ -197,6 +197,80 @@ class EasyGLM:
         divided by the weight)."""
         return pl.Series("prediction", self.glm.predict(raw_data))
 
+    def plot_actual_vs_expected(
+        self,
+        data: pl.DataFrame,
+        *,
+        show: bool = True,
+    ) -> dict[str, dict[str, Any]]:
+        """Plot actual and expected rates by fitted main rating factor.
+
+        Produces separate Training and Test figures when ``data`` includes the
+        split column used for fitting. The chart follows the exact fitted bands
+        or category order, draws actual in red and expected in blue, and shows
+        exposure (or observations) behind the rate lines. Expected values use
+        the complete fitted model, not just the displayed factor.
+
+        Set ``show=False`` to receive the Plotly figures without opening them.
+        """
+        from easy_glm.app.charts import BLUE, RED, ae_chart
+        from easy_glm.workflow import ae_by_variable, totals
+
+        split_col = self.rate_model.metadata.train_test_col
+        subsets: tuple[tuple[str, pl.DataFrame], ...]
+        if split_col and split_col in data.columns:
+            subsets = (
+                ("Training", data.filter(pl.col(split_col) == 1)),
+                ("Test", data.filter(pl.col(split_col) == 0)),
+            )
+        else:
+            subsets = (("All", data),)
+
+        scored: dict[str, tuple[pl.DataFrame, Any, Any, Any]] = {}
+        for label, frame in subsets:
+            prediction = self.rate_model.predict(frame, exposure_col=None)
+            actual, expected, exposure = totals(frame, self.glm, prediction)
+            scored[label] = (frame, actual, expected, exposure)
+
+        volume_label = self.glm.weight_col or "Observations"
+        figures: dict[str, dict[str, Any]] = {}
+        for factor in self.spec.main_effects:
+            table = self._tables[factor]
+            labels = table["label"].to_list()
+            encoder = self.spec[factor]
+            knots = encoder.band_edges() if hasattr(encoder, "band_edges") else None
+            levels = (
+                list(encoder.levels)
+                if isinstance(encoder, CategoricalEncoder)
+                else None
+            )
+            other_label = labels[-1] if levels else None
+            factor_figures: dict[str, Any] = {}
+            for split_label, (frame, actual, expected, exposure) in scored.items():
+                diagnostic = ae_by_variable(
+                    frame,
+                    factor,
+                    actual,
+                    expected,
+                    exposure,
+                    knots=knots,
+                    fitted_labels=labels,
+                    fitted_levels=levels,
+                    other_label=other_label,
+                )
+                figure = ae_chart(
+                    diagnostic,
+                    title=f"{factor} — actual vs expected ({split_label})",
+                    actual_color=RED,
+                    expected_color=BLUE,
+                    volume_label=volume_label,
+                )
+                factor_figures[split_label] = figure
+                if show:
+                    figure.show()
+            figures[factor] = factor_figures
+        return figures
+
     # ---------------------------------------------------------- persistence
     def save(self, path: str | Path) -> None:
         """Write the spec, the fitted estimator(s), the RateModel and the tables.

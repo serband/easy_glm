@@ -1,0 +1,64 @@
+<svg class="chart" viewBox="0 0 900 340" width="100%" height="340" role="img" xmlns="http://www.w3.org/2000/svg"><title>Density: actual versus expected rate (Training)</title><rect x="0" y="0" width="900" height="340" fill="#ffffff"/><line x1="834.0" y1="244.0" x2="66.0" y2="244.0" stroke="#e8ecef" stroke-width="1"/><text x="840.0" y="248.0" text-anchor="start" class="ax">0.000</text><line x1="834.0" y1="162.7" x2="66.0" y2="162.7" stroke="#e8ecef" stroke-width="1"/><text x="840.0" y="166.7" text-anchor="start" class="ax">0.050</text><line x1="834.0" y1="81.3" x2="66.0" y2="81.3" stroke="#e8ecef" stroke-width="1"/><text x="840.0" y="85.3" text-anchor="start" class="ax">0.100</text><text x="880.0" y="136.0" text-anchor="middle" class="ax" transform="rotate(90 880.0 136.0)">Claim frequency</text><text x="60.0" y="248.0" text-anchor="end" class="ax">0.000</text><text x="60.0" y="200.1" text-anchor="end" class="ax">250.0</text><text x="60.0" y="152.3" text-anchor="end" class="ax">500.0</text><text x="60.0" y="104.4" text-anchor="end" class="ax">750.0</text><text x="60.0" y="56.5" text-anchor="end" class="ax">1,000</text><text x="20.0" y="136.0" text-anchor="middle" class="ax" transform="rotate(-90 20.0 136.0)">Exposure</text><rect x="71.5" y="40.2" width="25.6" height="203.8" fill="#c9cfd6" opacity="0.7"/><rect x="108.1" y="49.0" width="25.6" height="195.0" fill="#c9cfd6" opacity="0.7"/><rect x="144.6" y="45.5" width="25.6" height="198.5" fill="#c9cfd6" opacity="0.7"/><rect x="181.2" y="55.8" width="25.6" height="188.2" fill="#c9cfd6" opacity="0.7"/><rect x="217.8" y="41.7" width="25.6" height="202.3" fill="#c9cfd6" opacity="0.7"/><rect x="254.3" y="56.8" width="25.6" height="187.2" fill="#c9cfd6" opacity="0.7"/><rect x="290.9" y="58.1" width="25.6" height="185.9" fill="#c9cfd6" opacity="0.7"/><rect x="327.5" y="63.1" width="25.6" height="180.9" fill="#c9cfd6" opacity="0.7"/><rect x="364.1" y="69.6" width="25.6" height="174.4" fill="#c9cfd6" opacity="0.7"/><rect x="400.6" y="68.8" width="25.6" height="175.2" fill="#c9cfd6" opacity="0.7"/><rect x="437.2" y="60.3" width="25.6" height="183.7" fill="#c9cfd6" opacity="0.7"/><rect x="473.8" y="68.1" width="25.6" height="175.9" fill="#c9cfd6" opacity="0.7"/><rect x="510.3" y="81.0" width="25.6" height="163.0" fill="#c9cfd6" opacity="0.7"/><rect x="546.9" y="101.1" width="25.6" height="142.9" fill="#c9cfd6" opacity="0.7"/><rect x="583.5" y="46.9" width="25.6" height="197.1" fill="#c9cfd6" opacity="0.7"/><rect x="620.1" y="91.0" width="25.6" height="153.0" fill="#c9cfd6" opacity="0.7"/><rect x="656.6" y="97.7" width="25.6" height="146.3" fill="#c9cfd6" opacity="0.7"/><rect x="693.2" y="91.3" width="25.6" height="152.7" fill="#c9cfd6" opacity="0.7"/><rect x="729.8" y="88.6" width="25.6" height="155.4" fill="#c9cfd6" opacity="0.7"/><rect x="766.3" y="91.1" width="25.6" height="152.9" fill="#c9cfd6" opacity="0.7"/><rect x="802.9" y="244.0" width="25.6" height="0.5" fill="#c9cfd6" opacity="0.7"/><line x1="66.0" y1="244.0" x2="834.0" y2="244.0" stroke="#5b6570" stroke-width="1"/><polyline points="84.3,173.7 120.9,181.7 157.4,154.5 194.0,138.1 230.6,148.6 267.1,127.5 303.7,145.1 340.3,111.4 376.9,122.6 413.4,142.7 450.0,120.2 486.6,98.8 523.1,91.2 559.7,98.0 596.3,117.6 632.9,42.4 669.4,107.8 706.0,115.5 742.6,97.7 779.1,40.2" fill="none" stroke="#c0392b" stroke-width="2.5" stroke-linejoin="round"/><circle cx="84.3" cy="173.7" r="3" fill="#c0392b"/><circle cx="120.9" cy="181.7" r="3" fill="#c0392b"/><circle cx="157.4" cy="154.5" r="3" fill="#c0392b"/><circle cx="194.0" cy="138.1" r="3" fill="#c0392b"/><circle cx="230.6" cy="148.6" r="3" fill="#c0392b"/><circle cx="267.1" cy="127.5" r="3" fill="#c0392b"/><circle cx="303.7" cy="145.1" r="3" fill="#c0392b"/><circle cx="340.3" cy="111.4" r="3" fill="#c0392b"/><circle cx="376.9" cy="122.6" r="3" fill="#c0392b"/><circle cx="413.4" cy="142.7" r="3" fill="#c0392b"/><circle cx="450.0" cy="120.2" r="3" fill="#c0392b"/><circle cx="486.6" cy="98.8" r="3" fill="#c0392b"/><circle cx="523.1" cy="91.2" r="3" fill="#c0392b"/><circle cx="559.7" cy="98.0" r="3" fill="#c0392b"/><circle cx="596.3" cy="117.6" r="3" fill="#c0392b"/><circle cx="632.9" cy="42.4" r="3" fill="#c0392b"/><circle cx="669.4" cy="107.8" r="3" fill="#c0392b"/><circle cx="706.0" cy="115.5" r="3" fill="#c0392b"/><circle cx="742.6" cy="97.7" r="3" fill="#c0392b"/><circle cx="779.1" cy="40.2" r="3" fill="#c0392b"/><polyline points="84.3,174.7 120.9,173.0 157.4,153.1 194.0,144.1 230.6,141.3 267.1,135.4 303.7,136.2 340.3,126.4 376.9,124.7 413.4,124.8 450.0,120.3 486.6,108.4 523.1,100.3 559.7,99.0 596.3,102.6 632.9,66.4 669.4,103.8 706.0,101.7 742.6,97.5 779.1,46.5" fill="none" stroke="#1f5f99" stroke-width="2.5" stroke-linejoin="round"/><circle cx="84.3" cy="174.7" r="3" fill="#1f5f99"/><circle cx="120.9" cy="173.0" r="3" fill="#1f5f99"/><circle cx="157.4" cy="153.1" r="3" fill="#1f5f99"/><circle cx="194.0" cy="144.1" r="3" fill="#1f5f99"/><circle cx="230.6" cy="141.3" r="3" fill="#1f5f99"/><circle cx="267.1" cy="135.4" r="3" fill="#1f5f99"/><circle cx="303.7" cy="136.2" r="3" fill="#1f5f99"/><circle cx="340.3" cy="126.4" r="3" fill="#1f5f99"/><circle cx="376.9" cy="124.7" r="3" fill="#1f5f99"/><circle cx="413.4" cy="124.8" r="3" fill="#1f5f99"/><circle cx="450.0" cy="120.3" r="3" fill="#1f5f99"/><circle cx="486.6" cy="108.4" r="3" fill="#1f5f99"/><circle cx="523.1" cy="100.3" r="3" fill="#1f5f99"/><circle cx="559.7" cy="99.0" r="3" fill="#1f5f99"/><circle cx="596.3" cy="102.6" r="3" fill="#1f5f99"/><circle cx="632.9" cy="66.4" r="3" fill="#1f5f99"/><circle cx="669.4" cy="103.8" r="3" fill="#1f5f99"/><circle cx="706.0" cy="101.7" r="3" fill="#1f5f99"/><circle cx="742.6" cy="97.5" r="3" fill="#1f5f99"/><circle cx="779.1" cy="46.5" r="3" fill="#1f5f99"/><rect x="66.0" y="28.0" width="36.6" height="216.0" fill="transparent"><title>&lt; 20.0
+Exposure: 1,064
+Actual: 0.0432
+Expected: 0.0426</title></rect><rect x="102.6" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[20.0, 33.0)
+Exposure: 1,019
+Actual: 0.0383
+Expected: 0.0436</title></rect><rect x="139.1" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[33.0, 50.0)
+Exposure: 1,036
+Actual: 0.0550
+Expected: 0.0558</title></rect><rect x="175.7" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[50.0, 67.0)
+Exposure: 982.9
+Actual: 0.0651
+Expected: 0.0614</title></rect><rect x="212.3" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[67.0, 92.0)
+Exposure: 1,057
+Actual: 0.0587
+Expected: 0.0632</title></rect><rect x="248.9" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[92.0, 122.0)
+Exposure: 977.5
+Actual: 0.0716
+Expected: 0.0667</title></rect><rect x="285.4" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[122.0, 165.0)
+Exposure: 970.9
+Actual: 0.0608
+Expected: 0.0663</title></rect><rect x="322.0" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[165.0, 215.0)
+Exposure: 944.9
+Actual: 0.0815
+Expected: 0.0723</title></rect><rect x="358.6" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[215.0, 287.0)
+Exposure: 910.9
+Actual: 0.0747
+Expected: 0.0733</title></rect><rect x="395.1" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[287.0, 393.0)
+Exposure: 915.2
+Actual: 0.0623
+Expected: 0.0733</title></rect><rect x="431.7" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[393.0, 511.0)
+Exposure: 959.4
+Actual: 0.0761
+Expected: 0.0760</title></rect><rect x="468.3" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[511.0, 714.0)
+Exposure: 918.5
+Actual: 0.0893
+Expected: 0.0833</title></rect><rect x="504.9" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[714.0, 966.0)
+Exposure: 851.5
+Actual: 0.0939
+Expected: 0.0883</title></rect><rect x="541.4" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[966.0, 1313.0)
+Exposure: 746.5
+Actual: 0.0898
+Expected: 0.0891</title></rect><rect x="578.0" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[1313.0, 1630.0)
+Exposure: 1,030
+Actual: 0.0777
+Expected: 0.0869</title></rect><rect x="614.6" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[1630.0, 2658.0)
+Exposure: 798.9
+Actual: 0.1239
+Expected: 0.1092</title></rect><rect x="651.1" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[2658.0, 3374.0)
+Exposure: 764.2
+Actual: 0.0837
+Expected: 0.0862</title></rect><rect x="687.7" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[3374.0, 4128.0)
+Exposure: 797.3
+Actual: 0.0790
+Expected: 0.0875</title></rect><rect x="724.3" y="28.0" width="36.6" height="216.0" fill="transparent"><title>[4128.0, 7259.0)
+Exposure: 811.8
+Actual: 0.0899
+Expected: 0.0901</title></rect><rect x="760.9" y="28.0" width="36.6" height="216.0" fill="transparent"><title>≥ 7259.0
+Exposure: 798.4
+Actual: 0.1253
+Expected: 0.1214</title></rect><rect x="797.4" y="28.0" width="36.6" height="216.0" fill="transparent"><title>Other / Unknown
+Exposure: 0.000
+Actual: —
+Expected: —</title></rect><text x="84.3" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 84.3 258.0)">&lt; 20.0</text><text x="120.9" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 120.9 258.0)">[20.0, 33.0)</text><text x="157.4" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 157.4 258.0)">[33.0, 50.0)</text><text x="194.0" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 194.0 258.0)">[50.0, 67.0)</text><text x="230.6" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 230.6 258.0)">[67.0, 92.0)</text><text x="267.1" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 267.1 258.0)">[92.0, 122.0)</text><text x="303.7" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 303.7 258.0)">[122.0, 165.0)</text><text x="340.3" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 340.3 258.0)">[165.0, 215.0)</text><text x="376.9" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 376.9 258.0)">[215.0, 287.0)</text><text x="413.4" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 413.4 258.0)">[287.0, 393.0)</text><text x="450.0" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 450.0 258.0)">[393.0, 511.0)</text><text x="486.6" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 486.6 258.0)">[511.0, 714.0)</text><text x="523.1" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 523.1 258.0)">[714.0, 966.0)</text><text x="559.7" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 559.7 258.0)">[966.0, 1313.0)</text><text x="596.3" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 596.3 258.0)">[1313.0, 1630.0)</text><text x="632.9" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 632.9 258.0)">[1630.0, 2658.0)</text><text x="669.4" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 669.4 258.0)">[2658.0, 3374.0)</text><text x="706.0" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 706.0 258.0)">[3374.0, 4128.0)</text><text x="742.6" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 742.6 258.0)">[4128.0, 7259.0)</text><text x="779.1" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 779.1 258.0)">≥ 7259.0</text><text x="815.7" y="258.0" text-anchor="end" class="ax" transform="rotate(-40 815.7 258.0)">Other / Unknown</text><rect x="66.0" y="9.0" width="16" height="10" fill="#c9cfd6"/><text x="87.0" y="18.0" class="lg">Exposure</text><line x1="148.8" y1="14.0" x2="164.8" y2="14.0" stroke="#c0392b" stroke-width="2.5"/><text x="169.8" y="18.0" class="lg">Actual</text><line x1="218.4" y1="14.0" x2="234.4" y2="14.0" stroke="#1f5f99" stroke-width="2.5"/><text x="239.4" y="18.0" class="lg">Expected</text></svg>

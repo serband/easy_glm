@@ -37,3 +37,29 @@ def validate_train_test_column(
             f"No training rows in '{train_test_col}' (expected value {TRAIN_FLAG}). "
             "Check your train/holdout split."
         )
+
+
+def add_train_test_split(
+    data: pl.DataFrame,
+    *,
+    train_fraction: float = 0.7,
+    seed: int = 42,
+    column: str = "traintest",
+) -> pl.DataFrame:
+    """Add a reproducible random split column (1 = training, 0 = test).
+
+    This is the simple starting point for a first model. It refuses to replace
+    an existing column so a train/test designation is never overwritten by
+    accident.
+    """
+    from easy_glm.workflow import Split, add_split_column
+
+    return add_split_column(
+        data,
+        Split(
+            mode="random",
+            column=column,
+            fraction=train_fraction,
+            seed=seed,
+        ),
+    )

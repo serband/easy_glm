@@ -51,8 +51,8 @@ def test_actuary_rate_review(actuary_server, browser, e2e_dir):
     body = pg.locator('[data-testid="stMain"]').inner_text()
     assert "train" in body and "holdout" in body
 
-    # -- Design: Density becomes piecewise-linear, VehPower × VehGas is added
-    goto_page(pg, "Design")
+    # -- Model: Density becomes piecewise-linear, VehPower × VehGas is added
+    goto_page(pg, "Model")
     assert_clean(pg, "design")
     select(pg, "Variable", "Density")
     select(pg, "Kind", "linear")

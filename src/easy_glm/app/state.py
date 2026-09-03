@@ -1306,10 +1306,8 @@ def status() -> dict[str, bool]:
 
 
 def persistence_note() -> str:
-    """One line for the sidebar about where fits are kept."""
+    """One plain-language sidebar line about fitted-model persistence."""
     folder = runs_dir()
     if folder is None:
-        return (
-            "Unsaved project — fits are not persisted; save the project to keep them."
-        )
-    return f"Fits persisted to `{folder.name}/` next to the project file."
+        return "Fitted models are not persisted; they stay only in this browser session until the project is saved."
+    return "Fitted models are saved beside this project and restored when still valid."

@@ -123,7 +123,8 @@ if not st.session_state.get("_loaded"):
 if {fit!r} and not st.session_state.get("_fitted"):
     S.fit_model("freq")
     st.session_state._fitted = True
-importlib.import_module("easy_glm.app." + {page!r}).render()
+page_name = st.session_state.get("_page", {page!r})
+importlib.import_module("easy_glm.app." + page_name).render()
 {body}
 st.session_state["_project"] = S.project()
 st.session_state["_runs"] = sorted(st.session_state.runs)
@@ -167,6 +168,11 @@ def _button(at: AppTest, label: str):
     return [b for b in at.button if b.label == label][0]
 
 
+def _show_design(at: AppTest) -> None:
+    at.session_state["_page"] = "pages_design"
+    at.run()
+
+
 # --------------------------------------------------------------------------
 # data loss — the shared runs folder
 # --------------------------------------------------------------------------
@@ -194,6 +200,7 @@ def test_breakage2_01_a_paused_tab_never_touches_the_runs_folder(workspace):
     assert "shown in this tab only" in _texts(tab_b)
 
     # ... Delete in the paused tab: this tab's project only, files kept
+    _show_design(tab_b)
     _button(tab_b, "Delete").click().run()
     assert not tab_b.exception
     assert _files(workspace["runs"]) == before
@@ -291,7 +298,7 @@ def test_breakage2_03_create_switches_to_the_new_model(workspace):
     """Finding 3: "Model 'freq_v2' created" while the page below kept editing
     and fitting the champion."""
     path = str(workspace["project"])
-    at = _run(_script("pages_model", path))
+    at = _run(_script("pages_design", path))
     at.text_input(key=wk(at, "model_new_name")).set_value("freq_v2").run()
     _button(at, "Create").click().run()
     assert not at.exception
@@ -299,7 +306,10 @@ def test_breakage2_03_create_switches_to_the_new_model(workspace):
     assert at.session_state["model_current"] == "freq_v2"
     assert at.text_input(key=wk(at, "model_new_name")).value == ""
 
-    # what is typed next belongs to the new model, not to the champion
+    # What is typed and fitted next belongs to the new model, not the champion.
+    at.session_state["_page"] = "pages_model"
+    at.run()
+    assert at.selectbox(key=wk(at, "model_select")).value == "freq_v2"
     at.text_input(key=wk(at, "notes_freq_v2")).set_value("for v2").run()
     p = at.session_state["_project"]
     assert p.models["freq_v2"].notes == "for v2" and p.models["freq"].notes == ""
@@ -340,7 +350,11 @@ def test_breakage2_07_the_status_chips_agree_with_the_refit_banner(workspace):
     at = _run(_script("pages_model", str(workspace["project"]), fit=True), 240)
     chips = [m.value for m in at.markdown if "Fitted]" in m.value]
     assert chips and "✓ Fitted" in chips[0]
+    at.session_state["_page"] = "pages_design"
+    at.run()
     at.selectbox(key=wk(at, "fam_freq")).set_value("gamma").run()
+    at.session_state["_page"] = "pages_model"
+    at.run()
     assert not at.exception
     chips = [m.value for m in at.markdown if "Fitted]" in m.value]
     assert chips and "○ Fitted" in chips[0], chips
@@ -369,11 +383,11 @@ def test_breakage2_10c_the_caption_names_the_missing_parent(workspace):
 
     p.models["freq"].interactions.append(Interaction(a="DrivAge", b="Region"))
     p.to_json(workspace["project"])
-    at = _run(_script("pages_model", str(workspace["project"])))
+    at = _run(_script("pages_design", str(workspace["project"])))
     at.multiselect(key=wk(at, "preds_freq")).set_value(["DrivAge", "BonusMalus"]).run()
     assert not at.exception
-    captions = " ".join(c.value for c in at.caption)
-    assert "no longer among the predictors: Region" in captions, captions
+    messages = _texts(at)
+    assert "no longer among the predictors: Region" in messages, messages
 
 
 # --------------------------------------------------------------------------
@@ -434,7 +448,7 @@ def test_breakage2_30_windows_device_names_are_refused(workspace):
         assert "reserved by Windows" in (validate_model_name(bad) or ""), bad
     for ok in ("CONS", "COM10", "freq_CON", "NULL_model"):
         assert validate_model_name(ok) is None, ok
-    at = _run(_script("pages_model", str(workspace["project"])))
+    at = _run(_script("pages_design", str(workspace["project"])))
     at.text_input(key=wk(at, "model_new_name")).set_value("CON").run()
     assert _button(at, "Create").disabled
     assert any("reserved by Windows" in c.value for c in at.caption)
@@ -444,7 +458,7 @@ def test_breakage2_30_windows_device_names_are_refused(workspace):
 def test_breakage2_31_the_divide_box_is_never_ticked_while_disabled(workspace):
     """Item 31: with the weight cleared the box stayed ticked (Streamlit keeps
     a widget key's value) while the project held False."""
-    at = _run(_script("pages_model", str(workspace["project"])))
+    at = _run(_script("pages_design", str(workspace["project"])))
     assert at.checkbox(key=wk(at, "div_freq")).value is True
     at.selectbox(key=wk(at, "wgt_freq")).set_value("(none)").run()
     assert not at.exception
@@ -666,6 +680,7 @@ def test_breakage2_s2_delete_says_so_before_the_conflict_notice_is_up(workspace)
     tab_a.text_input(key=wk(tab_a, "notes_freq")).set_value("A wins").run()
     before = _snap(workspace["runs"])  # tab B has no conflict notice yet
 
+    _show_design(tab_b)
     _button(tab_b, "Delete").click().run()
     assert not tab_b.exception
     assert _snap(workspace["runs"]) == before
@@ -690,6 +705,7 @@ def test_breakage2_s3_deleting_resumes_once_the_conflict_is_resolved(
     tab_b.button(key=resolution).click().run()
     assert not tab_b.exception
     assert not any("changed by another" in w.value for w in tab_b.warning)
+    _show_design(tab_b)
     _button(tab_b, "Delete").click().run()
     assert not tab_b.exception
     assert "removed from this tab only" not in _texts(tab_b)
@@ -701,7 +717,7 @@ def test_breakage2_03b_delete_moves_the_picker_too(workspace):
     """The companion of finding 3: after Delete the picker must be on a model
     that still exists (and on nothing when the last one goes)."""
     path = str(workspace["project"])
-    at = _run(_script("pages_model", path))
+    at = _run(_script("pages_design", path))
     at.text_input(key=wk(at, "model_new_name")).set_value("freq_v2").run()
     _button(at, "Create").click().run()
     assert at.selectbox(key=wk(at, "model_select")).value == "freq_v2"
@@ -716,7 +732,7 @@ def test_breakage2_03b_delete_moves_the_picker_too(workspace):
     assert not at.exception
     assert at.session_state["model_current"] is None
     assert at.session_state["_project"].models == {}
-    assert "Create a model to start" in _texts(at)
+    assert "Define a model to start" in _texts(at)
 
 
 def test_breakage2_nit_number_boxes_take_whole_seeds_and_refuse_negatives(workspace):

@@ -162,6 +162,7 @@ def _two_stage_code(
     alpha2: float | None,
     monotone: dict[str, str],
     chose_by_cv: bool,
+    stage2_chose_by_cv: bool,
 ) -> list[str]:
     """The two stages of a model with interactions, written out in full."""
     eta1 = "eta1 = stage1.linear_predictor(train)"
@@ -190,7 +191,7 @@ def _two_stage_code(
             cfg,
             alpha2,
             {},
-            False,
+            stage2_chose_by_cv,
             spec_expr="spec.interactions_spec()",
             var="stage2",
             extra=(
@@ -329,6 +330,7 @@ def to_script(
         alpha = run.fit.alpha
         alpha2 = run.alpha_stage2
         chose_by_cv = cfg.penalty.alpha is None
+        stage2_chose_by_cv = chose_by_cv
         monotone = dict(run.fit.monotone)
     else:
         dd = project.design.defaults
@@ -408,6 +410,7 @@ def to_script(
         # None here means "follow the mains", which is fit_two_stage's own default
         alpha2 = stage2_alpha(cfg) if derive_stages else None
         chose_by_cv = False
+        stage2_chose_by_cv = False
         monotone = {
             **{
                 v: vd.monotone
@@ -422,7 +425,9 @@ def to_script(
     ]
     alpha = None if alpha is None else float(alpha)
     if two_stage:
-        lines += _two_stage_code(cfg, alpha, alpha2, monotone, chose_by_cv)
+        lines += _two_stage_code(
+            cfg, alpha, alpha2, monotone, chose_by_cv, stage2_chose_by_cv
+        )
     elif derive_stages:
         lines += [
             "# The mains are fitted first and frozen; the interaction cells are then",
@@ -430,6 +435,8 @@ def to_script(
             "# offset), so adding an interaction never moves a main-effect table.",
             "# fit_two_stage decides here, from this data, whether any cell has enough",
             "# exposure to be rated on its own; if none has, there is no second stage.",
+            "# With CV, its second stage independently evaluates the same folds and",
+            "# alpha-path length on the interaction cells (it never reuses the mains alpha).",
             _fit_code(
                 cfg,
                 alpha,

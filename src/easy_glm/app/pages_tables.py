@@ -59,9 +59,70 @@ def _ae_frame(df: pl.DataFrame, which: str) -> pl.DataFrame:
     return df.filter(pl.col(p.data.split.column) == (0 if which == "holdout" else 1))
 
 
+def _main_effect_ae_tables(
+    run,
+    var: str,
+    frame: pl.DataFrame,
+    actual,
+    expected,
+    weight,
+    challenger=None,
+) -> tuple[pl.DataFrame, pl.DataFrame | None, str | None]:
+    """Aggregate current and challenger expected rates on ``run``'s table.
+
+    The factor table belongs to the current model, so its bands or categorical
+    levels are the common grouping even when the challenger has no such term.
+    This is precisely the useful comparison: whether adding the factor better
+    explains experience in those same groups.
+    """
+    enc = run.spec[var]
+    knots = enc.band_edges() if hasattr(enc, "band_edges") else None
+    levels = list(enc.levels) if hasattr(enc, "levels") else None
+    var_cfg = run.rate_model.variables[var]
+    grouping = dict(
+        knots=knots,
+        fitted_labels=run.tables[var]["label"].to_list(),
+        fitted_levels=levels,
+        other_label=var_cfg.other_label,
+    )
+    table = ae_by_variable(frame, var, actual, expected, weight, **grouping)
+    if challenger is None:
+        return table, None, None
+
+    required = set(challenger.spec.required_columns)
+    required.update(
+        column
+        for column in (challenger.config.target, challenger.config.weight)
+        if column is not None
+    )
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        return (
+            table,
+            None,
+            f"Cannot draw {challenger.name}'s expected line: it needs missing "
+            f"column(s) {', '.join(missing)}.",
+        )
+    try:
+        challenger_expected = totals(
+            frame, challenger.config, challenger.predict(frame)
+        )[1]
+    except Exception as exc:  # noqa: BLE001 - page error, never a traceback
+        return (
+            table,
+            None,
+            f"Cannot score {challenger.name} on these rows: {exc}",
+        )
+    return (
+        table,
+        ae_by_variable(frame, var, actual, challenger_expected, weight, **grouping),
+        None,
+    )
+
+
 def _challenger_selector(column, model: str):
     """The challenger whose expected line is overlaid on the A/E charts: the
-    sidebar's "compare with" by default, overridable here (the widget's key
+    sidebar's "default comparison model" by default, overridable here (the widget's key
     carries the sidebar value, so moving that selector re-defaults this one)."""
     fitted = [n for n in S.fitted_models() if n != model]
     if not fitted:
@@ -75,7 +136,7 @@ def _challenger_selector(column, model: str):
             options,
             index=options.index(default),
             key=S.widget_key(f"tables_chal_{model}_{sidebar}"),
-            help="Overlays the challenger's expected line on the A/E charts "
+            help="Defaults to the sidebar's Default comparison model and overlays that model's expected line on the A/E charts "
             "below. The full side-by-side view is the **Compare** page.",
         )
     return S.get_run(name) if name != "(none)" else None
@@ -146,36 +207,48 @@ def _main_effect(run, var: str, df: pl.DataFrame, challenger=None) -> pl.DataFra
             ["holdout", "train"],
             horizontal=True,
             key=S.widget_key("tables_ae_rows"),
+            help="Holdout rows were not used to fit the model; use them to check the edited tables independently.",
         )
         frame = _ae_frame(df, which)
         if not frame.is_empty():
-            actual, expected, w = totals(frame, cfg, run.predict(frame))
-            enc = run.spec[var]
-            knots = enc.band_edges() if hasattr(enc, "band_edges") else None
-            tbl = ae_by_variable(frame, var, actual, expected, w, knots=knots)
-            cmp_tbl = None
-            can_score = challenger is not None and not [
-                c for c in challenger.spec.required_columns if c not in frame.columns
-            ]
-            if can_score and var in challenger.spec.encoders:
-                exp_chal = totals(frame, challenger.config, challenger.predict(frame))[
-                    1
-                ]
-                cmp_tbl = ae_by_variable(frame, var, actual, exp_chal, w, knots=knots)
+            # ``run.rate_model`` is the working set of tables.  Keep the
+            # fitted model beside it so an editor change is visible as an
+            # expected-rate change, rather than silently replacing history.
+            actual, adjusted_expected, w = totals(frame, cfg, run.predict(frame))
+            fitted_rm = rate_model_for(p, run, [], base_rate_override=None)
+            fitted_expected = totals(
+                frame, cfg, fitted_rm.predict(frame, exposure_col=None)
+            )[1]
+            tbl, cmp_tbl, challenger_problem = _main_effect_ae_tables(
+                run, var, frame, actual, fitted_expected, w, challenger
+            )
+            adjusted_tbl = None
+            if cfg.adjustments:
+                adjusted_tbl, _unused, _problem = _main_effect_ae_tables(
+                    run, var, frame, actual, adjusted_expected, w
+                )
             st.plotly_chart(
                 C.ae_chart(
                     tbl,
-                    title=f"{var} — actual vs expected with current relativities ({which})",
+                    title=(
+                        f"{var} — actual, fitted model and adjusted tables ({which})"
+                        if adjusted_tbl is not None
+                        else f"{var} — actual vs fitted model ({which})"
+                    ),
                     compare=cmp_tbl,
                     compare_name=challenger.name if challenger else "challenger",
+                    expected_name="fitted model",
+                    adjusted=adjusted_tbl,
                 ),
                 width="stretch",
             )
-            if challenger is not None and cmp_tbl is None:
+            if adjusted_tbl is not None:
                 st.caption(
-                    f"{challenger.name} has no **{var}** term, so there is no "
-                    "second expected line to draw."
+                    "The fitted-model line is unchanged by table edits; the adjusted-tables "
+                    "line shows their effect without refitting."
                 )
+            if challenger_problem:
+                st.warning(challenger_problem)
     with right:
         if is_linear:
             st.markdown(
@@ -240,6 +313,10 @@ def _main_effect(run, var: str, df: pl.DataFrame, challenger=None) -> pl.DataFra
             column_config=col_cfg,
             key=S.widget_key(f"rel_editor_{run.name}_{var}"),
         )
+        st.caption(
+            "**Fitted** is the original model result and cannot be edited; "
+            "**working** is the adjusted table used for scoring now."
+        )
         before = S.edit_state(run.name)
         changed, errors = G.apply_row_edits(
             cfg,
@@ -292,6 +369,7 @@ def _interaction(run, var: str, df: pl.DataFrame) -> pl.DataFrame:
             ["holdout", "train"],
             horizontal=True,
             key=S.widget_key("tables_ae_rows"),
+            help="Holdout rows were not used to fit the model; use them to check the edited tables independently.",
         )
         frame = _ae_frame(df, which)
         if not frame.is_empty():

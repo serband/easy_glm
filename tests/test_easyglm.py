@@ -136,12 +136,60 @@ def test_easyglm_custom_train_test_col_name(synthetic_insurance_data):
     assert len(preds) == holdout.height
 
 
+def test_easyglm_actual_expected_plots_follow_fitted_tables(synthetic_insurance_data):
+    """The first-use diagnostic is rate-scale, split, and table-aligned."""
+    df = synthetic_insurance_data
+    eglm = EasyGLM.fit(
+        data=df,
+        target="ClaimNb",
+        model_type="Poisson",
+        predictors=["VehAge", "Region"],
+        weight_col="Exposure",
+        divide_target_by_weight=True,
+        alpha=0.01,
+    )
+
+    figures = eglm.plot_actual_vs_expected(df, show=False)
+    assert set(figures) == {"VehAge", "Region"}
+    assert all(set(by_split) == {"Training", "Test"} for by_split in figures.values())
+
+    for factor, by_split in figures.items():
+        labels = eglm.relativities[factor]["label"].to_list()
+        for split, figure in by_split.items():
+            volume, actual, expected = figure.data[:3]
+            assert list(actual.x) == labels
+            assert list(expected.x) == labels
+            assert volume.name == "Exposure"
+            assert actual.name == "actual" and actual.line.color == "#c0392b"
+            assert expected.name == "expected" and expected.line.color == "#1f5f99"
+
+            frame = df.filter(pl.col("traintest") == (1 if split == "Training" else 0))
+            assert np.nansum(
+                np.asarray(actual.y) * np.asarray(volume.y)
+            ) == pytest.approx(frame["ClaimNb"].sum())
+            assert np.nansum(
+                np.asarray(expected.y) * np.asarray(volume.y)
+            ) == pytest.approx(eglm.rate_model.predict(frame).sum())
+
+
 def test_validate_train_test_column_rejects_invalid_values():
     from easy_glm.core.split import validate_train_test_column
 
     df = pl.DataFrame({"split": [1, 2, 0]})
     with pytest.raises(ValueError, match="only 1"):
         validate_train_test_column(df, "split")
+
+
+def test_public_random_train_test_split_is_reproducible(synthetic_insurance_data):
+    from easy_glm import add_train_test_split
+
+    data = synthetic_insurance_data.drop("traintest")
+    first = add_train_test_split(data, train_fraction=0.7, seed=12)
+    second = add_train_test_split(data, train_fraction=0.7, seed=12)
+    assert first["traintest"].to_list() == second["traintest"].to_list()
+    assert set(first["traintest"].unique()) == {0, 1}
+    with pytest.raises(ValueError, match="overwrite"):
+        add_train_test_split(first)
 
 
 def test_easyglm_serialization(synthetic_insurance_data, tmp_path):
