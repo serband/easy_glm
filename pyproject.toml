@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easy_glm"
-version = "0.4.2"
+version = "0.4.3"
 description = "LASSO-regularised GLMs for insurance pricing: exact rate tables, a browser workbench and a portable scoring model. Built on glum."
 readme = "README.md"
 authors = [

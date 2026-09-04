@@ -30,6 +30,7 @@ main-effect table or the base rate and every cell is a pure adjustment.
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
+from .app import launch as launch_workbench
 from .engine.rate_model import RateModel
 
 try:
@@ -64,6 +65,7 @@ __all__ = [
     "RateModel",
     "load_external_dataframe",
     "add_train_test_split",
+    "launch_workbench",
     # Building blocks
     "DesignSpec",
     "StepEncoder",

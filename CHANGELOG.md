@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.3 (2026-09-04)
+
+### Cleaner workbench startup
+
+- The workbench no longer shows Streamlit's first-run email prompt or attempts
+  to submit an email address. This avoids a misleading SSL traceback on
+  restricted Windows networks.
+- The workbench can now be opened directly from Python with
+  `easy_glm.launch_workbench()`. Pass an in-memory Polars or pandas dataframe
+  with `easy_glm.launch_workbench(data=df)` to open it in the workbench.
+- Stopping the terminal launcher with Ctrl+C now closes it without a Python
+  traceback.
+
 ## 0.4.2 (2026-09-03)
 
 ### A complete browser-workbench path

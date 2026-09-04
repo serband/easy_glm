@@ -1033,6 +1033,91 @@ class TestCliWorkbench:
             "headless": True,
         }
 
+    def test_launcher_suppresses_streamlits_first_run_email_prompt(self, monkeypatch):
+        """A first run must not ask for an email or try to submit one.
+
+        The submission is both irrelevant to EasyGLM and can produce a long SSL
+        traceback on corporate Windows machines before the workbench opens.
+        """
+        import easy_glm.app as app
+
+        seen: list[str] = []
+
+        class FakeProc:
+            def wait(self):
+                raise AssertionError("launch(block=False) must not wait")
+
+        def fake_popen(args):
+            seen.extend(args)
+            return FakeProc()
+
+        monkeypatch.setattr(app.subprocess, "Popen", fake_popen)
+        app.launch(port=8599)
+
+        assert seen[seen.index("--server.showEmailPrompt") + 1] == "false"
+        assert seen[seen.index("--browser.gatherUsageStats") + 1] == "false"
+
+    def test_launcher_is_available_from_the_public_package(self):
+        import easy_glm
+        import easy_glm.app as app
+
+        assert easy_glm.launch_workbench is app.launch
+
+    def test_public_launcher_opens_an_in_memory_frame(self, tmp_path, monkeypatch):
+        import easy_glm
+        import easy_glm.app as app
+        from easy_glm.workflow import Project
+
+        seen: list[str] = []
+
+        class FakeProc:
+            pass
+
+        monkeypatch.setattr(app.tempfile, "mkdtemp", lambda **_: str(tmp_path))
+        monkeypatch.setattr(
+            app.subprocess, "Popen", lambda args: seen.extend(args) or FakeProc()
+        )
+
+        result = easy_glm.launch_workbench(data=pl.DataFrame({"claims": [0, 1]}))
+
+        assert isinstance(result, FakeProc)
+        project_arg = next(arg for arg in seen if arg.startswith("--project="))
+        project = Project.from_json(project_arg.removeprefix("--project="))
+        assert project.name == "in-memory data"
+        assert pl.read_parquet(project.data.source.path).to_dict(as_series=False) == {
+            "claims": [0, 1]
+        }
+
+    def test_public_launcher_rejects_a_project_and_data_together(self):
+        import easy_glm
+
+        with pytest.raises(ValueError, match="project_path or data"):
+            easy_glm.launch_workbench(
+                "saved.easyglm-project.json", data=pl.DataFrame({"x": [1]})
+            )
+
+    def test_blocking_launcher_stops_cleanly_on_keyboard_interrupt(self, monkeypatch):
+        import easy_glm.app as app
+
+        class FakeProc:
+            waits = 0
+            terminated = False
+
+            def wait(self):
+                self.waits += 1
+                if self.waits == 1:
+                    raise KeyboardInterrupt
+
+            def terminate(self):
+                self.terminated = True
+
+        proc = FakeProc()
+        monkeypatch.setattr(app.subprocess, "Popen", lambda _args: proc)
+
+        assert app.launch(block=True) is proc
+        assert proc.terminated is True
+        assert proc.waits == 2
+
 
 class TestCliProjectFileErrors:
     """S2: a path that is plainly the wrong kind of file is refused before it

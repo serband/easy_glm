@@ -8,7 +8,7 @@ Yes, its been built with AI (insert Boris Johnson sounds)
 ## Install
 
 ```bash
-pip install easy-glm
+pip install easy_glm
 ```
 
 ## Open the workbench
@@ -21,6 +21,23 @@ easy-glm-workbench
 
 It opens EasyGLM in your browser, normally at
 `http://localhost:8501`. Keep this terminal open while you use the workbench.
+
+You can also open it from a Python session:
+
+```python skip-test
+import easy_glm
+
+easy_glm.launch_workbench()
+```
+
+To open a Polars or pandas dataframe that is already in memory:
+
+```python skip-test
+easy_glm.launch_workbench(data=df)
+```
+
+The workbench opens with `df` loaded. Choose the target, weight and predictors
+on the **Variables** page, then define and fit the model on the **Model** page.
 
 For a first run without supplying a file, open **Project & data** and click
 **Use the French motor sample**. EasyGLM downloads that sample once and keeps a
