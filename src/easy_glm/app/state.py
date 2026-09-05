@@ -118,7 +118,7 @@ _SAMPLE_KEYS = ("sample_rows", "sample_seed")
 #: 7 — E merged after D5 and G: D5+A2 and E+A2 had each moved the merged tree
 #: to 6 on their own branches, so the release tree moves on once more. Every
 #: reason above applies to a run pickled before this number.
-PERSIST_FORMAT = 7
+PERSIST_FORMAT = 8
 #: A marker left by *another* session is only removed once it is this old:
 #: younger than this it may belong to a fit that is still running in another
 #: tab, and taking its marker away would cost that tab its own warning.

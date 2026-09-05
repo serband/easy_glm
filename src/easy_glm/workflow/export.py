@@ -119,11 +119,13 @@ def _fit_code(
     extra: tuple[str, ...] = (),
     use_offset_col: bool = True,
     call: str = "fit_glm",
+    cv_seed: int = 42,
+    data_expr: str = "train",
 ) -> str:
     """One ``fit_glm(...)`` call. ``alpha=None`` re-runs the cross-validation
     the workbench ran; ``extra`` carries the second stage's arguments."""
     args = [
-        "train",
+        data_expr,
         spec_expr,
         repr(cfg.target),
         f"family={cfg.family!r}",
@@ -139,7 +141,10 @@ def _fit_code(
     if cfg.divide_target_by_weight:
         args.append("divide_target_by_weight=True")
     if alpha is None:
-        args.append(f"cv={cfg.penalty.cv}, n_alphas={cfg.penalty.n_alphas}")
+        args.append(
+            f"cv={cfg.penalty.cv}, n_alphas={cfg.penalty.n_alphas}, "
+            f"cv_seed={cv_seed}"
+        )
     else:
         args.append(f"alpha={alpha!r}")
     if cfg.penalty.l1_ratio != 1.0:
@@ -163,14 +168,10 @@ def _two_stage_code(
     monotone: dict[str, str],
     chose_by_cv: bool,
     stage2_chose_by_cv: bool,
+    cv_seed: int,
 ) -> list[str]:
     """The two stages of a model with interactions, written out in full."""
-    eta1 = "eta1 = stage1.linear_predictor(train)"
-    if cfg.offset:
-        # the same cast fit_glm applies, so an Int64 or Float32 offset column
-        # takes the same path here as it does in the workbench
-        eta1 += f" + train[{cfg.offset!r}].cast(pl.Float64).to_numpy()"
-    return [
+    lines = [
         "# Stage 1 — the main effects on their own. This is exactly the fit this",
         "# model would get with no interaction at all, and the rate tables and base",
         "# rate below are read off it, so adding an interaction never moves them.",
@@ -181,12 +182,46 @@ def _two_stage_code(
             chose_by_cv,
             spec_expr="spec.main_effects_spec()",
             var="stage1",
+            cv_seed=cv_seed,
         ),
         "",
         "# Stage 2 — the interaction cells as pure adjustments on top of stage 1:",
-        "# no intercept, and stage 1's linear predictor as the offset. A cell",
+        "# no intercept, and a stage-1 linear predictor as the offset. A cell",
         "# coefficient of 0 (relativity 1.00) means 'no adjustment'.",
-        eta1,
+    ]
+    if stage2_chose_by_cv:
+        fold_fit = _fit_code(
+            cfg,
+            alpha,
+            monotone,
+            False,
+            spec_expr="spec.main_effects_spec()",
+            var="stage1_fold",
+            cv_seed=cv_seed,
+            data_expr="train[fit_index]",
+        )
+        eta_fold = "stage1_fold.linear_predictor(train[score_index])"
+        if cfg.offset:
+            eta_fold += (
+                f" + train[score_index][{cfg.offset!r}]" ".cast(pl.Float64).to_numpy()"
+            )
+        lines += [
+            "# The cells' alpha was selected against out-of-fold main-effect",
+            "# predictions. Rebuild those offsets with the same shuffled folds.",
+            "eta1 = np.empty(train.height, dtype=float)",
+            f"folds = KFold(n_splits={cfg.penalty.cv}, shuffle=True, random_state={cv_seed})",
+            "for fit_index, score_index in folds.split(np.arange(train.height)):",
+            "    " + fold_fit.replace("\n", "\n    "),
+            f"    eta1[score_index] = {eta_fold}",
+        ]
+    else:
+        eta1 = "eta1 = stage1.linear_predictor(train)"
+        if cfg.offset:
+            # the same cast fit_glm applies, so an Int64 or Float32 offset column
+            # takes the same path here as it does in the workbench
+            eta1 += f" + train[{cfg.offset!r}].cast(pl.Float64).to_numpy()"
+        lines.append(eta1)
+    lines += [
         _fit_code(
             cfg,
             alpha2,
@@ -202,9 +237,11 @@ def _two_stage_code(
                 "scale_predictors=False",
             ),
             use_offset_col=False,
+            cv_seed=cv_seed,
         ),
         "fit = TwoStageFit(stage1, stage2)",
     ]
+    return lines
 
 
 def to_script(
@@ -249,6 +286,8 @@ def to_script(
     ]
     if uses_sas:
         lines.append("import pandas as pd")
+    if two_stage and cfg.penalty.alpha is None and stage2_alpha(cfg) is None:
+        lines.append("from sklearn.model_selection import KFold")
     lines += [
         "",
         "from easy_glm import (",
@@ -330,7 +369,7 @@ def to_script(
         alpha = run.fit.alpha
         alpha2 = run.alpha_stage2
         chose_by_cv = cfg.penalty.alpha is None
-        stage2_chose_by_cv = chose_by_cv
+        stage2_chose_by_cv = chose_by_cv and stage2_alpha(cfg) is None
         monotone = dict(run.fit.monotone)
     else:
         dd = project.design.defaults
@@ -426,7 +465,13 @@ def to_script(
     alpha = None if alpha is None else float(alpha)
     if two_stage:
         lines += _two_stage_code(
-            cfg, alpha, alpha2, monotone, chose_by_cv, stage2_chose_by_cv
+            cfg,
+            alpha,
+            alpha2,
+            monotone,
+            chose_by_cv,
+            stage2_chose_by_cv,
+            split.seed,
         )
     elif derive_stages:
         lines += [
@@ -435,8 +480,9 @@ def to_script(
             "# offset), so adding an interaction never moves a main-effect table.",
             "# fit_two_stage decides here, from this data, whether any cell has enough",
             "# exposure to be rated on its own; if none has, there is no second stage.",
-            "# With CV, its second stage independently evaluates the same folds and",
-            "# alpha-path length on the interaction cells (it never reuses the mains alpha).",
+            "# With CV, its second stage independently evaluates the same folds,",
+            "# shuffled with the project seed, and alpha-path length on the cells (it never",
+            "# reuses the mains alpha). Its offset uses out-of-fold stage-1 predictions.",
             _fit_code(
                 cfg,
                 alpha,
@@ -444,10 +490,11 @@ def to_script(
                 chose_by_cv,
                 call="fit_two_stage",
                 extra=() if alpha2 is None else (f"stage2_alpha={alpha2!r}",),
+                cv_seed=split.seed,
             ),
         ]
     else:
-        lines.append(_fit_code(cfg, alpha, monotone, chose_by_cv))
+        lines.append(_fit_code(cfg, alpha, monotone, chose_by_cv, cv_seed=split.seed))
     lines += ["print(fit)", "print(fit.coef_table(drop_zero=True))"]
 
     exposure = exposure_for(project, cfg)

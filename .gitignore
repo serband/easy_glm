@@ -41,6 +41,7 @@ tmp/
 ## Local experimentation
 scratch*/
 playground*/
+.internal/
 
 ## R history (found existing .Rhistory)
 .Rhistory

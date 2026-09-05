@@ -25,7 +25,7 @@ pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
 from easy_glm.app import state as S  # noqa: E402
-from easy_glm.workflow import Project, build_design  # noqa: E402
+from easy_glm.workflow import Project, VariableDesign, build_design  # noqa: E402
 from easy_glm.workflow.project import validate_model_name  # noqa: E402
 from easy_glm.workflow.run import UnusableColumnError  # noqa: E402
 
@@ -408,6 +408,24 @@ def test_breakage2_24_a_knot_above_the_data_is_accepted_and_flagged(workspace):
         40.0,
         999999.0,
     ]
+    assert at.session_state["_project"].design.variables["DrivAge"].n_bins == 4
+    assert any("Custom knots are active" in i.value for i in at.info)
+
+
+def test_quantile_knot_source_and_actual_bin_count_are_explained(workspace, tmp_path):
+    """A requested bin count may yield fewer bins when quantiles repeat; the
+    page names both numbers before the user decides whether to override them."""
+    p = Project.from_json(workspace["project"])
+    p.design.variables["DrivAge"] = VariableDesign(
+        kind="step", knots="quantile", n_bins=50
+    )
+    path = tmp_path / "quantile-note.easyglm-project.json"
+    p.to_json(path)
+    at = _run(_script("pages_design", str(path)))
+    at.selectbox(key=wk(at, "design_detail_var")).set_value("DrivAge").run()
+    notes = " ".join(i.value for i in at.info)
+    assert "requested 50 quantile bins" in notes
+    assert "actual bins" in notes
 
 
 def test_breakage2_28_an_interrupted_fit_is_reported_not_forgotten(workspace):

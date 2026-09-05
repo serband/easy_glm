@@ -231,6 +231,9 @@ def render() -> None:
             "train and holdout set below."
         )
     cfg = run.config
+    train_frame, holdout_frame = train_holdout(df, p.data.split)
+    train_pred = run.predict(train_frame)
+    train_actual, train_expected, train_weight = totals(train_frame, cfg, train_pred)
     actual = expected = w = np.array([], dtype=float)
     if not no_global_rows:
         pred = run.predict(frame)
@@ -293,10 +296,9 @@ def render() -> None:
         elif numeric:
             c2.caption("Using this model's fitted bands.")
 
-        train, holdout = train_holdout(df, p.data.split)
-        ae_sets = [("train", train)]
-        if not holdout.is_empty():
-            ae_sets.append(("holdout", holdout))
+        ae_sets = [("train", train_frame)]
+        if not holdout_frame.is_empty():
+            ae_sets.append(("holdout", holdout_frame))
         else:
             st.info(
                 "There are no holdout rows, so this view shows training experience only."
@@ -326,7 +328,9 @@ def render() -> None:
         st.caption(
             "Actual / expected in every **cell** of two variables. With both mains "
             "in the model, a block of red or blue cells with real exposure is an "
-            "interaction the model is missing — add it on the Model page."
+            "interaction the model is missing — add it on the Model page. This "
+            "diagnostic follows the Rows choice above; it is not used by the "
+            "automatic missing-interaction search."
         )
         options = in_model + others
         c1, c2, c3 = st.columns([2, 2, 1])
@@ -441,31 +445,53 @@ def render() -> None:
     with tabs[4]:
         st.markdown("**Missing factors** — variables not in the model")
         st.caption(
-            "Exposure-weighted spread of log(A/E) across the bands of each variable "
-            "**not in the model**. Large values point at factors the model is missing."
+            "Scored on the **training rows only** — the holdout is for validation, "
+            "not for choosing variables. Signal is a noise-adjusted Pearson excess "
+            "z-score across each variable's bands; large values point at factors "
+            "the model is missing."
         )
-        candidates = [c for c in others if p.data.roles.get(c) not in ("id",)]
+        candidates = [c for c in others if p.data.roles.get(c) not in ("id", "ignore")]
         if not candidates:
-            st.info("Every available variable is already in the model (or is an id).")
+            st.info(
+                "Every available variable is already in the model, an id, or "
+                "explicitly ignored."
+            )
         elif (
             st.button("Run residual search", key=S.widget_key("rfs_go"))
-            or "rfs_result" in st.session_state
+            or "rfs_training_result_v2" in st.session_state
         ):
-            res = residual_factor_search(frame, candidates, actual, expected, w)
+            counts = cfg.family == "poisson"
+            phi = (
+                1.0
+                if counts
+                else pearson_dispersion(train_actual, train_expected, len(run.fit.coef))
+            )
+            res = residual_factor_search(
+                train_frame,
+                candidates,
+                train_actual,
+                train_expected,
+                train_weight,
+                dispersion=phi,
+            )
+            st.session_state.rfs_training_result_v2 = res
             st.session_state.rfs_result = res
             st.dataframe(
                 res,
                 width="stretch",
                 hide_index=True,
                 column_config={
-                    "signal": st.column_config.ProgressColumn(
-                        "signal (sd of log A/E)",
-                        min_value=0.0,
-                        max_value=float(max(res["signal"].max() or 1.0, 1e-9)),
-                        format="%.3f",
+                    "signal": st.column_config.NumberColumn(
+                        "signal (excess z-score)", format="%.2f"
+                    ),
+                    "sd_log_ae": st.column_config.NumberColumn(
+                        "sd of log A/E", format="%.3f"
                     ),
                     "max_abs_log_ae": st.column_config.NumberColumn(
                         "max |log A/E|", format="%.3f"
+                    ),
+                    "exposure_share": st.column_config.NumberColumn(
+                        "exposure retained", format="percent"
                     ),
                 },
             )
@@ -473,16 +499,32 @@ def render() -> None:
                 top = st.selectbox(
                     "Show", res["variable"].to_list(), key=S.widget_key("rfs_show")
                 )
-                t = ae_by_variable(frame, top, actual, expected, w, n_bins=10)
+                t = ae_by_variable(
+                    train_frame,
+                    top,
+                    train_actual,
+                    train_expected,
+                    train_weight,
+                    n_bins=10,
+                )
                 st.plotly_chart(
-                    C.ae_chart(t, title=f"{top} (not in model) — actual vs expected"),
+                    C.ae_chart(
+                        t,
+                        title=f"{top} (not in model) — actual vs expected (train)",
+                    ),
                     width="stretch",
                 )
         st.markdown("**Missing interactions** — pairs of the model's predictors")
         counts = cfg.family == "poisson"
-        phi = 1.0 if counts else pearson_dispersion(actual, expected, len(run.fit.coef))
+        phi = (
+            1.0
+            if counts
+            else pearson_dispersion(train_actual, train_expected, len(run.fit.coef))
+        )
         st.caption(
-            "For every pair of the model's predictors: the cells' Pearson excess "
+            "Scored on the **training rows only** — the holdout is for validation, "
+            "not for choosing interactions. For every pair of the model's predictors: "
+            "the cells' Pearson excess "
             "after re-fitting the two margins, as a z-score (numerics in 8 coarse "
             "bands, cells with fewer than 3 expected ignored; many small noisy cells "
             "do not outrank one large real effect). The top pairs are the "
@@ -508,19 +550,20 @@ def render() -> None:
             st.info("Every pair of predictors is already an interaction of this model.")
         elif (
             st.button("Search pairs", key=S.widget_key("rps_go"))
-            or "rps_result" in st.session_state
+            or "rps_training_result_v2" in st.session_state
         ):
             with st.spinner(f"Scoring {len(pairs)} pairs ..."):
                 res = residual_pair_search(
-                    frame,
+                    train_frame,
                     mains,
-                    actual,
-                    expected,
-                    w,
+                    train_actual,
+                    train_expected,
+                    train_weight,
                     levels=levels,  # numerics in 8 coarse bands: enough claims per cell
                     pairs=pairs,
                     dispersion=phi,
                 )
+            st.session_state.rps_training_result_v2 = res
             st.session_state.rps_result = res
             if res.is_empty():
                 st.info("No pair has enough populated cells to score.")
@@ -530,11 +573,8 @@ def render() -> None:
                     width="stretch",
                     hide_index=True,
                     column_config={
-                        "signal": st.column_config.ProgressColumn(
-                            "signal (excess deviance z-score)",
-                            min_value=0.0,
-                            max_value=float(max(res["signal"].max() or 1.0, 1e-9)),
-                            format="%.1f",
+                        "signal": st.column_config.NumberColumn(
+                            "signal (excess z-score)", format="%.1f"
                         ),
                         "sd_log_ae": st.column_config.NumberColumn(
                             "sd of log A/E", format="%.3f"
@@ -550,15 +590,15 @@ def render() -> None:
                 row = res.filter(pl.col("pair") == top_pair).row(0, named=True)
                 # the same 8-band grid the search scored, so worst_cell is visible
                 _pair_heatmap(
-                    frame,
+                    train_frame,
                     row["a"],
                     row["b"],
-                    actual,
-                    expected,
-                    w,
+                    train_actual,
+                    train_expected,
+                    train_weight,
                     {},
                     levels,
-                    title=f"{top_pair} — actual / expected by cell ({which}), search bands",
+                    title=f"{top_pair} — actual / expected by cell (train), search bands",
                     n_bins=8,
                 )
 

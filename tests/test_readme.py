@@ -62,6 +62,25 @@ _IMAGE_RE = re.compile(r"!\[[^]]*\]\((docs/images/[^)]+)\)")
 MAX_SKIPPED_BLOCKS = 3
 
 
+def _swedish_motorcycle_fixture() -> pl.DataFrame:
+    """Small offline stand-in with the public dataset's exact column shape."""
+    return (
+        pl.read_parquet(ROOT / "tests/fixtures/french_motor_50k.parquet")
+        .head(5_000)
+        .select(
+            pl.col("DrivAge").alias("OwnerAge"),
+            pl.col("VehGas").alias("Gender"),
+            pl.col("Area"),
+            pl.col("VehPower").cast(pl.Utf8).alias("RiskClass"),
+            pl.col("VehAge"),
+            pl.col("BonusMalus").cast(pl.Utf8).alias("BonusClass"),
+            pl.col("Exposure"),
+            pl.col("ClaimNb"),
+            (pl.col("ClaimNb") * (1_000 + 10 * pl.col("DrivAge"))).alias("ClaimAmount"),
+        )
+    )
+
+
 def _extract_blocks() -> list[tuple[bool, str]]:
     """``(skip, code)`` for every ```python fence in README.md, in order."""
     text = README.read_text(encoding="utf-8")
@@ -109,6 +128,11 @@ def test_readme_code_blocks_all_run(readme_blocks, tmp_path, monkeypatch):
         easy_glm,
         "load_external_dataframe",
         lambda: pl.read_parquet(ROOT / "tests/fixtures/french_motor_50k.parquet"),
+    )
+    monkeypatch.setattr(
+        easy_glm,
+        "load_swedish_motorcycle_data",
+        _swedish_motorcycle_fixture,
     )
     import matplotlib.pyplot as plt
     import plotly.graph_objects as go
@@ -167,6 +191,8 @@ def _run_lesson(script: Path, tmp_path: Path, *, use_local_public_data: bool) ->
 
 def test_basic_example_runs_with_local_public_data(tmp_path):
     """The beginner script stays linear; the test supplies its cached dataset."""
+    swedish = tmp_path / "swedish_motorcycle.parquet"
+    _swedish_motorcycle_fixture().write_parquet(swedish)
     code = (
         "import runpy\n"
         "import matplotlib.pyplot as plt\n"
@@ -176,6 +202,7 @@ def test_basic_example_runs_with_local_public_data(tmp_path):
         "plt.show = lambda: None\n"
         "go.Figure.show = lambda self: None\n"
         f"easy_glm.load_external_dataframe = lambda: pl.read_parquet({str(ROOT / 'tests/fixtures/french_motor_50k.parquet')!r})\n"
+        f"easy_glm.load_swedish_motorcycle_data = lambda: pl.read_parquet({str(swedish)!r})\n"
         f"runpy.run_path({str(BASIC_EXAMPLE)!r}, run_name='__main__')\n"
     )
     result = subprocess.run(

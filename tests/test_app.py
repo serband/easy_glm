@@ -281,6 +281,12 @@ def test_fit_and_design_controls_explain_technical_choices(project_file):
     assert "regularisation" in alpha.help
     l1 = next(s for s in model.slider if s.label == "l1_ratio (1 = lasso)")
     assert "sparse lasso" in l1.help
+    base = next(
+        r for r in model.radio if r.label == "Which risk is 1.00 in the rate tables?"
+    )
+    assert "every fitted prediction stays the same" in base.help
+    assert any("Most common risk" in c.value for c in model.caption)
+    assert any("not the predictions" in c.value for c in model.caption)
     design = AppTest.from_string(
         _script("pages_design", project_file, fit=False), default_timeout=180
     )

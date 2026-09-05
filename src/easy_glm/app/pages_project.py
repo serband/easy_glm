@@ -17,6 +17,7 @@ from . import ui
 DATA_SUFFIX = ".easyglm-data"
 FRENCH_MOTOR_SAMPLE = "french_motor_sample.parquet"
 FRENCH_MOTOR_ROWS = 50_000
+SWEDISH_MOTORCYCLE_SAMPLE = "swedish_motorcycle_sample.parquet"
 
 
 def open_project_file(path: str) -> str | None:
@@ -131,6 +132,90 @@ def _load_french_motor_sample(p: Project) -> str | None:
     return None
 
 
+def _load_swedish_motorcycle_sample(p: Project) -> str | None:
+    """Load the public motorcycle portfolio with a ready burn-cost setup."""
+    try:
+        frame = easy_glm.load_swedish_motorcycle_data()
+        folder, _temporary = _data_folder()
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / SWEDISH_MOTORCYCLE_SAMPLE
+        frame.write_parquet(path)
+    except Exception as exc:  # noqa: BLE001 - show a friendly page message
+        return (
+            "Could not load the Swedish motorcycle sample. Check your internet "
+            f"connection and try again. Details: {exc}"
+        )
+
+    predictors = [
+        "OwnerAge",
+        "Gender",
+        "Area",
+        "RiskClass",
+        "VehAge",
+        "BonusClass",
+    ]
+    p.data.source.path = str(path)
+    p.data.source.type = "parquet"
+    p.data.roles = {
+        "ClaimAmount": "target",
+        "Exposure": "weight",
+        "ClaimNb": "ignore",
+        **dict.fromkeys(predictors, "predictor"),
+    }
+    p.data.filters = ["pl.col('Exposure') > 0"]
+    p.data.split.mode = "random"
+    p.data.split.column = "traintest"
+    p.data.split.fraction = 0.7
+    p.data.split.seed = 42
+    if not p.models:
+        p.new_model(
+            "BurnCost",
+            family="tweedie",
+            tweedie_power=1.5,
+            divide_target_by_weight=True,
+            predictors=predictors,
+        )
+        st.session_state.model_current = "BurnCost"
+    S.touch()
+    if S.raw_frame(force=True) is None:
+        return st.session_state.get(
+            "load_error", "Could not open the saved Swedish motorcycle sample."
+        )
+    return None
+
+
+def _new_project_button(
+    p: Project, *, label: str, key: str, width: str = "stretch"
+) -> None:
+    """Render a two-click, loss-aware route back to an empty project."""
+    has_work = bool(p.models or p.data.source.path or p.data.roles)
+    confirm = st.session_state.get("confirm_new_project", False)
+    button_label = "Confirm: start over" if confirm else label
+    if not st.button(button_label, width=width, key=S.widget_key(key)):
+        return
+    if has_work and not confirm:
+        st.session_state.confirm_new_project = True
+        if st.session_state.get("project_path"):
+            ui.flash(
+                "warning",
+                "This closes the current project. Its saved setup remains in its "
+                "project file, and the new project starts empty. Click **Confirm: "
+                "start over** to continue.",
+            )
+        else:
+            ui.flash(
+                "warning",
+                "This project has not been saved. Save it first if you want to keep "
+                "the current setup, or click **Confirm: start over** to discard it "
+                "and return to the sample choices.",
+            )
+        st.rerun()
+    st.session_state.confirm_new_project = False
+    S.set_project(Project(name="untitled"), None)
+    ui.flash("info", "New empty project — choose a sample or your own data below.")
+    st.rerun()
+
+
 def _project_section(p: Project) -> None:
     with st.container(border=True):
         st.subheader("Project")
@@ -159,26 +244,14 @@ def _project_section(p: Project) -> None:
                 st.error(err)
             else:
                 st.rerun()
-        has_work = bool(p.models or p.data.source.path or p.data.roles)
-        confirm = st.session_state.get("confirm_new_project", False)
-        label = "Click again to start a new project" if confirm else "New empty project"
-        if b3.button(label, width="stretch", key=S.widget_key("new_project_btn")):
-            if has_work and not confirm:
-                st.session_state.confirm_new_project = True
-                st.warning(
-                    "This closes the current project. It stays saved in its own file "
-                    "and the new project starts unsaved — nothing is overwritten. "
-                    "Click the button again to continue."
-                )
-            else:
-                st.session_state.confirm_new_project = False
-                S.set_project(Project(name="untitled"), None)
-                ui.flash("info", "New unsaved project — save it under a new name.")
-                st.rerun()
+        with b3:
+            _new_project_button(
+                p, label="Start over / new project", key="new_project_btn"
+            )
         st.info(
             "Resuming previous work? Open an **EasyGLM project file** here. New to "
-            "EasyGLM? You do not need one: use the French motor sample below or "
-            "choose a data file instead."
+            "EasyGLM? You do not need one: use either built-in insurance sample "
+            "below or choose a data file instead."
         )
         st.caption(
             "A project file saves the workbench setup: the data-file location, "
@@ -213,16 +286,36 @@ def _project_section(p: Project) -> None:
 def _data_section(p: Project) -> None:
     with st.container(border=True):
         st.subheader("Data source")
+        source_name = Path(p.data.source.path).name if p.data.source.path else ""
         if not p.data.source.path:
             st.info(
-                "New here? Start with the French motor sample: 50,000 policies, "
-                "a claim count and exposure, plus four common rating factors."
+                "New here? Start with a public insurance sample. Each option loads "
+                "the data, assigns sensible roles and prepares an editable starter "
+                "model. Nothing is fitted automatically."
             )
-            if st.button(
-                "Use the French motor sample",
-                type="primary",
-                key=S.widget_key("french_motor_sample_btn"),
-            ):
+            french, swedish = st.columns(2)
+            with french:
+                st.caption(
+                    "50,000 motor policies with claim count, exposure and four "
+                    "common rating factors."
+                )
+                french_clicked = st.button(
+                    "French motor sample (Poisson frequency)",
+                    type="primary",
+                    width="stretch",
+                    key=S.widget_key("french_motor_sample_btn"),
+                )
+            with swedish:
+                st.caption(
+                    "Motorcycle policies with claim amount, exposure and six rating "
+                    "factors."
+                )
+                swedish_clicked = st.button(
+                    "Swedish motorcycle sample (Tweedie burn cost)",
+                    width="stretch",
+                    key=S.widget_key("swedish_motorcycle_sample_btn"),
+                )
+            if french_clicked:
                 err = _load_french_motor_sample(p)
                 if err:
                     st.error(err)
@@ -230,16 +323,46 @@ def _data_section(p: Project) -> None:
                     ui.flash(
                         "success",
                         "French motor sample loaded. Review the preview, then visit "
-                        "Variables and Split when you are ready. A frequency model is "
-                        "also prepared on the Model page; review it there, then click "
-                        "Fit model when you want to run it.",
+                        "Variables and Split when you are ready. A Poisson frequency "
+                        "model is prepared on the Model page; review it there, then "
+                        "click Fit model when you want to run it.",
                     )
                     st.rerun()
-        elif Path(p.data.source.path).name == FRENCH_MOTOR_SAMPLE:
+            if swedish_clicked:
+                err = _load_swedish_motorcycle_sample(p)
+                if err:
+                    st.error(err)
+                else:
+                    ui.flash(
+                        "success",
+                        "Swedish motorcycle sample loaded. Review the preview, roles "
+                        "and split. A Tweedie burn-cost model is prepared on the Model "
+                        "page; review it there, then click Fit model when you want to "
+                        "run it.",
+                    )
+                    st.rerun()
+        elif source_name == FRENCH_MOTOR_SAMPLE:
             st.caption(
                 "French motor sample: ClaimNb is the claim count; Exposure is the "
                 "weight; DrivAge, Region, BonusMalus and Density are predictors. "
                 "A 70/30 random train/test split (seed 42) is ready to review."
+            )
+        elif source_name == SWEDISH_MOTORCYCLE_SAMPLE:
+            st.caption(
+                "Swedish motorcycle sample: ClaimAmount is incurred cost; Exposure "
+                "is the weight; ClaimNb is ignored; six rating factors feed a Tweedie "
+                "burn-cost model. Zero-exposure rows are filtered and a 70/30 random "
+                "train/test split (seed 42) is ready to review."
+            )
+        if source_name in {FRENCH_MOTOR_SAMPLE, SWEDISH_MOTORCYCLE_SAMPLE}:
+            st.caption(
+                "Finished exploring this sample? Start over to return to both sample "
+                "choices. Save the current project first if you want to keep it."
+            )
+            _new_project_button(
+                p,
+                label="Start over and choose another sample",
+                key="choose_another_sample_btn",
             )
         st.caption(
             "Point at a local file (fastest for large data) or upload one. "

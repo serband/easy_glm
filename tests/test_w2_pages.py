@@ -21,6 +21,7 @@ from easy_glm.workflow import (  # noqa: E402
     Project,
     VariableDesign,
     ae_by_pair,
+    residual_factor_search,
     residual_pair_search,
     totals,
 )
@@ -136,6 +137,10 @@ class TestDesignPage:
         rm[0].click().run()
         assert not at.exception
         assert at.session_state["_project"].models["freq"].interactions == []
+        assert any(
+            "No interactions are included" in message.value for message in at.info
+        )
+        assert any("only preview" in message.value for message in at.info)
 
     def test_add_interaction_with_preview_and_validation(self, workspace):
         at = _run(_script("pages_design", workspace["project"], fit=False))
@@ -341,6 +346,45 @@ class TestDiagnosticsPage:
         res = at.session_state["rps_result"]
         assert res.height > 0 and "pair" in res.columns
         assert not any("DrivAge × Region" == r for r in res["pair"].to_list())
+
+    def test_residual_search_uses_train_when_rows_selector_is_holdout(self, workspace):
+        at = _run(
+            _script(
+                "pages_diagnostics",
+                workspace["project"],
+                fit=True,
+                prelude="S.project().models['freq'].predictors.remove('BonusMalus')",
+            )
+        )
+        assert at.radio(key=wk(at, "diag_subset")).value == "holdout"
+        [b for b in at.button if b.label == "Run residual search"][0].click().run()
+        shown = at.session_state["rfs_training_result_v2"]
+        run = at.session_state["runs"]["freq"][1]
+        df = pl.read_parquet(workspace["data"])
+        train = df.filter(pl.col("traintest") == 1)
+        actual, expected, weight = totals(train, run.config, run.predict(train))
+        expected_result = residual_factor_search(
+            train, ["BonusMalus"], actual, expected, weight
+        )
+        assert shown["variable"].to_list() == expected_result["variable"].to_list()
+        for column in shown.columns[1:]:
+            np.testing.assert_allclose(shown[column], expected_result[column])
+        assert any("training rows only" in caption.value for caption in at.caption)
+
+    def test_residual_search_excludes_explicitly_ignored_columns(self, workspace):
+        at = _run(
+            _script(
+                "pages_diagnostics",
+                workspace["project"],
+                fit=True,
+                prelude=(
+                    "S.project().models['freq'].predictors.remove('BonusMalus'); "
+                    "S.project().data.roles['BonusMalus'] = 'ignore'"
+                ),
+            )
+        )
+        assert not any(b.label == "Run residual search" for b in at.button)
+        assert any("explicitly ignored" in message.value for message in at.info)
 
     def test_ae_by_pair_matches_rate_table_rows(self, workspace):
         at = _run(_script("pages_tables", workspace["project"], fit=True))

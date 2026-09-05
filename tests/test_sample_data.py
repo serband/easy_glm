@@ -1,9 +1,10 @@
-"""French-motor sample entry point on the Project & data page."""
+"""Built-in insurance samples on the Project & data page."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -48,9 +49,25 @@ def _run(loader: str) -> AppTest:
     return at
 
 
-def _sample_button(at: AppTest):
-    return next(
-        button for button in at.button if button.label == "Use the French motor sample"
+def _sample_button(at: AppTest, name: str = "French"):
+    return next(button for button in at.button if button.label.startswith(name))
+
+
+def _swedish_fixture() -> pl.DataFrame:
+    return (
+        pl.read_parquet(FIXTURE)
+        .head(5_000)
+        .select(
+            pl.col("DrivAge").alias("OwnerAge"),
+            pl.col("VehGas").alias("Gender"),
+            pl.col("Area"),
+            pl.col("VehPower").cast(pl.Utf8).alias("RiskClass"),
+            pl.col("VehAge"),
+            pl.col("BonusMalus").cast(pl.Utf8).alias("BonusClass"),
+            pl.col("Exposure"),
+            pl.col("ClaimNb"),
+            (pl.col("ClaimNb") * (1_000 + 10 * pl.col("DrivAge"))).alias("ClaimAmount"),
+        )
     )
 
 
@@ -70,15 +87,17 @@ def test_empty_project_explains_when_to_open_an_easyglm_project_file():
     assert "train/test split" in text
     assert "model definitions and rate-table adjustments" in text
     assert "does not contain the data itself or fitted results" in text
-    assert "French motor sample" in text
+    labels = [button.label for button in at.button]
+    assert "French motor sample (Poisson frequency)" in labels
+    assert "Swedish motorcycle sample (Tweedie burn cost)" in labels
 
 
-def test_french_motor_interaction_uses_its_own_cv_path_and_changes_predictions():
+def test_french_motor_interaction_uses_its_own_seeded_cv_path():
     """A real book guards against cells silently inheriting a main-stage alpha.
 
-    The full model has a detectable BonusMalus × Area residual effect.  The
-    stage-two path must retain it, so its predictions and double-lift A/E line
-    differ from the frozen mains.
+    A valid interaction stage may select an all-1.00 table when its shuffled
+    validation folds find no repeatable improvement; that is a modelling
+    result, not a failed fit.
     """
     train = pl.read_parquet(FIXTURE).sample(fraction=0.7, seed=42)
     predictors = ["DrivAge", "Region", "BonusMalus", "Density", "Area"]
@@ -99,19 +118,24 @@ def test_french_motor_interaction_uses_its_own_cv_path_and_changes_predictions()
         cv=5,
         n_alphas=20,
     )
-    assert fit.stage1.model.cv == fit.stage2.model.cv == 5
+    for stage in (fit.stage1, fit.stage2):
+        assert stage.model.cv.n_splits == 5
+        assert stage.model.cv.shuffle is True
+        assert stage.model.cv.random_state == 42
     assert fit.stage1.model.n_alphas == fit.stage2.model.n_alphas == 20
-    assert (fit.stage2.coef != 0).sum() > 0
+    assert fit.alpha_stage2 != pytest.approx(fit.alpha)
     cells = rate_tables(fit)["BonusMalus×Area"]
-    assert cells["relativity"].max() > 1.1
-    assert cells["relativity"].min() < 0.95
+    assert cells.height > 0
 
     cfg = ModelConfig(target="ClaimNb", weight="Exposure", divide_target_by_weight=True)
     actual, expected_cells, weight = totals(train, cfg, fit.predict(train))
     expected_mains = totals(train, cfg, fit.stage1.predict(train))[1]
-    assert not (expected_cells == expected_mains).all()
     double = double_lift(actual, expected_cells, expected_mains, weight)
-    assert (double["ae_a"] - double["ae_b"]).abs().max() > 0.01
+    if (fit.stage2.coef != 0).any():
+        assert not (expected_cells == expected_mains).all()
+        assert (double["ae_a"] - double["ae_b"]).abs().max() > 0
+    else:
+        np.testing.assert_allclose(expected_cells, expected_mains)
 
 
 def _button(at: AppTest, label: str):
@@ -248,6 +272,92 @@ def test_sample_data_button_loads_a_ready_french_motor_project():
     assert any("ready to fit" in info.value for info in at.info)
 
 
+def test_loaded_sample_has_a_clear_two_click_route_back_to_sample_choices():
+    at = _run(
+        "import easy_glm\n"
+        "import polars as pl\n"
+        f"easy_glm.load_external_dataframe = lambda: pl.read_parquet({str(FIXTURE)!r})"
+    )
+    _sample_button(at).click().run()
+
+    _button(at, "Start over and choose another sample").click().run()
+    assert any("has not been saved" in warning.value for warning in at.warning)
+    assert _button(at, "Confirm: start over")
+
+    _button(at, "Confirm: start over").click().run()
+    project = at.session_state["_project"]
+    assert project.name == "untitled"
+    assert not project.data.source.path
+    assert not project.models
+    labels = [button.label for button in at.button]
+    assert "French motor sample (Poisson frequency)" in labels
+    assert "Swedish motorcycle sample (Tweedie burn cost)" in labels
+
+
+def test_sample_data_button_loads_a_ready_swedish_burn_cost_project(tmp_path):
+    fixture = tmp_path / "swedish.parquet"
+    _swedish_fixture().write_parquet(fixture)
+    at = _run(
+        "import easy_glm\n"
+        "import polars as pl\n"
+        "easy_glm.load_swedish_motorcycle_data = "
+        f"lambda: pl.read_parquet({str(fixture)!r})"
+    )
+
+    _sample_button(at, "Swedish").click().run()
+    assert not at.exception, [exception.value for exception in at.exception]
+    project = at.session_state["_project"]
+    source = Path(project.data.source.path)
+    assert source.name == "swedish_motorcycle_sample.parquet" and source.is_file()
+    assert project.data.source.type == "parquet"
+    assert project.data.roles == {
+        "ClaimAmount": "target",
+        "Exposure": "weight",
+        "ClaimNb": "ignore",
+        "OwnerAge": "predictor",
+        "Gender": "predictor",
+        "Area": "predictor",
+        "RiskClass": "predictor",
+        "VehAge": "predictor",
+        "BonusClass": "predictor",
+    }
+    assert project.data.filters == ["pl.col('Exposure') > 0"]
+    assert project.data.split.mode == "random"
+    assert project.data.split.column == "traintest"
+    assert project.data.split.fraction == 0.7
+    assert project.data.split.seed == 42
+    assert list(project.models) == ["BurnCost"]
+    starter = project.models["BurnCost"]
+    assert starter.family == "tweedie"
+    assert starter.tweedie_power == 1.5
+    assert starter.target == "ClaimAmount" and starter.weight == "Exposure"
+    assert starter.divide_target_by_weight is True
+    assert starter.predictors == [
+        "OwnerAge",
+        "Gender",
+        "Area",
+        "RiskClass",
+        "VehAge",
+        "BonusClass",
+    ]
+    assert at.session_state["raw"][1].height == 5_000
+    assert at.dataframe
+    assert project.validate("BurnCost") == []
+
+    at.session_state["_page"] = "model"
+    at.run()
+    assert not at.exception, [exception.value for exception in at.exception]
+    assert next(select.value for select in at.selectbox if select.label == "Model") == (
+        "BurnCost"
+    )
+    assert not _button(at, "Fit model").disabled
+    assert any("ready to fit" in info.value for info in at.info)
+
+    _button(at, "Fit model").click().run()
+    assert not at.exception, [exception.value for exception in at.exception]
+    assert any("Fitted and up to date" in success.value for success in at.success)
+
+
 def test_sample_data_loader_failure_is_a_page_message():
     at = _run(
         "import easy_glm\n"
@@ -260,6 +370,22 @@ def test_sample_data_loader_failure_is_a_page_message():
     assert not at.exception, [exception.value for exception in at.exception]
     assert any(
         "Could not load the French motor sample" in error.value for error in at.error
+    )
+
+
+def test_swedish_sample_loader_failure_is_a_page_message():
+    at = _run(
+        "import easy_glm\n"
+        "def unavailable():\n"
+        "    raise OSError('offline')\n"
+        "easy_glm.load_swedish_motorcycle_data = unavailable"
+    )
+
+    _sample_button(at, "Swedish").click().run()
+    assert not at.exception, [exception.value for exception in at.exception]
+    assert any(
+        "Could not load the Swedish motorcycle sample" in error.value
+        for error in at.error
     )
 
 

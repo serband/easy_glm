@@ -1,4 +1,4 @@
-from .data import load_external_dataframe
+from .data import load_external_dataframe, load_swedish_motorcycle_data
 from .design import (
     CategoricalEncoder,
     DesignSpec,
@@ -34,6 +34,7 @@ __all__ = [
     "to_rate_model",
     "write_rate_tables_xlsx",
     "load_external_dataframe",
+    "load_swedish_motorcycle_data",
     "plot_all_ratetables",
     "add_train_test_split",
     "validate_train_test_column",

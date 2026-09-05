@@ -273,6 +273,9 @@ class ModelRun:
             "family": self.fit.family,
             "alpha": self.fit.alpha,
             "alpha_stage2": self.alpha_stage2,
+            "cv_seed": self.project_snapshot.get("data", {})
+            .get("split", {})
+            .get("seed"),
             "cells_kept": self.cells_kept,
             "features": len(self.fit.coef),
             "non_zero": int((self.fit.coef != 0).sum()),
@@ -353,7 +356,10 @@ def stage2_alpha(cfg: ModelConfig) -> float | None:
 
 
 def snapshot_metrics(
-    fit: GLMFit, metrics: dict[str, dict[str, float]]
+    fit: GLMFit,
+    metrics: dict[str, dict[str, float]],
+    *,
+    cv_seed: int | None = None,
 ) -> dict[str, Any]:
     """``metrics`` (one entry per data subset) plus a ``model`` entry naming the
     penalty of each stage, so a saved ``.easyglm`` says how it was fitted."""
@@ -364,6 +370,7 @@ def snapshot_metrics(
             "alpha": fit.alpha,
             "alpha_stage2": stage2,
             "stages": 2 if stage2 is not None else 1,
+            "cv_seed": cv_seed,
         },
     }
 
@@ -425,6 +432,7 @@ def run_model(
         divide_target_by_weight=cfg.divide_target_by_weight,
         alpha=pen.alpha,
         cv=None if pen.alpha is not None else pen.cv,
+        cv_seed=project.data.split.seed,
         n_alphas=pen.n_alphas,
         l1_ratio=pen.l1_ratio,
         min_alpha_ratio=pen.min_alpha_ratio,
@@ -463,10 +471,14 @@ def run_model(
         for k, v in frames.items()
         if not v.is_empty()
     }
-    metrics = model_metrics(
-        fit, preds, {k: v for k, v in frames.items() if not v.is_empty()}, cfg
+    metric_frames = {k: v for k, v in frames.items() if not v.is_empty()}
+    null_preds = {
+        k: null_model_predict(project, cfg, train, v) for k, v in metric_frames.items()
+    }
+    metrics = model_metrics(fit, preds, metric_frames, cfg, null_preds)
+    rm.set_snapshot_metrics(
+        snapshot_metrics(fit, metrics, cv_seed=project.data.split.seed)
     )
-    rm.set_snapshot_metrics(snapshot_metrics(fit, metrics))
     return ModelRun(
         name=model_name,
         config=project.models[model_name],
@@ -749,7 +761,12 @@ def rebuild_rate_model(project: Project, run: ModelRun, df: pl.DataFrame) -> Mod
     preds = {k: rm.predict(v, exposure_col=None) for k, v in frames.items()}
     run.rate_model = rm
     run.config = cfg
-    run.metrics = model_metrics(run.fit, preds, frames, cfg)
-    rm.set_snapshot_metrics(snapshot_metrics(run.fit, run.metrics))
+    null_preds = {
+        k: null_model_predict(project, cfg, train, v) for k, v in frames.items()
+    }
+    run.metrics = model_metrics(run.fit, preds, frames, cfg, null_preds)
+    rm.set_snapshot_metrics(
+        snapshot_metrics(run.fit, run.metrics, cv_seed=project.data.split.seed)
+    )
     run.tables = rate_tables(run.fit, base=cfg.base)  # type: ignore[arg-type]
     return run

@@ -110,12 +110,27 @@ def expected_claims(rm: Any, df: pl.DataFrame, cfg: ModelConfig) -> float:
 # deviance
 # --------------------------------------------------------------------------
 def deviance_stats(
-    family: Any, y_unit: np.ndarray, mu_unit: np.ndarray, weight: np.ndarray | None
+    family: Any,
+    y_unit: np.ndarray,
+    mu_unit: np.ndarray,
+    weight: np.ndarray | None,
+    mu0_unit: np.ndarray | None = None,
 ) -> dict[str, float]:
-    """Deviance, null deviance and the share explained (``1 - D / D0``)."""
+    """Deviance, null deviance and the share explained (``1 - D / D0``).
+
+    ``mu0_unit`` should come from a null model fitted on training rows. This
+    preserves any offset rather than crediting the fitted factors for
+    variation the offset already explains.
+    """
     w = None if weight is None else np.asarray(weight, dtype=float)
     dev = float(family.deviance(y_unit, mu_unit, sample_weight=w))
-    mu0 = np.full_like(y_unit, np.average(y_unit, weights=w), dtype=float)
+    mu0 = (
+        np.full_like(y_unit, np.average(y_unit, weights=w), dtype=float)
+        if mu0_unit is None
+        else np.asarray(mu0_unit, dtype=float)
+    )
+    if mu0.shape != y_unit.shape:
+        raise ValueError("mu0_unit must have the same shape as y_unit")
     null = float(family.deviance(y_unit, mu0, sample_weight=w))
     n = float(len(y_unit)) if w is None else float(w.sum())
     return {
@@ -524,31 +539,92 @@ def residual_factor_search(
     weight: np.ndarray | None = None,
     *,
     n_bins: int = 10,
+    min_expected: float = 3.0,
+    dispersion: float = 1.0,
 ) -> pl.DataFrame:
-    """Rank variables by how much unexplained structure they show: the
-    exposure-weighted standard deviation of ``log(A/E)`` across their bands.
-    Large values on a variable *not* in the model suggest a missing factor."""
+    """Rank missing factors by noise-adjusted one-way Pearson excess.
+
+    Bands need at least ``min_expected * dispersion`` expected claims. Rare
+    categorical levels are pooled before that test, and zero-actual bands are
+    retained. ``signal`` is ``(X2 - d) / sqrt(2d)`` for ``d = k - 1``; the
+    log-A/E spread remains available as a descriptive secondary measure.
+    """
+    phi = max(float(dispersion), np.finfo(float).eps)
+    threshold = float(min_expected) * phi
     rows = []
     for var in variables:
         try:
+            categorical = df[var].dtype not in NUMERIC_DTYPES
             tbl = ae_by_variable(
-                df, var, actual_total, expected_total, weight, n_bins=n_bins
+                df,
+                var,
+                actual_total,
+                expected_total,
+                weight,
+                n_bins=n_bins,
+                max_levels=100 if categorical else 30,
             )
         except Exception:  # noqa: BLE001
             continue
-        tbl = tbl.filter((pl.col("expected") > 0) & (pl.col("actual") > 0))
-        if tbl.height < 2:
+        total_exposure = float(tbl["exposure"].sum()) or 1.0
+        if categorical:
+            rare = tbl.filter(pl.col("expected") < threshold)
+            tbl = tbl.filter(pl.col("expected") >= threshold)
+            if rare.height:
+                pooled_exposure = float(rare["exposure"].sum())
+                pooled_actual = float(rare["actual"].sum())
+                pooled_expected = float(rare["expected"].sum())
+                if pooled_expected > 0:
+                    pooled = pl.DataFrame(
+                        {
+                            "label": [f"(other {rare.height} levels)"],
+                            "exposure": [pooled_exposure],
+                            "actual": [pooled_actual],
+                            "expected": [pooled_expected],
+                            "ae": [pooled_actual / pooled_expected],
+                            "actual_rate": [
+                                (
+                                    pooled_actual / pooled_exposure
+                                    if pooled_exposure > 0
+                                    else float("nan")
+                                )
+                            ],
+                            "expected_rate": [
+                                (
+                                    pooled_expected / pooled_exposure
+                                    if pooled_exposure > 0
+                                    else float("nan")
+                                )
+                            ],
+                            "order": [int(tbl.height)],
+                        }
+                    )
+                    tbl = pl.concat([tbl, pooled], how="vertical_relaxed")
+        else:
+            tbl = tbl.filter(pl.col("expected") >= threshold)
+        tbl = tbl.filter(pl.col("expected") > 0)
+        k = tbl.height
+        if k < 2:
             continue
-        log_ae = np.log(tbl["ae"].to_numpy())
-        w = tbl["exposure"].to_numpy()
-        mean = np.average(log_ae, weights=w)
-        signal = float(np.sqrt(np.average((log_ae - mean) ** 2, weights=w)))
+        act = tbl["actual"].to_numpy()
+        exp = tbl["expected"].to_numpy()
+        pearson = float(np.sum((act - exp) ** 2 / (phi * exp)))
+        dof = k - 1
+        signal = float((pearson - dof) / np.sqrt(2.0 * dof))
+        # A half-claim continuity correction keeps zero-claim bands visible in
+        # these descriptive columns without affecting the Pearson score.
+        log_ae = np.log((act + 0.5) / (exp + 0.5))
+        band_weight = tbl["exposure"].to_numpy()
+        mean = np.average(log_ae, weights=band_weight)
+        sd = float(np.sqrt(np.average((log_ae - mean) ** 2, weights=band_weight)))
         rows.append(
             {
                 "variable": var,
                 "signal": signal,
+                "sd_log_ae": sd,
                 "max_abs_log_ae": float(np.abs(log_ae).max()),
-                "n_bands": tbl.height,
+                "n_bands": k,
+                "exposure_share": float(tbl["exposure"].sum()) / total_exposure,
             }
         )
     return pl.DataFrame(
@@ -556,8 +632,10 @@ def residual_factor_search(
         schema={
             "variable": pl.Utf8,
             "signal": pl.Float64,
+            "sd_log_ae": pl.Float64,
             "max_abs_log_ae": pl.Float64,
             "n_bands": pl.Int64,
+            "exposure_share": pl.Float64,
         },
     ).sort("signal", descending=True)
 
@@ -833,6 +911,7 @@ def model_metrics(
     pred_unit_by_subset: dict[str, np.ndarray],
     frames: dict[str, pl.DataFrame],
     cfg: ModelConfig,
+    null_pred_unit_by_subset: dict[str, np.ndarray] | None = None,
 ) -> dict[str, dict[str, float]]:
     """Per subset (e.g. ``train`` / ``holdout``): exposure, A/E, Gini, deviance."""
     out: dict[str, dict[str, float]] = {}
@@ -843,7 +922,14 @@ def model_metrics(
         pred = np.asarray(pred_unit_by_subset[name], dtype=float)
         actual, expected, w = totals(frame, cfg, pred)
         y_unit, w_unit = unit_values(frame, cfg)
-        dev = deviance_stats(fam, y_unit, pred, w_unit if cfg.weight else None)
+        mu0 = (
+            None
+            if null_pred_unit_by_subset is None
+            else null_pred_unit_by_subset.get(name)
+        )
+        dev = deviance_stats(
+            fam, y_unit, pred, w_unit if cfg.weight else None, mu0_unit=mu0
+        )
         out[name] = {
             "rows": float(frame.height),
             "exposure": float(w.sum()),

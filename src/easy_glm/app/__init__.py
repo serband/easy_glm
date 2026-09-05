@@ -47,6 +47,13 @@ def _temporary_project_for(data: Any) -> Path:
     project = Project(name="in-memory data")
     project.data.source.type = "parquet"
     project.data.source.path = str(data_path)
+    project.data.split.mode = "random"
+    split_name = "traintest"
+    suffix = 2
+    while split_name in frame.columns:
+        split_name = f"traintest_{suffix}"
+        suffix += 1
+    project.data.split.column = split_name
     project.to_json(project_path)
     return project_path
 

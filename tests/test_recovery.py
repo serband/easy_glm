@@ -120,12 +120,10 @@ class TestPlantedInteraction:
         fit = fit_two_stage(
             planted, _spec(planted, True), "ClaimNb", cv=5, n_alphas=20, **FIT
         )
-        # each stage cross-validates on its own path. With the cells taken out,
-        # stage 1 has nothing left to shrink and CV asks for a far smaller
-        # penalty than the joint fit did (measured 3.6e-06, so the bound is two
-        # orders of magnitude of room); the cells land in the range the joint
-        # fit used to.
-        assert fit.alpha < 1e-4, fit.alpha
+        # Each stage cross-validates on its own seeded, shuffled path. The
+        # selected main penalty is allowed to move from the former contiguous-
+        # fold value, while remaining well below the cell penalty.
+        assert fit.alpha < 5e-4, fit.alpha
         assert 2e-4 < fit.alpha_stage2 < 3e-3, fit.alpha_stage2
         recovered = _double_difference(fit)
         assert 0.45 <= recovered <= 0.95, recovered

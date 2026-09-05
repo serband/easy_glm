@@ -14,6 +14,40 @@ from . import pages_design as D
 from . import state as S
 from . import ui
 
+BASE_RISK_LABELS = {
+    "modal": "Most common risk",
+    "reference": "GLM reference risk",
+}
+
+
+def _base_risk_control(column, name: str, cfg) -> str:
+    """Choose the 1.00 point for presenting the same fitted predictions."""
+    base = column.radio(
+        "Which risk is 1.00 in the rate tables?",
+        ["modal", "reference"],
+        index=0 if cfg.base == "modal" else 1,
+        format_func=BASE_RISK_LABELS.__getitem__,
+        horizontal=False,
+        key=S.widget_key(f"base_{name}"),
+        help=(
+            "The base rate is the prediction for the risk whose factor "
+            "relativities are all 1.00. This choice only changes the base rate and "
+            "the displayed relativities; every fitted prediction stays the same."
+        ),
+    )
+    if base == "modal":
+        column.caption(
+            "**Most common risk** — sets the most-exposed band or level of each "
+            "factor to 1.00."
+        )
+    else:
+        column.caption(
+            "**GLM reference risk** — keeps the original reference band or level "
+            "used when fitting at 1.00."
+        )
+    column.caption("This changes the table presentation, not the predictions.")
+    return base
+
 
 def _column_pick(
     column, label: str, current: str | None, options: list[str], *, key: str, none: bool
@@ -134,14 +168,7 @@ def _fit_options(name: str) -> None:
             help="1 keeps a sparse lasso model; lower values retain more, smaller effects.",
         )
         c1, c2, c3, c4 = st.columns(4)
-        base = c1.radio(
-            "Base risk for tables",
-            ["modal", "reference"],
-            index=0 if cfg.base == "modal" else 1,
-            horizontal=True,
-            key=S.widget_key(f"base_{name}"),
-            help="The 1.00 point used to display the rate tables: most-exposed band or reference level.",
-        )
+        base = _base_risk_control(c1, name, cfg)
         bro_value, bro_problem = ui.repair_number(
             cfg.base_rate_override, 0.0, "base_rate_override"
         )
@@ -397,13 +424,7 @@ def _config(name: str) -> None:
             key=S.widget_key(f"l1_{name}"),
         )
         c1, c2, c3, c4 = st.columns(4)
-        base = c1.radio(
-            "Base risk for tables",
-            ["modal", "reference"],
-            index=0 if cfg.base == "modal" else 1,
-            horizontal=True,
-            key=S.widget_key(f"base_{name}"),
-        )
+        base = _base_risk_control(c1, name, cfg)
         bro_value, bro_problem = ui.repair_number(
             cfg.base_rate_override, 0.0, "base_rate_override"
         )
@@ -668,10 +689,14 @@ def _fit_and_results(name: str) -> None:
     if two_stage:
         stage2_model = run.fit.stage2.model
         stage2_cv = getattr(stage2_model, "cv", None)
+        stage2_folds = getattr(stage2_cv, "n_splits", stage2_cv)
         stage2_n_alphas = getattr(stage2_model, "n_alphas", None)
         selection = (
-            f" Stage 2 independently selected that alpha by {stage2_cv}-fold CV "
-            f"over {stage2_n_alphas} penalties on the interaction cells."
+            f" Stage 2 independently selected that alpha by {stage2_folds}-fold CV "
+            f"over {stage2_n_alphas} penalties on the interaction cells, using "
+            "the same seeded, shuffled folds as the mains. Its offset is assembled "
+            "from out-of-fold stage-1 predictions, so a row's outcome never informs "
+            "the offset used to validate that row."
             if stage2_cv is not None
             else (
                 " Stage 2 honoured a preserved legacy cell-alpha override."

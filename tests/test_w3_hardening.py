@@ -150,7 +150,7 @@ def test_breakage_01_new_project_never_overwrites_the_open_file(workspace):
     at = _run(_script("pages_project", str(workspace["project"])))
     btn = at.button(key=wk(at, "new_project_btn"))
     btn.click().run()  # first click: confirmation
-    assert any("Click the button again" in w.value for w in at.warning)
+    assert any("Confirm: start over" in w.value for w in at.warning)
     assert at.session_state["_path"] == str(workspace["project"])
     at.button(key=wk(at, "new_project_btn")).click().run()  # second click: new project
     assert not at.exception

@@ -224,6 +224,27 @@ class TestFitGLM:
         assert hasattr(fit.model, "alpha_")
         assert np.isfinite(fit.alpha) and fit.alpha > 0
 
+    def test_cv_is_seeded_shuffled_and_stable_to_row_permutation(self, messy_data):
+        kwargs = {"alpha": None, "cv": 3, "n_alphas": 8, "cv_seed": 91}
+        ordered = _fit(messy_data, **kwargs)
+        permuted = _fit(
+            messy_data.sample(fraction=1.0, shuffle=True, seed=123), **kwargs
+        )
+        assert ordered.model.cv.shuffle is True
+        assert ordered.model.cv.random_state == 91
+        assert ordered.alpha == pytest.approx(permuted.alpha, rel=1e-12)
+
+    def test_step_modal_base_never_uses_the_null_row(self):
+        frame = pl.DataFrame(
+            {
+                "x": [None] * 80 + [1.0] * 12 + [2.0] * 8,
+                "y": [0.0] * 80 + [1.0] * 20,
+            }
+        )
+        spec = DesignSpec({"x": StepEncoder("x", [1.5], null_indicator=True)})
+        fit = fit_glm(frame, spec, "y", family="poisson", alpha=0.01)
+        assert fit.modal_bins["x"] != spec["x"].n_rows - 1
+
     def test_input_validation(self, messy_data):
         spec = DesignSpec.from_data(messy_data, PREDICTORS)
         with pytest.raises(ValueError, match="weight_col"):

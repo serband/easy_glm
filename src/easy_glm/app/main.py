@@ -32,6 +32,17 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# The workbench is a local modelling tool. Streamlit's hosting shortcut implies
+# that the current project will be deployed, which is not an EasyGLM action and
+# is misleading here.
+st.html("""
+    <style>
+    [data-testid="stAppDeployButton"], .stAppDeployButton {
+        display: none;
+    }
+    </style>
+    """)
+
 
 def _cli_project() -> str | None:
     for arg in sys.argv[1:]:

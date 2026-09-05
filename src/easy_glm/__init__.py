@@ -52,6 +52,7 @@ from .core import (
     fit_glm,
     fit_two_stage,
     load_external_dataframe,
+    load_swedish_motorcycle_data,
     plot_all_ratetables,
     rate_tables,
     to_rate_model,
@@ -64,6 +65,7 @@ __all__ = [
     "EasyGLM",
     "RateModel",
     "load_external_dataframe",
+    "load_swedish_motorcycle_data",
     "add_train_test_split",
     "launch_workbench",
     # Building blocks

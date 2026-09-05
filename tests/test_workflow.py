@@ -598,7 +598,10 @@ class TestRun:
             assert sub["cv_deviance"].null_count() == 0
         # Stage 2 cross-validates on its own path over its own columns, with
         # exactly the user's CV configuration rather than stage 1's alpha.
-        assert run.fit.stage1.model.cv == run.fit.stage2.model.cv == 2
+        for stage in (run.fit.stage1, run.fit.stage2):
+            assert stage.model.cv.n_splits == 2
+            assert stage.model.cv.shuffle is True
+            assert stage.model.cv.random_state == project.data.split.seed
         assert run.fit.stage1.model.n_alphas == run.fit.stage2.model.n_alphas == 4
         assert run.alpha_stage2 != pytest.approx(run.alpha)
         assert run.alpha_stage2 is not None
@@ -667,22 +670,57 @@ class TestDiagnostics:
     def test_ae_by_variable_and_residual_search(self, project):
         df = prepare(project)
         run = run_model(project, df, "freq")
-        holdout = df.filter(pl.col("traintest") == 0)
-        actual, expected, w = totals(holdout, run.config, run.predict(holdout))
-        tbl = ae_by_variable(holdout, "DrivAge", actual, expected, w)
+        train = df.filter(pl.col("traintest") == 1)
+        actual, expected, w = totals(train, run.config, run.predict(train))
+        tbl = ae_by_variable(train, "DrivAge", actual, expected, w)
         assert tbl["actual"].sum() == pytest.approx(actual.sum())
         assert tbl["label"][-1] == "Other / Unknown"
-        cat = ae_by_variable(holdout, "Region", actual, expected, w)
+        cat = ae_by_variable(train, "Region", actual, expected, w)
         assert cat["exposure"].sum() == pytest.approx(w.sum())
         # plant a missing factor: inflate actuals for Lic == 'Q'
-        planted = np.where(holdout["Lic"].to_numpy() == "Q", actual * 3.0, actual)
-        noise = holdout.with_columns(
-            pl.Series("Noise", np.random.default_rng(1).random(holdout.height))
+        planted = np.where(train["Lic"].to_numpy() == "Q", actual * 3.0, actual)
+        noise = train.with_columns(
+            pl.Series("Noise", np.random.default_rng(1).random(train.height))
         )
         search = residual_factor_search(
             noise, ["Lic", "Noise", "Exp"], planted, expected, w
         )
         assert search["variable"][0] == "Lic"
+        assert {
+            "signal",
+            "sd_log_ae",
+            "max_abs_log_ae",
+            "exposure_share",
+        } <= set(search.columns)
+
+    def test_residual_factor_signal_beats_many_level_noise(self):
+        rng = np.random.default_rng(7)
+        n = 80_000
+        exposure = rng.uniform(0.2, 1.0, n)
+        expected = np.full(n, 0.12) * exposure
+        actual = rng.poisson(expected).astype(float)
+        real = rng.choice(["low", "high"], n)
+        planted = np.where(real == "high", actual * 1.06, actual * 0.94)
+        frame = pl.DataFrame(
+            {
+                "real": real,
+                "noise30": rng.integers(0, 30, n).astype(str),
+                "rare20": np.where(
+                    rng.random(n) < 0.01,
+                    rng.integers(0, 20, n).astype(str),
+                    "common",
+                ),
+                "noise_num": rng.random(n),
+            }
+        )
+        search = residual_factor_search(
+            frame,
+            ["real", "noise30", "rare20", "noise_num"],
+            planted,
+            expected,
+            exposure,
+        )
+        assert search["variable"][0] == "real"
 
     def test_alpha_path_fixed_alpha(self, project):
         run = run_model(project, prepare(project), "freq")
@@ -712,7 +750,15 @@ class TestExport:
         src = to_script(project, "freq")
         assert "fit = fit_two_stage(" in src
         assert "cv=2, n_alphas=4" in src
+        assert f"cv_seed={project.data.split.seed}" in src
         assert "second stage independently evaluates the same folds" in src
+
+        run = run_model(project, prepare(project), "freq")
+        fitted_src = to_script(project, "freq", run=run)
+        assert "from sklearn.model_selection import KFold" in fitted_src
+        assert "stage1_fold = fit_glm(" in fitted_src
+        assert "eta1[score_index]" in fitted_src
+        compile(fitted_src, "exported_cv_model.py", "exec")
         assert (
             "replace_strict" in src
             and "Exp_Q" in src

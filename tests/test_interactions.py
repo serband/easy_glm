@@ -3,6 +3,7 @@ and the two-stage fit (A2) that freezes the mains before fitting the cells."""
 
 from __future__ import annotations
 
+import importlib
 import pickle
 
 import numpy as np
@@ -732,6 +733,28 @@ class TestTwoStageFit:
             )
         assert base_rate(with_cells) == pytest.approx(base_rate(alone), rel=1e-13)
         assert with_cells.modal_bins == alone.modal_bins
+
+    def test_stage_two_cv_receives_out_of_fold_main_offset(
+        self, book, spec, monkeypatch
+    ):
+        fit_module = importlib.import_module("easy_glm.core.fit")
+        original = fit_module.fit_glm
+        captured: dict[str, np.ndarray] = {}
+
+        def recording_fit(data, one_spec, target, **kwargs):
+            if one_spec.interactions and kwargs.get("offset") is not None:
+                captured["stage2_offset"] = np.asarray(kwargs["offset"]).copy()
+            return original(data, one_spec, target, **kwargs)
+
+        monkeypatch.setattr(fit_module, "fit_glm", recording_fit)
+        fitted = fit_module.fit_two_stage(
+            book, spec, "ClaimNb", cv=3, cv_seed=17, n_alphas=5, **FIT_KW
+        )
+        in_sample = fitted.stage1.linear_predictor(book)
+        oof = captured["stage2_offset"]
+        assert np.mean(np.abs(oof - in_sample) > 1e-10) > 0.9
+        assert fitted.stage2.model.cv.n_splits == 3
+        assert fitted.stage2.model.cv.random_state == 17
 
     def test_rate_model_is_exact_and_cells_are_pure_adjustments(self, book, two_stage):
         fit = two_stage

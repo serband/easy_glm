@@ -361,13 +361,16 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
     for v in predictors:
         vd = p.design.variables.get(v, VariableDesign())
         numeric = v in train.columns and train[v].dtype in NUMERIC_DTYPES
+        displayed_bins = (
+            len(vd.knots) + 1 if isinstance(vd.knots, list) else (vd.n_bins or 0)
+        )
         rows.append(
             {
                 "variable": v,
                 "dtype": str(train[v].dtype) if v in train.columns else "?",
                 "kind": vd.kind or "auto",
                 "knots": "custom" if isinstance(vd.knots, list) else vd.knots,
-                "n_bins": vd.n_bins or 0,
+                "n_bins": displayed_bins,
                 "null col": (
                     vd.null_indicator
                     if vd.null_indicator is not None
@@ -404,7 +407,11 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
                 min_value=0,
                 max_value=200,
                 step=1,
-                help="Quantile knot count for this predictor; 0 uses the defaults above.",
+                help=(
+                    "Number of quantile bins to request for this predictor; 0 uses "
+                    "the default above. Repeated cut points can produce fewer bins. "
+                    "For custom knots, this shows the exact number of resulting bins."
+                ),
             ),
             "null col": st.column_config.CheckboxColumn(
                 "null col",
@@ -443,14 +450,25 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
     for _, r in edited.iterrows():
         v = r["variable"]
         vd = p.design.variables.get(v, VariableDesign())
+        requested_bins = int(r["n_bins"])
+        selected_knots = r["knots"]
+        if selected_knots == "custom":
+            previous_displayed_bins = (
+                len(vd.knots) + 1 if isinstance(vd.knots, list) else (vd.n_bins or 0)
+            )
+            if requested_bins != previous_displayed_bins:
+                # Editing n_bins is a request to calculate a fresh quantile
+                # design. Otherwise an old custom list silently wins and the
+                # number appears to do nothing.
+                selected_knots = "quantile"
+            elif isinstance(vd.knots, list):
+                selected_knots = vd.knots
+            else:
+                selected_knots = []  # to be filled in the detail panel
         new = VariableDesign(
             kind=None if r["kind"] == "auto" else r["kind"],
-            knots=(
-                vd.knots
-                if (r["knots"] == "custom" and isinstance(vd.knots, list))
-                else (vd.knots if r["knots"] == "custom" else r["knots"])
-            ),
-            n_bins=int(r["n_bins"]) or None,
+            knots=selected_knots,
+            n_bins=requested_bins or None,
             null_indicator=(
                 None
                 if bool(r["null col"]) == p.design.defaults.null_indicator
@@ -468,8 +486,6 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
             monotone=None if r["monotone"] == "none" else r["monotone"],
             penalty_weight=max(0.0, float(r["penalty"])),
         )
-        if r["knots"] == "custom" and not isinstance(new.knots, list):
-            new.knots = []  # to be filled in the detail panel
         numeric = v in train.columns and train[v].dtype in NUMERIC_DTYPES
         if new.monotone and (not numeric or new.kind == "categorical"):
             ui.flash(
@@ -553,13 +569,44 @@ def _step_detail(
     divide,
 ) -> None:
     p = S.project()
+    custom = isinstance(vd.knots, list)
+    requested_bins = vd.n_bins or p.design.defaults.n_bins
+    actual_bins = len(enc.knots) + 1
     knots_txt = st.text_area(
-        "Knots (comma-separated; editing switches to custom)",
+        (
+            "Custom knots (comma-separated)"
+            if custom
+            else "Calculated knots (edit and apply to override)"
+        ),
         ", ".join(f"{k:g}" for k in enc.knots),
         height=90,
         key=S.widget_key(f"knots_{var}"),
-        help="Band edges. Each band receives its own relativity; use values with enough exposure.",
+        help=(
+            "Band edges. Each band receives its own relativity. The values only "
+            "become custom after you press Apply knots."
+        ),
     )
+    if custom:
+        st.info(
+            f"Custom knots are active. These {len(enc.knots)} knots define "
+            f"{actual_bins} bins and replace automatic quantile binning. The "
+            f"n_bins value in the table therefore reports {actual_bins}. Change "
+            "the knots setting in the table to quantile to calculate them again."
+        )
+    elif vd.knots == "integer":
+        st.info(
+            f"These {len(enc.knots)} knots were calculated from the observed integer "
+            f"values and define {actual_bins} bins. Edit the list and press Apply "
+            "knots to replace them with exact custom values."
+        )
+    else:
+        st.info(
+            f"These {len(enc.knots)} unique knots were calculated from the requested "
+            f"{requested_bins} quantile bins, giving {actual_bins} actual bins. "
+            "Repeated quantile cut points are removed, so the actual count can be "
+            "lower. Edit the list and press Apply knots to use exact custom values "
+            "instead."
+        )
     if st.button("Apply knots", key=S.widget_key(f"apply_knots_{var}")):
         try:
             knots = _parse_numbers(knots_txt)
@@ -571,8 +618,14 @@ def _step_detail(
             else:
                 _knots_outside_the_data(var, knots, train[var])
                 vd.knots = knots
+                vd.n_bins = len(knots) + 1
                 p.design.variables[var] = vd
                 S.touch()
+                ui.flash(
+                    "success",
+                    f"{var}: using {len(knots)} custom knots ({len(knots) + 1} bins) "
+                    "instead of automatic quantile binning",
+                )
                 st.rerun()
     u = univariate(
         preview,
@@ -849,8 +902,14 @@ def _detail(
                     st.error(f"Knots: {err}")
                 else:
                     vd.knots = knots
+                    vd.n_bins = len(knots) + 1
                     p.design.variables[var] = vd
                     S.touch()
+                    ui.flash(
+                        "success",
+                        f"{var}: using {len(knots)} custom knots "
+                        f"({len(knots) + 1} bins) instead of automatic quantile binning",
+                    )
                     st.rerun()
         return
     if isinstance(enc, StepEncoder):
@@ -957,7 +1016,11 @@ def _interactions(train: pl.DataFrame, name: str) -> None:
                             "New interactions select their penalty automatically."
                         )
     else:
-        st.caption("No interactions in this model yet.")
+        st.info(
+            "**No interactions are included in this model yet.** The controls and "
+            "chart below only preview a possible interaction. Nothing will be fitted "
+            "unless you press **Add interaction**."
+        )
     preds = list(cfg.predictors)
     if len(preds) < 2:
         st.info("The model needs at least two predictors before adding an interaction.")

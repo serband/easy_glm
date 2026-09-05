@@ -32,11 +32,15 @@ from easy_glm.workflow import (
     Interaction,
     Project,
     VariableDesign,
+    deviance_stats,
+    null_model_predict,
     premium_offset_column,
     prepare,
     run_model,
     solve_base_rate,
     to_script,
+    train_holdout,
+    unit_values,
 )
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
@@ -159,6 +163,26 @@ class TestRateChangeSetup:
         assert rm.metadata.offset_is_premium is True
         assert rm.relativity_label == "multiplier on current premium"
         assert "overall" in rm.relativity_note and "differential" in rm.relativity_note
+
+    def test_deviance_explained_uses_train_fitted_offset_null(self, data_path):
+        project = rate_change_project(data_path)
+        frame = prepare(project)
+        run = run_model(project, frame, "change")
+        train, holdout = train_holdout(frame, project.data.split)
+        for name, subset in (("train", train), ("holdout", holdout)):
+            null_prediction = null_model_predict(project, run.config, train, subset)
+            y_unit, _weight = unit_values(subset, run.config)
+            expected = deviance_stats(
+                run.fit.model.family_instance,
+                y_unit,
+                run.predict(subset),
+                None,
+                mu0_unit=null_prediction,
+            )
+            assert run.metrics[name]["deviance_explained"] == pytest.approx(
+                expected["deviance_explained"]
+            )
+            assert 0 <= run.metrics[name]["deviance_explained"] <= 1
 
     def test_excel_summary_says_how_to_read_the_tables(self, data_path, tmp_path):
         p = rate_change_project(data_path)
@@ -1084,9 +1108,28 @@ class TestCliWorkbench:
         project_arg = next(arg for arg in seen if arg.startswith("--project="))
         project = Project.from_json(project_arg.removeprefix("--project="))
         assert project.name == "in-memory data"
+        assert project.data.split.mode == "random"
+        assert project.data.split.column == "traintest"
         assert pl.read_parquet(project.data.source.path).to_dict(as_series=False) == {
             "claims": [0, 1]
         }
+
+    def test_in_memory_frame_does_not_overwrite_an_existing_split_name(
+        self, tmp_path, monkeypatch
+    ):
+        import easy_glm.app as app
+        from easy_glm.workflow import Project, prepare
+
+        monkeypatch.setattr(app.tempfile, "mkdtemp", lambda **_: str(tmp_path))
+        project = Project.from_json(
+            app._temporary_project_for(pl.DataFrame({"traintest": [7, 8]}))
+        )
+
+        assert project.data.split.mode == "random"
+        assert project.data.split.column == "traintest_2"
+        prepared = prepare(project)
+        assert prepared["traintest"].to_list() == [7, 8]
+        assert "traintest_2" in prepared.columns
 
     def test_public_launcher_rejects_a_project_and_data_together(self):
         import easy_glm

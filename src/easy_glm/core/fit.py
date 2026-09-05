@@ -30,6 +30,7 @@ from glum import (
     GeneralizedLinearRegressorCV,
     TweedieDistribution,
 )
+from sklearn.model_selection import KFold
 
 from .design import (
     SCORING_CHUNK_ROWS,
@@ -425,9 +426,13 @@ def _modal_bins(
             out[var] = _continuous_base_row(enc, x, w)
             continue
         counts = exposures[var].copy()
-        if isinstance(enc, LinearEncoder) and len(counts) > 1:
-            # the base of a linear term is a point on the curve (x_base), so the
-            # null row is never the base even when it carries the most exposure
+        if (
+            isinstance(enc, StepEncoder | LinearEncoder)
+            and enc.null_indicator
+            and len(counts) > 1
+        ):
+            # The base risk must be an observed point on the numeric curve, not
+            # the separate null adjustment, even when nulls carry the most exposure.
             counts[-1] = -1.0
         out[var] = int(np.argmax(counts))
     return out
@@ -717,6 +722,7 @@ def fit_glm(
     alpha: float | None = None,
     l1_ratio: float | list[float] = 1.0,
     cv: int | None = None,
+    cv_seed: int = 42,
     n_alphas: int = 20,
     min_alpha_ratio: float | None = None,
     monotone: Mapping[str, Direction] | None = None,
@@ -757,7 +763,11 @@ def fit_glm(
         meaningful with ``cv``.
     cv : int, optional
         Number of folds; the alpha (and l1_ratio) minimising CV deviance over a
-        ``n_alphas``-point path is chosen. Overrides ``alpha``.
+        ``n_alphas``-point path is chosen. Folds are shuffled reproducibly
+        using ``cv_seed``. Overrides ``alpha``.
+    cv_seed : int
+        Seed used when shuffling cross-validation folds. It has no effect on a
+        fixed-alpha fit.
     monotone : {variable: "increasing" | "decreasing"}, optional
         Sign constraints on step increments / piecewise-linear band slopes
         (see :func:`monotone_bounds`).
@@ -918,7 +928,10 @@ def fit_glm(
         if alpha is not None:
             warnings.warn("alpha is ignored when cv is set", stacklevel=2)
         model = GeneralizedLinearRegressorCV(
-            cv=cv, n_alphas=n_alphas, min_alpha_ratio=min_alpha_ratio, **common
+            cv=KFold(n_splits=cv, shuffle=True, random_state=cv_seed),
+            n_alphas=n_alphas,
+            min_alpha_ratio=min_alpha_ratio,
+            **common,
         )
     else:
         if isinstance(l1_ratio, list | tuple):
@@ -1108,8 +1121,9 @@ def fit_two_stage(
     * ``stage2_alpha`` if given (an explicit strength for the cells, which
       overrides cross-validation for this stage);
     * otherwise, when stage 1 used ``cv``, stage 2 independently uses the same
-      number of folds and path points on its *own* cell columns; it does not
-      reuse the main-effects alpha;
+      seeded, shuffled folds and path points on its *own* cell columns; its
+      offset is assembled from out-of-fold stage-1 predictions, so no row's
+      outcome has already informed the offset used to validate that row;
     * otherwise (a fixed-alpha main fit), stage 2 uses that fixed alpha.
 
     Per-interaction differences in strength belong in
@@ -1144,16 +1158,62 @@ def fit_two_stage(
 
     kwargs = {**kwargs, "progress": _stage_progress("Stage 1, main effects")}
     fit1 = fit_glm(data, spec.main_effects_spec(), target, **kwargs)
+
     # eta1 must be the *whole* of stage 1's linear predictor, the user's offset
     # included, or stage 2 would see a residual that still contains the offset
     # and would put it in the cells. linear_predictor() adds neither form of
     # offset, so both are added here.
-    eta1 = fit1.linear_predictor(data)
-    if fit1.offset_col:
-        eta1 = eta1 + data[fit1.offset_col].cast(pl.Float64).to_numpy()
-    user_offset = kwargs.get("offset")
-    if user_offset is not None:
-        eta1 = eta1 + np.asarray(user_offset, dtype=float)
+    def _whole_eta(fit: GLMFit, rows: pl.DataFrame, row_index=None) -> np.ndarray:
+        eta = fit.linear_predictor(rows)
+        if fit.offset_col:
+            eta = eta + rows[fit.offset_col].cast(pl.Float64).to_numpy()
+        full_offset = kwargs.get("offset")
+        if full_offset is not None:
+            values = np.asarray(full_offset, dtype=float)
+            eta = eta + (values if row_index is None else values[row_index])
+        return eta
+
+    eta1 = _whole_eta(fit1, data)
+    stage2_uses_cv = (
+        stage2_alpha is None
+        and kwargs.get("cv") is not None
+        and kwargs.get("alpha") is None
+    )
+    eta_stage2 = eta1
+    if stage2_uses_cv:
+        folds = int(kwargs["cv"])
+        seed = int(kwargs.get("cv_seed", 42))
+        eta_stage2 = np.empty(data.height, dtype=float)
+        splitter = KFold(n_splits=folds, shuffle=True, random_state=seed)
+        fold_kwargs = {
+            k: v
+            for k, v in kwargs.items()
+            if k not in {"alpha", "cv", "progress", "offset"}
+        }
+        fold_kwargs["alpha"] = fit1.alpha
+        full_offset = kwargs.get("offset")
+        for fold_number, (fit_index, score_index) in enumerate(
+            splitter.split(np.arange(data.height)), start=1
+        ):
+            if outer_progress is not None:
+                outer_progress(
+                    f"Stage 2 preparation — fitting main effects for fold "
+                    f"{fold_number} of {folds}"
+                )
+            one_fold_kwargs = dict(fold_kwargs)
+            if full_offset is not None:
+                one_fold_kwargs["offset"] = np.asarray(full_offset, dtype=float)[
+                    fit_index
+                ]
+            fold_fit = fit_glm(
+                data[fit_index],
+                spec.main_effects_spec(),
+                target,
+                **one_fold_kwargs,
+            )
+            eta_stage2[score_index] = _whole_eta(
+                fold_fit, data[score_index], score_index
+            )
 
     dropped = {
         "monotone",
@@ -1181,7 +1241,7 @@ def fit_two_stage(
         data,
         spec.interactions_spec(),
         target,
-        offset=eta1,
+        offset=eta_stage2,
         fit_intercept=False,
         **kw2,
     )
