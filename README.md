@@ -28,6 +28,8 @@ You can also open it from a Python session:
 import easy_glm
 
 easy_glm.launch_workbench()
+# Explicit port/headless settings (useful on Windows and remote shells):
+easy_glm.launch_workbench(port=8501, headless=True)
 ```
 
 To open a Polars or pandas dataframe that is already in memory:
@@ -38,6 +40,8 @@ easy_glm.launch_workbench(data=df)
 
 The workbench opens with `df` loaded. Choose the target, weight and predictors
 on the **Variables** page, then define and fit the model on the **Model** page.
+`launch_workbench()` prints the exact URL to open (for example,
+`http://localhost:8501`).
 
 For a first run without supplying a file, open **Project & data** and choose the
 French motor sample for Poisson claim frequency or the Swedish motorcycle

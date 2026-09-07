@@ -17,6 +17,7 @@ exported as a Python script from the Export page. It is included in the normal
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -58,25 +59,20 @@ def _temporary_project_for(data: Any) -> Path:
     return project_path
 
 
-def launch(
-    project_path: str | Path | None = None,
+def _url_for(host: str | None, port: int) -> str:
+    shown_host = host or "localhost"
+    if shown_host == "0.0.0.0":
+        shown_host = "localhost"
+    return f"http://{shown_host}:{port}"
+
+
+def _streamlit_args(
+    project_path: str | Path | None,
     *,
-    data: Any | None = None,
-    port: int = 8501,
-    block: bool = False,
-    headless: bool = False,
-) -> subprocess.Popen:
-    """Start the workbench in a separate Streamlit process.
-
-    Pass either a saved workbench ``project_path`` or an in-memory Polars or
-    pandas ``data`` frame. With a frame, the workbench opens with the data
-    loaded and the user assigns its modelling roles in the browser.
-    """
-    if project_path is not None and data is not None:
-        raise ValueError("pass project_path or data, not both")
-    if data is not None:
-        project_path = _temporary_project_for(data)
-
+    port: int,
+    headless: bool,
+    host: str | None,
+) -> list[str]:
     main = Path(__file__).with_name("main.py")
     args = [
         sys.executable,
@@ -93,12 +89,90 @@ def launch(
         "--server.maxUploadSize",
         "2048",
     ]
+    if host:
+        args += ["--server.address", host]
     if headless:
         args += ["--server.headless", "true"]
     args.append("--")
     if project_path is not None:
         args.append(f"--project={project_path}")
-    proc = subprocess.Popen(args)
+    return args
+
+
+def _launcher_args(
+    project_path: str | Path | None,
+    *,
+    port: int,
+    headless: bool,
+    host: str | None,
+) -> list[str]:
+    args = [sys.executable, "-m", "easy_glm.app"]
+    if project_path is not None:
+        args.append(str(project_path))
+    args += ["--port", str(port)]
+    if host:
+        args += ["--host", host]
+    if headless:
+        args.append("--headless")
+    return args
+
+
+def launch(
+    project_path: str | Path | None = None,
+    *,
+    data: Any | None = None,
+    port: int = 8501,
+    block: bool = False,
+    headless: bool = False,
+    host: str | None = "localhost",
+) -> subprocess.Popen:
+    """Start the workbench in a separate Streamlit process.
+
+    Pass either a saved workbench ``project_path`` or an in-memory Polars or
+    pandas ``data`` frame. With a frame, the workbench opens with the data
+    loaded and the user assigns its modelling roles in the browser.
+    """
+    if project_path is not None and data is not None:
+        raise ValueError("pass project_path or data, not both")
+    if data is not None:
+        project_path = _temporary_project_for(data)
+
+    url = _url_for(host, port)
+    print(f"easy_glm workbench: opening at {url}")
+    if block:
+        proc = subprocess.Popen(
+            _streamlit_args(
+                project_path=project_path, port=port, headless=headless, host=host
+            )
+        )
+    else:
+        fd, log_path = tempfile.mkstemp(prefix="easy_glm_workbench_", suffix=".log")
+        with os.fdopen(fd, "w", encoding="utf-8") as log_file:
+            proc = subprocess.Popen(
+                _launcher_args(
+                    project_path=project_path, port=port, headless=headless, host=host
+                ),
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        try:
+            proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            print(
+                "easy_glm workbench: process started; "
+                f"if startup fails, see {log_path}",
+            )
+            return proc
+        details = Path(log_path).read_text(encoding="utf-8", errors="replace").strip()
+        if not details:
+            details = "(no child-process output)"
+        raise RuntimeError(
+            "easy_glm workbench failed to start. "
+            f"Command: {' '.join(_launcher_args(project_path=project_path, port=port, headless=headless, host=host))}\n"
+            f"Expected URL: {url}\n"
+            f"Startup output:\n{details}"
+        )
     if block:
         try:
             proc.wait()
