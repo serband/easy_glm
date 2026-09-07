@@ -22,6 +22,8 @@ df = easy_glm.load_swedish_motorcycle_data()
 df = df.filter(pl.col("Exposure") > 0)
 
 easy_glm.launch_workbench(data=df)
+# Optional explicit settings:
+# easy_glm.launch_workbench(data=df, port=8501, headless=True)
 ```
 
 A pandas dataframe is also accepted. EasyGLM converts the supplied frame to

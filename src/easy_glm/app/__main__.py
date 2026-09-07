@@ -14,10 +14,21 @@ def main() -> None:
     parser.add_argument("project", nargs="?", help="project JSON to open")
     parser.add_argument("--port", type=int, default=8501)
     parser.add_argument(
+        "--host",
+        default="localhost",
+        help="host/interface to bind (default: localhost)",
+    )
+    parser.add_argument(
         "--headless", action="store_true", help="do not open a browser tab"
     )
     args = parser.parse_args()
-    launch(args.project, port=args.port, block=True, headless=args.headless)
+    launch(
+        args.project,
+        port=args.port,
+        host=args.host,
+        block=True,
+        headless=args.headless,
+    )
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ F   the ``easy-glm`` console script, driven through ``subprocess``.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -1057,29 +1058,28 @@ class TestCliWorkbench:
             "headless": True,
         }
 
-    def test_launcher_suppresses_streamlits_first_run_email_prompt(self, monkeypatch):
-        """A first run must not ask for an email or try to submit one.
-
-        The submission is both irrelevant to EasyGLM and can produce a long SSL
-        traceback on corporate Windows machines before the workbench opens.
-        """
+    def test_launcher_uses_the_public_easy_glm_app_entrypoint(self, monkeypatch):
         import easy_glm.app as app
 
         seen: list[str] = []
 
         class FakeProc:
-            def wait(self):
-                raise AssertionError("launch(block=False) must not wait")
+            def wait(self, timeout=None):
+                raise app.subprocess.TimeoutExpired(
+                    cmd="python -m easy_glm.app", timeout=timeout
+                )
 
-        def fake_popen(args):
+        def fake_popen(args, **_kwargs):
             seen.extend(args)
             return FakeProc()
 
         monkeypatch.setattr(app.subprocess, "Popen", fake_popen)
-        app.launch(port=8599)
+        app.launch(port=8599, headless=True)
 
-        assert seen[seen.index("--server.showEmailPrompt") + 1] == "false"
-        assert seen[seen.index("--browser.gatherUsageStats") + 1] == "false"
+        assert seen[:3] == [sys.executable, "-m", "easy_glm.app"]
+        assert "--port" in seen and "8599" in seen
+        assert "--headless" in seen
+        assert "--server.port" not in seen
 
     def test_launcher_is_available_from_the_public_package(self):
         import easy_glm
@@ -1095,24 +1095,62 @@ class TestCliWorkbench:
         seen: list[str] = []
 
         class FakeProc:
-            pass
+            def wait(self, timeout=None):
+                raise app.subprocess.TimeoutExpired(
+                    cmd="python -m easy_glm.app", timeout=timeout
+                )
 
         monkeypatch.setattr(app.tempfile, "mkdtemp", lambda **_: str(tmp_path))
         monkeypatch.setattr(
-            app.subprocess, "Popen", lambda args: seen.extend(args) or FakeProc()
+            app.subprocess,
+            "Popen",
+            lambda args, **_kwargs: seen.extend(args) or FakeProc(),
         )
 
         result = easy_glm.launch_workbench(data=pl.DataFrame({"claims": [0, 1]}))
 
         assert isinstance(result, FakeProc)
-        project_arg = next(arg for arg in seen if arg.startswith("--project="))
-        project = Project.from_json(project_arg.removeprefix("--project="))
+        project_path = Path(next(arg for arg in seen if arg.endswith(".easyglm-project.json")))
+        project = Project.from_json(project_path)
         assert project.name == "in-memory data"
         assert project.data.split.mode == "random"
         assert project.data.split.column == "traintest"
         assert pl.read_parquet(project.data.source.path).to_dict(as_series=False) == {
             "claims": [0, 1]
         }
+
+    def test_launcher_surfaces_fast_child_process_failures(self, monkeypatch, tmp_path):
+        import easy_glm.app as app
+
+        log_path = tmp_path / "launch.log"
+        args_seen: list[str] = []
+
+        class FakeProc:
+            returncode = 1
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        def fake_mkstemp(*_args, **_kwargs):
+            return os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), str(
+                log_path
+            )
+
+        def fake_popen(args, **kwargs):
+            args_seen.extend(args)
+            kwargs["stdout"].write("boom from child\n")
+            return FakeProc()
+
+        monkeypatch.setattr(app.tempfile, "mkstemp", fake_mkstemp)
+        monkeypatch.setattr(app.subprocess, "Popen", fake_popen)
+
+        with pytest.raises(RuntimeError, match="failed to start") as exc:
+            app.launch(port=8507, headless=True)
+
+        msg = str(exc.value)
+        assert "boom from child" in msg
+        assert "http://localhost:8507" in msg
+        assert "--headless" in " ".join(args_seen)
 
     def test_in_memory_frame_does_not_overwrite_an_existing_split_name(
         self, tmp_path, monkeypatch
