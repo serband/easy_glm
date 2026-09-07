@@ -2,6 +2,34 @@
 
 This is the user-facing record of useful new features and fixes.
 
+## 0.4.5 — 7 September 2026
+
+### New features
+
+- **Bulk variable setup with JSON.** On the Variables page, switch from the
+  table to a copy/paste JSON editor to assign roles, rename columns and set
+  type overrides across large datasets. EasyGLM shows the proposed changes
+  first and refuses invalid roles, unknown columns and conflicting names
+  without changing the project.
+- **Less duplication in the sidebar.** The sidebar now identifies the current
+  project and its save state without repeating the save and open controls from
+  Project & data.
+- **Your data comes first.** Project & data now leads with the normal file
+  path, type and upload controls. The French and Swedish starter datasets are
+  smaller, optional examples at the bottom of the data-source panel.
+- **Exports represent completed work.** The Export page now stays closed until
+  a model has been fitted and lists only models whose current specification has
+  a valid fit.
+- **Split before you explore.** Train/holdout setup now sits on the Variables
+  page. Later workflow pages stay locked until both subsets exist, and Explore
+  uses training rows only so the holdout remains an honest validation set.
+- **Champion status is explicit.** The first model actually fitted becomes the
+  champion automatically. Its Model-page control now says **Champion**, while
+  an unfitted model cannot be promoted accidentally.
+- **Diagnostic recommendations are actionable.** One or more missing factors,
+  or a suggested interaction, can be added to the selected model directly from
+  Diagnostics. EasyGLM then opens that model for review and refitting.
+
 ## 0.4.4 — 5 September 2026
 
 ### New features

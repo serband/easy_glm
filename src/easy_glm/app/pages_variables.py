@@ -8,7 +8,9 @@ a role change keeps every model consistent — are unit-testable.
 
 from __future__ import annotations
 
+import json
 import math
+from copy import deepcopy
 from typing import Any
 
 import pandas as pd
@@ -17,13 +19,15 @@ import streamlit as st
 
 from easy_glm.core.design import NUMERIC_DTYPES
 from easy_glm.workflow import Derived, Project, Recode, apply_variables, eval_expr
-from easy_glm.workflow.project import ROLES, premium_offset_column
+from easy_glm.workflow.project import ROLES, SINGLE_ROLES, premium_offset_column
 
+from . import pages_split, ui
 from . import state as S
-from . import ui
 
 ROLE_OPTIONS = ["unassigned", *ROLES]
 TYPE_OPTIONS = ["auto", "categorical", "numeric"]
+BULK_ROLE_GROUPS = ("predictor", "id", "unassigned", "ignore")
+BULK_TYPE_GROUPS = ("categorical", "numeric", "auto")
 
 
 def _guess_role(name: str, dtype: pl.DataType, n_unique: int, n: int) -> str:
@@ -64,51 +68,96 @@ def apply_roles_grid(
     """
     notices: list[tuple[str, str]] = []
     changed = False
-    # final names as they stand now, per raw column
+    # Final names as they stand now, and as this edit wants them. Validate the
+    # whole set before changing anything: a pasted bulk edit must never be
+    # half-applied just because its last row contains a collision.
     finals = {c: p.data.renames.get(c, c) for c in raw_columns}
+    wanted_finals = dict(finals)
     derived_names = {d.name for d in p.data.derived}
-    for r in rows:
+    rows_by_column = {r.get("column"): r for r in rows}
+    for raw_name, r in rows_by_column.items():
+        if raw_name not in finals:
+            continue
+        wanted_finals[raw_name] = _cell_text(r.get("rename to")) or raw_name
+
+    collisions: dict[str, list[str]] = {}
+    for raw_name, final in wanted_finals.items():
+        collisions.setdefault(final, []).append(raw_name)
+    duplicate_names = {name: cols for name, cols in collisions.items() if len(cols) > 1}
+    if duplicate_names:
+        for name, cols in duplicate_names.items():
+            notices.append(
+                (
+                    "error",
+                    f"Cannot use final name {name!r} for {', '.join(cols)}. "
+                    "Another column already has that name; every column needs a "
+                    "different final name. Nothing was changed.",
+                )
+            )
+        return False, notices
+    for raw_name, final in wanted_finals.items():
+        if final in derived_names and final != finals[raw_name]:
+            notices.append(
+                (
+                    "error",
+                    f"Cannot rename {raw_name!r} to {final!r}: a derived column "
+                    "already has that name. Nothing was changed.",
+                )
+            )
+    if notices:
+        return False, notices
+
+    # Rename through unique temporary names. This makes a bulk swap such as
+    # A -> B and B -> A well-defined, and lets us apply every validated rename
+    # atomically rather than depending on JSON/grid row order.
+    rename_plans: list[tuple[str, str, str, list[str], list[str]]] = []
+    reserved = set(finals.values()) | set(wanted_finals.values()) | derived_names
+    for index, raw_name in enumerate(raw_columns):
+        current = finals[raw_name]
+        wanted = wanted_finals[raw_name]
+        if current == wanted:
+            continue
+        temporary = f"__easy_glm_bulk_rename_{index}__"
+        while temporary in reserved:
+            temporary += "_"
+        reserved.add(temporary)
+        expressions = p.expressions_using(current)
+        p.data.renames[raw_name] = temporary
+        touched = p.rename_column(current, temporary)
+        rename_plans.append((raw_name, current, wanted, expressions, touched))
+        finals[raw_name] = temporary
+
+    for raw_name, current, wanted, expressions, touched in rename_plans:
+        temporary = finals[raw_name]
+        touched = sorted(set(touched) | set(p.rename_column(temporary, wanted)))
+        if wanted == raw_name:
+            p.data.renames.pop(raw_name, None)
+        else:
+            p.data.renames[raw_name] = wanted
+        finals[raw_name] = wanted
+        changed = True
+        if touched:
+            notices.append(
+                (
+                    "info",
+                    f"{current!r} renamed to {wanted!r} in model(s): "
+                    + ", ".join(touched),
+                )
+            )
+        if expressions:
+            notices.append(
+                (
+                    "info",
+                    f"{current!r} renamed to {wanted!r} in "
+                    f"{len(expressions)} row filter / derived formula(s): "
+                    + "; ".join(expressions),
+                )
+            )
+
+    for raw_name, r in rows_by_column.items():
         raw_name = r["column"]
         if raw_name not in finals:
             continue
-        wanted = _cell_text(r.get("rename to")) or raw_name
-        current = finals[raw_name]
-        if wanted != current:
-            others = {v for c, v in finals.items() if c != raw_name} | derived_names
-            if wanted in others:
-                notices.append(
-                    (
-                        "error",
-                        f"Cannot rename {raw_name!r} to {wanted!r}: another column "
-                        "already has that name. Rename not saved.",
-                    )
-                )
-            else:
-                if wanted == raw_name:
-                    p.data.renames.pop(raw_name, None)
-                else:
-                    p.data.renames[raw_name] = wanted
-                expressions = p.expressions_using(current)
-                touched = p.rename_column(current, wanted)
-                finals[raw_name] = wanted
-                changed = True
-                if touched:
-                    notices.append(
-                        (
-                            "info",
-                            f"{current!r} renamed to {wanted!r} in model(s): "
-                            + ", ".join(touched),
-                        )
-                    )
-                if expressions:
-                    notices.append(
-                        (
-                            "info",
-                            f"{current!r} renamed to {wanted!r} in "
-                            f"{len(expressions)} row filter / derived formula(s): "
-                            + "; ".join(expressions),
-                        )
-                    )
         final = finals[raw_name]
         role = r.get("role") or "unassigned"
         if role == "unassigned":
@@ -133,6 +182,226 @@ def apply_roles_grid(
             p.data.types[final] = kind
             changed = True
     return changed, notices
+
+
+def variable_setup_json(p: Project, raw_columns: list[str]) -> str:
+    """A compact, copy/paste-friendly snapshot of the variables grid.
+
+    Column names in every section are deliberately the raw source names: they
+    remain stable when ``renames`` changes and make pasted settings unambiguous.
+    Ignored columns and automatic types are omitted because those are the bulk
+    format's defaults. Unassigned columns are listed explicitly so regenerating
+    and applying the current setup is lossless.
+    """
+    renames: dict[str, str] = {}
+    assignments: dict[str, str] = {}
+    roles: dict[str, list[str]] = {}
+    types: dict[str, list[str]] = {}
+    for raw_name in raw_columns:
+        final = p.data.renames.get(raw_name, raw_name)
+        if final != raw_name:
+            renames[raw_name] = final
+        role = p.data.roles.get(final, "unassigned")
+        if role in SINGLE_ROLES:
+            assignments[role] = raw_name
+        elif role != "ignore":
+            roles.setdefault(role, []).append(raw_name)
+        kind = p.data.types.get(final, "auto")
+        if kind != "auto":
+            types.setdefault(kind, []).append(raw_name)
+    setup = {
+        "renames": renames,
+        "assignments": assignments,
+        "roles": roles,
+        "types": types,
+    }
+    return json.dumps(setup, indent=2, ensure_ascii=False)
+
+
+def parse_variable_setup_json(
+    p: Project, raw_columns: list[str], text: str
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Parse a section-based bulk variable setup without mutating ``p``.
+
+    Omitted renames leave the source name unchanged; columns absent from both
+    assignments and roles default to ignore; columns absent from types default
+    to auto. Every column reference is a raw source-column name.
+    """
+    try:
+        payload = json.loads(text)
+    except (TypeError, json.JSONDecodeError) as exc:
+        return [], [f"Invalid JSON: {exc}"]
+    if not isinstance(payload, dict):
+        return [], ["The JSON must be an object containing the four sections."]
+
+    raw_set = set(raw_columns)
+    errors: list[str] = []
+    allowed_sections = {"renames", "assignments", "roles", "types"}
+    unknown_sections = sorted(set(payload) - allowed_sections)
+    if unknown_sections:
+        errors.append(
+            "Unknown top-level section(s): "
+            + ", ".join(repr(name) for name in unknown_sections)
+        )
+
+    sections: dict[str, dict[str, Any]] = {}
+    for name in allowed_sections:
+        section = payload.get(name, {})
+        if not isinstance(section, dict):
+            errors.append(f"{name!r} must be a JSON object.")
+            sections[name] = {}
+        else:
+            sections[name] = section
+
+    rows_by_column = {
+        raw_name: {
+            "column": raw_name,
+            "rename to": "",
+            "role": "ignore",
+            "type": "auto",
+        }
+        for raw_name in raw_columns
+    }
+
+    def raw_column(value: Any, where: str) -> str | None:
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"{where} must name one raw source column.")
+            return None
+        clean = value.strip()
+        if clean not in raw_set:
+            errors.append(f"{where} refers to unknown raw column {clean!r}.")
+            return None
+        return clean
+
+    for raw_name, wanted in sections["renames"].items():
+        source = raw_column(raw_name, "A renames key")
+        if source is None:
+            continue
+        if wanted is None:
+            continue
+        if not isinstance(wanted, str) or not wanted.strip():
+            errors.append(f"renames.{source} must be a non-empty name or null.")
+            continue
+        rows_by_column[source]["rename to"] = wanted.strip()
+
+    assigned_roles: dict[str, str] = {}
+
+    def assign_role(raw_name: str, role: str, where: str) -> None:
+        previous = assigned_roles.get(raw_name)
+        if previous is not None and previous != role:
+            errors.append(
+                f"Raw column {raw_name!r} appears in both {previous!r} and "
+                f"{role!r} roles ({where})."
+            )
+            return
+        assigned_roles[raw_name] = role
+        rows_by_column[raw_name]["role"] = role
+
+    for role, value in sections["assignments"].items():
+        if role not in SINGLE_ROLES:
+            errors.append(
+                f"assignments.{role} is not a single-column assignment; use one "
+                "of: " + ", ".join(SINGLE_ROLES)
+            )
+            continue
+        source = raw_column(value, f"assignments.{role}")
+        if source is not None:
+            assign_role(source, role, f"assignments.{role}")
+
+    for role, values in sections["roles"].items():
+        if role not in BULK_ROLE_GROUPS:
+            errors.append(
+                f"roles.{role} is not valid here; use one of: "
+                + ", ".join(BULK_ROLE_GROUPS)
+            )
+            continue
+        if not isinstance(values, list):
+            errors.append(f"roles.{role} must be a JSON list of raw columns.")
+            continue
+        for index, value in enumerate(values):
+            source = raw_column(value, f"roles.{role}[{index}]")
+            if source is not None:
+                assign_role(source, role, f"roles.{role}")
+
+    assigned_types: dict[str, str] = {}
+    for kind, values in sections["types"].items():
+        if kind not in BULK_TYPE_GROUPS:
+            errors.append(
+                f"types.{kind} is not valid; use one of: " + ", ".join(BULK_TYPE_GROUPS)
+            )
+            continue
+        if not isinstance(values, list):
+            errors.append(f"types.{kind} must be a JSON list of raw columns.")
+            continue
+        for index, value in enumerate(values):
+            source = raw_column(value, f"types.{kind}[{index}]")
+            if source is None:
+                continue
+            previous = assigned_types.get(source)
+            if previous is not None and previous != kind:
+                errors.append(
+                    f"Raw column {source!r} appears in both {previous!r} and "
+                    f"{kind!r} type groups."
+                )
+                continue
+            assigned_types[source] = kind
+            rows_by_column[source]["type"] = kind
+
+    rows = [rows_by_column[name] for name in raw_columns]
+
+    if errors:
+        return rows, errors
+
+    # Exercise the exact same rules as Apply, but only on a copy. This catches
+    # final-name collisions and guarantees the real project remains untouched.
+    candidate = deepcopy(p)
+    _changed, notices = apply_roles_grid(candidate, raw_columns, rows)
+    errors.extend(text for kind, text in notices if kind == "error")
+    return rows, errors
+
+
+def variable_setup_changes(
+    p: Project, raw_columns: list[str], rows: list[dict[str, str]]
+) -> list[dict[str, str]]:
+    """Plain preview rows for the settings that would actually change."""
+    changes: list[dict[str, str]] = []
+    for row in rows:
+        raw_name = row["column"]
+        if raw_name not in raw_columns:
+            continue
+        current_name = p.data.renames.get(raw_name, raw_name)
+        wanted_name = _cell_text(row.get("rename to")) or raw_name
+        current_role = p.data.roles.get(current_name, "unassigned")
+        current_type = p.data.types.get(current_name, "auto")
+        wanted_role = row["role"]
+        wanted_type = row["type"]
+        if (current_name, current_role, current_type) == (
+            wanted_name,
+            wanted_role,
+            wanted_type,
+        ):
+            continue
+        changes.append(
+            {
+                "raw column": raw_name,
+                "name": (
+                    current_name
+                    if current_name == wanted_name
+                    else f"{current_name} → {wanted_name}"
+                ),
+                "role": (
+                    current_role
+                    if current_role == wanted_role
+                    else f"{current_role} → {wanted_role}"
+                ),
+                "type": (
+                    current_type
+                    if current_type == wanted_type
+                    else f"{current_type} → {wanted_type}"
+                ),
+            }
+        )
+    return changes
 
 
 def _drop_premium_offset(p: Project, column: str) -> list[str]:
@@ -198,40 +467,56 @@ def _roles_grid(raw: pl.DataFrame) -> None:
                     new, raw.schema[r["column"]], r["unique"], raw.height
                 )
         S.touch()
+        st.session_state[S.widget_key("bulk_roles_refresh")] = True
         st.rerun()
     if c2.button("Unassigned → predictor"):
         for r in rows:
             new = p.data.renames.get(r["column"], r["column"])
             p.data.roles.setdefault(new, "predictor")
         S.touch()
+        st.session_state[S.widget_key("bulk_roles_refresh")] = True
         st.rerun()
 
-    edited = st.data_editor(
-        grid,
-        hide_index=True,
-        width="stretch",
-        height=min(38 * (len(rows) + 1) + 4, 620),
-        disabled=["column", "dtype", "null %", "unique"],
-        column_config={
-            "role": st.column_config.SelectboxColumn(
-                "role", options=ROLE_OPTIONS, required=True
-            ),
-            "type": st.column_config.SelectboxColumn(
-                "type", options=TYPE_OPTIONS, required=True
-            ),
-            "rename to": st.column_config.TextColumn("rename to"),
-            "null %": st.column_config.NumberColumn("null %", format="%.1f"),
-        },
-        key=S.widget_key("roles_grid"),
+    use_json = st.toggle(
+        "Bulk edit with JSON",
+        help=(
+            "Switch from the table to a copy/paste editor for changing many "
+            "column names, roles and types at once."
+        ),
+        key=S.widget_key("bulk_roles_toggle"),
     )
-    changed, notices = apply_roles_grid(p, list(raw.columns), edited.to_dict("records"))
-    if changed:
-        for kind, text in notices:
-            ui.flash(kind, text)
-        S.touch()
-        st.rerun()
-    for kind, text in notices:  # e.g. a refused rename still sitting in the grid
-        getattr(st, kind)(text)
+    if use_json:
+        _bulk_roles_json(p, raw)
+    else:
+        edited = st.data_editor(
+            grid,
+            hide_index=True,
+            width="stretch",
+            height=min(38 * (len(rows) + 1) + 4, 620),
+            disabled=["column", "dtype", "null %", "unique"],
+            column_config={
+                "role": st.column_config.SelectboxColumn(
+                    "role", options=ROLE_OPTIONS, required=True
+                ),
+                "type": st.column_config.SelectboxColumn(
+                    "type", options=TYPE_OPTIONS, required=True
+                ),
+                "rename to": st.column_config.TextColumn("rename to"),
+                "null %": st.column_config.NumberColumn("null %", format="%.1f"),
+            },
+            key=S.widget_key("roles_grid"),
+        )
+        changed, notices = apply_roles_grid(
+            p, list(raw.columns), edited.to_dict("records")
+        )
+        if changed:
+            for kind, text in notices:
+                ui.flash(kind, text)
+            S.touch()
+            st.session_state[S.widget_key("bulk_roles_refresh")] = True
+            st.rerun()
+        for kind, text in notices:  # a refused rename remains visible in the grid
+            getattr(st, kind)(text)
 
     roles = p.data.roles
     summary = " · ".join(
@@ -251,6 +536,72 @@ def _roles_grid(raw: pl.DataFrame) -> None:
             "fits the **change** from today's premium. Filter out rows with a "
             "premium of zero or less first."
         )
+
+
+def _bulk_roles_json(p: Project, raw: pl.DataFrame) -> None:
+    """Render the guarded copy/paste alternative to the variables grid."""
+    raw_columns = list(raw.columns)
+    editor_key = S.widget_key("bulk_roles_json_v2")
+    refresh_key = S.widget_key("bulk_roles_refresh")
+    if st.session_state.pop(refresh_key, False) or editor_key not in st.session_state:
+        st.session_state[editor_key] = variable_setup_json(p, raw_columns)
+
+    st.info(
+        "This compact format has four sections. `renames` maps raw names to new "
+        "names. `assignments` sets the single target, weight, exposure, offset, "
+        "current premium and split columns. `roles` groups predictors and IDs. "
+        "`types` groups explicit categorical or numeric overrides. All names "
+        "refer to the raw source columns. A column omitted from assignments and "
+        "roles becomes **ignored**; one omitted from types stays **auto**. "
+        "Nothing is saved until you select **Apply JSON changes**."
+    )
+    if st.button(
+        "Reset JSON from current setup",
+        key=S.widget_key("bulk_roles_reset"),
+        help="Discard text in this editor and regenerate it from the project.",
+    ):
+        st.session_state[refresh_key] = True
+        st.rerun()
+
+    text = st.text_area(
+        "Variable setup JSON",
+        height=460,
+        key=editor_key,
+        help=(
+            "Use raw source-column names throughout. Omit unchanged renames, "
+            "ignored columns and automatic types."
+        ),
+    )
+    rows, errors = parse_variable_setup_json(p, raw_columns, text)
+    changes = [] if errors else variable_setup_changes(p, raw_columns, rows)
+    if errors:
+        st.error("Fix the JSON before applying it:\n\n- " + "\n- ".join(errors))
+    elif changes:
+        st.caption(f"Proposed changes: {len(changes)} column(s).")
+        st.dataframe(pd.DataFrame(changes), hide_index=True, width="stretch")
+    else:
+        st.caption("Valid JSON. It matches the current variable setup.")
+
+    if st.button(
+        "Apply JSON changes",
+        type="primary",
+        disabled=bool(errors) or not changes,
+        key=S.widget_key("bulk_roles_apply"),
+    ):
+        changed, notices = apply_roles_grid(p, raw_columns, rows)
+        unexpected = [text for kind, text in notices if kind == "error"]
+        if not changed or unexpected:
+            st.error(
+                "The JSON could not be applied. "
+                + (" ".join(unexpected) if unexpected else "No settings changed.")
+            )
+            return
+        for kind, notice in notices:
+            ui.flash(kind, notice)
+        ui.flash("success", f"Applied JSON changes to {len(changes)} column(s).")
+        S.touch()
+        st.session_state[refresh_key] = True
+        st.rerun()
 
 
 def _recodes(raw: pl.DataFrame) -> None:
@@ -510,7 +861,8 @@ def render() -> None:
     st.subheader("Roles, names and types")
     st.caption(
         "Exactly one **target**; **weight** = exposure or premium used as GLM weight; "
-        "**split** = train/holdout indicator (or use a random split on the Split page); "
+        "**split** = an existing train/holdout indicator; you can instead create a "
+        "seeded random split below; "
         "**id** and **ignore** are excluded from modelling. Renaming a column carries "
         "its role and every model reference with it."
     )
@@ -530,3 +882,5 @@ def render() -> None:
         )
     else:
         ui.show_data_problem()
+    st.divider()
+    pages_split.render_contents(raw)

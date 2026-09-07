@@ -18,9 +18,9 @@ from easy_glm.app import (
     pages_export,
     pages_model,
     pages_project,
-    pages_split,
     pages_tables,
     pages_variables,
+    ui,
 )
 from easy_glm.app import state as S
 from easy_glm.workflow import Project
@@ -58,6 +58,33 @@ if not st.session_state.get("_cli_loaded"):
     if path and Path(path).exists():
         S.set_project(Project.from_json(path), path)
 
+
+split_is_ready = S.split_ready()
+
+
+def _after_split(title: str, render):
+    """Keep a directly opened downstream URL behind the same workflow gate."""
+
+    def gated() -> None:
+        if not split_is_ready:
+            st.title(title)
+            ui.status_bar()
+            ui.require_split()
+            return
+        render()
+
+    return gated
+
+
+downstream_visibility = "visible" if split_is_ready else "hidden"
+model_page = st.Page(
+    _after_split("Model", pages_model.render),
+    title="Model",
+    icon=":material/function:",
+    url_path="model",
+    visibility=downstream_visibility,
+)
+
 pages = [
     st.Page(
         pages_project.render,
@@ -73,60 +100,71 @@ pages = [
         url_path="variables",
     ),
     st.Page(
-        pages_explore.render,
+        _after_split("Explore", pages_explore.render),
         title="Explore",
         icon=":material/search_insights:",
         url_path="explore",
+        visibility=downstream_visibility,
     ),
+    model_page,
     st.Page(
-        pages_split.render,
-        title="Split",
-        icon=":material/call_split:",
-        url_path="split",
-    ),
-    st.Page(
-        pages_model.render, title="Model", icon=":material/function:", url_path="model"
-    ),
-    st.Page(
-        pages_diagnostics.render,
+        _after_split("Diagnostics", pages_diagnostics.render),
         title="Diagnostics",
         icon=":material/monitoring:",
         url_path="diagnostics",
+        visibility=downstream_visibility,
     ),
     st.Page(
-        pages_compare.render,
+        _after_split("Compare", pages_compare.render),
         title="Compare",
         icon=":material/compare_arrows:",
         url_path="compare",
+        visibility=downstream_visibility,
     ),
     st.Page(
-        pages_tables.render,
+        _after_split("Rate tables", pages_tables.render),
         title="Rate tables",
         icon=":material/table_chart:",
         url_path="tables",
+        visibility=downstream_visibility,
     ),
     st.Page(
-        pages_export.render, title="Export", icon=":material/code:", url_path="export"
+        _after_split("Export", pages_export.render),
+        title="Export",
+        icon=":material/code:",
+        url_path="export",
+        visibility=downstream_visibility,
     ),
 ]
+# Callable pages can only be targeted through their registered Streamlit page
+# object. Diagnostics uses this to update a model and take the user straight to
+# its design without losing the current browser session.
+st.session_state["_model_page"] = model_page
 nav = st.navigation({"Workflow": pages})
 
 with st.sidebar:
+    if not split_is_ready:
+        st.caption("Complete the train / holdout split on Variables to unlock:")
+        for title in (
+            "Explore",
+            "Model",
+            "Diagnostics",
+            "Compare",
+            "Rate tables",
+            "Export",
+        ):
+            st.markdown(f":grey[○ {title}]")
+        st.divider()
     p = S.project()
     project_path = st.session_state.project_path
-    st.markdown("### Current project")
+    # Context only. Project actions live on Project & data; repeating save/open
+    # controls here made the sidebar look like a second project editor.
+    st.caption("Current project")
     st.markdown(f"**{p.name}**")
     if project_path:
-        st.caption(f"Saved setup · {Path(project_path).name}")
+        st.caption(f"Autosaved · {Path(project_path).name}")
     else:
-        st.warning("Not saved yet")
-        st.caption("Name and save it on Project & data.")
-        st.page_link(
-            pages[0],
-            label="Open Project & data",
-            icon=":material/edit:",
-            help="Name the project and choose where to save its setup.",
-        )
+        st.caption("Not saved")
     s = S.status()
     st.markdown("#### Setup progress")
     st.caption("Work down this checklist before reviewing results.")
@@ -167,21 +205,6 @@ with st.sidebar:
         st.caption("Fit two models to compare them.")
     # With fewer than two fitted models the selector is not drawn; the stored
     # choice survives a momentary stale fit and is ignored once no longer valid.
-    st.caption(
-        "Saving keeps your setup and adjustments. Fitted models are stored "
-        "separately and restored when their data and setup still match."
-    )
-    if st.button(
-        "Save project setup",
-        width="stretch",
-        help="Save the project name, data setup, model definitions and adjustments.",
-    ):
-        path = project_path or S.default_project_path(p)
-        err = S.save_project(path)
-        if err:
-            st.error(err)
-        else:
-            st.toast(f"Saved {path}")
     if st.session_state.get("conflict"):
         st.error("Autosave paused: the project file changed on disk (see the notice).")
     elif any(e.startswith("Autosave") for e in st.session_state.get("errors", [])):

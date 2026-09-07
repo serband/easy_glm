@@ -255,10 +255,21 @@ def _balance(df: pl.DataFrame) -> None:
 def render() -> None:
     st.title("Split")
     ui.status_bar()
-    p = S.project()
     raw = ui.require_raw()
     if raw is None:
         return
+    render_contents(raw)
+
+
+def render_contents(raw: pl.DataFrame) -> None:
+    """Render split setup inside the Variables workflow."""
+    st.subheader("Train / holdout split")
+    st.info(
+        "Required before exploration or modelling. EasyGLM uses training rows "
+        "for exploration, model design and fitting; holdout rows remain unseen "
+        "until diagnostics."
+    )
+    p = S.project()
     sp = p.data.split
     mode = st.radio(
         "How is the holdout defined?",
@@ -294,7 +305,12 @@ def render() -> None:
     if sp.column not in df.columns:
         return
     ui.guarded(lambda: _balance(df), "Train / holdout balance")
+    if not S.split_ready(df):
+        st.error(
+            "The split must contain at least one training row and one holdout row."
+        )
     st.caption(
         "Model bands, level lumping and the fit all use **training rows only**; "
-        "the holdout is used for diagnostics."
+        "the holdout is kept out of exploration and fitting and is used for "
+        "diagnostics."
     )

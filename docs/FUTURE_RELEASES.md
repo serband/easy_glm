@@ -24,9 +24,10 @@ real modelling work. Items belong here until they are scheduled for a release.
 - When a dataframe is launched from Python, detect an existing train/test
   column and make its values and interpretation clear instead of initially
   presenting the data as broken.
-- Support a spreadsheet round trip for datasets with many columns: download
-  the detected variable types and proposed roles, edit them in Excel, validate
-  the file, and upload it to apply the mapping.
+- **Implemented on `codex/bulk-variable-json`:** add a guarded JSON editor for
+  datasets with many columns. Four compact sections cover renames,
+  single-column assignments, grouped roles and grouped type overrides. It
+  previews every change and validates the whole mapping before applying it.
 - Ensure the exported Python workflow contains the final column roles,
   renames, recodes, derived columns, and split definition.
 

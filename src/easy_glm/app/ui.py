@@ -304,6 +304,20 @@ def require_data() -> pl.DataFrame | None:
     return df
 
 
+def require_split() -> pl.DataFrame | None:
+    """The prepared frame only after a usable train/holdout split exists."""
+    df = require_data()
+    if df is None:
+        return None
+    if not S.split_ready(df):
+        st.info(
+            "Create a split with both training and holdout rows in the "
+            "**Train / holdout split** section on the **Variables** page first."
+        )
+        return None
+    return df
+
+
 def show_data_problem() -> None:
     """The load or data-step error (if any), else a hint to load data."""
     err = st.session_state.get("load_error") or st.session_state.get("prep_error")

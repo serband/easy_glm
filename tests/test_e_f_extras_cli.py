@@ -1110,7 +1110,9 @@ class TestCliWorkbench:
         result = easy_glm.launch_workbench(data=pl.DataFrame({"claims": [0, 1]}))
 
         assert isinstance(result, FakeProc)
-        project_path = Path(next(arg for arg in seen if arg.endswith(".easyglm-project.json")))
+        project_path = Path(
+            next(arg for arg in seen if arg.endswith(".easyglm-project.json"))
+        )
         project = Project.from_json(project_path)
         assert project.name == "in-memory data"
         assert project.data.split.mode == "random"

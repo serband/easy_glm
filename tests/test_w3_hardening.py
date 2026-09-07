@@ -309,6 +309,138 @@ def test_breakage_07_cleared_rename_cell_restores_the_original(workspace):
     assert p.models["freq"].predictors[1] == "BonusMalus"
 
 
+def test_bulk_variable_json_round_trip_and_partial_edit(workspace):
+    p = Project.from_json(workspace["project"])
+    columns = _frame().columns
+    text = pv.variable_setup_json(p, columns)
+    payload = json.loads(text)
+    assert payload["renames"] == {}
+    assert payload["assignments"] == {
+        "target": "ClaimNb",
+        "weight": "Exposure",
+        "split": "traintest",
+    }
+    assert payload["roles"] == {
+        "id": ["IDpol"],
+        "predictor": ["DrivAge", "BonusMalus", "Region"],
+    }
+    assert payload["types"] == {}
+    rows, errors = pv.parse_variable_setup_json(p, columns, text)
+    assert errors == []
+    assert pv.variable_setup_changes(p, columns, rows) == []
+
+    p.data.filters = ["pl.col('DrivAge') >= 18"]
+    payload["renames"]["DrivAge"] = "driver_age"
+    payload["roles"]["predictor"].remove("DrivAge")  # omitted -> ignore
+    payload["types"]["numeric"] = ["DrivAge"]
+    rows, errors = pv.parse_variable_setup_json(p, columns, json.dumps(payload))
+    assert errors == []
+    assert pv.variable_setup_changes(p, columns, rows) == [
+        {
+            "raw column": "DrivAge",
+            "name": "DrivAge → driver_age",
+            "role": "predictor → ignore",
+            "type": "auto → numeric",
+        }
+    ]
+    changed, notices = pv.apply_roles_grid(p, columns, rows)
+    assert changed and not any(kind == "error" for kind, _ in notices)
+    assert p.data.renames["DrivAge"] == "driver_age"
+    assert p.data.roles["driver_age"] == "ignore"
+    assert p.data.types["driver_age"] == "numeric"
+    assert "driver_age" not in p.models["freq"].predictors
+    assert p.data.filters == ["pl.col('driver_age') >= 18"]
+
+
+def test_bulk_variable_json_uses_compact_defaults(workspace):
+    p = Project.from_json(workspace["project"])
+    columns = _frame().columns
+    rows, errors = pv.parse_variable_setup_json(p, columns, "{}")
+    assert errors == []
+    assert {row["role"] for row in rows} == {"ignore"}
+    assert {row["type"] for row in rows} == {"auto"}
+    assert {row["rename to"] for row in rows} == {""}
+
+
+def test_bulk_variable_json_refuses_bad_or_ambiguous_input_atomically(workspace):
+    p = Project.from_json(workspace["project"])
+    columns = _frame().columns
+    before = p.to_dict()
+    bad_payloads = [
+        "not JSON",
+        json.dumps({"renames": {"missing": "new_name"}}),
+        json.dumps({"roles": {"hero": ["DrivAge"]}}),
+        json.dumps({"renames": {"DrivAge": "Region"}}),
+        json.dumps(
+            {
+                "assignments": {
+                    "target": "ClaimNb",
+                    "weight": "ClaimNb",
+                }
+            }
+        ),
+        json.dumps(
+            {
+                "types": {
+                    "numeric": ["DrivAge"],
+                    "categorical": ["DrivAge"],
+                }
+            }
+        ),
+    ]
+    for text in bad_payloads:
+        _rows, errors = pv.parse_variable_setup_json(p, columns, text)
+        assert errors, text
+        assert p.to_dict() == before
+
+
+def test_bulk_variable_json_can_swap_two_column_names(workspace):
+    p = Project.from_json(workspace["project"])
+    columns = _frame().columns
+    payload = json.loads(pv.variable_setup_json(p, columns))
+    payload["renames"] = {
+        "DrivAge": "BonusMalus",
+        "BonusMalus": "DrivAge",
+    }
+    rows, errors = pv.parse_variable_setup_json(
+        p,
+        columns,
+        json.dumps(payload),
+    )
+    assert errors == []
+    changed, notices = pv.apply_roles_grid(p, columns, rows)
+    assert changed and not any(kind == "error" for kind, _ in notices)
+    assert p.data.renames == {
+        "DrivAge": "BonusMalus",
+        "BonusMalus": "DrivAge",
+    }
+    assert p.models["freq"].predictors == ["BonusMalus", "DrivAge", "Region"]
+
+
+def test_bulk_variable_json_page_applies_only_after_confirmation(workspace):
+    at = _run(_script("pages_variables", str(workspace["project"])))
+    at.toggle(key=wk(at, "bulk_roles_toggle")).set_value(True).run()
+    editor = at.text_area(key=wk(at, "bulk_roles_json_v2"))
+    assert '"ClaimNb"' in editor.value
+
+    payload = json.loads(editor.value)
+    payload["renames"]["Region"] = "territory"
+    payload["roles"]["predictor"].remove("Region")  # omitted -> ignore
+    payload["types"]["categorical"] = ["Region"]
+    editor.set_value(json.dumps(payload)).run()
+    # Merely pasting valid JSON shows a preview and changes nothing.
+    p = at.session_state["_project"]
+    assert p.data.renames == {}
+    assert "Region" in p.models["freq"].predictors
+    at.button(key=wk(at, "bulk_roles_apply")).click().run()
+    assert not at.exception
+    p = at.session_state["_project"]
+    assert p.data.renames["Region"] == "territory"
+    assert p.data.roles["territory"] == "ignore"
+    assert p.data.types["territory"] == "categorical"
+    assert "territory" not in p.models["freq"].predictors
+
+
 def test_breakage_08_09_derived_columns_that_cannot_run_are_refused(workspace):
     at = _run(_script("pages_variables", str(workspace["project"])))
     at.text_input(key=wk(at, "derived_name")).set_value("foo").run()

@@ -128,18 +128,17 @@ The spec is versioned; loaders migrate old versions.
 | # | Page | User does | Engine (workflow) | Exported code |
 |---|------|-----------|-------------------|---------------|
 | 1 | **Project & Data** | New/open project; pick file (parquet/csv/sas7bdat/xlsx); preview; row/col counts; memory; optional exploration sample | `prep.load_source` | `df = pl.read_parquet(...)` / `pd.read_sas` |
-| 2 | **Variables** | Assign roles (target/weight/exposure/offset/split/id/predictor/ignore); rename; override type; recode levels via an editable mapping grid; add derived columns with a polars expression and live preview; add row filters | `prep.apply` (renames→recodes→derived→filters) | `.rename`, `.with_columns`, `.filter` |
-| 3 | **Explore** | Univariate panel per variable: exposure histogram, target mean by band (train), missing %, cardinality; **Leakage report** ranking every candidate with reasons; one click sets role=ignore or "acknowledge" | `explore.univariate`, `explore.leakage_report` | comment block listing ignored variables |
-| 4 | **Split** | Column split or random split (fraction, seed); shows train/holdout exposure, target rate balance | `prep.split` | `train = df.filter(...)` |
-| 5 | **Design** | Per predictor: kind (step/categorical), knot strategy (quantile n / integer range / custom list, editable), null indicator, level share threshold, monotone direction; preview: exposure per bin + target mean per bin on train; design size counter | `DesignSpec.from_data` + overrides | `DesignSpec({...})` written out explicitly (knots as literals) |
-| 6 | **Model** | Family/link, target/weight/offset, penalty (alpha slider or CV), predictors checklist, fit button; results: alpha chosen, deviance train/holdout, non-zero terms, **regularisation path chart** (deviance vs alpha, coefficients vs alpha) | `fit_glm`, `diagnostics.alpha_path`, `registry` | `fit_glm(train, spec, ...)` |
-| 7 | **Diagnostics** | A/E by variable (train vs holdout, with exposure bars), lift chart (deciles), Gini/AUC, double lift vs a benchmark column (e.g. current premium), calibration; **residual factor search**: A/E by every *unused* variable to spot missing factors; champion vs challenger overlay | `diagnostics.*` | not exported (report only) |
-| 8 | **Rate tables** | Existing relativity editor (baseline vs working, snapshots, A/E recompute); adjustments are recorded in the spec; export Excel / `.easyglm` | `rate_tables`, `to_rate_model`, `RateModel` | `to_rate_model`, `update_relativity(...)` per adjustment |
-| 9 | **Export** | Download: Python script, project JSON, Excel rate tables, `.easyglm`, HTML report | `export.to_script`, `export.to_report` | — |
+| 2 | **Variables** | Assign roles (target/weight/exposure/offset/split/id/predictor/ignore); rename; override type; recode levels; add derived columns and row filters; define the column or seeded random train/holdout split and review its balance | `prep.apply` (renames→recodes→derived→filters→split) | `.rename`, `.with_columns`, `.filter`, then `train = df.filter(...)` |
+| 3 | **Explore** | Training-only univariate panel per variable: exposure histogram, target mean by band, missing %, cardinality; **Leakage report** ranking every candidate with reasons; one click sets role=ignore or "acknowledge" | `explore.univariate`, `explore.leakage_report` | comment block listing ignored variables |
+| 4 | **Model** | Design each predictor (kind, knots, level threshold and constraints), add optional interactions, choose family/target/weight/offset and penalty, then fit and inspect results | `DesignSpec.from_data`, `fit_glm`, `diagnostics.alpha_path`, `registry` | explicit `DesignSpec`, then `fit_glm(train, spec, ...)` |
+| 5 | **Diagnostics** | A/E by variable (train vs holdout, with exposure bars), lift chart (deciles), Gini/AUC, double lift against another fitted model or the null model; **residual factor search** over unused predictors | `diagnostics.*` | not exported (report only) |
+| 6 | **Compare** | Compare fitted models' metrics and relativities on a like-for-like basis | `diagnostics.relativity_diff` | not exported (report only) |
+| 7 | **Rate tables** | Review fitted versus working relativities, snapshots and A/E; record manual adjustments; export Excel / `.easyglm` | `rate_tables`, `to_rate_model`, `RateModel` | `to_rate_model`, `update_relativity(...)` per adjustment |
+| 8 | **Export** | After fitting, download the Python script, project JSON, Excel rate tables, `.easyglm` scorer and HTML report | `export.to_script`, `export.to_report` | — |
 
-Navigation is free (any page any time); each page shows a status chip for its
-upstream prerequisites (e.g. Model page: "design uses 12 predictors, 2 changed
-since last fit → refit").
+Project & data and Variables remain available during setup. Explore and every
+later page stay locked until the prepared data contains both training and
+holdout rows; each page also shows status chips for its other prerequisites.
 
 ## 7. Leakage detection (Explore page)
 

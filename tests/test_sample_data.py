@@ -50,7 +50,7 @@ def _run(loader: str) -> AppTest:
 
 
 def _sample_button(at: AppTest, name: str = "French"):
-    return next(button for button in at.button if button.label.startswith(name))
+    return next(button for button in at.button if name in button.label)
 
 
 def _swedish_fixture() -> pl.DataFrame:
@@ -88,8 +88,8 @@ def test_empty_project_explains_when_to_open_an_easyglm_project_file():
     assert "model definitions and rate-table adjustments" in text
     assert "does not contain the data itself or fitted results" in text
     labels = [button.label for button in at.button]
-    assert "French motor sample (Poisson frequency)" in labels
-    assert "Swedish motorcycle sample (Tweedie burn cost)" in labels
+    assert "Load French motor" in labels
+    assert "Load Swedish motorcycle" in labels
 
 
 def test_french_motor_interaction_uses_its_own_seeded_cv_path():
@@ -290,8 +290,8 @@ def test_loaded_sample_has_a_clear_two_click_route_back_to_sample_choices():
     assert not project.data.source.path
     assert not project.models
     labels = [button.label for button in at.button]
-    assert "French motor sample (Poisson frequency)" in labels
-    assert "Swedish motorcycle sample (Tweedie burn cost)" in labels
+    assert "Load French motor" in labels
+    assert "Load Swedish motorcycle" in labels
 
 
 def test_sample_data_button_loads_a_ready_swedish_burn_cost_project(tmp_path):

@@ -29,7 +29,7 @@ def _main(pg) -> str:
 
 
 def _click_main(pg, name: str) -> None:
-    """Click a button in the main panel (the sidebar has its own Save button)."""
+    """Click a button in the main panel."""
     pg.get_by_test_id("stMain").get_by_role("button", name=name, exact=True).click()
     settle(pg)
 
@@ -84,8 +84,8 @@ def test_breakit(breakit_server, browser, e2e_dir):
     assert_clean(pg, "bad derived column")
     assert wait_text(pg, "no_such_column"), _main(pg)[:800]
     assert '"boom"' not in project_path.read_text()
-    goto_page(pg, "Split")
-    assert_clean(pg, "split after the bad derived column")
+    goto_page(pg, "Variables")
+    assert_clean(pg, "embedded split after the bad derived column")
     assert wait_text(pg, "train"), _main(pg)[:800]
 
     # -- 4. the roles grid in a real browser: renaming a column carries the
@@ -106,8 +106,8 @@ def test_breakit(breakit_server, browser, e2e_dir):
     saved = project_path.read_text()
     assert '"exposure_years"' in saved, saved[:800]
     assert "pl.col('exposure_years') > 0.02" in saved, "the row filter was not renamed"
-    goto_page(pg, "Split")
-    assert_clean(pg, "split after the rename")
+    goto_page(pg, "Variables")
+    assert_clean(pg, "embedded split after the rename")
     assert "unable to find column" not in _main(pg), _main(pg)[:800]
     assert wait_text(pg, "train"), _main(pg)[:800]
 

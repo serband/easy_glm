@@ -111,6 +111,42 @@ def test_page_renders_without_a_fit(page, project_file):
     assert not at.exception, [e.value for e in at.exception]
 
 
+def test_export_waits_until_a_model_is_fitted(project_file, tmp_path):
+    p = Project.from_json(project_file)
+    p.name = "unfitted_export"
+    path = tmp_path / "unfitted_export.easyglm-project.json"
+    p.to_json(path)
+
+    at = AppTest.from_string(
+        _script("pages_export", str(path), fit=False), default_timeout=120
+    )
+    at.run()
+
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("Fit a model on the Model page" in message.value for message in at.info)
+    assert not [box for box in at.selectbox if box.label == "Model"]
+    assert not [heading for heading in at.subheader if heading.value == "Python script"]
+    assert not at.get("download_button")
+
+
+def test_export_lists_only_fitted_models(project_file, tmp_path):
+    p = Project.from_json(project_file)
+    p.name = "partly_fitted_export"
+    p.new_model("draft")
+    path = tmp_path / "partly_fitted_export.easyglm-project.json"
+    p.to_json(path)
+
+    at = AppTest.from_string(
+        _script("pages_export", str(path), fit=True), default_timeout=180
+    )
+    at.run()
+
+    assert not at.exception, [e.value for e in at.exception]
+    selector = [box for box in at.selectbox if box.label == "Model"]
+    assert len(selector) == 1
+    assert selector[0].options == ["freq"]
+
+
 @pytest.mark.parametrize(
     "page", ["pages_model", "pages_diagnostics", "pages_tables", "pages_export"]
 )
@@ -123,6 +159,39 @@ def test_page_renders_with_a_fit(page, project_file):
         assert "StepEncoder('DrivAge'" in code and "fit_glm(" in code
     if page == "pages_model":
         assert any("Fitted" in m.value for m in at.success)
+        champion = [button for button in at.button if button.label == "Champion"]
+        assert len(champion) == 1 and champion[0].disabled
+
+
+def test_first_model_actually_fitted_becomes_champion(project_file, tmp_path):
+    p = Project.from_json(project_file)
+    p.new_model("first_fit")
+    p.models["first_fit"].penalty.alpha = 0.002
+    p.models["first_fit"].penalty.cv = None
+    assert p.champion == "freq"
+    path = tmp_path / "first_fit_champion.easyglm-project.json"
+    p.to_json(path)
+
+    script = f"""
+import importlib
+import streamlit as st
+from easy_glm.app import state as S
+from easy_glm.workflow import Project
+
+S.init_state()
+if not st.session_state.get("_loaded"):
+    S.set_project(Project.from_json({str(path)!r}), None)
+    S.fit_model("first_fit")
+    st.session_state._loaded = True
+importlib.import_module("easy_glm.app.pages_model").render()
+"""
+    at = AppTest.from_string(script, default_timeout=180)
+    at.run()
+
+    assert not at.exception, [e.value for e in at.exception]
+    assert at.session_state["project"].champion == "first_fit"
+    champion = [button for button in at.button if button.label == "Champion"]
+    assert len(champion) == 1 and champion[0].disabled
 
 
 @pytest.mark.parametrize(
@@ -245,10 +314,12 @@ def test_main_entry_point_renders(project_file):
         sys.argv = argv
     assert not at.exception, [e.value for e in at.exception]
     assert any("apptest" in m.value for m in at.sidebar.markdown)
-    assert any("Current project" in m.value for m in at.sidebar.markdown)
+    assert any("Current project" in c.value for c in at.sidebar.caption)
     assert any("Setup progress" in m.value for m in at.sidebar.markdown)
-    assert any(b.label == "Save project setup" for b in at.sidebar.button)
-    assert any("Saving keeps your setup" in c.value for c in at.sidebar.caption)
+    assert not any(b.label == "Save project setup" for b in at.sidebar.button)
+    assert any("Autosaved" in c.value for c in at.sidebar.caption)
+    assert not any("unlock" in c.value for c in at.sidebar.caption)
+    assert not any("○ Explore" in m.value for m in at.sidebar.markdown)
 
 
 def test_main_sidebar_explains_an_unsaved_project():
@@ -266,9 +337,12 @@ def test_main_sidebar_explains_an_unsaved_project():
     finally:
         sys.argv = argv
     assert not at.exception, [e.value for e in at.exception]
-    assert any(w.value == "Not saved yet" for w in at.sidebar.warning)
-    assert any("Name and save it" in c.value for c in at.sidebar.caption)
-    assert any(b.label == "Save project setup" for b in at.sidebar.button)
+    assert any(c.value == "Not saved" for c in at.sidebar.caption)
+    assert not at.sidebar.warning
+    assert not any(b.label == "Save project setup" for b in at.sidebar.button)
+    assert any("split on Variables to unlock" in c.value for c in at.sidebar.caption)
+    locked = " ".join(m.value for m in at.sidebar.markdown)
+    assert "○ Explore" in locked and "○ Export" in locked
 
 
 def test_fit_and_design_controls_explain_technical_choices(project_file):
@@ -307,3 +381,44 @@ def test_leakage_page_actions(project_file):
     buttons[0].click().run()
     assert not at.exception, [e.value for e in at.exception]
     assert at.dataframe  # the report table rendered
+
+
+def test_explore_is_training_only(project_file):
+    p = Project.from_json(project_file)
+    train_rows = (
+        pl.read_parquet(p.data.source.path)
+        .filter(pl.col(p.data.split.column) == p.data.split.train_value)
+        .height
+    )
+    at = AppTest.from_string(
+        _script("pages_explore", project_file, fit=False), default_timeout=180
+    )
+    at.run()
+
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("Training data only" in message.value for message in at.info)
+    assert not [radio for radio in at.radio if radio.label == "Rows"]
+    rows = [metric for metric in at.metric if metric.label == "Rows"]
+    assert rows and rows[0].value == f"{train_rows:,}"
+
+
+def test_variables_refuses_a_split_without_holdout_rows(project_file, tmp_path):
+    p = Project.from_json(project_file)
+    data = tmp_path / "all_train.parquet"
+    pl.read_parquet(p.data.source.path).with_columns(
+        pl.lit(1).alias(p.data.split.column)
+    ).write_parquet(data)
+    p.name = "all_train"
+    p.data.source.path = str(data)
+    path = tmp_path / "all_train.easyglm-project.json"
+    p.to_json(path)
+
+    at = AppTest.from_string(
+        _script("pages_variables", str(path), fit=False), default_timeout=180
+    )
+    at.run()
+
+    assert not at.exception, [e.value for e in at.exception]
+    assert any("one training row and one holdout row" in e.value for e in at.error)
+    chips = [m.value for m in at.markdown if "Prepared]" in m.value]
+    assert chips and "○ Prepared" in chips[0]

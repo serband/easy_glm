@@ -3,7 +3,7 @@
 Steps mirror docs/RELEASE_0.4_PLAN.md §"Persona runs": roles/recode/derived/
 filter/split come from the project file (the data grids are canvas widgets
 Playwright cannot type into), then in the browser: check the variables and the
-split, add an interaction and a linear term on the Design page, choose the
+embedded split, add an interaction and a linear term on the Model page, choose the
 offset on the Model page, fit, review A/E by every rating factor and by pair,
 open the interaction table, download Excel + scorer + script, reload and check
 the fit survived, and finally run the exported script and compare it with the
@@ -39,16 +39,12 @@ def test_actuary_rate_review(actuary_server, browser, e2e_dir):
     assert_clean(pg, "project page")
     assert "actuary" in pg.get_by_test_id("stSidebar").inner_text()
 
-    # -- Variables: roles are visible and a target is set
+    # -- Variables: roles and the compulsory split are visible
     goto_page(pg, "Variables")
     assert_clean(pg, "variables")
     body = pg.locator('[data-testid="stMain"]').inner_text()
     assert "target" in body and "ClaimNb" in body
-
-    # -- Split: the balance table shows train and holdout
-    goto_page(pg, "Split")
-    assert_clean(pg, "split")
-    body = pg.locator('[data-testid="stMain"]').inner_text()
+    assert "Train / holdout split" in body
     assert "train" in body and "holdout" in body
 
     # -- Model: Density becomes piecewise-linear, VehPower × VehGas is added

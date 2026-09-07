@@ -9,13 +9,13 @@ All pages go through these helpers so that
 
 Two data frames live in the session:
 
-* the **full** prepared frame — every fit, diagnostic, rate table and the
-  leakage report use it (``prepared_frame``); knots and levels are always
-  derived from it;
-* an **exploration sample** (``sample_frame`` / ``raw_sample``) — the Explore
-  page, the Design-page previews and the Variables-page previews use it so
-  large books stay interactive. ``Project.data.sample_rows`` / ``sample_seed``
-  only ever size that sample; changing it never invalidates a fit.
+* the **full** prepared frame — fits, diagnostics and rate tables use it
+  (``prepared_frame``); knots and levels are derived from its training rows;
+* an **exploration sample** (``sample_frame`` / ``raw_sample``) — Variables
+  previews use it, while Explore and Model previews use a training-only sample
+  (``train_sample``), so large books stay interactive without exposing the
+  holdout. ``Project.data.sample_rows`` / ``sample_seed`` only ever size that
+  sample; changing it never invalidates a fit.
 
 Fitted runs are **persisted** next to the project file
 (``<project>.easyglm-runs/<model-tag>-<key>.pkl``) so a browser reload or
@@ -498,7 +498,7 @@ def prepared_frame() -> pl.DataFrame | None:
         st.session_state.prepared = None
         st.session_state.prep_error = (
             f"The data steps fail: {exc}. Fix or remove the offending rename, "
-            "recode, derived column, filter or split on the Variables / Split pages."
+            "recode, derived column, filter or split on the Variables page."
         )
         return None
     st.session_state.prep_error = None
@@ -562,11 +562,32 @@ def train_frame() -> pl.DataFrame | None:
 
 
 def train_sample() -> pl.DataFrame | None:
-    """Training rows of the exploration sample (for preview charts only)."""
-    df = sample_frame()
+    """A sample drawn only from training rows (for preview charts only)."""
+    df = train_frame()
     if df is None:
         return None
-    return train_holdout(df, project().data.split)[0]
+    return _sample_of(df, project())
+
+
+def split_ready(df: pl.DataFrame | None = None) -> bool:
+    """Whether the prepared data has non-empty training and holdout subsets.
+
+    A column merely existing is not enough: without both subsets there is no
+    honest out-of-sample workflow to unlock.
+    """
+    if df is None:
+        df = prepared_frame()
+    if df is None or df.is_empty():
+        return False
+    column = project().data.split.column
+    if column not in df.columns:
+        return False
+    flag = pl.col(column).cast(pl.Utf8)
+    counts = df.select(
+        (flag == "1").any().alias("train"),
+        (flag == "0").any().alias("holdout"),
+    ).row(0)
+    return bool(counts[0]) and bool(counts[1])
 
 
 # --------------------------------------------------------------------------
@@ -1038,6 +1059,9 @@ def fit_model(model: str) -> ModelRun:
     df = prepared_frame()
     if df is None:
         raise ValueError("Load data first (Project page).")
+    first_fitted_model = not any(
+        get_run(other) is not None for other in p.models if other != model
+    )
     key = run_key(p, model)
     _mark_fit_started(model, key)
     try:
@@ -1058,6 +1082,9 @@ def fit_model(model: str) -> ModelRun:
     st.session_state.runs[model] = (model_hash(p, model), run)
     persist_run(model, run)
     _clear_fit_marker(model, key)
+    if first_fitted_model and p.champion != model:
+        p.champion = model
+        touch()
     return run
 
 
@@ -1261,7 +1288,7 @@ def set_challenger(name: str | None) -> None:
 def leakage(force: bool = False) -> pl.DataFrame | None:
     """Leakage report on the full training rows (the report samples internally)."""
     p = project()
-    df = prepared_frame()
+    df = train_frame()
     if df is None or p.target is None:
         return None
     key = spec_hash(
@@ -1286,9 +1313,6 @@ def leakage(force: bool = False) -> pl.DataFrame | None:
 def status() -> dict[str, bool]:
     p = project()
     raw = st.session_state.get("raw")
-    split_ok = p.data.split.mode == "random" or (
-        raw is not None and p.data.split.column in raw[1].columns
-    )
     loaded = bool(p.data.source.path) and raw is not None
     prepared = st.session_state.get("prepared")
     # a frame with no rows is not "prepared": nothing can be fitted from it
@@ -1297,7 +1321,7 @@ def status() -> dict[str, bool]:
         "data": loaded,
         "roles": p.target is not None and bool(p.predictors),
         "split": loaded
-        and split_ok
+        and split_ready(prepared[1] if prepared is not None else None)
         and not empty
         and not st.session_state.get("prep_error"),
         "model": bool(p.models),

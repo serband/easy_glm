@@ -346,6 +346,12 @@ class TestDiagnosticsPage:
         res = at.session_state["rps_result"]
         assert res.height > 0 and "pair" in res.columns
         assert not any("DrivAge × Region" == r for r in res["pair"].to_list())
+        selected = at.selectbox(key=wk(at, "rps_show")).value
+        row = res.filter(pl.col("pair") == selected).row(0, named=True)
+        [b for b in at.button if b.label == "Add interaction"][0].click().run()
+        assert not at.exception
+        interactions = at.session_state["_project"].models["freq"].interactions
+        assert any({it.a, it.b} == {row["a"], row["b"]} for it in interactions)
 
     def test_residual_search_uses_train_when_rows_selector_is_holdout(self, workspace):
         at = _run(
@@ -370,6 +376,29 @@ class TestDiagnosticsPage:
         for column in shown.columns[1:]:
             np.testing.assert_allclose(shown[column], expected_result[column])
         assert any("training rows only" in caption.value for caption in at.caption)
+
+    def test_residual_factor_can_be_added_to_the_model(self, workspace):
+        at = _run(
+            _script(
+                "pages_diagnostics",
+                workspace["project"],
+                fit=True,
+                prelude=(
+                    "S.project().models['freq'].predictors.remove('BonusMalus'); "
+                    "S.project().models['freq'].predictors.remove('Density')"
+                ),
+            )
+        )
+        [b for b in at.button if b.label == "Run residual search"][0].click().run()
+        add = at.multiselect(key=wk(at, "rfs_add_selection"))
+        assert set(add.options) == {"BonusMalus", "Density"}
+        add.set_value(["BonusMalus", "Density"]).run()
+        [b for b in at.button if b.label == "Add selected"][0].click().run()
+
+        assert not at.exception
+        predictors = at.session_state["_project"].models["freq"].predictors
+        assert "BonusMalus" in predictors and "Density" in predictors
+        assert at.session_state["model_current"] == "freq"
 
     def test_residual_search_excludes_explicitly_ignored_columns(self, workspace):
         at = _run(

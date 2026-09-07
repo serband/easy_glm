@@ -1175,7 +1175,7 @@ def render_contents() -> str | None:
     if train is None or preview is None:
         return None
     if train.is_empty():
-        st.error("There are no training rows; check the split on the Split page.")
+        st.error("There are no training rows; check the split on the Variables page.")
         return None
     missing = [v for v in predictors if v not in train.columns]
     if missing:

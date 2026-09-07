@@ -283,89 +283,64 @@ def _project_section(p: Project) -> None:
                 st.rerun()
 
 
+def _sample_choices(p: Project) -> None:
+    """Small, secondary starter choices shown below the normal data controls."""
+    st.divider()
+    st.caption("Optional examples — load a prepared starter project")
+    french, swedish = st.columns(2)
+    with french:
+        french_clicked = st.button(
+            "Load French motor",
+            key=S.widget_key("french_motor_sample_btn"),
+        )
+        st.caption(
+            "Poisson claim frequency · 50,000 policies with claim count, exposure "
+            "and four rating factors."
+        )
+    with swedish:
+        swedish_clicked = st.button(
+            "Load Swedish motorcycle",
+            key=S.widget_key("swedish_motorcycle_sample_btn"),
+        )
+        st.caption(
+            "Tweedie burn cost · motorcycle policies with claim amount, exposure "
+            "and six rating factors."
+        )
+    if french_clicked:
+        err = _load_french_motor_sample(p)
+        if err:
+            st.error(err)
+        else:
+            ui.flash(
+                "success",
+                "French motor sample loaded. Review the preview, then visit "
+                "Variables and Split when you are ready. A Poisson frequency "
+                "model is prepared on the Model page; review it there, then "
+                "click Fit model when you want to run it.",
+            )
+            st.rerun()
+    if swedish_clicked:
+        err = _load_swedish_motorcycle_sample(p)
+        if err:
+            st.error(err)
+        else:
+            ui.flash(
+                "success",
+                "Swedish motorcycle sample loaded. Review the preview, roles "
+                "and split. A Tweedie burn-cost model is prepared on the Model "
+                "page; review it there, then click Fit model when you want to "
+                "run it.",
+            )
+            st.rerun()
+
+
 def _data_section(p: Project) -> None:
     with st.container(border=True):
         st.subheader("Data source")
         source_name = Path(p.data.source.path).name if p.data.source.path else ""
-        if not p.data.source.path:
-            st.info(
-                "New here? Start with a public insurance sample. Each option loads "
-                "the data, assigns sensible roles and prepares an editable starter "
-                "model. Nothing is fitted automatically."
-            )
-            french, swedish = st.columns(2)
-            with french:
-                st.caption(
-                    "50,000 motor policies with claim count, exposure and four "
-                    "common rating factors."
-                )
-                french_clicked = st.button(
-                    "French motor sample (Poisson frequency)",
-                    type="primary",
-                    width="stretch",
-                    key=S.widget_key("french_motor_sample_btn"),
-                )
-            with swedish:
-                st.caption(
-                    "Motorcycle policies with claim amount, exposure and six rating "
-                    "factors."
-                )
-                swedish_clicked = st.button(
-                    "Swedish motorcycle sample (Tweedie burn cost)",
-                    width="stretch",
-                    key=S.widget_key("swedish_motorcycle_sample_btn"),
-                )
-            if french_clicked:
-                err = _load_french_motor_sample(p)
-                if err:
-                    st.error(err)
-                else:
-                    ui.flash(
-                        "success",
-                        "French motor sample loaded. Review the preview, then visit "
-                        "Variables and Split when you are ready. A Poisson frequency "
-                        "model is prepared on the Model page; review it there, then "
-                        "click Fit model when you want to run it.",
-                    )
-                    st.rerun()
-            if swedish_clicked:
-                err = _load_swedish_motorcycle_sample(p)
-                if err:
-                    st.error(err)
-                else:
-                    ui.flash(
-                        "success",
-                        "Swedish motorcycle sample loaded. Review the preview, roles "
-                        "and split. A Tweedie burn-cost model is prepared on the Model "
-                        "page; review it there, then click Fit model when you want to "
-                        "run it.",
-                    )
-                    st.rerun()
-        elif source_name == FRENCH_MOTOR_SAMPLE:
-            st.caption(
-                "French motor sample: ClaimNb is the claim count; Exposure is the "
-                "weight; DrivAge, Region, BonusMalus and Density are predictors. "
-                "A 70/30 random train/test split (seed 42) is ready to review."
-            )
-        elif source_name == SWEDISH_MOTORCYCLE_SAMPLE:
-            st.caption(
-                "Swedish motorcycle sample: ClaimAmount is incurred cost; Exposure "
-                "is the weight; ClaimNb is ignored; six rating factors feed a Tweedie "
-                "burn-cost model. Zero-exposure rows are filtered and a 70/30 random "
-                "train/test split (seed 42) is ready to review."
-            )
-        if source_name in {FRENCH_MOTOR_SAMPLE, SWEDISH_MOTORCYCLE_SAMPLE}:
-            st.caption(
-                "Finished exploring this sample? Start over to return to both sample "
-                "choices. Save the current project first if you want to keep it."
-            )
-            _new_project_button(
-                p,
-                label="Start over and choose another sample",
-                key="choose_another_sample_btn",
-            )
         st.caption(
-            "Point at a local file (fastest for large data) or upload one. "
+            "Start with your data: point at a local file (fastest for large data) "
+            "or upload one. "
             "Supported: parquet, csv, sas7bdat, xlsx, arrow/ipc."
         )
         c1, c2 = st.columns([4, 1])
@@ -384,9 +359,9 @@ def _data_section(p: Project) -> None:
             value=int(p.data.sample_rows or 0),
             step=10000,
             help=(
-                "Rows used by the Explore page and the Design / Variables previews so "
-                "large books stay interactive. Fits, diagnostics, rate tables and the "
-                "leakage report always use the full data; changing this never "
+                "Rows used by Variables previews; Explore and Model previews draw "
+                "this many from training rows only. Fits, diagnostics, rate tables "
+                "and the leakage report use all relevant rows; changing this never "
                 "invalidates a fit."
             ),
             key=S.widget_key("sample_rows"),
@@ -424,6 +399,32 @@ def _data_section(p: Project) -> None:
         err = st.session_state.get("load_error")
         if err and p.data.source.path:
             st.error(err)
+        if source_name == FRENCH_MOTOR_SAMPLE:
+            st.caption(
+                "French motor sample: ClaimNb is the claim count; Exposure is the "
+                "weight; DrivAge, Region, BonusMalus and Density are predictors. "
+                "A 70/30 random train/test split (seed 42) is ready to review."
+            )
+        elif source_name == SWEDISH_MOTORCYCLE_SAMPLE:
+            st.caption(
+                "Swedish motorcycle sample: ClaimAmount is incurred cost; Exposure "
+                "is the weight; ClaimNb is ignored; six rating factors feed a Tweedie "
+                "burn-cost model. Zero-exposure rows are filtered and a 70/30 random "
+                "train/test split (seed 42) is ready to review."
+            )
+        if source_name in {FRENCH_MOTOR_SAMPLE, SWEDISH_MOTORCYCLE_SAMPLE}:
+            st.caption(
+                "Finished exploring this sample? Start over to return to both sample "
+                "choices. Save the current project first if you want to keep it."
+            )
+            _new_project_button(
+                p,
+                label="Start over and choose another sample",
+                key="choose_another_sample_btn",
+                width="content",
+            )
+        elif not p.data.source.path:
+            _sample_choices(p)
 
 
 def _preview(p: Project) -> None:

@@ -610,7 +610,7 @@ def test_breakage2_14_row_counts_and_the_prepared_chip(workspace):
     p.to_json(workspace["project"])
     at = _run(_script("pages_explore", str(workspace["project"])))
     captions = " ".join(c.value for c in at.caption)
-    assert "sample of 1 row " in captions and "1 rows" not in captions
+    assert "exploration sample: 1 row " in captions and "1 rows" not in captions
 
     p = Project.from_json(workspace["project"])
     p.data.sample_rows = None

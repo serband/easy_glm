@@ -16,27 +16,19 @@ def _univariate(df: pl.DataFrame) -> None:
     p = S.project()
     if S.is_sampled():
         st.caption(
-            f"Charts use the exploration sample of {df.height:,} "
-            f"{'row' if df.height == 1 else 'rows'} (Project page); fits and "
-            "diagnostics use the full data."
+            f"Charts use the training portion of the exploration sample: {df.height:,} "
+            f"{'row' if df.height == 1 else 'rows'} (Project page). Fits use all "
+            "training rows; diagnostics evaluate the holdout separately."
         )
     cfg = p.models.get(p.champion) if p.champion else None
     divide = cfg.divide_target_by_weight if cfg else bool(p.weight)
     reserved = {p.target, p.weight, p.offset, p.data.split.column} - {None}
     candidates = [c for c in df.columns if c not in reserved]
-    c1, c2, c3 = st.columns([3, 1, 1])
+    c1, c2 = st.columns([3, 1])
     var = c1.selectbox("Variable", candidates, key=S.widget_key("explore_var"))
     n_bins = c2.slider("Bands", 5, 50, 20, key=S.widget_key("explore_bins"))
-    subset = c3.radio(
-        "Rows", ["train", "all"], horizontal=True, key=S.widget_key("explore_subset")
-    )
-    frame = (
-        df.filter(pl.col(p.data.split.column) == 1)
-        if subset == "train" and p.data.split.column in df.columns
-        else df
-    )
     u = univariate(
-        frame,
+        df,
         var,
         target=p.target,
         weight=p.weight,
@@ -169,14 +161,19 @@ def _leakage(df: pl.DataFrame) -> None:
 def render() -> None:
     st.title("Explore")
     ui.status_bar()
-    df = ui.require_data()
+    df = ui.require_split()
     if df is None:
         return
+    st.info(
+        "**Training data only.** Every chart and leakage check on this page "
+        "excludes the holdout data. The holdout is reserved for diagnostics "
+        "after fitting."
+    )
     tab1, tab2 = st.tabs(["Univariate", "Leakage report"])
     with tab1:
-        sample = S.sample_frame()
+        sample = S.train_sample()
         if sample is not None:
             _univariate(sample)
     with tab2:
         if ui.require_target() is not None:
-            _leakage(df)  # full training rows; the report samples internally
+            _leakage(df)

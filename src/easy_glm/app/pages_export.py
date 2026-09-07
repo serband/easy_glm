@@ -18,21 +18,22 @@ def render() -> None:
     p = S.project()
     if ui.require_data() is None:
         return
-    if not p.models:
-        st.info("Create and fit a model first.")
+    names = S.fitted_models()
+    if not names:
+        st.info("Fit a model on the Model page before exporting it.")
         return
-    names = list(p.models)
     default = p.champion if p.champion in names else names[0]
     name = st.selectbox(
         "Model", names, index=names.index(default), key=S.widget_key("export_model")
     )
     run = S.get_run(name)
-    if run is not None and run.rate_model.relativity_label != "relativity":
-        st.info(ui.relativity_note_markdown(run.rate_model))
     if run is None:
-        st.warning(
-            "This model is not fitted (or its spec changed). The script below derives knots and levels from the data at run time; fit it to get every knot and level written out explicitly."
+        st.info(
+            "This fit is no longer available. Return to the Model page and fit it again."
         )
+        return
+    if run.rate_model.relativity_label != "relativity":
+        st.info(ui.relativity_note_markdown(run.rate_model))
     try:
         src = to_script(p, name, run=run, output_prefix=f"{p.name}_{name}")
     except Exception as exc:  # noqa: BLE001
@@ -57,19 +58,18 @@ def render() -> None:
         file_name=f"{p.name}.easyglm-project.json",
         key=S.widget_key("dl_project"),
     )
-    if run is not None:
-        c3.download_button(
-            "Excel rate tables",
-            ui.excel_bytes(run),
-            file_name=f"{p.name}_{name}_rate_tables.xlsx",
-            key=S.widget_key("dl_xlsx2"),
-        )
-        c4.download_button(
-            "Scorer (.easyglm)",
-            ui.easyglm_bytes(run),
-            file_name=f"{p.name}_{name}.easyglm",
-            key=S.widget_key("dl_easyglm2"),
-        )
+    c3.download_button(
+        "Excel rate tables",
+        ui.excel_bytes(run),
+        file_name=f"{p.name}_{name}_rate_tables.xlsx",
+        key=S.widget_key("dl_xlsx2"),
+    )
+    c4.download_button(
+        "Scorer (.easyglm)",
+        ui.easyglm_bytes(run),
+        file_name=f"{p.name}_{name}.easyglm",
+        key=S.widget_key("dl_easyglm2"),
+    )
     _report(name, run)
     with st.expander("Project JSON"):
         st.json(p.to_dict(), expanded=False)

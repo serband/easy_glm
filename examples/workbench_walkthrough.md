@@ -48,20 +48,19 @@ On **Variables**, use:
 - `ClaimNb` as ignored for this model, because a known claim count would leak
   information into the incurred-cost prediction.
 
-Review the detected data types and any renames or recodes before continuing.
-Ignored columns are also excluded from the residual-factor search.
-
-## 3. Create the split
-
-On **Split**, choose a random 70/30 training and holdout split with seed 42.
+Review the detected data types and any renames or recodes. Then, in the
+**Train / holdout split** section on the same Variables page, choose a random
+70/30 training and holdout split with seed 42.
 The training rows are used to fit and select the model. Holdout rows are kept
-out of those decisions and are used to check how the finished model behaves on
-unseen data.
+out of exploration and modelling decisions and are used to check how the
+finished model behaves on unseen data. The later workflow pages remain locked
+until both subsets exist. Ignored columns are also excluded from the
+residual-factor search.
 
 If the data already contains a split column, select that column and explicitly
 identify the value which means “training”.
 
-## 4. Define the model
+## 3. Define the model
 
 On **Model**, create a model named `BurnCost` and choose:
 
@@ -86,7 +85,7 @@ cell, but an interaction is not part of the model until **Add interaction** has
 been selected. Sparse cells below the chosen exposure threshold receive no
 separate adjustment.
 
-## 5. Fit it
+## 4. Fit it
 
 Keep cross-validation selected, use five folds, and select **Fit model**.
 EasyGLM shuffles those folds reproducibly using the project’s split seed. If the
@@ -96,7 +95,7 @@ main-model predictions rather than fitted values from the same rows.
 The model page then shows the selected penalty, retained coefficients,
 training and holdout metrics, and the regularisation path.
 
-## 6. Check the diagnostics
+## 5. Check the diagnostics
 
 On **Diagnostics**:
 
@@ -112,7 +111,7 @@ On **Diagnostics**:
 
 ![Training and holdout diagnostics in the workbench](../docs/images/workbench-diagnostics.png)
 
-## 7. Compare and adjust
+## 6. Compare and adjust
 
 Create a second model when you want to test a different design, penalty or
 interaction. **Compare** shows the performance and rate-table differences
@@ -123,7 +122,7 @@ band. Smoothing, caps and manual edits create an adjusted prediction without
 refitting the original model, so the actual, fitted and adjusted lines remain
 separate. Check both training and holdout views after an adjustment.
 
-## 8. Export or resume later
+## 7. Export or resume later
 
 Use **Export** to download:
 

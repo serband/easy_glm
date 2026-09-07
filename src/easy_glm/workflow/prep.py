@@ -227,7 +227,7 @@ def add_split_column(df: pl.DataFrame, split: Split) -> pl.DataFrame:
         if out[split.column].sum() == 0:
             raise ValueError(
                 f"No row of {split.column!r} equals the TRAIN value "
-                f"{split.train_value!r}; check the value on the Split page"
+                f"{split.train_value!r}; check the split on the Variables page"
             )
         return out
     if split.mode == "random":
@@ -237,7 +237,7 @@ def add_split_column(df: pl.DataFrame, split: Split) -> pl.DataFrame:
         if name in df.columns:
             raise ValueError(
                 f"The random split column {name!r} would overwrite an existing data "
-                "column; choose another name on the Split page"
+                "column; choose another name on the Variables page"
             )
         is_train = np.random.default_rng(split.seed).random(df.height) < split.fraction
         return df.with_columns(pl.Series(name, is_train.astype(np.int64)))

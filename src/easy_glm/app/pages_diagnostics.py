@@ -9,6 +9,7 @@ import streamlit as st
 
 from easy_glm.core.design import NUMERIC_DTYPES
 from easy_glm.workflow import (
+    Interaction,
     ModelRun,
     ae_by_pair,
     ae_by_variable,
@@ -29,6 +30,17 @@ from . import charts as C
 from . import grids as G
 from . import state as S
 from . import ui
+
+
+def _open_model(name: str) -> None:
+    """Select ``name`` and continue on the registered Model page."""
+    st.session_state.model_current = name
+    st.session_state.pop(S.widget_key("model_select"), None)
+    page = st.session_state.get("_model_page")
+    if page is not None:
+        st.switch_page(page)
+    # Standalone AppTests render this module without main.py's navigation.
+    st.rerun()
 
 
 def _subset(df: pl.DataFrame, which: str) -> pl.DataFrame:
@@ -496,9 +508,45 @@ def render() -> None:
                 },
             )
             if res.height:
-                top = st.selectbox(
-                    "Show", res["variable"].to_list(), key=S.widget_key("rfs_show")
-                )
+                factor_options = res["variable"].to_list()
+                recommended = res.filter(pl.col("signal") >= 2.0)["variable"].to_list()
+                with st.container(border=True):
+                    st.markdown("**Review and add missing factors**")
+                    selected_factors = st.multiselect(
+                        "Factors to add",
+                        factor_options,
+                        default=recommended,
+                        key=S.widget_key("rfs_add_selection"),
+                        help="The strongest positive signals (2.0 or higher) are selected initially. Adjust the selection before adding anything.",
+                    )
+                    choose, action = st.columns([3, 1], vertical_alignment="bottom")
+                    top = choose.selectbox(
+                        "Preview one factor",
+                        factor_options,
+                        key=S.widget_key("rfs_show"),
+                    )
+                    add_factor = action.button(
+                        "Add selected",
+                        width="stretch",
+                        disabled=not selected_factors,
+                        key=S.widget_key("rfs_add_selected"),
+                        help="Add every selected factor to this model, then review their designs before refitting.",
+                    )
+                    st.caption(
+                        "Signals of 2.0 or higher are preselected as a starting point. The preview choice is independent of the factors you add."
+                    )
+                if add_factor:
+                    added = [v for v in selected_factors if v not in cfg.predictors]
+                    cfg.predictors.extend(added)
+                    S.touch()
+                    shown = ", ".join(added[:5])
+                    if len(added) > 5:
+                        shown += f", and {len(added) - 5} more"
+                    ui.flash(
+                        "success",
+                        f"Added {len(added)} factor(s) to {run.name}: {shown}. Review their factor designs, then refit the model.",
+                    )
+                    _open_model(run.name)
                 t = ae_by_variable(
                     train_frame,
                     top,
@@ -584,10 +632,32 @@ def render() -> None:
                         ),
                     },
                 )
-                top_pair = st.selectbox(
-                    "Show", res["pair"].to_list(), key=S.widget_key("rps_show")
-                )
-                row = res.filter(pl.col("pair") == top_pair).row(0, named=True)
+                with st.container(border=True):
+                    st.markdown("**Review a missing interaction**")
+                    choose, action = st.columns([3, 1], vertical_alignment="bottom")
+                    top_pair = choose.selectbox(
+                        "Interaction",
+                        res["pair"].to_list(),
+                        key=S.widget_key("rps_show"),
+                    )
+                    row = res.filter(pl.col("pair") == top_pair).row(0, named=True)
+                    add_interaction = action.button(
+                        "Add interaction",
+                        width="stretch",
+                        key=S.widget_key(f"rps_add_{row['a']}_{row['b']}"),
+                        help="Add the selected pair using the default cell-exposure threshold, then review it before refitting.",
+                    )
+                    st.caption(
+                        "The selected pair is previewed below. Add it to open this model's interaction settings for review and refitting."
+                    )
+                if add_interaction:
+                    cfg.interactions.append(Interaction(row["a"], row["b"]))
+                    S.touch()
+                    ui.flash(
+                        "success",
+                        f"Added {row['a']} × {row['b']} to {run.name}. Review the interaction settings, then refit the model.",
+                    )
+                    _open_model(run.name)
                 # the same 8-band grid the search scored, so worst_cell is visible
                 _pair_heatmap(
                     train_frame,

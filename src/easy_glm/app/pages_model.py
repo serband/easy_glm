@@ -622,8 +622,19 @@ def _fit_and_results(name: str) -> None:
                 + f". {name} was fitted without them.",
             )
         st.rerun()
+    is_champion = run is not None and p.champion == name
+    champion_label = "Champion" if is_champion else "Make champion"
+    if run is None:
+        champion_help = "Fit this model before making it the champion."
+    elif is_champion:
+        champion_help = "This is the current champion model."
+    else:
+        champion_help = "Make this fitted model the default incumbent for comparisons."
     if c2.button(
-        "Make champion", disabled=p.champion == name, key=S.widget_key(f"champ_{name}")
+        champion_label,
+        disabled=run is None or is_champion,
+        help=champion_help,
+        key=S.widget_key(f"champ_{name}"),
     ):
         p.champion = name
         S.touch()
