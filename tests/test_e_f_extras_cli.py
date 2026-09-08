@@ -1081,6 +1081,25 @@ class TestCliWorkbench:
         assert "--headless" in seen
         assert "--server.port" not in seen
 
+    def test_workbench_does_not_reload_modules_during_live_sessions(self, monkeypatch):
+        import easy_glm.app as app
+
+        seen = []
+
+        class FakeProc:
+            def wait(self):
+                return 0
+
+        def fake_popen(args, **_kwargs):
+            seen.extend(args)
+            return FakeProc()
+
+        monkeypatch.setattr(app.subprocess, "Popen", fake_popen)
+        app.launch(block=True, headless=True)
+        option = seen.index("--server.fileWatcherType")
+        assert seen[option + 1] == "none"
+        assert option < seen.index("--")
+
     def test_launcher_builds_a_sanitized_child_environment(self, monkeypatch):
         import easy_glm.app as app
 

@@ -340,7 +340,9 @@ def test_main_sidebar_explains_an_unsaved_project():
     assert any(c.value == "Not saved" for c in at.sidebar.caption)
     assert not at.sidebar.warning
     assert not any(b.label == "Save project setup" for b in at.sidebar.button)
-    assert any("split on Variables to unlock" in c.value for c in at.sidebar.caption)
+    assert any(
+        "predictor roles on Variables to unlock" in c.value for c in at.sidebar.caption
+    )
     locked = " ".join(m.value for m in at.sidebar.markdown)
     assert "○ Explore" in locked and "○ Export" in locked
 

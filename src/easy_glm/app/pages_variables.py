@@ -480,8 +480,13 @@ def _roles_grid(raw: pl.DataFrame) -> None:
     use_json = st.toggle(
         "Bulk edit with JSON",
         help=(
-            "Switch from the table to a copy/paste editor for changing many "
-            "column names, roles and types at once."
+            "This compact format has four sections. `renames` maps raw names to new "
+            "names. `assignments` sets the single target, weight, exposure, offset, "
+            "current premium and split columns. `roles` groups predictors and IDs. "
+            "`types` groups categorical or numeric overrides. Use raw source-column "
+            "names throughout. A column omitted from assignments and roles becomes "
+            "**ignored**; one omitted from types stays **auto**. Nothing is saved "
+            "until you select **Apply JSON changes**."
         ),
         key=S.widget_key("bulk_roles_toggle"),
     )
@@ -504,7 +509,7 @@ def _roles_grid(raw: pl.DataFrame) -> None:
                 "rename to": st.column_config.TextColumn("rename to"),
                 "null %": st.column_config.NumberColumn("null %", format="%.1f"),
             },
-            key=S.widget_key("roles_grid"),
+            key=S.synced_widget_key("roles_grid", rows),
         )
         changed, notices = apply_roles_grid(
             p, list(raw.columns), edited.to_dict("records")
@@ -518,7 +523,6 @@ def _roles_grid(raw: pl.DataFrame) -> None:
         for kind, text in notices:  # a refused rename remains visible in the grid
             getattr(st, kind)(text)
 
-    roles = p.data.roles
     summary = " · ".join(
         f"**{r}**: {', '.join(p.columns_with_role(r)) or '—'}"
         for r in ("target", "weight", "exposure", "offset", "current_premium", "split")
@@ -527,8 +531,10 @@ def _roles_grid(raw: pl.DataFrame) -> None:
         summary
         + f" · **predictors**: {len(p.predictors)} · **ignored**: {len(p.columns_with_role('ignore'))}"
     )
-    if roles and p.target is None:
-        st.warning("No target assigned yet.")
+    st.caption(
+        "A predictor role makes a column available to models. Choose each model's "
+        "factors and interactions on Model; interactions do not need a column role."
+    )
     if (premium := p.current_premium) is not None:
         st.caption(
             f"Rate change: `{premium_offset_column(premium)}` = log({premium}) is "
@@ -543,18 +549,19 @@ def _bulk_roles_json(p: Project, raw: pl.DataFrame) -> None:
     raw_columns = list(raw.columns)
     editor_key = S.widget_key("bulk_roles_json_v2")
     refresh_key = S.widget_key("bulk_roles_refresh")
-    if st.session_state.pop(refresh_key, False) or editor_key not in st.session_state:
-        st.session_state[editor_key] = variable_setup_json(p, raw_columns)
+    source_key = S.widget_key("bulk_roles_json_source")
+    current = variable_setup_json(p, raw_columns)
+    previous = st.session_state.get(source_key)
+    refresh = st.session_state.pop(refresh_key, False)
+    if previous is not None and previous != current:
+        draft = st.session_state.get(editor_key)
+        if draft and draft not in (previous, current) and not refresh:
+            st.session_state[S.widget_key("bulk_roles_previous_draft")] = draft
+        refresh = True
+    if refresh or editor_key not in st.session_state:
+        st.session_state[editor_key] = current
+    st.session_state[source_key] = current
 
-    st.info(
-        "This compact format has four sections. `renames` maps raw names to new "
-        "names. `assignments` sets the single target, weight, exposure, offset, "
-        "current premium and split columns. `roles` groups predictors and IDs. "
-        "`types` groups explicit categorical or numeric overrides. All names "
-        "refer to the raw source columns. A column omitted from assignments and "
-        "roles becomes **ignored**; one omitted from types stays **auto**. "
-        "Nothing is saved until you select **Apply JSON changes**."
-    )
     if st.button(
         "Reset JSON from current setup",
         key=S.widget_key("bulk_roles_reset"),
@@ -572,13 +579,20 @@ def _bulk_roles_json(p: Project, raw: pl.DataFrame) -> None:
             "ignored columns and automatic types."
         ),
     )
+    previous_draft = st.session_state.get(S.widget_key("bulk_roles_previous_draft"))
+    if previous_draft:
+        with st.expander("Previous unapplied JSON draft"):
+            st.caption(
+                "The editor refreshed because the variable setup changed elsewhere. "
+                "Your earlier unapplied text is kept here for reference."
+            )
+            st.code(previous_draft, language="json")
     rows, errors = parse_variable_setup_json(p, raw_columns, text)
     changes = [] if errors else variable_setup_changes(p, raw_columns, rows)
     if errors:
         st.error("Fix the JSON before applying it:\n\n- " + "\n- ".join(errors))
     elif changes:
         st.caption(f"Proposed changes: {len(changes)} column(s).")
-        st.dataframe(pd.DataFrame(changes), hide_index=True, width="stretch")
     else:
         st.caption("Valid JSON. It matches the current variable setup.")
 
@@ -859,13 +873,6 @@ def render() -> None:
     if raw is None:
         return
     st.subheader("Roles, names and types")
-    st.caption(
-        "Exactly one **target**; **weight** = exposure or premium used as GLM weight; "
-        "**split** = an existing train/holdout indicator; you can instead create a "
-        "seeded random split below; "
-        "**id** and **ignore** are excluded from modelling. Renaming a column carries "
-        "its role and every model reference with it."
-    )
     _roles_grid(raw)
     _missing_role_columns(raw)
     tab1, tab2, tab3 = st.tabs(["Level recodes", "Derived columns", "Row filters"])

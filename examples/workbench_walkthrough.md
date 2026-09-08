@@ -48,13 +48,20 @@ On **Variables**, use:
 - `ClaimNb` as ignored for this model, because a known claim count would leak
   information into the incurred-cost prediction.
 
+Use the roles table or **Bulk edit with JSON**. JSON edits are validated and
+saved only when you select **Apply JSON changes**; the table and JSON then show
+the same setup. The toggle's question mark explains the JSON format. Roles make
+columns available to models; choose each model's factors and interactions on
+**Model**. Interactions do not need a separate column role.
+
 Review the detected data types and any renames or recodes. Then, in the
 **Train / holdout split** section on the same Variables page, choose a random
 70/30 training and holdout split with seed 42.
 The training rows are used to fit and select the model. Holdout rows are kept
 out of exploration and modelling decisions and are used to check how the
 finished model behaves on unseen data. The later workflow pages remain locked
-until both subsets exist. Ignored columns are also excluded from the
+until a target and at least one predictor are assigned and both subsets exist.
+Other columns may remain unassigned. Ignored columns are also excluded from the
 residual-factor search.
 
 If the data already contains a split column, select that column and explicitly

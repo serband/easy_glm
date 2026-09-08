@@ -462,7 +462,11 @@ def render() -> None:
             "z-score across each variable's bands; large values point at factors "
             "the model is missing."
         )
-        candidates = [c for c in others if p.data.roles.get(c) not in ("id", "ignore")]
+        candidates = [
+            c
+            for c in others
+            if p.data.roles.get(c) in (None, "unassigned", "predictor")
+        ]
         if not candidates:
             st.info(
                 "Every available variable is already in the model, an id, or "
@@ -536,8 +540,14 @@ def render() -> None:
                         "Signals of 2.0 or higher are preselected as a starting point. The preview choice is independent of the factors you add."
                     )
                 if add_factor:
-                    added = [v for v in selected_factors if v not in cfg.predictors]
-                    cfg.predictors.extend(added)
+                    model = p.models[run.name]
+                    added = [v for v in selected_factors if v not in model.predictors]
+                    for variable in added:
+                        # A search can find an unassigned column. Including it
+                        # in a model also makes it a project predictor, so the
+                        # role table, JSON and project validation agree.
+                        p.apply_role_change(variable, "predictor")
+                    model.predictors.extend(added)
                     S.touch()
                     shown = ", ".join(added[:5])
                     if len(added) > 5:
@@ -651,7 +661,9 @@ def render() -> None:
                         "The selected pair is previewed below. Add it to open this model's interaction settings for review and refitting."
                     )
                 if add_interaction:
-                    cfg.interactions.append(Interaction(row["a"], row["b"]))
+                    p.models[run.name].interactions.append(
+                        Interaction(row["a"], row["b"])
+                    )
                     S.touch()
                     ui.flash(
                         "success",

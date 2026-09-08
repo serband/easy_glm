@@ -264,6 +264,21 @@ def widget_key(name: str) -> str:
     return f"{name}_{st.session_state.project_token}"
 
 
+def synced_widget_key(name: str, source: Any) -> str:
+    """Reset stale widget state when its project value changes.
+
+    Call before rendering the widget. A copy of the last rendered source
+    distinguishes a new user edit from an update made through another editor.
+    In particular, a data editor's old row deltas must not replay on new rows.
+    """
+    key = widget_key(name)
+    source_key = widget_key(f"{name}_source")
+    if source_key in st.session_state and st.session_state[source_key] != source:
+        st.session_state.pop(key, None)
+    st.session_state[source_key] = copy.deepcopy(source)
+    return key
+
+
 def _file_stamp(path: str | None) -> tuple[int, int, str] | None:
     """Identity of the project file: modification time, size and a hash of the
     bytes. The timestamp alone is not enough — NFS, SMB and FAT round it to a
@@ -567,6 +582,29 @@ def train_sample() -> pl.DataFrame | None:
     if df is None:
         return None
     return _sample_of(df, project())
+
+
+def roles_ready() -> bool:
+    """Required project roles refer to available columns, independently of models.
+
+    Other columns may be ignored, IDs or unassigned. Resolve names before the
+    split so an unfinished split does not make valid role assignments look missing.
+    """
+    p = project()
+    raw = raw_frame()
+    if raw is None:
+        return False
+    columns = {p.data.renames.get(name, name) for name in raw.columns}
+    columns.update(derived.name for derived in p.data.derived)
+    if p.current_premium and p.offset_column:
+        columns.add(p.offset_column)
+    targets = p.columns_with_role("target")
+    return (
+        len(targets) == 1
+        and targets[0] in columns
+        and bool(p.predictors)
+        and all(name in columns for name in p.predictors)
+    )
 
 
 def split_ready(df: pl.DataFrame | None = None) -> bool:
@@ -1319,7 +1357,7 @@ def status() -> dict[str, bool]:
     empty = prepared is not None and prepared[1].is_empty()
     return {
         "data": loaded,
-        "roles": p.target is not None and bool(p.predictors),
+        "roles": roles_ready(),
         "split": loaded
         and split_ready(prepared[1] if prepared is not None else None)
         and not empty

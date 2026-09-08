@@ -2,6 +2,32 @@
 
 This is the user-facing record of useful new features and fixes.
 
+## 0.451 — 8 September 2026
+
+### Fixes and improvements
+
+- **Variable edits stay in sync.** The roles table and JSON editor reflect the
+  latest applied setup. Model predictor selections and factor-design tables
+  refresh after changes elsewhere instead of restoring old values. An unapplied
+  JSON draft is retained for reference if another update replaces it.
+- **Residual suggestions update the project correctly.** Adding an unassigned
+  factor also gives it a predictor role, so the roles table, JSON and model
+  agree. Suggested interactions remain part of the selected model and need no
+  extra column role.
+- **Setup comes before modelling.** Explore and later pages unlock only after
+  a target, at least one predictor and a valid train/holdout split are assigned.
+  Direct links to locked pages return to Variables. Other columns may remain
+  unassigned, ignored or IDs.
+- **A quieter Variables page.** JSON schema help is available from the toggle's
+  question mark. Proposed edits show a compact column count instead of a large
+  preview table; validation and the explicit Apply button remain. Missing model
+  settings have actionable guidance where they are needed.
+- **More reliable startup.** The launcher avoids Python paths injected by IDEs,
+  and startup handles older split-readiness interfaces safely.
+- **Stable running sessions.** The workbench no longer reloads package code
+  while sessions are active, avoiding import failures during updates. Restart
+  the workbench after upgrading EasyGLM.
+
 ## 0.4.5 — 7 September 2026
 
 ### New features

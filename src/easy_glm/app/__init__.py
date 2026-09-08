@@ -88,6 +88,10 @@ def _streamlit_args(
         "false",
         "--server.maxUploadSize",
         "2048",
+        # Keep imported classes/modules stable for the lifetime of a workbench.
+        # Hot reload evicts modules while another session may be importing them.
+        "--server.fileWatcherType",
+        "none",
     ]
     if host:
         args += ["--server.address", host]

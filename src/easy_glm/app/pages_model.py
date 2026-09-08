@@ -640,7 +640,17 @@ def _fit_and_results(name: str) -> None:
         S.touch()
         st.rerun()
     if problems:
-        c3.error("; ".join(problems))
+        guidance = {
+            f"{name}: no target column": (
+                f"{name}: choose a Target in Model definition above "
+                "(or assign the target role on Variables before creating a model)."
+            ),
+            f"{name}: no predictors": (
+                f"{name}: assign predictor roles on Variables, then select "
+                "this model's Predictors above before fitting."
+            ),
+        }
+        c3.error("; ".join(guidance.get(problem, problem) for problem in problems))
     elif run is not None:
         n_adj = len(p.models[name].adjustments)
         suffix = f" · metrics include {n_adj} manual adjustment(s)" if n_adj else ""

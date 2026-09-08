@@ -264,11 +264,7 @@ def render() -> None:
 def render_contents(raw: pl.DataFrame) -> None:
     """Render split setup inside the Variables workflow."""
     st.subheader("Train / holdout split")
-    st.info(
-        "Required before exploration or modelling. EasyGLM uses training rows "
-        "for exploration, model design and fitting; holdout rows remain unseen "
-        "until diagnostics."
-    )
+    st.info("Train/test split indicator is mandatory.")
     p = S.project()
     sp = p.data.split
     mode = st.radio(

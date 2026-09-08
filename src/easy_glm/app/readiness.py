@@ -6,6 +6,16 @@ from collections.abc import Mapping
 from typing import Any
 
 
+def roles_ready(state_module: Any) -> bool:
+    """Use project-role readiness, with the status contract as a fallback."""
+    helper = getattr(state_module, "roles_ready", None)
+    if callable(helper):
+        return bool(helper())
+    status = getattr(state_module, "status", None)
+    current = status() if callable(status) else None
+    return isinstance(current, Mapping) and bool(current.get("roles", False))
+
+
 def split_ready(state_module: Any) -> bool:
     """Return whether split-gated pages should be unlocked.
 

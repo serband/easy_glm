@@ -21,7 +21,6 @@ from easy_glm.app import (
     pages_tables,
     pages_variables,
     readiness,
-    ui,
 )
 from easy_glm.app import state as S
 from easy_glm.workflow import Project
@@ -60,26 +59,32 @@ if not st.session_state.get("_cli_loaded"):
         S.set_project(Project.from_json(path), path)
 
 
+roles_are_ready = readiness.roles_ready(S)
 split_is_ready = readiness.split_ready(S)
+setup_is_ready = roles_are_ready and split_is_ready
 
 
-def _after_split(title: str, render):
+def _after_setup(render):
     """Keep a directly opened downstream URL behind the same workflow gate."""
 
     def gated() -> None:
-        if not split_is_ready:
-            st.title(title)
-            ui.status_bar()
-            ui.require_split()
+        if not setup_is_ready:
+            st.switch_page(variables_page)
             return
         render()
 
     return gated
 
 
-downstream_visibility = "visible" if split_is_ready else "hidden"
+variables_page = st.Page(
+    pages_variables.render,
+    title="Variables",
+    icon=":material/view_column:",
+    url_path="variables",
+)
+downstream_visibility = "visible" if setup_is_ready else "hidden"
 model_page = st.Page(
-    _after_split("Model", pages_model.render),
+    _after_setup(pages_model.render),
     title="Model",
     icon=":material/function:",
     url_path="model",
@@ -94,14 +99,9 @@ pages = [
         url_path="project",
         default=True,
     ),
+    variables_page,
     st.Page(
-        pages_variables.render,
-        title="Variables",
-        icon=":material/view_column:",
-        url_path="variables",
-    ),
-    st.Page(
-        _after_split("Explore", pages_explore.render),
+        _after_setup(pages_explore.render),
         title="Explore",
         icon=":material/search_insights:",
         url_path="explore",
@@ -109,28 +109,28 @@ pages = [
     ),
     model_page,
     st.Page(
-        _after_split("Diagnostics", pages_diagnostics.render),
+        _after_setup(pages_diagnostics.render),
         title="Diagnostics",
         icon=":material/monitoring:",
         url_path="diagnostics",
         visibility=downstream_visibility,
     ),
     st.Page(
-        _after_split("Compare", pages_compare.render),
+        _after_setup(pages_compare.render),
         title="Compare",
         icon=":material/compare_arrows:",
         url_path="compare",
         visibility=downstream_visibility,
     ),
     st.Page(
-        _after_split("Rate tables", pages_tables.render),
+        _after_setup(pages_tables.render),
         title="Rate tables",
         icon=":material/table_chart:",
         url_path="tables",
         visibility=downstream_visibility,
     ),
     st.Page(
-        _after_split("Export", pages_export.render),
+        _after_setup(pages_export.render),
         title="Export",
         icon=":material/code:",
         url_path="export",
@@ -144,8 +144,12 @@ st.session_state["_model_page"] = model_page
 nav = st.navigation({"Workflow": pages})
 
 with st.sidebar:
-    if not split_is_ready:
-        st.caption("Complete the train / holdout split on Variables to unlock:")
+    if not setup_is_ready:
+        st.caption(
+            "Assign a target and predictor roles on Variables to unlock:"
+            if not roles_are_ready
+            else "Complete the train / holdout split on Variables to unlock:"
+        )
         for title in (
             "Explore",
             "Model",

@@ -244,8 +244,12 @@ def _model_definition(name: str, df: pl.DataFrame) -> None:
             format_func=lambda value: (
                 value if value in p.predictors else f"{value} (missing)"
             ),
-            key=S.widget_key(f"preds_{name}"),
-            help="Rating factors included in this model. Their shared design is edited below.",
+            key=S.synced_widget_key(f"preds_{name}", list(cfg.predictors)),
+            help=(
+                "Rating factors included in this model. Predictor roles on Variables "
+                "make columns available; this selection chooses which ones to fit. "
+                "Their shared design is edited below."
+            ),
         )
         if cfg.interactions:
             missing_parents = sorted(
@@ -444,7 +448,7 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
                 "such as a territory table).",
             ),
         },
-        key=S.widget_key("design_grid"),
+        key=S.synced_widget_key("design_grid", rows),
     )
     changed = False
     for _, r in edited.iterrows():
@@ -1157,6 +1161,11 @@ def render_contents() -> str | None:
     df = ui.require_data()
     if df is None:
         return None
+    if not p.models and (p.target is None or not p.predictors):
+        st.warning(
+            "Assign a target and at least one predictor role on Variables "
+            "before creating a model."
+        )
     name = _model_picker()
     if name is None:
         return None
@@ -1165,7 +1174,8 @@ def render_contents() -> str | None:
     predictors = list(cfg.predictors)
     if not predictors:
         st.info(
-            "Choose one or more predictor roles above to define this model's design."
+            "Assign predictor roles on Variables, then choose this model's "
+            "Predictors above. Other columns may remain unassigned."
         )
         return name
     train = S.train_frame()  # knots and levels always come from the full training rows

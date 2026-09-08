@@ -54,6 +54,9 @@ To reopen a saved project later, pass its project file after the command:
 easy-glm-workbench path/to/project.easyglm-project.json
 ```
 
+After upgrading EasyGLM, stop and restart the workbench to use the new version.
+Reopen your saved project to continue working.
+
 The workbench follows the same modelling pipeline as the Python API. It helps
 you assign column roles, prepare a reproducible train/holdout split, design and
 fit one or more models, inspect diagnostics, adjust rate tables, and export the
