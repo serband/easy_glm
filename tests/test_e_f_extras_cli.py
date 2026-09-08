@@ -1081,6 +1081,46 @@ class TestCliWorkbench:
         assert "--headless" in seen
         assert "--server.port" not in seen
 
+    def test_launcher_builds_a_sanitized_child_environment(self, monkeypatch):
+        import easy_glm.app as app
+
+        monkeypatch.setenv("PYTHONPATH", "injected_path")
+        monkeypatch.setenv("PYTHONHOME", "injected_home")
+        monkeypatch.setenv("PATH", f"other{os.pathsep}dirs")
+        env = app._launcher_env()
+
+        assert "PYTHONPATH" not in env
+        assert "PYTHONHOME" not in env
+        assert env["PYTHONNOUSERSITE"] == "1"
+        assert env["PATH"].split(os.pathsep)[0] == str(
+            Path(sys.executable).resolve().parent
+        )
+
+    def test_launcher_passes_the_sanitized_env_to_the_child(self, monkeypatch):
+        import easy_glm.app as app
+
+        seen_env: dict[str, str] = {}
+
+        class FakeProc:
+            def wait(self, timeout=None):
+                raise app.subprocess.TimeoutExpired(
+                    cmd="python -m easy_glm.app", timeout=timeout
+                )
+
+        def fake_popen(_args, **kwargs):
+            seen_env.update(kwargs["env"])
+            return FakeProc()
+
+        monkeypatch.setenv("PYTHONPATH", "injected_path")
+        monkeypatch.setenv("PYTHONHOME", "injected_home")
+        monkeypatch.setattr(app.subprocess, "Popen", fake_popen)
+
+        app.launch(port=8599, headless=True)
+
+        assert "PYTHONPATH" not in seen_env
+        assert "PYTHONHOME" not in seen_env
+        assert seen_env["PYTHONNOUSERSITE"] == "1"
+
     def test_launcher_is_available_from_the_public_package(self):
         import easy_glm
         import easy_glm.app as app
@@ -1195,7 +1235,7 @@ class TestCliWorkbench:
                 self.terminated = True
 
         proc = FakeProc()
-        monkeypatch.setattr(app.subprocess, "Popen", lambda _args: proc)
+        monkeypatch.setattr(app.subprocess, "Popen", lambda _args, **_kwargs: proc)
 
         assert app.launch(block=True) is proc
         assert proc.terminated is True

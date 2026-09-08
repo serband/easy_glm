@@ -117,6 +117,25 @@ def _launcher_args(
     return args
 
 
+def _launcher_env() -> dict[str, str]:
+    """Child env that avoids parent-kernel path injection."""
+    env = os.environ.copy()
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONPATH", None)
+    env["PYTHONNOUSERSITE"] = "1"
+
+    python_dir = str(Path(sys.executable).resolve().parent)
+    path_parts = [p for p in env.get("PATH", "").split(os.pathsep) if p]
+    norm_python_dir = os.path.normcase(os.path.normpath(python_dir))
+    deduped = [
+        p
+        for p in path_parts
+        if os.path.normcase(os.path.normpath(p)) != norm_python_dir
+    ]
+    env["PATH"] = os.pathsep.join([python_dir, *deduped])
+    return env
+
+
 def launch(
     project_path: str | Path | None = None,
     *,
@@ -143,7 +162,8 @@ def launch(
         proc = subprocess.Popen(
             _streamlit_args(
                 project_path=project_path, port=port, headless=headless, host=host
-            )
+            ),
+            env=_launcher_env(),
         )
     else:
         fd, log_path = tempfile.mkstemp(prefix="easy_glm_workbench_", suffix=".log")
@@ -155,6 +175,7 @@ def launch(
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 text=True,
+                env=_launcher_env(),
             )
         try:
             proc.wait(timeout=1.0)
