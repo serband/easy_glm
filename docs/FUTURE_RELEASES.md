@@ -63,3 +63,18 @@ at a given alpha.
   null row. Remaining guards: a gamma or inverse-Gaussian holdout row with zero
   loss should be excluded from the holdout deviance and counted; document that
   Gaussian uses a log link.
+
+## Leakage review candidates
+
+- Make default leakage candidates follow the same role meanings as Variables.
+  Currently, a missing role entry is treated as a predictor by the leakage
+  report, while Variables treats it as unassigned. Missing and explicitly
+  unassigned roles must both stay out of the default scan, as must ignored
+  columns.
+- Keep predictors and IDs in the intended leakage review, while preserving
+  the existing exclusions for reserved target, weight, offset and split
+  columns. Offer an explicit opt-in scan of unassigned columns if useful.
+- Add candidate-selection tests for absent roles, explicit unassigned, ignore,
+  predictor and ID roles, including reserved-column exclusions and any opt-in
+  behaviour. This is a roadmap item; the current release does not change
+  leakage selection.

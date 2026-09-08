@@ -2,6 +2,21 @@
 
 This is the user-facing record of useful new features and fixes.
 
+## 0.452 — 8 September 2026
+
+### Fixes and improvements
+
+- **Every role is visible in JSON.** Generated settings list all supported roles,
+  including unused ones. Empty single-column assignments use `null`; empty role
+  groups use `[]`. Ignored columns remain explicit when switching between the
+  table and JSON or resetting the editor.
+- **Reset uses the current setup.** The reset button replaces the JSON draft
+  before the editor renders, without an extra explicit rerun. Changes still
+  require the Apply button.
+- **Faster JSON editing on wide datasets.** JSON edits and resets no longer
+  calculate distinct-value counts for the hidden roles table. Table statistics
+  are calculated when the table is shown or needed for automatic role assignment.
+
 ## 0.451 — 8 September 2026
 
 ### Fixes and improvements
