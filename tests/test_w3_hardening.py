@@ -318,11 +318,16 @@ def test_bulk_variable_json_round_trip_and_partial_edit(workspace):
     assert payload["assignments"] == {
         "target": "ClaimNb",
         "weight": "Exposure",
+        "exposure": None,
+        "offset": None,
+        "current_premium": None,
         "split": "traintest",
     }
     assert payload["roles"] == {
         "id": ["IDpol"],
         "predictor": ["DrivAge", "BonusMalus", "Region"],
+        "ignore": [],
+        "unassigned": [],
     }
     assert payload["types"] == {}
     rows, errors = pv.parse_variable_setup_json(p, columns, text)

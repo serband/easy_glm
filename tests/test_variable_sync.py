@@ -247,3 +247,71 @@ def test_wide_json_reset_does_not_scan_columns_or_prepare_again(tmp_path, monkey
     assert len(at.dataframe[0].value) == 2000
     at.toggle(key=wk(at, "bulk_roles_toggle")).set_value(True).run()
     assert json.loads(at.text_area(key=wk(at, "bulk_roles_json_v2")).value) == payload
+
+
+@pytest.mark.parametrize("setup", ["no_columns", "no_roles", "partial", "all_roles"])
+def test_generated_template_lists_every_role_without_changing_setup(setup):
+    from easy_glm.app import pages_variables as pv
+
+    p = Project()
+    columns = [f"column_{role}" for role in pv.ROLE_OPTIONS]
+    if setup == "no_columns":
+        columns = []
+    elif setup == "partial":
+        p.data.roles = {"column_target": "target", "column_ignore": "ignore"}
+    elif setup == "all_roles":
+        p.data.roles = {f"column_{role}": role for role in pv.ROLES}
+    if columns:
+        p.data.renames = {"column_unassigned": "renamed_column"}
+        p.data.types = {"renamed_column": "categorical"}
+    before = p.to_dict()
+    text = pv.variable_setup_json(p, columns)
+    payload = json.loads(text)
+    assert set(payload["assignments"]) == set(pv.SINGLE_ROLES)
+    assert set(payload["roles"]) == set(pv.BULK_ROLE_GROUPS)
+    for role, name in payload["assignments"].items():
+        assert name == (f"column_{role}" if role in p.data.roles.values() else None)
+    represented = [v for v in payload["assignments"].values() if v is not None]
+    represented += [name for names in payload["roles"].values() for name in names]
+    assert sorted(represented) == sorted(columns)
+    rows, errors = pv.parse_variable_setup_json(p, columns, text)
+    assert not errors
+    assert pv.variable_setup_changes(p, columns, rows) == []
+    assert pv.apply_roles_grid(p, columns, rows) == (False, [])
+    assert p.to_dict() == before
+    assert pv.variable_setup_json(p, columns) == text
+
+
+@pytest.mark.parametrize("empty_roles", [True, False])
+def test_reset_restores_complete_role_template(workspace, empty_roles):
+    from easy_glm.app import pages_variables as pv
+
+    if empty_roles:
+        p = Project.from_json(workspace["project"])
+        p.data.roles = {}
+        p.to_json(workspace["project"])
+    at = _run(_script("pages_variables", str(workspace["project"])))
+    at.toggle(key=wk(at, "bulk_roles_toggle")).set_value(True).run()
+    current = at.text_area(key=wk(at, "bulk_roles_json_v2")).value
+    before = workspace["project"].read_bytes()
+    at.text_area(key=wk(at, "bulk_roles_json_v2")).set_value("{}").run()
+    at.button(key=wk(at, "bulk_roles_reset")).click().run()
+    assert not at.exception
+    assert at.text_area(key=wk(at, "bulk_roles_json_v2")).value == current
+    payload = json.loads(current)
+    assert set(payload["assignments"]) == set(pv.SINGLE_ROLES)
+    assert set(payload["roles"]) == set(pv.BULK_ROLE_GROUPS)
+    assert at.button(key=wk(at, "bulk_roles_apply")).disabled
+    assert workspace["project"].read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "assignments", [{"target": ""}, {"target": []}, {"hero": None}]
+)
+def test_empty_assignment_support_does_not_accept_invalid_values(assignments):
+    from easy_glm.app import pages_variables as pv
+
+    _, errors = pv.parse_variable_setup_json(
+        Project(), ["x"], json.dumps({"assignments": assignments})
+    )
+    assert errors

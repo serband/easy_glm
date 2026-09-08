@@ -190,12 +190,13 @@ def variable_setup_json(p: Project, raw_columns: list[str]) -> str:
     Column names in every section are deliberately the raw source names: they
     remain stable when ``renames`` changes and make pasted settings unambiguous.
     Every column's role is explicit, including ignored and unassigned columns,
-    so switching editors preserves the visible assignments. Automatic types
-    are omitted because those are the bulk format's default.
+    so switching editors preserves the visible assignments. Empty singleton
+    roles use null and empty role groups use lists to show every available role.
+    Automatic types are omitted because those are the bulk format's default.
     """
     renames: dict[str, str] = {}
-    assignments: dict[str, str] = {}
-    roles: dict[str, list[str]] = {}
+    assignments: dict[str, str | None] = dict.fromkeys(SINGLE_ROLES)
+    roles: dict[str, list[str]] = {role: [] for role in BULK_ROLE_GROUPS}
     types: dict[str, list[str]] = {}
     for raw_name in raw_columns:
         final = p.data.renames.get(raw_name, raw_name)
@@ -224,8 +225,9 @@ def parse_variable_setup_json(
     """Parse a section-based bulk variable setup without mutating ``p``.
 
     Omitted renames leave the source name unchanged; columns absent from both
-    assignments and roles default to ignore; columns absent from types default
-    to auto. Every column reference is a raw source-column name.
+    assignments and roles default to ignore; null singleton assignments name no
+    column. Columns absent from types default to auto. Every column reference
+    is a raw source-column name.
     """
     try:
         payload = json.loads(text)
@@ -303,6 +305,8 @@ def parse_variable_setup_json(
                 f"assignments.{role} is not a single-column assignment; use one "
                 "of: " + ", ".join(SINGLE_ROLES)
             )
+            continue
+        if value is None:
             continue
         source = raw_column(value, f"assignments.{role}")
         if source is not None:
@@ -467,7 +471,8 @@ def _roles_grid(raw: pl.DataFrame) -> None:
             "This compact format has four sections. `renames` maps raw names to new "
             "names. `assignments` sets the single target, weight, exposure, offset, "
             "current premium and split columns. `roles` groups predictors, IDs, "
-            "ignored and unassigned columns. "
+            "ignored and unassigned columns. Use `null` for an empty assignment "
+            "and `[]` for an empty role group. "
             "`types` groups categorical or numeric overrides. Use raw source-column "
             "names throughout. A column omitted from assignments and roles becomes "
             "**ignored**; one omitted from types stays **auto**. Nothing is saved "
