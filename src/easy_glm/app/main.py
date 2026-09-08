@@ -20,6 +20,7 @@ from easy_glm.app import (
     pages_project,
     pages_tables,
     pages_variables,
+    readiness,
     ui,
 )
 from easy_glm.app import state as S
@@ -59,7 +60,7 @@ if not st.session_state.get("_cli_loaded"):
         S.set_project(Project.from_json(path), path)
 
 
-split_is_ready = S.split_ready()
+split_is_ready = readiness.split_ready(S)
 
 
 def _after_split(title: str, render):
