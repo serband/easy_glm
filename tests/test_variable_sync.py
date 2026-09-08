@@ -207,3 +207,43 @@ def test_every_role_survives_json_serialization_with_rename(role):
         {"column": "raw", "rename to": "renamed", "role": role, "type": "auto"}
     ]
     assert pv.variable_setup_changes(p, ["raw"], rows) == []
+
+
+def test_wide_json_reset_does_not_scan_columns_or_prepare_again(tmp_path, monkeypatch):
+    import polars as pl
+
+    from easy_glm.app import state
+
+    columns = [f"hist_clm_{i}" for i in range(2000)]
+    data = tmp_path / "wide.parquet"
+    pl.DataFrame({name: range(64) for name in columns}).write_parquet(data)
+    p = Project()
+    p.data.source.type = "parquet"
+    p.data.source.path = str(data)
+    p.data.roles = dict.fromkeys(columns, "ignore")
+    p.data.split.mode = "random"
+    project = tmp_path / "wide.easyglm-project.json"
+    p.to_json(project)
+    at = _run(_script("pages_variables", str(project)))
+    before = project.read_bytes()
+
+    def unexpected_scan(*args, **kwargs):
+        raise AssertionError("JSON reset must reuse data and avoid table statistics")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pl.Series, "n_unique", unexpected_scan)
+        patch.setattr(state, "prepare", unexpected_scan)
+        at.toggle(key=wk(at, "bulk_roles_toggle")).set_value(True).run()
+        at.text_area(key=wk(at, "bulk_roles_json_v2")).set_value('{"draft":').run()
+        at.button(key=wk(at, "bulk_roles_reset")).click().run()
+        assert not at.exception
+        assert not at.error
+        payload = json.loads(at.text_area(key=wk(at, "bulk_roles_json_v2")).value)
+        assert payload["roles"]["ignore"] == columns
+        assert at.button(key=wk(at, "bulk_roles_apply")).disabled
+        assert project.read_bytes() == before
+    at.toggle(key=wk(at, "bulk_roles_toggle")).set_value(False).run()
+    assert not at.exception
+    assert len(at.dataframe[0].value) == 2000
+    at.toggle(key=wk(at, "bulk_roles_toggle")).set_value(True).run()
+    assert json.loads(at.text_area(key=wk(at, "bulk_roles_json_v2")).value) == payload

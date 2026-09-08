@@ -439,39 +439,23 @@ def _drop_from_models(p: Project, column: str) -> list[str]:
 
 def _roles_grid(raw: pl.DataFrame) -> None:
     p = S.project()
-    rows = []
-    n = max(raw.height, 1)
-    for name, dtype in raw.schema.items():
-        new = p.data.renames.get(name, name)
-        rows.append(
-            {
-                "column": name,
-                "rename to": new if new != name else "",
-                "role": p.data.roles.get(new, "unassigned"),
-                "type": p.data.types.get(new, "auto"),
-                "dtype": str(dtype),
-                "null %": round(100 * raw[name].null_count() / n, 1),
-                "unique": raw[name].n_unique(),
-            }
-        )
-    grid = pd.DataFrame(rows)
     c1, c2, c3 = st.columns([1, 1, 3])
     if c1.button(
         "Auto-assign roles",
         help="Guess split / weight / id / predictor from names and cardinality",
     ):
-        for r in rows:
-            new = p.data.renames.get(r["column"], r["column"])
+        for name, dtype in raw.schema.items():
+            new = p.data.renames.get(name, name)
             if p.data.roles.get(new, "unassigned") == "unassigned":
                 p.data.roles[new] = _guess_role(
-                    new, raw.schema[r["column"]], r["unique"], raw.height
+                    new, dtype, raw[name].n_unique(), raw.height
                 )
         S.touch()
         st.session_state[S.widget_key("bulk_roles_refresh")] = True
         st.rerun()
     if c2.button("Unassigned → predictor"):
-        for r in rows:
-            new = p.data.renames.get(r["column"], r["column"])
+        for name in raw.columns:
+            new = p.data.renames.get(name, name)
             p.data.roles.setdefault(new, "predictor")
         S.touch()
         st.session_state[S.widget_key("bulk_roles_refresh")] = True
@@ -494,6 +478,23 @@ def _roles_grid(raw: pl.DataFrame) -> None:
     if use_json:
         _bulk_roles_json(p, raw)
     else:
+        # Column statistics belong to the table, not to JSON edits or resets.
+        rows = []
+        n = max(raw.height, 1)
+        for name, dtype in raw.schema.items():
+            new = p.data.renames.get(name, name)
+            rows.append(
+                {
+                    "column": name,
+                    "rename to": new if new != name else "",
+                    "role": p.data.roles.get(new, "unassigned"),
+                    "type": p.data.types.get(new, "auto"),
+                    "dtype": str(dtype),
+                    "null %": round(100 * raw[name].null_count() / n, 1),
+                    "unique": raw[name].n_unique(),
+                }
+            )
+        grid = pd.DataFrame(rows)
         edited = st.data_editor(
             grid,
             hide_index=True,
