@@ -54,6 +54,8 @@ def test_table_json_roundtrip_and_saved_model_removal(workspace):
     editor = at.text_area(key=wk(at, "bulk_roles_json_v2"))
     payload = json.loads(editor.value)
     assert "Region" not in payload["roles"]["predictor"]
+    assert payload["roles"]["ignore"] == ["Region"]
+    payload["roles"]["ignore"].remove("Region")
     payload["roles"]["predictor"].append("Region")
     editor.set_value(json.dumps(payload)).run()
     at.button(key=wk(at, "bulk_roles_apply")).click().run()
@@ -125,3 +127,83 @@ def test_residual_interaction_is_visible_in_model_without_new_roles(workspace):
     assert any(interaction.name in info.value for info in at.info)
     assert at.session_state["_project"].data.roles == roles
     assert not at.exception
+
+
+def test_json_ignore_survives_table_and_reset(workspace):
+    at = _run(_script("pages_variables", str(workspace["project"])))
+    at.toggle(key=wk(at, "bulk_roles_toggle")).set_value(True).run()
+    payload = json.loads(at.text_area(key=wk(at, "bulk_roles_json_v2")).value)
+    payload["roles"]["predictor"] = ["DrivAge"]
+    payload["roles"]["ignore"] = ["BonusMalus", "Region"]
+    at.text_area(key=wk(at, "bulk_roles_json_v2")).set_value(json.dumps(payload)).run()
+    assert at.session_state["_project"].data.roles["Region"] == "predictor"
+    at.button(key=wk(at, "bulk_roles_apply")).click().run()
+    at.toggle(key=wk(at, "bulk_roles_toggle")).set_value(False).run()
+    grid = at.dataframe[0].value.set_index("column")
+    assert grid.loc["Region", "role"] == "ignore"
+    assert grid.loc["BonusMalus", "role"] == "ignore"
+    at.toggle(key=wk(at, "bulk_roles_toggle")).set_value(True).run()
+    assert json.loads(at.text_area(key=wk(at, "bulk_roles_json_v2")).value) == payload
+    before = workspace["project"].read_bytes()
+    for draft in ('{"unfinished":', "{}"):
+        at.text_area(key=wk(at, "bulk_roles_json_v2")).set_value(draft).run()
+        at.button(key=wk(at, "bulk_roles_reset")).click().run()
+        assert not at.exception
+        assert (
+            json.loads(at.text_area(key=wk(at, "bulk_roles_json_v2")).value) == payload
+        )
+        assert workspace["project"].read_bytes() == before
+        assert at.button(key=wk(at, "bulk_roles_apply")).disabled
+
+
+def test_reset_uses_latest_table_after_unapplied_draft(workspace):
+    at = _run(_script("pages_variables", str(workspace["project"])))
+    at.toggle(key=wk(at, "bulk_roles_toggle")).set_value(True).run()
+    at.text_area(key=wk(at, "bulk_roles_json_v2")).set_value('{"draft":').run()
+    at.toggle(key=wk(at, "bulk_roles_toggle")).set_value(False).run()
+    at.session_state[wk(at, "roles_grid")] = {
+        "edited_rows": {5: {"role": "ignore"}},
+        "added_rows": [],
+        "deleted_rows": [],
+    }
+    at.run()
+    at.toggle(key=wk(at, "bulk_roles_toggle")).set_value(True).run()
+    at.button(key=wk(at, "bulk_roles_reset")).click().run()
+    assert not at.exception
+    payload = json.loads(at.text_area(key=wk(at, "bulk_roles_json_v2")).value)
+    assert payload["roles"]["ignore"] == ["Region"]
+    assert at.session_state["_project"].data.roles["Region"] == "ignore"
+
+
+@pytest.mark.parametrize(
+    "role",
+    [
+        "unassigned",
+        "target",
+        "weight",
+        "exposure",
+        "offset",
+        "current_premium",
+        "split",
+        "id",
+        "predictor",
+        "ignore",
+    ],
+)
+def test_every_role_survives_json_serialization_with_rename(role):
+    from easy_glm.app import pages_variables as pv
+
+    p = Project()
+    p.data.renames = {"raw": "renamed"}
+    if role != "unassigned":
+        p.data.roles = {"renamed": role}
+    text = pv.variable_setup_json(p, ["raw"])
+    payload = json.loads(text)
+    section = "assignments" if role in pv.SINGLE_ROLES else "roles"
+    assert payload[section][role] == ("raw" if section == "assignments" else ["raw"])
+    rows, errors = pv.parse_variable_setup_json(p, ["raw"], text)
+    assert not errors
+    assert rows == [
+        {"column": "raw", "rename to": "renamed", "role": role, "type": "auto"}
+    ]
+    assert pv.variable_setup_changes(p, ["raw"], rows) == []

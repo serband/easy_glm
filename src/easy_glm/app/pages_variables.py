@@ -189,9 +189,9 @@ def variable_setup_json(p: Project, raw_columns: list[str]) -> str:
 
     Column names in every section are deliberately the raw source names: they
     remain stable when ``renames`` changes and make pasted settings unambiguous.
-    Ignored columns and automatic types are omitted because those are the bulk
-    format's defaults. Unassigned columns are listed explicitly so regenerating
-    and applying the current setup is lossless.
+    Every column's role is explicit, including ignored and unassigned columns,
+    so switching editors preserves the visible assignments. Automatic types
+    are omitted because those are the bulk format's default.
     """
     renames: dict[str, str] = {}
     assignments: dict[str, str] = {}
@@ -204,7 +204,7 @@ def variable_setup_json(p: Project, raw_columns: list[str]) -> str:
         role = p.data.roles.get(final, "unassigned")
         if role in SINGLE_ROLES:
             assignments[role] = raw_name
-        elif role != "ignore":
+        else:
             roles.setdefault(role, []).append(raw_name)
         kind = p.data.types.get(final, "auto")
         if kind != "auto":
@@ -482,7 +482,8 @@ def _roles_grid(raw: pl.DataFrame) -> None:
         help=(
             "This compact format has four sections. `renames` maps raw names to new "
             "names. `assignments` sets the single target, weight, exposure, offset, "
-            "current premium and split columns. `roles` groups predictors and IDs. "
+            "current premium and split columns. `roles` groups predictors, IDs, "
+            "ignored and unassigned columns. "
             "`types` groups categorical or numeric overrides. Use raw source-column "
             "names throughout. A column omitted from assignments and roles becomes "
             "**ignored**; one omitted from types stays **auto**. Nothing is saved "
@@ -562,21 +563,25 @@ def _bulk_roles_json(p: Project, raw: pl.DataFrame) -> None:
         st.session_state[editor_key] = current
     st.session_state[source_key] = current
 
-    if st.button(
+    def request_reset() -> None:
+        # Callbacks run before the page renders its widgets. Queue the reset
+        # here instead of interrupting a render with another explicit rerun.
+        st.session_state[refresh_key] = True
+
+    st.button(
         "Reset JSON from current setup",
         key=S.widget_key("bulk_roles_reset"),
         help="Discard text in this editor and regenerate it from the project.",
-    ):
-        st.session_state[refresh_key] = True
-        st.rerun()
+        on_click=request_reset,
+    )
 
     text = st.text_area(
         "Variable setup JSON",
         height=460,
         key=editor_key,
         help=(
-            "Use raw source-column names throughout. Omit unchanged renames, "
-            "ignored columns and automatic types."
+            "Use raw source-column names throughout. Ignored columns are listed "
+            "under roles.ignore. Unchanged renames and automatic types may be omitted."
         ),
     )
     previous_draft = st.session_state.get(S.widget_key("bulk_roles_previous_draft"))
