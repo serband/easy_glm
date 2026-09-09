@@ -756,3 +756,24 @@ interaction parents, immutable model/data, read-only compatibility, optional
 cache failure, and fit-versus-adjustment cache invalidation. The existing eight
 A/E cache tests also passed. `ruff`, `black --check`, and the core/workflow mypy
 check passed. No persisted model representation or scoring meaning changed.
+
+### Interaction definitions in Factor design
+
+Factor design now lists defined interaction pairs openly, with the minimum cell
+exposure shown as a percentage. A section link and main-effect/interaction counts
+make the existing pairs visible from the Model page. Users can add a pair, remove
+one, or change its exposure threshold; penalty weights remain under a compact
+expander. These are model drafts until **Save model settings**. Fitting remains an
+explicit separate action.
+
+Model saves validate distinct selected predictor parents, unordered duplicates,
+exposure shares and penalty weights atomically. Existing pair orientation, precise
+settings and legacy alpha survive unchanged saves. Removing a pair also removes
+only its current and snapshot cell adjustments. Deselecting an interaction parent
+requires the user to remove the pair or reselect that parent.
+
+Validation: 41 focused backend tests, Svelte check/build and a Chrome workflow test
+cover add/save/fit, duplicate prevention, invalid drafts, reset, removal persistence
+and 884-pixel containment. The fitted French motor session was rehearsed through
+the private restore path with its original fit, all nine rate tables and five undo
+steps preserved. No refit was used for the update.

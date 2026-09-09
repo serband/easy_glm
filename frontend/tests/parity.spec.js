@@ -135,7 +135,9 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     await tab('Residual factors').click();
     await button('Find missing interactions').click();
     await page.getByRole('button', { name: 'Add and review model', exact: true }).first().click();
-    await expect(page.getByText(/Retained two-stage interactions/)).toBeVisible();
+    await expect(
+        page.getByRole('region', { name: 'Defined interactions' }).locator('.interaction-row'),
+    ).toHaveCount(1);
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 30000 });
     await button('Diagnostics').click();

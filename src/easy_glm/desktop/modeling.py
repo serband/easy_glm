@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from easy_glm.workflow.prep import add_split_column, apply_variables, train_holdout
 from easy_glm.workflow.project import (
     FAMILIES,
+    Interaction,
     ModelConfig,
     Project,
     VariableDesign,
@@ -89,6 +90,55 @@ def setup_info(project: Project, raw: pl.DataFrame) -> dict[str, Any]:
     }
 
 
+def _edit_interactions(cfg: ModelConfig, values: Any) -> None:
+    """Replace the pair list while preserving settings not exposed by the editor."""
+    if not isinstance(values, list):
+        raise ValueError("Interactions must be a list of variable pairs.")
+    existing = {frozenset((item.a, item.b)): item for item in cfg.interactions}
+    interactions: list[Interaction] = []
+    seen: set[frozenset[str]] = set()
+    for value in values:
+        if not isinstance(value, dict) or set(value) - {
+            "a",
+            "b",
+            "min_cell_exposure",
+            "penalty_weight",
+            "alpha",
+        }:
+            raise ValueError(
+                "Each interaction needs a, b, min_cell_exposure and penalty_weight."
+            )
+        if any(
+            not isinstance(value.get(parent), str) or not value[parent].strip()
+            for parent in ("a", "b")
+        ):
+            raise ValueError("Each interaction needs two column names.")
+        pair = frozenset((value["a"], value["b"]))
+        if len(pair) != 2:
+            raise ValueError("Choose two different variables for each interaction.")
+        if pair in seen:
+            raise ValueError(
+                f"Interaction {value['a']} × {value['b']} is listed twice."
+            )
+        seen.add(pair)
+        original = existing.get(pair)
+        # Keep the original orientation: cell edits use the ordered pair name
+        # and carry the first and second parent's band coordinates separately.
+        item = deepcopy(original) if original else Interaction(value["a"], value["b"])
+        if "alpha" in value and value["alpha"] != item.alpha:
+            raise ValueError(
+                "Legacy interaction alpha cannot be changed here; use penalty weight."
+            )
+        for field in ("min_cell_exposure", "penalty_weight"):
+            if field in value:
+                setattr(item, field, value[field])
+        interactions.append(item)
+    for pair, original in existing.items():
+        if pair not in seen:
+            cfg.drop_adjustments_for(original.name)
+    cfg.interactions = interactions
+
+
 def edit_model(project: Project, edit: ModelEdit) -> Project:
     candidate = deepcopy(project)
     if edit.create:
@@ -111,6 +161,7 @@ def edit_model(project: Project, edit: ModelEdit) -> Project:
         "offset",
         "divide_target_by_weight",
         "predictors",
+        "interactions",
         "penalty",
         "tweedie_power",
         "base",
@@ -120,7 +171,9 @@ def edit_model(project: Project, edit: ModelEdit) -> Project:
             "Unsupported model fields: " + ", ".join(sorted(set(edit.fields) - allowed))
         )
     for key, value in edit.fields.items():
-        if key == "penalty":
+        if key == "interactions":
+            _edit_interactions(cfg, value)
+        elif key == "penalty":
             if not isinstance(value, dict) or set(value) - {
                 "alpha",
                 "cv",
@@ -159,8 +212,8 @@ def edit_model(project: Project, edit: ModelEdit) -> Project:
         candidate.design.defaults.n_bins = edit.n_bins
     if edit.min_level_share is not None:
         candidate.design.defaults.min_level_share = edit.min_level_share
-    # Existing interactions, monotone rules, adjustments and expert design fields
-    # stay intact. Invalid combinations are explained, never silently removed.
+    # Monotone rules and expert design fields stay intact. Interactions are
+    # changed only when explicitly included; invalid parent selections are refused.
     problems = candidate.validate(edit.name)
     if problems:
         raise ValueError("; ".join(problems))

@@ -2,6 +2,7 @@
     import { formatNumber as num, formatRelativity as rel } from './format.js';
     import { onDestroy } from 'svelte';
     import ReviewPanel from './ReviewPanel.svelte';
+    import InteractionEditor from './InteractionEditor.svelte';
     import DiagnosticTable from './DiagnosticTable.svelte';
     import { comparisonIssue, comparisonMetrics, comparisonSettings } from './comparison.js';
     import { rateChartKind } from './rateChartData.js';
@@ -161,6 +162,7 @@
         nBins = 20,
         levelShare = 0.0025,
         kinds = {};
+    let interactionsValid = true;
     let termSearch = '',
         termScroll = 0,
         subset = 'holdout',
@@ -191,6 +193,7 @@
                   offset: cfg.offset,
                   divide_target_by_weight: cfg.divide_target_by_weight,
                   predictors: cfg.predictors,
+                  interactions: cfg.interactions,
                   tweedie_power: cfg.tweedie_power,
                   base: cfg.base,
                   penalty: {
@@ -228,6 +231,7 @@
         offset: null,
         divide_target_by_weight: false,
         predictors: [],
+        interactions: [],
         tweedie_power: 1.5,
         base: 'modal',
         penalty: { alpha: 0.001, cv: null, n_alphas: 20, l1_ratio: 1 },
@@ -265,6 +269,7 @@
                 offset: cfg.offset,
                 divide_target_by_weight: cfg.divide_target_by_weight,
                 predictors: cfg.predictors,
+                interactions: cfg.interactions,
                 tweedie_power: cfg.tweedie_power,
                 base: cfg.base,
                 penalty: {
@@ -348,6 +353,10 @@
         }
     }
     async function saveModel() {
+        if (!interactionsValid) {
+            error = 'Check the interaction settings before saving.';
+            return;
+        }
         saving = true;
         error = '';
         try {
@@ -532,7 +541,9 @@
             <nav class="section-nav" aria-label="Model sections">
                 <a href="#model-definition">Model definition</a><a href="#factor-design"
                     >Factor design</a
-                ><a href="#fit-settings">Fit and results</a>
+                ><a href="#model-interactions">Interactions ({cfg.interactions.length})</a><a
+                    href="#fit-settings">Fit and results</a
+                >
             </nav>
             <fieldset disabled={saving} class="edit-fieldset">
                 <section class="model-card">
@@ -587,7 +598,9 @@
                 <section class="model-card">
                     <div class="section-heading">
                         <h2 id="factor-design">Factor design</h2>
-                        <span>{cfg.predictors.length} selected</span>
+                        <span
+                            >{cfg.predictors.length} main effects · {cfg.interactions.length} interactions</span
+                        >
                     </div>
                     <p class="help-text">
                         Roles make columns eligible; this selection defines this model. Design kinds
@@ -658,11 +671,12 @@
                             </div>
                         </div>
                     </div>
-                    {#if cfg.interactions?.length}<div class="preserved">
-                            Retained two-stage interactions: {cfg.interactions
-                                .map((i) => i.a + ' × ' + i.b)
-                                .join(', ')}. Their detailed editor is not yet available here.
-                        </div>{/if}
+                    <InteractionEditor
+                        interactions={cfg.interactions}
+                        onchange={(pairs) => (cfg = { ...cfg, interactions: pairs })}
+                        predictors={cfg.predictors}
+                        bind:valid={interactionsValid}
+                    />
                     {#if Object.keys(cfg.monotone || {}).length}<div class="preserved">
                             Retained monotone constraints: {Object.entries(cfg.monotone)
                                 .map(([n, v]) => n + ' ' + v)
@@ -803,7 +817,7 @@
                         L1 ratio 1 is lasso; 0 is ridge. Save changes before fitting.
                     </p>
                     <div class="model-actions">
-                        <button class="primary" onclick={saveModel}
+                        <button class="primary" onclick={saveModel} disabled={!interactionsValid}
                             >{selected === '__new__'
                                 ? 'Create model'
                                 : 'Save model settings'}</button
