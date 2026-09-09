@@ -20,6 +20,13 @@ from easy_glm.workflow.project import Project
 
 class ReviewEdit(Revision):
     action: Literal[
+        "champion",
+        "lift",
+        "double_lift",
+        "path",
+        "coefficients",
+        "compare",
+        "include_factors",
         "include_factor",
         "include_pair",
         "variable",
@@ -38,8 +45,12 @@ class ReviewEdit(Revision):
         "restore_snapshot",
         "reset",
     ]
+    challenger: str | None = None
+    variables: list[str] = Field(default_factory=list)
+    n_bins: int = Field(default=10, ge=3, le=50)
+    tolerance: float = Field(default=0.01, ge=0, le=5)
     variable: str | None = None
-    subset: Literal["train", "holdout"] = "train"
+    subset: Literal["train", "holdout", "all"] = "train"
     a: str | None = None
     b: str | None = None
     edits: dict[str, float] = Field(default_factory=dict)

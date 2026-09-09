@@ -95,7 +95,7 @@ def test_real_fit_diagnostics_tables_and_invalidation(model_session):
     status = wait_fit(client)
     assert status["status"] == "complete", status
     result = client.get("/api/results/Frequency").json()
-    assert set(result["metrics"]) == {"train", "holdout"}
+    assert set(result["metrics"]) == {"train", "holdout", "all"}
     assert result["metrics"]["train"]["expected"] > 0
     assert result["lift"]["holdout"]
     assert result["base_rate"] > 0

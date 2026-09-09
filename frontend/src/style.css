@@ -1203,3 +1203,60 @@ main {
         font-size: 10px;
     }
 }
+
+.diagnostic-plot svg {
+    display: block;
+    width: 100%;
+}
+.diagnostic-plot svg text {
+    font-size: 11px;
+    fill: #6b8275;
+}
+.diagnostic-plot {
+    margin-top: 16px;
+}
+.diagnostic-plot .chart-legend {
+    margin: 10px 0;
+}
+.diagnostic-table {
+    margin-top: 14px;
+}
+.diagnostic-table .results-toolbar {
+    flex-wrap: wrap;
+    font-size: 11px;
+}
+.factor-selection {
+    display: grid;
+    gap: 8px;
+    margin: 16px 0;
+}
+.factor-selection label {
+    font-size: 12px;
+}
+.sidebar-comparison {
+    display: grid;
+    gap: 7px;
+    font-size: 10px;
+    color: #bfd0c6;
+    margin-top: 14px;
+}
+.sidebar-comparison select {
+    width: 100%;
+    font-size: 11px;
+}
+.rail {
+    overflow-y: auto;
+}
+.rail-bottom {
+    position: static;
+    margin-top: 28px;
+}
+.workflow-tabs {
+    flex-wrap: wrap;
+    gap: 4px 14px;
+}
+.comparison-context {
+    flex-wrap: wrap;
+    font-size: 11px;
+    margin-bottom: 12px;
+}

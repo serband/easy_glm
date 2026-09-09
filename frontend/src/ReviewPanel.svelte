@@ -1,11 +1,14 @@
 <script>
     import { onDestroy } from 'svelte';
+    import DiagnosticPlot from './DiagnosticPlot.svelte';
+    import DiagnosticTable from './DiagnosticTable.svelte';
     export let api,
         state,
         name,
         view,
         subset = 'train',
         diagnosticTab = 'variable',
+        challenger = '',
         variable = '',
         edits = {},
         onApplied,
@@ -13,14 +16,31 @@
         onNavigate;
     let activeDiagnosticTab = 'variable',
         inspectedResidual = false;
+    let bins = 10,
+        tolerance = 0.01,
+        kept = true,
+        analysis = null,
+        aeSets = [],
+        aeKind = 'numeric',
+        selectedFactors = [],
+        pairMetric = 'ae';
     $: if (view === 'diagnostics' && diagnosticTab !== activeDiagnosticTab && !busy) {
         activeDiagnosticTab = diagnosticTab;
         inspectedResidual = false;
+        analysis = null;
+        runTab();
+    }
+    function runTab() {
         if (diagnosticTab === 'variable' && diagnosticVariable)
-            run('variable', { variable: diagnosticVariable });
-        if (diagnosticTab === 'pair' && a && b && a !== b) run('pair', { a, b });
+            return run('variable', { variable: diagnosticVariable });
+        if (diagnosticTab === 'pair' && a && b && a !== b) return run('pair', { a, b });
+        if (['lift', 'double_lift', 'path', 'coefficients', 'compare'].includes(diagnosticTab))
+            return run(diagnosticTab, { options: { kept } });
     }
     let info = { variables: [], snapshots: [], undo: false, redo: false };
+    $: temporaryBins = (diagnosticTab === 'pair' ? [a, b] : [diagnosticVariable]).some((v) =>
+        info.variable_info?.some((x) => x.name === v && x.numeric && !x.kind),
+    );
     let shownTitle = '',
         shownSubset = '';
     let diagnosticVariable = '',
@@ -48,11 +68,12 @@
         snapshotName = '',
         chosenSnapshot = '';
     $: selectedVariable = view === 'tables' ? variable : diagnosticVariable;
-    $: key = `${name}:${state.session_id}:${state.revision}:${view}:${subset}:${variable}`;
+    $: key = `${name}:${state.session_id}:${state.revision}:${view}:${subset}:${variable}:${challenger}`;
     $: if (name && key !== loadedKey && !busy) load();
     $: series = [
         { key: 'actual_rate', label: 'Actual', color: '#287762' },
         { key: 'fitted_rate', label: 'Original fitted', color: '#737e9b' },
+        { key: 'challenger_rate', label: challenger || 'Challenger', color: '#439da5' },
         { key: 'before_rate', label: 'Before preview', color: '#a27c48' },
         {
             key: 'expected_rate',
@@ -109,14 +130,10 @@
             busy = false;
         }
         if (destroyed || key !== startedKey) return;
-        const v = view === 'tables' ? variable : diagnosticVariable;
-        if (view === 'diagnostics' && diagnosticTab === 'residual') {
-            inspectedResidual = false;
-            return;
-        }
-        if (view === 'diagnostics' && diagnosticTab === 'pair' && a !== b)
-            await run('pair', { a, b });
-        else if (v) await run('variable', { variable: v });
+        if (view === 'diagnostics') {
+            if (diagnosticTab === 'residual') inspectedResidual = false;
+            else await runTab();
+        } else if (variable) await run('variable', { variable });
     }
     export function previewRowEdits() {
         return run('edit', { edits });
@@ -134,6 +151,10 @@
                 action,
                 variable: selectedVariable || null,
                 subset,
+                challenger: challenger || null,
+                n_bins: Number(bins),
+                tolerance: Number(tolerance),
+                options: { both_subsets: view === 'diagnostics' },
                 ...extra,
             });
             if (response.snapshot) {
@@ -152,17 +173,31 @@
                     if (started !== key) return;
                     const data = response.data;
                     note = data.note || '';
-                    if (action === 'factors' || action === 'interactions') {
+                    if (
+                        ['lift', 'double_lift', 'path', 'coefficients', 'compare'].includes(action)
+                    ) {
+                        analysis = data;
+                        rows = [];
+                    } else if (action === 'factors' || action === 'interactions') {
                         searchRows = data.rows;
                         searchKind = action;
+                        selectedFactors =
+                            action === 'factors'
+                                ? data.rows.filter((r) => r.signal >= 2).map((r) => r.variable)
+                                : [];
                     } else {
                         rows = data.rows || [];
+                        aeSets = data.ae_sets || [];
+                        aeKind = data.kind || 'numeric';
+                        analysis = null;
                         if (diagnosticTab === 'residual') inspectedResidual = true;
                         shownTitle =
                             action === 'pair'
                                 ? `${extra.a || a} × ${extra.b || b}`
                                 : extra.variable || selectedVariable;
-                        shownSubset = (extra.subset || subset) === 'train' ? 'Training' : 'Holdout';
+                        shownSubset = { train: 'Training', holdout: 'Holdout', all: 'All rows' }[
+                            data.subset || extra.subset || subset
+                        ];
                         if (response.can_apply) preview = { ...data, id: taskId };
                     }
                     break;
@@ -216,7 +251,12 @@
         try {
             const response = await api('review/' + encodeURIComponent(name), {
                 ...rev(),
-                action: searchKind === 'factors' ? 'include_factor' : 'include_pair',
+                action: row.variables
+                    ? 'include_factors'
+                    : searchKind === 'factors'
+                      ? 'include_factor'
+                      : 'include_pair',
+                variables: row.variables || [],
                 variable: row.variable || null,
                 a: row.a || null,
                 b: row.b || null,
@@ -244,10 +284,47 @@
             ? 'Adjustments & actual versus expected'
             : diagnosticTab === 'residual'
               ? 'Residual factors and interactions'
-              : 'Actual versus expected'}
+              : {
+                    lift: 'Lift',
+                    double_lift: 'Double lift',
+                    path: 'Regularisation path',
+                    coefficients: 'Coefficients',
+                    compare: 'Relativities that differ',
+                }[diagnosticTab] || 'Actual versus expected'}
     </h2>
     {#if error}<div class="message error" role="alert">{error}</div>{/if}
     {#if view === 'diagnostics'}
+        {#if ['lift', 'double_lift'].includes(diagnosticTab) || (['variable', 'pair'].includes(diagnosticTab) && temporaryBins)}<div
+                class="results-toolbar"
+            >
+                <label
+                    >{['variable', 'pair'].includes(diagnosticTab)
+                        ? 'Temporary bands (unfitted numeric variables)'
+                        : 'Equal-exposure bins'}<input
+                        aria-label="Diagnostic bins"
+                        type="number"
+                        min="3"
+                        max="50"
+                        bind:value={bins}
+                    /></label
+                ><button disabled={busy} onclick={runTab}>Update view</button>
+            </div>{/if}
+        {#if diagnosticTab === 'coefficients'}<label
+                ><input type="checkbox" bind:checked={kept} onchange={runTab} /> Coefficients kept only</label
+            >{/if}
+        {#if diagnosticTab === 'compare'}<div class="results-toolbar">
+                <label
+                    >Log-difference tolerance<input
+                        aria-label="Difference tolerance"
+                        type="number"
+                        min="0"
+                        max="5"
+                        step=".01"
+                        bind:value={tolerance}
+                    /></label
+                ><button disabled={busy} onclick={runTab}>Update differences</button>
+            </div>{/if}
+
         <div class="results-toolbar" hidden={diagnosticTab !== 'variable'}>
             <label
                 >Variable<select
@@ -255,7 +332,11 @@
                     bind:value={diagnosticVariable}
                     disabled={busy}
                     onchange={() => run('variable', { variable: diagnosticVariable })}
-                    >{#each info.variables as v}<option value={v}>{v}</option>{/each}</select
+                    >{#each info.variables as v}<option value={v}
+                            >{v}{info.variable_info?.find((x) => x.name === v)?.kind
+                                ? ''
+                                : ' (not in model)'}</option
+                        >{/each}</select
                 ></label
             >
         </div>
@@ -263,12 +344,20 @@
             <div class="results-toolbar" hidden={diagnosticTab !== 'pair'}>
                 <label
                     >First variable<select aria-label="Pair first variable" bind:value={a}
-                        >{#each info.variables as v}<option value={v}>{v}</option>{/each}</select
+                        >{#each info.variables as v}<option value={v}
+                                >{v}{info.variable_info?.find((x) => x.name === v)?.kind
+                                    ? ''
+                                    : ' (not in model)'}</option
+                            >{/each}</select
                     ></label
                 >
                 <label
                     >Second variable<select aria-label="Pair second variable" bind:value={b}
-                        >{#each info.variables as v}<option value={v}>{v}</option>{/each}</select
+                        >{#each info.variables as v}<option value={v}
+                                >{v}{info.variable_info?.find((x) => x.name === v)?.kind
+                                    ? ''
+                                    : ' (not in model)'}</option
+                            >{/each}</select
                     ></label
                 >
                 <button disabled={busy || a === b} onclick={() => run('pair', { a, b })}
@@ -289,7 +378,26 @@
                         >Find missing interactions</button
                     >
                 </div>
-                {#if searchKind}<h3>
+                {#if searchKind === 'factors' && searchRows.length}<div class="factor-selection">
+                        <strong>Factors to add</strong>{#each searchRows as row}<label
+                                ><input
+                                    type="checkbox"
+                                    value={row.variable}
+                                    bind:group={selectedFactors}
+                                />{row.variable} · signal {num(row.signal)}</label
+                            >{/each}<button
+                            disabled={busy || !selectedFactors.length}
+                            onclick={() => include({ variables: selectedFactors })}
+                            >Add selected and review model</button
+                        >
+                    </div>{/if}
+                {#if searchKind}<DiagnosticTable
+                        rows={searchRows}
+                        title={searchKind === 'factors'
+                            ? 'Factor search statistics'
+                            : 'Interaction search statistics'}
+                    />
+                    <h3>
                         {searchKind === 'factors' ? 'Missing factors' : 'Missing interactions'}
                     </h3>
                     {#if !searchRows.length}<p>
@@ -319,6 +427,8 @@
                                                                   a: row.a,
                                                                   b: row.b,
                                                                   subset: 'train',
+                                                                  n_bins: 8,
+                                                                  options: { search_preview: true },
                                                               })}>Inspect</button
                                                 ></td
                                             ><td
@@ -493,9 +603,58 @@
             <button class="primary" disabled={busy} onclick={applyPreview}>Apply adjustment</button
             ><button disabled={busy} onclick={() => run('variable')}>Discard preview</button>
         </div>{/if}
+    {#if analysis}
+        {#if analysis.base_rate_change !== undefined}<p>
+                Base rate change: {num(100 * analysis.base_rate_change)}%
+            </p>{/if}
+        {#each analysis.charts || [] as chart, i}<DiagnosticPlot
+                rows={chart.rows}
+                title={chart.title}
+                series={chart.series || [
+                    { key: 'actual_rate', label: 'Actual' },
+                    { key: 'expected_rate', label: 'Expected' },
+                ]}
+                ariaLabel={diagnosticTab === 'lift' && i === 0
+                    ? 'Actual and expected lift on ' + subset
+                    : ''}
+            />{/each}
+        {#if analysis.path}{#each [...new Set(analysis.path.map((r) => r.stage))] as stage}{#each [...new Set(analysis.path
+                            .filter((r) => r.stage === stage)
+                            .map((r) => r.l1_ratio))] as ratio}<DiagnosticPlot
+                        rows={analysis.path.filter(
+                            (r) => r.stage === stage && r.l1_ratio === ratio,
+                        )}
+                        title={'Stage ' + stage + ' · L1 ' + ratio + ' · regularisation path'}
+                        xKey="alpha"
+                        logX={true}
+                        series={[
+                            { key: 'cv_deviance', label: 'Mean CV deviance' },
+                            { key: 'train_deviance', label: 'Training deviance' },
+                        ]}
+                    /><DiagnosticPlot
+                        rows={analysis.path.filter(
+                            (r) => r.stage === stage && r.l1_ratio === ratio,
+                        )}
+                        title={'Stage ' + stage + ' · L1 ' + ratio + ' · retained coefficients'}
+                        xKey="alpha"
+                        logX={true}
+                        series={[{ key: 'n_nonzero', label: 'Nonzero coefficients' }]}
+                    />{/each}{/each}{/if}
+        {#each analysis.tables || [] as table}<DiagnosticTable
+                rows={table.rows}
+                title={table.title}
+            />{/each}
+    {/if}
     {#if rows.length && (view === 'tables' || (diagnosticTab === 'variable' && !pairRows) || (diagnosticTab === 'pair' && pairRows) || (diagnosticTab === 'residual' && inspectedResidual))}
-        <h3>{shownTitle} · {shownSubset}</h3>
-        {#if pairRows}<h3>Actual / expected by cell</h3>
+        {#if pairRows}<h3>{shownTitle} · {shownSubset}</h3>
+            <h3>Actual / expected by cell</h3>
+            {#if rows.some((r) => r.challenger_ae !== undefined)}<label
+                    >Heatmap model<select bind:value={pairMetric}
+                        ><option value="ae">{name}</option><option value="challenger_ae"
+                            >{challenger}</option
+                        ></select
+                    ></label
+                >{/if}
             <div class="heatmap-scroll">
                 <table class="ae-heatmap">
                     <thead
@@ -507,97 +666,31 @@
                                 ><th>{label}</th>{#each pairB as other}{@const cell = rows.find(
                                         (r) => r.label_a === label && r.label_b === other,
                                     )}<td
-                                        style:background={heat(cell?.ae)}
-                                        title={`Actual ${num(cell?.actual)}; expected ${num(cell?.expected)}; exposure ${num(cell?.exposure)}`}
+                                        style:background={heat(cell?.[pairMetric])}
+                                        title={`Actual ${num(cell?.actual)}; expected ${num(pairMetric === 'challenger_ae' ? cell?.challenger_expected : cell?.expected)}; exposure ${num(cell?.exposure)}`}
                                         >{num(cell?.ae)}</td
                                     >{/each}</tr
                             >{/each}</tbody
                     >
                 </table>
             </div>
-        {:else}<div class="chart-legend">
-                {#each series as s}<span style:color={s.color}>● {s.label}</span>{/each}
-            </div>
-            <svg
-                class="lift-chart"
-                viewBox="0 0 1000 230"
-                role="img"
-                aria-label="Actual fitted and adjusted by variable"
-                ><title>Actual, original fitted and adjusted rates</title
-                >{#each [0, 0.5, 1] as tick}<line
-                        x1="50"
-                        x2="950"
-                        y1={190 - tick * 160}
-                        y2={190 - tick * 160}
-                        stroke="#e1e9e4"
-                    /><text x="0" y={194 - tick * 160}>{num(tick * maxValue)}</text
-                    >{/each}{#each series as s}<polyline
-                        points={points(s.key)}
-                        fill="none"
-                        stroke={s.color}
-                        stroke-width="2"
-                    />{#each chartRows as row, i}<circle
-                            cx={50 + (i * 900) / Math.max(1, chartRows.length - 1)}
-                            cy={190 - ((row[s.key] || 0) / maxValue) * 160}
-                            r="4"
-                            fill={s.color}
-                            ><title
-                                >{row.label}: {s.label}
-                                {num(row[s.key])}; exposure {num(row.exposure)}</title
-                            ></circle
-                        >{/each}{/each}{#each chartRows as row, i}{#if i % Math.max(1, Math.ceil(chartRows.length / 8)) === 0}<text
-                            x={50 + (i * 900) / Math.max(1, chartRows.length - 1)}
-                            y="220"
-                            text-anchor="middle">{String(row.label).slice(0, 16)}</text
-                        >{/if}{/each}</svg
-            >{/if}
-        {#if !pairRows}<div class="exposure-caption">
-                Exposure by band / level · largest {num(
-                    Math.max(0, ...chartRows.map((r) => r.exposure)),
-                )}
-            </div>
-            <svg
-                class="exposure-chart"
-                viewBox="0 0 1000 95"
-                role="img"
-                aria-label="Exposure by variable band"
-                ><title>Exposure aligned with actual and expected rates</title><line
-                    x1="50"
-                    x2="950"
-                    y1="80"
-                    y2="80"
-                    stroke="#d8e2dc"
-                />{#each chartRows as row, i}<rect
-                        x={50 +
-                            (i * 900) / Math.max(1, chartRows.length - 1) -
-                            Math.min(12, 350 / Math.max(1, chartRows.length)) / 2}
-                        y={80 -
-                            (row.exposure / Math.max(1, ...chartRows.map((r) => r.exposure))) * 65}
-                        width={Math.min(12, 350 / Math.max(1, chartRows.length))}
-                        height={(row.exposure / Math.max(1, ...chartRows.map((r) => r.exposure))) *
-                            65}
-                        fill="#91afa1"
-                        ><title>{row.label}: exposure {num(row.exposure)}</title></rect
-                    >{/each}</svg
-            >{/if}
+        {:else}<DiagnosticPlot
+                {rows}
+                title={shownTitle + ' · ' + shownSubset}
+                {series}
+                kind={aeKind}
+                ariaLabel="Actual fitted and adjusted by variable"
+                showTable={false}
+            />{/if}
+        {#each aeSets as data}<DiagnosticPlot
+                rows={data.rows}
+                title={data.title}
+                {series}
+                kind={aeKind}
+            />{/each}
         <details>
             <summary>A/E values and exposure</summary>
-            <div class="review-scroll">
-                <table>
-                    <thead
-                        ><tr
-                            >{#each Object.keys(rows[0]) as column}<th
-                                    >{column.replaceAll('_', ' ')}</th
-                                >{/each}</tr
-                        ></thead
-                    ><tbody
-                        >{#each rows.slice(0, 200) as row}<tr
-                                >{#each Object.values(row) as value}<td>{num(value)}</td>{/each}</tr
-                            >{/each}</tbody
-                    >
-                </table>
-                {#if rows.length > 200}<p>First 200 groups shown.</p>{/if}
-            </div>
+            <DiagnosticTable {rows} title="A/E values and exposure" />
         </details>
     {/if}
 </section>

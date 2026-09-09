@@ -42,6 +42,58 @@ class FitJobs:
         self.folder = tempfile.TemporaryDirectory(prefix="easyglm_fits_")
         self.thread: threading.Thread | None = None
 
+    def restore(self, project: Project, raw: pl.DataFrame, folder: Path) -> None:
+        """Restore application-owned upgrade artifacts without fitting any model.
+
+        This is a local launcher operation, never an HTTP-provided path.
+        """
+        import pickle
+        import shutil
+
+        from easy_glm.desktop.fit_worker import result_for, write_json
+        from easy_glm.workflow.prep import prepare
+        from easy_glm.workflow.run import rebuild_rate_model
+
+        records = json.loads((folder / "jobs.json").read_text())
+        prepared = None
+        for name, record in records.items():
+            if name not in project.models:
+                continue
+            saved = {
+                k: record[k]
+                for k in ("id", "name", "status", "message", "elapsed", "key")
+            }
+            if record.get("applicable"):
+                if record["key"] != model_key(project, name):
+                    raise ValueError(
+                        "Restored fit does not match applied settings: " + name
+                    )
+                source = folder / "fits" / record["id"]
+                if not raw.equals(pl.read_parquet(source / "raw.parquet")):
+                    raise ValueError(
+                        "Restored fit data differs from the loaded source."
+                    )
+                with (source / "fit.pkl").open("rb") as handle:
+                    run = pickle.load(
+                        handle
+                    )  # only private artifacts created by this application
+                if run.name != name:
+                    raise ValueError("Restored fit identity does not match.")
+                if prepared is None:
+                    prepared = prepare(project, raw)
+                rebuild_rate_model(project, run, prepared)
+                warnings = json.loads((source / "result.json").read_text()).get(
+                    "warnings", []
+                )
+                result = result_for(project, prepared, run, warnings)
+                destination = Path(self.folder.name) / record["id"]
+                shutil.copytree(source, destination)
+                write_json(destination / "result.json", result)
+                saved["result"] = result
+            else:
+                saved["status"] = "stale"
+            self.jobs[name] = saved
+
     def status(self, project: Project) -> dict[str, Any]:
         with self.lock:
             return {

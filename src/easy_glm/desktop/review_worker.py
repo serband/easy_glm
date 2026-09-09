@@ -53,6 +53,8 @@ def ae_detail(
     frame: pl.DataFrame,
     variable: str,
     baseline: RateModel | None = None,
+    challenger: ModelRun | None = None,
+    n_bins: int = 20,
 ) -> list[dict[str, Any]]:
     actual, expected, weight = totals(frame, run.config, run.predict(frame))
     fitted = rate_model_for(project, run, [], base_rate_override=None)
@@ -83,11 +85,21 @@ def ae_detail(
     else:
 
         def aggregate(values: Any) -> pl.DataFrame:
-            return ae_by_variable(frame, variable, actual, values, weight, **kwargs)
+            return ae_by_variable(
+                frame, variable, actual, values, weight, n_bins=n_bins, **kwargs
+            )
 
     table = aggregate(expected)
     fitted_table = aggregate(fitted_expected)
     table = table.with_columns(pl.Series("fitted_rate", fitted_table["expected_rate"]))
+    if challenger is not None:
+        from easy_glm.desktop.diagnostic_views import compatible
+
+        compatible(run, challenger)
+        other = totals(frame, challenger.config, challenger.predict(frame))[1]
+        table = table.with_columns(
+            pl.Series("challenger_rate", aggregate(other)["expected_rate"])
+        )
     if baseline is not None:
         before = totals(frame, run.config, baseline.predict(frame, exposure_col=None))[
             1
@@ -99,12 +111,27 @@ def ae_detail(
 
 
 def review(
-    project: Project, run: ModelRun, raw: pl.DataFrame, request: dict[str, Any]
+    project: Project,
+    run: ModelRun,
+    raw: pl.DataFrame,
+    request: dict[str, Any],
+    challenger: ModelRun | None = None,
 ) -> dict[str, Any]:
     frame = prepare(project, raw)
     rebuild_rate_model(project, run, frame)
+    if challenger is not None:
+        rebuild_rate_model(project, challenger, frame)
+        from easy_glm.desktop.diagnostic_views import compatible
+
+        compatible(run, challenger)
     train, holdout = train_holdout(frame, project.data.split)
-    part = train if request.get("subset", "train") == "train" else holdout
+    part = {"train": train, "holdout": holdout, "all": frame}[
+        request.get("subset", "train")
+    ]
+    if request["action"] in ("lift", "double_lift", "path", "coefficients", "compare"):
+        from easy_glm.desktop.diagnostic_views import view
+
+        return view(project, run, frame, request, challenger)
     if part.is_empty():
         raise ValueError("The selected subset has no rows.")
     action = request["action"]
@@ -134,17 +161,71 @@ def review(
     if action == "variable":
         if variable not in frame.columns and variable not in run.rate_model.variables:
             raise ValueError("Choose an available variable.")
+        both = request.get("options", {}).get("both_subsets", False)
+        selected_subset = request.get("subset", "train")
+        if both and selected_subset == "all":
+            part, selected_subset = train, "train"
+        sets = []
+        if both:
+            for label, data in (("train", train), ("holdout", holdout)):
+                if not data.is_empty() and label != selected_subset:
+                    sets.append(
+                        {
+                            "title": f"{variable} · {label}",
+                            "rows": ae_detail(
+                                project,
+                                run,
+                                data,
+                                variable,
+                                challenger=challenger,
+                                n_bins=request.get("n_bins", 20),
+                            ),
+                        }
+                    )
+        cfg = run.rate_model.variables.get(variable)
+        kind = (
+            cfg.type
+            if cfg
+            else ("numeric" if frame.schema[variable].is_numeric() else "categorical")
+        )
         return {
-            "rows": ae_detail(project, run, part, variable),
-            "subset": request.get("subset", "train"),
+            "rows": ae_detail(
+                project,
+                run,
+                part,
+                variable,
+                challenger=challenger,
+                n_bins=request.get("n_bins", 20),
+            ),
+            "ae_sets": sets,
+            "kind": kind,
+            "subset": selected_subset,
         }
+
     actual, expected, weight = totals(train, run.config, run.predict(train))
     if action == "pair":
         a, b = request["a"], request["b"]
         if a == b or a not in available or b not in available:
             raise ValueError("Choose two different available variables.")
         aa, ee, ww = totals(part, run.config, run.predict(part))
-        return {"rows": ae_by_pair(part, a, b, aa, ee, ww).to_dicts()}
+        ga, gb = grouping(run, a), grouping(run, b)
+        search_preview = request.get("options", {}).get("search_preview", False)
+        args = {
+            "n_bins": 8 if search_preview else request.get("n_bins", 8),
+            "knots_a": None if search_preview else ga.get("knots"),
+            "knots_b": None if search_preview else gb.get("knots"),
+            "levels_a": ga.get("fitted_levels"),
+            "levels_b": gb.get("fitted_levels"),
+        }
+        rows = ae_by_pair(part, a, b, aa, ee, ww, **args)
+        if challenger is not None:
+            other = totals(part, challenger.config, challenger.predict(part))[1]
+            other_table = ae_by_pair(part, a, b, aa, other, ww, **args)
+            rows = rows.with_columns(
+                pl.Series("challenger_ae", other_table["ae"]),
+                pl.Series("challenger_expected", other_table["expected"]),
+            )
+        return {"rows": rows.to_dicts()}
     if action in ("factors", "interactions"):
         phi = (
             1.0
@@ -173,6 +254,11 @@ def review(
                     expected,
                     weight,
                     pairs=pairs,
+                    levels={
+                        v: list(run.spec[v].levels)
+                        for v in run.spec.main_effects
+                        if hasattr(run.spec[v], "levels")
+                    },
                     dispersion=phi,
                 ).to_dicts()
                 if pairs
@@ -181,7 +267,14 @@ def review(
         return {
             "rows": rows,
             "subset": "train",
-            "note": "Ranked on training data only. Review the signal, then validate any refit on holdout data.",
+            "note": "Ranked on training data only. Review the signal, then validate any refit on holdout data."
+            + (
+                " Non-Poisson model: signal is scaled by Pearson dispersion "
+                + str(round(phi, 4))
+                + "; interpret it as a ranking, not a calibrated z-score."
+                if run.config.family != "poisson"
+                else " Signal is a noise-adjusted Pearson excess z-score; 2 or higher is a review starting point."
+            ),
         }
     before = run.rate_model.clone()
     config = project.models[run.name]
@@ -316,11 +409,16 @@ def main() -> None:
     try:
         with (source / "fit.pkl").open("rb") as handle:
             run = pickle.load(handle)  # only our own private temporary worker artifact
+        challenger = None
+        if request.get("_challenger_source"):
+            with (Path(request["_challenger_source"]) / "fit.pkl").open("rb") as handle:
+                challenger = pickle.load(handle)
         result = review(
             Project.from_json(folder / "project.json"),
             run,
             pl.read_parquet(source / "raw.parquet"),
             request,
+            challenger,
         )
     except Exception as exc:
         result = {"error": str(exc)}

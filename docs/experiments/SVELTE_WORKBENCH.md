@@ -384,3 +384,52 @@ time was 24.2 ms. Model and diagnostics layouts were visually inspected at
 884 × 773. Svelte check/build and whitespace checks passed. The static-only live
 update retained the applied project, fit identities/status and server session;
 original main, project/data/cache hashes and Streamlit health were verified.
+
+### Diagnostics parity restoration
+
+Diagnostics now follows the original workbench's analytical workflow using its
+existing workflow functions. The diagnostics gap list above describes the earlier
+layout checkpoint; champion comparisons, double lift, coefficients and paths are
+now implemented.
+
+| View | Restored behaviour |
+| --- | --- |
+| Shared comparison | Sidebar default and page selector across Diagnostics, Compare and Rate tables; designate the project champion without refitting |
+| Metrics and facts | Training, holdout and all rows; target totals, deviance, Gini, fitted settings and recorded table-version metrics; family limitations explained |
+| A/E by variable | Fitted bands/levels, actual/fitted/current/challenger rates, training and holdout, aligned exposure; numeric lines and categorical bars |
+| A/E by pair | Fitted main-factor grouping, current/challenger A/E heatmaps, exposure and cell values; temporary numeric bins for unfitted variables |
+| Lift and double lift | Equal-exposure lift for both models; double lift against a challenger or a null benchmark calibrated only on training rows |
+| Residual factors | Full signal statistics, multi-factor selection, inspection, add to model then review/refit |
+| Interactions | Residual search, inspection with the search's coarse numeric bins and fitted categorical levels, add then two-stage refit |
+| Regularisation | Separate stages and L1 ratios, CV/training deviance, selected penalties and retained coefficients; fixed-alpha table retained |
+| Coefficients | Kept/all original fitted coefficients with complete CSV download |
+| Relativity comparison | Canonical union of numeric edges and matching categorical/cell labels; base-rate change and tolerance |
+
+Analysis runs on demand in a worker. Comparisons require the same target and
+exposure basis. Requests and editable previews are bound to both fit identities;
+refitting either invalidates an old comparison. Gini is unavailable for signed
+actuals/predictions; double lift also requires a positive benchmark. Binomial Gini
+is an exposure-weighted ordering measure, not ROC AUC. The rate-table workbench
+continues to support log/logit links only.
+
+A private launcher option `--restore-session` supports this local upgrade from
+application-owned fit artifacts. It validates applied model settings and raw data,
+rebuilds adjusted tables and results from saved coefficients, and does not refit.
+It is not a public import format or an HTTP endpoint. Undo/redo stacks remain
+session-only: this upgrade was rehearsed with an empty live undo/redo history;
+project adjustments and named snapshots remain in the exported project.
+
+Validation: the full Python suite passed 958 tests (one skipped, one deselected),
+with the final focused parity/edit checks covering subsequent challenger-staleness
+and heatmap refinements. Fourteen browser cases passed, including a two-model CV
+flow, both stages of the regularisation path, search/add/refit, smoothing/edit/undo,
+actual server restarts and draft retention. A numeric-to-categorical switch checks
+that exposure bars follow the new groups. At 884 × 773 the charts and controls were
+visually checked; the 2,000-column editor retained 28 rendered rows and 24 ms median
+edit response. Svelte check/build, Black/Ruff and core/workflow mypy passed.
+
+The live French motor session was upgraded from a fresh private backup after a
+separate-port rehearsal. The applied project, Frequency fit identity and original
+2.402-second elapsed time, rate-table rows and train/holdout metrics were preserved.
+Live variable A/E, lift, double lift, path and coefficient queries passed. Original
+main, project/data/cache hashes and the Streamlit session were left intact.

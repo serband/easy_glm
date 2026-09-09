@@ -58,14 +58,34 @@ def result_for(
     project: Any, frame: Any, run: Any, notices: list[str] | None = None
 ) -> dict[str, Any]:
     from easy_glm.core.excel import rate_model_tables
+    from easy_glm.desktop.diagnostic_views import metadata, safe_gini
     from easy_glm.workflow.diagnostics import lift_table, totals
     from easy_glm.workflow.prep import train_holdout
 
     train, holdout = train_holdout(frame, project.data.split)
     charts = {}
-    for subset, part in (("train", train), ("holdout", holdout)):
+    base_metrics = [run.metrics[k] for k in ("train", "holdout") if k in run.metrics]
+    combined = {
+        k: sum(m[k] for m in base_metrics)
+        for k in ("rows", "exposure", "actual", "expected", "deviance", "null_deviance")
+    }
+    combined["ae"] = (
+        combined["actual"] / combined["expected"] if combined["expected"] > 0 else None
+    )
+    combined["deviance_explained"] = (
+        1 - combined["deviance"] / combined["null_deviance"]
+        if combined["null_deviance"] > 0
+        else None
+    )
+    denominator = combined["exposure"] if run.config.weight else combined["rows"]
+    combined["mean_deviance"] = (
+        combined["deviance"] / denominator if denominator else None
+    )
+    run.metrics["all"] = combined
+    for subset, part in (("train", train), ("holdout", holdout), ("all", frame)):
         if part.height:
             actual, expected, weight = totals(part, run.config, run.predict(part))
+            run.metrics[subset]["gini"] = safe_gini(actual, expected, weight)
             charts[subset] = lift_table(actual, expected, weight).to_dicts()
     tables = {
         key: {"columns": table.columns, "rows": table.to_dicts()}
@@ -95,6 +115,7 @@ def result_for(
                     run.config.offset,
                 )
             ],
+            "diagnostic_info": metadata(run, frame),
             "summary": run.summary(),
             "metrics": run.metrics,
             "lift": charts,

@@ -27,7 +27,7 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await page.getByRole('tab', { name: 'Residual factors', exact: true }).click();
     await button('Find missing factors').click();
     await expect(page.getByRole('heading', { name: 'Missing factors', exact: true })).toBeVisible();
-    await expect(page.locator('.review-scroll').first()).toContainText('AnnualMileage');
+    await expect(page.locator('.review-scroll').filter({hasText: 'AnnualMileage'}).first()).toContainText('AnnualMileage');
     await button('Find missing interactions').click();
     await expect(
         page.getByRole('heading', { name: 'Missing interactions', exact: true }),

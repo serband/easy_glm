@@ -18,6 +18,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path)
+    parser.add_argument("--restore-session", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--launch-id", default="", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -56,7 +57,13 @@ def main() -> None:
         }
     print(f"EasyGLM experiment: http://127.0.0.1:{args.port}", flush=True)
     uvicorn.run(
-        create_app(project, raw, port=args.port, launch_id=args.launch_id),
+        create_app(
+            project,
+            raw,
+            port=args.port,
+            launch_id=args.launch_id,
+            restore_folder=args.restore_session,
+        ),
         host="127.0.0.1",
         port=args.port,
         log_level="warning",

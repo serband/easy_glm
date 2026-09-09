@@ -1,6 +1,8 @@
 <script>
     import { onMount } from 'svelte';
     import ModelWorkbench from './ModelWorkbench.svelte';
+    let comparison = '',
+        modelContext = { fitted: [], selected: '', champion: null };
     let view = 'variables',
         resultsReady = false;
     function modelState(snapshot) {
@@ -18,6 +20,7 @@
         explore: 'Explore',
         model: 'Model',
         diagnostics: 'Diagnostics',
+        compare: 'Compare',
         tables: 'Rate tables',
         export: 'Export',
     };
@@ -437,13 +440,24 @@
                 <button
                     class="nav-link"
                     class:active={view === key}
-                    disabled={!state || (['diagnostics', 'tables'].includes(key) && !resultsReady)}
+                    disabled={!state ||
+                        (['diagnostics', 'compare', 'tables'].includes(key) && !resultsReady)}
                     onclick={() => navigate(key)}
                     >{title}{#if key === 'variables'}
                         <span class="nav-count">{state?.columns.length || '—'}</span>{/if}</button
                 >
             {/each}
         </nav>
+        {#if modelContext.fitted.length > 1}<label class="sidebar-comparison"
+                >Default comparison model<select
+                    aria-label="Default comparison model"
+                    bind:value={comparison}
+                    ><option value="">None</option
+                    >{#each modelContext.fitted.filter((n) => n !== modelContext.selected) as name}<option
+                            value={name}>{name}</option
+                        >{/each}</select
+                ></label
+            >{/if}
         <div class="setup-progress" aria-label="Setup progress">
             <strong>Setup progress</strong>
             <span>{state ? '✓' : '○'} Data loaded</span>
@@ -739,9 +753,8 @@
                     <p>
                         Source selection and upload; recodes, derived columns and filters; leakage
                         analysis; detailed knots, clamps, monotone constraints and interaction
-                        editing; champion comparisons, double lift, coefficient and
-                        regularisation-path views; Excel, report and script export. Existing project
-                        settings are retained here.
+                        editing; Excel, report and script export. Existing project settings are
+                        retained here.
                     </p>
                 </details>
             </section>
@@ -869,6 +882,8 @@
                     {api}
                     {state}
                     {view}
+                    bind:comparison
+                    onContext={(context) => (modelContext = context)}
                     onState={modelState}
                     onReady={(ready) => (resultsReady = ready)}
                     onNavigate={navigate}

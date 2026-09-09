@@ -2,7 +2,69 @@
     import { onDestroy } from 'svelte';
     import ReviewPanel from './ReviewPanel.svelte';
     import RateChart from './RateChart.svelte';
+    import DiagnosticTable from './DiagnosticTable.svelte';
     import { rateChartKind } from './rateChartData.js';
+    export let comparison = '',
+        onContext = () => {};
+    let comparisonResult = null,
+        comparisonKey = '',
+        sentContext = '',
+        readingComparison = false;
+    $: effectiveChallenger =
+        comparison !== selected && jobs[comparison]?.applicable ? comparison : '';
+    $: context = JSON.stringify({
+        fitted: Object.keys(jobs).filter((n) => jobs[n].applicable),
+        selected,
+        champion: wb?.champion,
+    });
+    $: if (context !== sentContext) {
+        sentContext = context;
+        onContext(JSON.parse(context));
+    }
+    $: compareKey = `${selected}:${effectiveChallenger}:${state?.revision}:${jobs[effectiveChallenger]?.id}`;
+    $: if (loaded && compareKey !== comparisonKey && !readingComparison) loadComparison();
+    async function loadComparison() {
+        const key = compareKey;
+        comparisonKey = key;
+        comparisonResult = null;
+        readingComparison = true;
+        try {
+            if (effectiveChallenger) {
+                const result = await api('results/' + encodeURIComponent(effectiveChallenger));
+                if (key === compareKey) comparisonResult = result;
+            }
+        } catch (e) {
+            error = e.message;
+        } finally {
+            readingComparison = false;
+        }
+    }
+    async function makeChampion(name) {
+        try {
+            const response = await api('review/' + encodeURIComponent(name), {
+                ...rev(),
+                action: 'champion',
+            });
+            onState(response.snapshot);
+            await refresh(true);
+            notice = name + ' is the project champion.';
+        } catch (e) {
+            error = e.message;
+        }
+    }
+    $: metricRows = [result, comparisonResult].filter(Boolean).flatMap((r) =>
+        Object.entries(r.metrics).map(([subset, m]) => ({
+            model: r.summary.name,
+            subset,
+            ...m,
+        })),
+    );
+    $: factRows = [result, comparisonResult]
+        .filter(Boolean)
+        .map((r) => ({ model: r.summary.name, ...r.diagnostic_info?.facts }));
+    $: savedVersionRows = [result, comparisonResult]
+        .filter(Boolean)
+        .flatMap((r) => r.diagnostic_info?.saved_versions || []);
     let diagnosticTab = 'variable';
     let tableDetails = false,
         tableReview,
@@ -76,7 +138,7 @@
         timer = null;
     $: signature = state ? state.session_id + ':' + state.revision : '';
     $: if (
-        (['model', 'diagnostics', 'tables'].includes(view) || state?.models?.length) &&
+        (['model', 'diagnostics', 'compare', 'tables'].includes(view) || state?.models?.length) &&
         state &&
         !loading &&
         !saving &&
@@ -204,7 +266,9 @@
             splitDraft = structuredClone(wb.split);
             if (selected !== '__new__' && !wb.models[selected])
                 selected = Object.keys(wb.models)[0] || '__new__';
-            if (!cfg && Object.keys(wb.models).length) selected = Object.keys(wb.models)[0];
+            if (!cfg && Object.keys(wb.models).length)
+                selected =
+                    wb.champion && wb.models[wb.champion] ? wb.champion : Object.keys(wb.models)[0];
             if (!keepDraft || !cfg) pickModel();
             else
                 notice =
@@ -341,7 +405,9 @@
         return value === null || value === undefined
             ? '—'
             : typeof value === 'number'
-              ? value.toLocaleString(undefined, { maximumSignificantDigits: digits })
+              ? Math.abs(value) > 0 && Math.abs(value) < 0.00001
+                  ? value.toExponential(2)
+                  : value.toLocaleString(undefined, { maximumSignificantDigits: digits })
               : String(value);
     }
     function points(field) {
@@ -360,7 +426,7 @@
     });
 </script>
 
-<div hidden={!['model', 'diagnostics', 'tables'].includes(view)} class="model-workbench">
+<div hidden={!['model', 'diagnostics', 'compare', 'tables'].includes(view)} class="model-workbench">
     <div class="heading">
         <div>
             <div class="eyebrow">{view === 'model' ? 'MODEL SETUP' : 'FITTED RESULTS'}</div>
@@ -369,7 +435,9 @@
                     ? 'Model design and fit'
                     : view === 'diagnostics'
                       ? 'Diagnostics'
-                      : 'Rate tables'}
+                      : view === 'compare'
+                        ? 'Compare'
+                        : 'Rate tables'}
             </h1>
             <p>
                 {view === 'model'
@@ -407,6 +475,25 @@
                       : 'Applied model settings'}</span
             >
         </div>
+        {#if view !== 'model' && selected !== '__new__' && (view === 'compare' || Object.values(jobs).filter((j) => j.applicable).length > 1)}<div
+                class="results-toolbar comparison-context"
+            >
+                <label
+                    >Compare with (challenger)<select
+                        aria-label="Compare with challenger"
+                        bind:value={comparison}
+                        ><option value="">None</option
+                        >{#each Object.keys(jobs).filter((n) => n !== selected && jobs[n].applicable) as name}<option
+                                value={name}>{name}</option
+                            >{/each}</select
+                    ></label
+                >
+                <span>Project champion: <b>{wb.champion || 'Not designated'}</b></span>
+                <button
+                    disabled={!applicable || wb.champion === selected}
+                    onclick={() => makeChampion(selected)}>Make selected model champion</button
+                >
+            </div>{/if}
         {#if view === 'model'}
             <nav class="section-nav" aria-label="Model sections">
                 <a href="#model-definition">Model definition</a><a href="#factor-design"
@@ -729,18 +816,20 @@
                         onclick={() => onNavigate('tables')}>View rate tables</button
                     >{/if}
             </section>{/if}
-        {#if ['diagnostics', 'tables'].includes(view)}
+        {#if ['diagnostics', 'compare', 'tables'].includes(view)}
             {#if !applicable}<div class="message">
                     A completed fit matching the current applied settings is required. Open Model
                     and fit the model.
                 </div>{:else if !result}<p>
                     Loading fitted results…
-                </p>{:else if view === 'diagnostics'}
+                </p>{:else if view === 'diagnostics' || view === 'compare'}
                 <div class="results-toolbar">
                     <label
                         >Data subset<select aria-label="Diagnostic subset" bind:value={subset}
                             >{#each Object.keys(result.metrics) as name}<option value={name}
-                                    >{name === 'train' ? 'Training' : 'Holdout'}</option
+                                    >{{ train: 'Training', holdout: 'Holdout', all: 'All rows' }[
+                                        name
+                                    ]}</option
                                 >{/each}</select
                         ></label
                     ><span
@@ -761,73 +850,42 @@
                             >{key}: <b>{num(result.metrics[subset]?.[key], 7)}</b></span
                         >{/each}
                 </div>
+                <p class="help-text">{result.diagnostic_info?.gini_note || ''}</p>
+                <details class="model-card" open={view === 'compare'}>
+                    <summary>Metrics and model facts side by side</summary><DiagnosticTable
+                        rows={metricRows}
+                        title="Metrics by model and subset"
+                    /><DiagnosticTable
+                        rows={factRows}
+                        title="Model facts"
+                    />{#if savedVersionRows.length}<DiagnosticTable
+                            rows={savedVersionRows}
+                            title="Saved versions of the rate tables"
+                        />{/if}{#if comparisonResult && comparisonResult.summary.family !== result.summary.family}<p
+                        >
+                            Deviances from different families are not directly comparable.
+                        </p>{/if}
+                </details>
                 <div class="workflow-tabs" role="tablist" aria-label="Diagnostics views">
-                    {#each [['variable', 'A/E by variable'], ['pair', 'A/E by pair'], ['lift', 'Lift'], ['residual', 'Residual factors']] as [key, label]}<button
+                    {#each [['variable', 'A/E by variable'], ['pair', 'A/E by pair'], ['lift', 'Lift'], ['double_lift', 'Double lift'], ['residual', 'Residual factors'], ['path', 'Regularisation path'], ['coefficients', 'Coefficients'], ['compare', 'Relativities that differ']] as [key, label]}<button
                             role="tab"
                             aria-selected={diagnosticTab === key}
                             onclick={() => (diagnosticTab = key)}>{label}</button
                         >{/each}
                 </div>
-                <section class="model-card" hidden={diagnosticTab !== 'lift'}>
-                    <h2>Actual vs expected by predicted risk</h2>
-                    <p class="help-text">
-                        Equal-exposure bins, ordered from lowest to highest predicted rate. Hover a
-                        point for its value.
-                    </p>
-                    <div class="chart-legend">
-                        <span>● Actual rate</span><span>● Expected rate</span>
-                    </div>
-                    <svg
-                        class="lift-chart"
-                        viewBox="0 0 1000 220"
-                        role="img"
-                        aria-label={'Actual and expected lift on ' + subset}
-                        ><title>Actual and expected rates by risk bin</title
-                        >{#each [0, 1, 2, 3] as line}<line
-                                x1="45"
-                                x2="945"
-                                y1={30 + line * 50}
-                                y2={30 + line * 50}
-                                stroke="#e1e9e4"
-                            />{/each}<polyline
-                            points={points('actual_rate')}
-                            fill="none"
-                            stroke="#287762"
-                            stroke-width="3"
-                        /><polyline
-                            points={points('expected_rate')}
-                            fill="none"
-                            stroke="#bf8b44"
-                            stroke-width="3"
-                            stroke-dasharray="6 4"
-                        />{#each lift as row, i}{#each ['actual_rate', 'expected_rate'] as field}<circle
-                                    cx={45 + (i * 900) / Math.max(1, lift.length - 1)}
-                                    cy={180 - ((row[field] || 0) / maxRate) * 150}
-                                    r="5"
-                                    fill={field === 'actual_rate' ? '#287762' : '#bf8b44'}
-                                    ><title
-                                        >Bin {row.bin}: {field.replace('_', ' ')}
-                                        {num(row[field], 7)}</title
-                                    ></circle
-                                >{/each}<text
-                                x={45 + (i * 900) / Math.max(1, lift.length - 1)}
-                                y="210"
-                                text-anchor="middle">{row.bin}</text
-                            >{/each}</svg
-                    >
-                </section>
                 {#if result.dropped_predictors.length}<div class="message">
                         Constant/all-null predictors omitted by the engine: {result.dropped_predictors.join(
                             ', ',
                         )}.
                     </div>{/if}
-                <div hidden={diagnosticTab === 'lift'}>
+                <div>
                     <ReviewPanel
                         {diagnosticTab}
+                        challenger={effectiveChallenger}
                         {api}
                         {state}
                         name={selected}
-                        {view}
+                        view={view === 'compare' ? 'diagnostics' : view}
                         {subset}
                         onApplied={reviewed}
                         onClear={clearEdits}
@@ -975,6 +1033,7 @@
                     >
                 </div>
                 <ReviewPanel
+                    challenger={effectiveChallenger}
                     bind:this={tableReview}
                     bind:busy={reviewBusy}
                     {api}

@@ -52,10 +52,17 @@ class Edit(BaseModel):
 
 
 def create_app(
-    project: Project, raw: pl.DataFrame, *, port: int, launch_id: str = ""
+    project: Project,
+    raw: pl.DataFrame,
+    *,
+    port: int,
+    launch_id: str = "",
+    restore_folder: Path | None = None,
 ) -> FastAPI:
     """Serve one local, in-memory project and bundled assets."""
     jobs = FitJobs()
+    if restore_folder is not None:
+        jobs.restore(project, raw, restore_folder)
     reviews = ReviewJobs()
     undo_steps = {}
     redo_steps = {}
@@ -225,6 +232,7 @@ def create_app(
             "revision": saved_revision,
             "session_id": session_id,
             "jobs": jobs.status(saved),
+            "champion": saved.champion,
         }
 
     @app.post("/api/models/save")
@@ -343,22 +351,41 @@ def create_app(
                 request = edit.model_dump(exclude={"session_id", "revision"})
                 saved = deepcopy(current)
                 cfg = saved.models[name]
-                if edit.action in ("include_factor", "include_pair"):
+                if edit.action == "champion":
+                    current.champion = name
+                    revision += 1
+                    return {"snapshot": snapshot()}
+                if edit.challenger:
+                    if edit.challenger == name:
+                        raise ValueError("Choose a different challenger.")
+                    other_source = jobs.artifact(current, edit.challenger)
+                    request["_challenger_source"] = str(other_source)
+                    request["challenger_fit_id"] = other_source.name
+                if edit.action in ("include_factor", "include_factors", "include_pair"):
                     from easy_glm.workflow.project import Interaction
 
-                    if edit.action == "include_factor":
+                    if edit.action in ("include_factor", "include_factors"):
                         eligible = jobs.result(current, name)["review_variables"]
-                        if (
-                            edit.variable not in eligible
-                            or saved.data.roles.get(edit.variable)
-                            not in (None, "unassigned", "predictor")
-                            or edit.variable == saved.data.split.column
-                        ):
-                            raise ValueError("Choose an eligible missing factor.")
-                        if edit.variable in cfg.predictors:
-                            raise ValueError("This factor is already included.")
-                        saved.apply_role_change(edit.variable, "predictor")
-                        cfg.predictors.append(edit.variable)
+                        variables = (
+                            edit.variables
+                            if edit.action == "include_factors"
+                            else [edit.variable]
+                        )
+                        if not variables or len(set(variables)) != len(variables):
+                            raise ValueError("Select distinct missing factors.")
+                        for variable in variables:
+                            if (
+                                variable not in eligible
+                                or saved.data.roles.get(variable)
+                                not in (None, "unassigned", "predictor")
+                                or variable == saved.data.split.column
+                                or variable in cfg.predictors
+                            ):
+                                raise ValueError(
+                                    "Choose eligible missing factors not already included."
+                                )
+                            saved.apply_role_change(variable, "predictor")
+                            cfg.predictors.append(variable)
                     else:
                         if (
                             edit.a == edit.b
@@ -437,6 +464,10 @@ def create_app(
                 or jobs.jobs.get(task["request"]["model"], {}).get("id")
                 != task["request"]["fit_id"]
             )
+            if task["request"].get("challenger"):
+                stale = stale or jobs.jobs.get(task["request"]["challenger"], {}).get(
+                    "id"
+                ) != task["request"].get("challenger_fit_id")
             data = task.get("data", {})
             return {
                 "id": key,
@@ -471,6 +502,11 @@ def create_app(
                     task["revision"] != revision
                     or jobs.jobs.get(task["request"]["model"], {}).get("id")
                     != task["request"]["fit_id"]
+                    or (
+                        task["request"].get("challenger")
+                        and jobs.jobs.get(task["request"]["challenger"], {}).get("id")
+                        != task["request"].get("challenger_fit_id")
+                    )
                     or task["status"] != "complete"
                     or "project" not in task.get("data", {})
                     or not task.get("data", {}).get("changed", True)
@@ -515,6 +551,9 @@ def create_app(
                 raise HTTPException(409, str(exc)) from exc
             return {
                 "variables": columns,
+                "variable_info": jobs.result(current, name)
+                .get("diagnostic_info", {})
+                .get("variables", []),
                 "snapshots": [s.name for s in current.models[name].snapshots],
                 "undo": bool(undo_steps.get(name)),
                 "redo": bool(redo_steps.get(name)),
