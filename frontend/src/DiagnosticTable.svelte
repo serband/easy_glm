@@ -7,7 +7,7 @@
     $: if (page * 100 >= rows.length) page = 0;
     $: labels = Object.fromEntries(
         columns
-            .filter((c) => c === 'label' || c === 'label_a' || c === 'label_b')
+            .filter((c) => c === 'label' || c === 'label_a' || c === 'label_b' || c === 'band')
             .map((c) => [c, formatLabels(rows.map((r) => r[c]))]),
     );
     function download() {

@@ -103,8 +103,11 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     await page.screenshot({ path: '/tmp/easyglm-parity-double-lift.png', fullPage: true });
     await button('Compare').click();
     await expect(
-        page.getByText('Metrics and model facts side by side', { exact: true }),
+        page.getByRole('heading', { name: 'Metrics side by side', exact: true }),
     ).toBeVisible();
+    await expect(page.getByRole('tablist', { name: 'Diagnostics views' })).toHaveCount(0);
+    await expect(page.getByText('Fit complete', { exact: true })).toHaveCount(0);
+    await expect(page.locator('.metrics-grid')).toHaveCount(0);
     expect(
         await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
     ).toBeTruthy();
@@ -113,7 +116,7 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     await expect(
         page.getByText('Frequency is the project champion.', { exact: true }),
     ).toBeVisible();
-    await tab('Relativities that differ').click();
+
     await expect(page.getByText(/Numeric factors use the union/)).toBeVisible();
     await button('Rate tables').click();
     await expect(page.getByLabel('Compare with challenger')).toHaveValue('Challenger');

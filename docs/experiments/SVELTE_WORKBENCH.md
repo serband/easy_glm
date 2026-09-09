@@ -593,3 +593,20 @@ delayed old result passed (27.5 seconds). Navigation now briefly retries only th
 explicit "review is running" refusal while the old view's worker finishes; all
 context guards remain active. Svelte check/build and diff checks passed. This was
 a static-only update with no server restart or changes to existing draft tabs.
+
+### Focused two-model comparison
+
+Compare now requires two selected, applicable fits and shows selected-subset metrics
+with challenger-minus-baseline deltas, changed model settings, both applied base
+rates, and the canonical aligned relativity differences. It no longer repeats the
+single-model KPI cards, fit banner, diagnostic tabs or saved-version tables.
+Response, exposure/scaling, family/link and Tweedie-power mismatches show guidance
+instead of comparable metrics. A/E is described in terms of closeness to one;
+there is no automatic winner or champion promotion. Numeric band labels use the
+shared display precision while CSV data and original hover labels remain exact.
+
+Validation: Svelte check and static build; comparison/format unit tests; existing
+two-model parity workflow; focused 884 × 773 browser checks for missing and
+incompatible challengers, subset deltas, containment and navigation. The live
+single-model session was checked read-only, preserving the exact project, fit jobs
+and review history; no live refit or server restart was required.

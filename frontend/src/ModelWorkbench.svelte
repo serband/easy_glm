@@ -3,6 +3,7 @@
     import { onDestroy } from 'svelte';
     import ReviewPanel from './ReviewPanel.svelte';
     import DiagnosticTable from './DiagnosticTable.svelte';
+    import { comparisonIssue, comparisonMetrics, comparisonSettings } from './comparison.js';
     import { rateChartKind } from './rateChartData.js';
     export let comparison = '',
         onContext = () => {};
@@ -52,19 +53,22 @@
             error = e.message;
         }
     }
-    $: metricRows = [result, comparisonResult].filter(Boolean).flatMap((r) =>
-        Object.entries(r.metrics).map(([subset, m]) => ({
-            model: r.summary.name,
-            subset,
-            ...m,
-        })),
+    $: compareIssue = comparisonIssue(
+        wb?.models[selected],
+        wb?.models[effectiveChallenger],
+        result,
+        comparisonResult,
+        subset,
     );
-    $: factRows = [result, comparisonResult]
-        .filter(Boolean)
-        .map((r) => ({ model: r.summary.name, ...r.diagnostic_info?.facts }));
-    $: savedVersionRows = [result, comparisonResult]
-        .filter(Boolean)
-        .flatMap((r) => r.diagnostic_info?.saved_versions || []);
+    $: metricRows = !compareIssue ? comparisonMetrics(result, comparisonResult, subset) : [];
+    $: factRows = !compareIssue
+        ? comparisonSettings(
+              wb.models[selected],
+              wb.models[effectiveChallenger],
+              result,
+              comparisonResult,
+          )
+        : [];
     let diagnosticTab = 'variable';
     let tableEditorOpen = false;
     let tableDetails = false,
@@ -453,7 +457,9 @@
             <p>
                 {view === 'model'
                     ? 'Configure the model, prepare the split and fit in the background.'
-                    : 'Results from the current applied model and full prepared data.'}
+                    : view === 'compare'
+                      ? 'Compare two fitted models on the same rows, including applied table adjustments.'
+                      : 'Results from the current applied model and full prepared data.'}
             </p>
         </div>
     </div>
@@ -466,19 +472,20 @@
     {#if !wb || !cfg}<div class="loading">Checking applied data and model settings…</div>{:else}
         <div class="model-selector">
             <label
-                >Model<select
+                >{view === 'compare' ? 'Baseline model' : 'Model'}<select
                     aria-label="Model selection"
                     bind:value={selected}
                     onchange={pickModel}
-                    ><option value="__new__">Create a new model</option
-                    >{#each Object.keys(wb.models) as name}<option value={name}>{name}</option
+                    >{#if view !== 'compare'}<option value="__new__">Create a new model</option
+                        >{/if}{#each Object.keys(wb.models).filter((n) => view !== 'compare' || jobs[n]?.applicable) as name}<option
+                            value={name}>{name}</option
                         >{/each}</select
                 ></label
             >{#if selected === '__new__'}<label
                     >Name<input aria-label="New model name" bind:value={newName} /></label
                 >{/if}
             <div class="spacer"></div>
-            <span class="edit-status"
+            <span class="edit-status" hidden={view === 'compare'}
                 >{dirty
                     ? 'Unsaved model changes'
                     : selected === '__new__'
@@ -799,7 +806,7 @@
                 </section>
             </fieldset>
         {/if}
-        {#if job && !(view === 'diagnostics' && job.status === 'complete')}<section
+        {#if job && view !== 'compare' && !(view === 'diagnostics' && job.status === 'complete')}<section
                 class="job-card"
                 class:compact-result-status={view !== 'model' && job.status === 'complete'}
                 role="status"
@@ -828,12 +835,89 @@
                     >{/if}
             </section>{/if}
         {#if ['diagnostics', 'compare', 'tables'].includes(view)}
-            {#if !applicable}<div class="message">
+            {#if view === 'compare'}
+                {#if !applicable || Object.values(jobs).filter((j) => j.applicable).length < 2}
+                    <section class="model-card">
+                        <h2>Compare needs two fitted models</h2>
+                        <p>
+                            Create and fit a second model to compare its results with the baseline.
+                        </p>
+                        <button onclick={() => onNavigate('model')}>Open Model</button>
+                    </section>
+                {:else if !effectiveChallenger}
+                    <section class="model-card">
+                        <h2>Select a challenger</h2>
+                        <p>
+                            Choose a second fitted model above to see metric, design and rate
+                            differences.
+                        </p>
+                    </section>
+                {:else if !result || !comparisonResult}<p>Loading comparison…</p>
+                {:else}
+                    <div class="results-toolbar">
+                        <label
+                            >Data subset<select aria-label="Comparison subset" bind:value={subset}
+                                >{#each Object.keys(result.metrics) as name}<option value={name}
+                                        >{{
+                                            train: 'Training',
+                                            holdout: 'Holdout',
+                                            all: 'All rows',
+                                        }[name]}</option
+                                    >{/each}</select
+                            ></label
+                        >
+                    </div>
+                    {#if compareIssue}<div class="message" role="status">{compareIssue}</div>
+                    {:else}
+                        <section class="model-card">
+                            <h2>Metrics side by side</h2>
+                            <p>
+                                Baseline: <b>{selected}</b> · Challenger:
+                                <b>{effectiveChallenger}</b>
+                            </p>
+                            <p class="help-text">
+                                Same {num(result.metrics[subset].rows)} rows · exposure {num(
+                                    result.metrics[subset].exposure,
+                                )} · actual {num(result.metrics[subset].actual)}. Delta is
+                                challenger minus baseline. A/E closer to 1 indicates better overall
+                                calibration.
+                            </p>
+                            <DiagnosticTable rows={metricRows} title="Metric differences" />
+                        </section>
+                        <section class="model-card">
+                            <h2>Model settings that differ</h2>
+                            {#if factRows.length}<DiagnosticTable
+                                    rows={factRows}
+                                    title="Changed settings and design"
+                                />{:else}<p>The fitted settings and design match.</p>{/if}
+                        </section>
+                        <p class="help-text">
+                            Base rate: {num(result.base_rate)} baseline · {num(
+                                comparisonResult.base_rate,
+                            )} challenger. Rates include applied adjustments.
+                        </p>
+                        <ReviewPanel
+                            diagnosticTab="compare"
+                            challenger={effectiveChallenger}
+                            fitIdentity={job?.id || ''}
+                            comparisonFitIdentity={jobs[effectiveChallenger]?.id || ''}
+                            {api}
+                            {state}
+                            name={selected}
+                            view="diagnostics"
+                            {subset}
+                            onApplied={reviewed}
+                            onClear={clearEdits}
+                            {onNavigate}
+                        />
+                    {/if}
+                {/if}
+            {:else if !applicable}<div class="message">
                     A completed fit matching the current applied settings is required. Open Model
                     and fit the model.
                 </div>{:else if !result}<p>
                     Loading fitted results…
-                </p>{:else if view === 'diagnostics' || view === 'compare'}
+                </p>{:else if view === 'diagnostics'}
                 <div class="results-toolbar">
                     <label
                         >Data subset<select aria-label="Diagnostic subset" bind:value={subset}
@@ -862,21 +946,6 @@
                         >{/each}
                 </div>
                 <p class="help-text">{result.diagnostic_info?.gini_note || ''}</p>
-                {#if view === 'compare'}<details class="model-card" open>
-                        <summary>Metrics and model facts side by side</summary><DiagnosticTable
-                            rows={metricRows}
-                            title="Metrics by model and subset"
-                        /><DiagnosticTable
-                            rows={factRows}
-                            title="Model facts"
-                        />{#if savedVersionRows.length}<DiagnosticTable
-                                rows={savedVersionRows}
-                                title="Saved versions of the rate tables"
-                            />{/if}{#if comparisonResult && comparisonResult.summary.family !== result.summary.family}<p
-                            >
-                                Deviances from different families are not directly comparable.
-                            </p>{/if}
-                    </details>{/if}
                 <div class="workflow-tabs" role="tablist" aria-label="Diagnostics views">
                     {#each [['variable', 'A/E by variable'], ['pair', 'A/E by pair'], ['lift', 'Lift'], ['double_lift', 'Double lift'], ['residual', 'Residual factors'], ['path', 'Regularisation path'], ['coefficients', 'Coefficients'], ['compare', 'Relativities that differ']] as [key, label]}<button
                             role="tab"
