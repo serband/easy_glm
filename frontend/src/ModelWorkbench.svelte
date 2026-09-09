@@ -73,7 +73,8 @@
     let tableEditorOpen = false;
     let tableDetails = false,
         tableReview,
-        reviewBusy = false;
+        reviewBusy = false,
+        reviewCommitting = false;
     $: visibleColumns = table
         ? table.columns.filter(
               (c) =>
@@ -101,6 +102,7 @@
         ]),
     );
     function editRow(index, value) {
+        tableReview?.selectManual();
         rowEdits = { ...rowEdits, [index]: Number(value) };
     }
     function clearEdits() {
@@ -1002,6 +1004,7 @@
                             comparisonFitIdentity={jobs[effectiveChallenger]?.id || ''}
                             bind:this={tableReview}
                             bind:busy={reviewBusy}
+                            bind:committing={reviewCommitting}
                             {api}
                             {state}
                             name={selected}
@@ -1064,7 +1067,7 @@
                                                                         JSON.stringify([a, b]),
                                                                     )}<td
                                                                     >{#if cell}<input
-                                                                            disabled={reviewBusy}
+                                                                            disabled={reviewCommitting}
                                                                             aria-label={'Relativity cell ' +
                                                                                 a +
                                                                                 ' × ' +
@@ -1086,7 +1089,7 @@
                                                                                     cell.index
                                                                             ] ??
                                                                                 cell.row.relativity}
-                                                                            onchange={(e) =>
+                                                                            oninput={(e) =>
                                                                                 editRow(
                                                                                     table.offset +
                                                                                         cell.index,
@@ -1130,7 +1133,7 @@
                                                                     title={num(row[column])}
                                                                     >{#if column === 'relativity'}<input
                                                                             class="relativity-input"
-                                                                            disabled={reviewBusy}
+                                                                            disabled={reviewCommitting}
                                                                             aria-label={'Relativity row ' +
                                                                                 (table.offset +
                                                                                     tableStart +
@@ -1144,7 +1147,7 @@
                                                                                     tableStart +
                                                                                     rowIndex
                                                                             ] ?? row[column]}
-                                                                            onchange={(e) =>
+                                                                            oninput={(e) =>
                                                                                 editRow(
                                                                                     table.offset +
                                                                                         tableStart +
@@ -1199,13 +1202,8 @@
                                     </div>
                                     <div class="table-edit-actions">
                                         <button
-                                            class="primary"
-                                            disabled={reviewBusy || !Object.keys(rowEdits).length}
-                                            onclick={() => tableReview.applyRowEdits()}
-                                            >Apply row edits ({Object.keys(rowEdits)
-                                                .length})</button
-                                        ><button
-                                            disabled={reviewBusy || !Object.keys(rowEdits).length}
+                                            disabled={reviewCommitting ||
+                                                !Object.keys(rowEdits).length}
                                             onclick={clearEdits}>Discard row edits</button
                                         >
                                     </div>

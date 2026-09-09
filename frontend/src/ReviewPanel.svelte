@@ -62,9 +62,12 @@
         searchKind = '',
         error = '',
         note = '';
-    export let busy = false;
+    export let busy = false,
+        committing = false;
     let taskId = '',
         preview = null,
+        acknowledgedPreview = null,
+        observedTable = null,
         loadedKey = '',
         destroyed = false;
     let tool = '',
@@ -88,15 +91,97 @@
         orderedVariable = variable;
         ordered = false;
     }
-    let baselineRows = [],
+    let baselineView = null,
         draftError = '',
-        committing = false;
-    $: if (
-        preview?.manualSignature !== undefined &&
-        preview.manualSignature !== JSON.stringify(edits)
-    ) {
+        adjustmentEpoch = 0,
+        adjustmentTimer,
+        adjustmentPending = false,
+        activeAdjustment = false,
+        scheduledAdjustmentKey = '';
+    $: adjustmentSignature = JSON.stringify([
+        tool,
+        windowSize,
+        direction,
+        ordered,
+        floor,
+        cap,
+        rounding,
+        decimals,
+        step,
+        edits,
+    ]);
+    $: adjustmentRequestKey =
+        view === 'tables' && tool ? JSON.stringify([key, adjustmentSignature]) : '';
+    $: if (adjustmentRequestKey !== scheduledAdjustmentKey) {
+        scheduledAdjustmentKey = adjustmentRequestKey;
+        scheduleAdjustment();
+    }
+    $: if (table !== observedTable) {
+        observedTable = table;
+        acknowledgedPreview = null;
+    }
+    $: acknowledgedMatches =
+        acknowledgedPreview?.name === name &&
+        acknowledgedPreview?.variable === variable &&
+        acknowledgedPreview?.fitIdentity === fitIdentity;
+    $: previewMatches =
+        !!preview &&
+        preview.contextKey === key &&
+        (!preview.adjustmentKey || preview.adjustmentKey === adjustmentRequestKey) &&
+        (preview.manualSignature === undefined ||
+            preview.manualSignature === JSON.stringify(edits));
+    function restoreAppliedView() {
+        if (!baselineView) return;
+        rows = baselineView.rows;
+        aeSets = baselineView.aeSets;
+        aeKind = baselineView.aeKind;
+        shownTitle = baselineView.title;
+        shownSubset = baselineView.subset;
+        bookImpact = baselineView.bookImpact;
+    }
+    function stopAdjustment() {
+        adjustmentEpoch++;
+        clearTimeout(adjustmentTimer);
+        adjustmentPending = false;
+        if (activeAdjustment && !committing) {
+            runSerial++;
+            const obsoleteTask = taskId;
+            taskId = '';
+            busy = false;
+            activeAdjustment = false;
+            if (obsoleteTask)
+                void api('reviews/' + obsoleteTask + '/cancel', rev()).catch(() => {});
+        }
+    }
+    function scheduleAdjustment() {
+        stopAdjustment();
         preview = null;
-        rows = baselineRows;
+        restoreAppliedView();
+        error = '';
+        feedback = '';
+        draftError = tool ? toolError() : '';
+        if (
+            !adjustmentRequestKey ||
+            draftError ||
+            (tool === 'manual' && !Object.keys(edits).length)
+        )
+            return;
+        const version = adjustmentEpoch;
+        const requestKey = adjustmentRequestKey;
+        const action = tool === 'manual' ? 'edit' : tool;
+        const extra = tool === 'manual' ? { edits: { ...edits } } : { options: toolOptions() };
+        adjustmentPending = true;
+        const dispatch = async () => {
+            if (destroyed || version !== adjustmentEpoch || requestKey !== adjustmentRequestKey)
+                return;
+            if (busy || loadedKey !== key || !baselineView) {
+                adjustmentTimer = setTimeout(dispatch, 75);
+                return;
+            }
+            await run(action, extra, null, { version, requestKey });
+            if (version === adjustmentEpoch) adjustmentPending = false;
+        };
+        adjustmentTimer = setTimeout(dispatch, 180);
     }
     function toolOptions() {
         if (tool === 'moving') return { window: windowSize, ordered };
@@ -105,7 +190,10 @@
         return rounding === 'decimals' ? { decimals } : { step };
     }
     function toolError() {
-        if (tool === 'manual') return '';
+        if (tool === 'manual')
+            return Object.values(edits).some((value) => !Number.isFinite(value) || value <= 0)
+                ? 'Enter positive values for each edited row.'
+                : '';
         if (Object.keys(edits).length) return 'Apply or discard your row edits first.';
         if (tableKind === 'interaction') return 'Edit interaction cells in the table.';
         if (['moving', 'isotonic'].includes(tool) && tableKind === 'categorical' && !ordered)
@@ -131,25 +219,19 @@
             return 'Enter valid rounding precision.';
         return '';
     }
-    function parametersChanged() {
-        error = '';
-        feedback = '';
-        queueMicrotask(() => {
-            draftError = tool ? toolError() : '';
-        });
-    }
     function chooseTool() {
-        parametersChanged();
         if (tool === 'manual') onManual();
     }
-    async function applyAdjustment() {
-        if (busy || !tool || tool === 'manual') return;
-        draftError = toolError();
-        if (!draftError) await run(tool, { options: toolOptions() }, null, true);
+    export function selectManual() {
+        if (!committing) tool = 'manual';
     }
     function discardPreview() {
+        if (committing) return;
+        stopAdjustment();
+        tool = '';
         preview = null;
-        rows = baselineRows;
+        restoreAppliedView();
+        onClear();
         note = '';
         error = '';
         draftError = '';
@@ -231,15 +313,18 @@
         run('variable');
     function showVariable(data, selected) {
         rows = data.rows || [];
-        baselineRows = rows;
         aeSets = data.ae_sets || [];
         aeKind = data.kind || 'numeric';
         bookImpact = data.book_impact || bookImpact;
         shownTitle = selected;
         shownSubset = { train: 'Training', holdout: 'Holdout', all: 'All rows' }[data.subset];
+        rememberAppliedView();
         analysis = null;
         preview = null;
         note = '';
+    }
+    function rememberAppliedView() {
+        baselineView = { rows, aeSets, aeKind, title: shownTitle, subset: shownSubset, bookImpact };
     }
     $: series = [
         { key: 'actual_rate', label: 'Actual', color: '#c35b48' },
@@ -279,7 +364,9 @@
     }
     async function load() {
         draftError = '';
-        baselineRows = [];
+        baselineView = null;
+        stopAdjustment();
+        tool = '';
         const startedKey = key;
         loadedKey = startedKey;
         error = '';
@@ -305,11 +392,7 @@
             else await runTab();
         } else if (variable) await run('variable', { variable });
     }
-    export async function applyRowEdits() {
-        if (!busy && Object.keys(edits).length)
-            await run('edit', { edits: { ...edits } }, null, true);
-    }
-    async function run(action, extra = {}, pairVersion = null, commit = false) {
+    async function run(action, extra = {}, pairVersion = null, adjustmentVersion = null) {
         if (destroyed) return;
         if (action === 'variable') {
             const ready = cachedAe(
@@ -343,7 +426,11 @@
         const capturedRevision = rev();
         const capturedVariable = selectedVariable;
         const capturedName = name;
-        const settings = commit && action !== 'edit' ? JSON.stringify([tool, toolOptions()]) : null;
+        if (view === 'tables' && action !== 'variable' && !adjustmentVersion) {
+            stopAdjustment();
+            tool = '';
+        }
+        activeAdjustment = !!adjustmentVersion;
         if (action === 'variable') {
             attemptedVariableKey = variableKey;
             rows = [];
@@ -366,7 +453,9 @@
             (pairVersion === null ||
                 (pairVersion.version === pairEpoch && pairVersion.requestKey === pairRequestKey)) &&
             (manualSignature === undefined || manualSignature === JSON.stringify(edits)) &&
-            (settings === null || settings === JSON.stringify([tool, toolOptions()]));
+            (adjustmentVersion === null ||
+                (adjustmentVersion.version === adjustmentEpoch &&
+                    adjustmentVersion.requestKey === adjustmentRequestKey));
         try {
             const payload = {
                 ...capturedRevision,
@@ -402,11 +491,11 @@
                 return;
             }
             requestTaskId = response.id;
-            taskId = requestTaskId;
             if (!valid()) {
                 await api('reviews/' + requestTaskId + '/cancel', rev());
                 return;
             }
+            taskId = requestTaskId;
             while (!destroyed) {
                 if (!valid()) {
                     await api('reviews/' + requestTaskId + '/cancel', rev());
@@ -417,33 +506,6 @@
                 if (response.status === 'complete') {
                     if (!valid()) return;
                     const data = response.data;
-                    if (commit) {
-                        if (!response.can_apply) {
-                            feedback = 'No changes needed.';
-                            return;
-                        }
-                        if (!valid()) return;
-                        committing = true;
-                        const snapshot = await api(
-                            'reviews/' + requestTaskId + '/apply',
-                            capturedRevision,
-                        );
-                        const matching =
-                            name === capturedName &&
-                            selectedVariable === capturedVariable &&
-                            (manualSignature === undefined ||
-                                manualSignature === JSON.stringify(edits));
-                        if (matching) onClear();
-                        preview = null;
-                        feedback = 'Adjustments applied.';
-                        try {
-                            await onApplied(snapshot);
-                        } catch (refreshError) {
-                            feedback = 'Adjustments saved. Refresh the page to reload the charts.';
-                        }
-                        return;
-                    }
-
                     if (action === 'variable' && data.ae_cache)
                         rememberAe(cacheContext, data.ae_cache);
                     if (data.book_impact) bookImpact = data.book_impact;
@@ -469,7 +531,6 @@
                                 : [];
                     } else {
                         rows = data.rows || [];
-                        if (action === 'variable') baselineRows = rows;
                         if (!rows.some((r) => r[pairMetric] !== undefined)) pairMetric = 'ae';
                         aeSets = data.ae_sets || [];
                         aeKind = data.kind || 'numeric';
@@ -482,10 +543,17 @@
                         shownSubset = { train: 'Training', holdout: 'Holdout', all: 'All rows' }[
                             data.subset || extra.subset || subset
                         ];
+                        if (action === 'variable') rememberAppliedView();
                         if (response.can_apply || data.preview_table) {
                             preview = {
                                 ...data,
-                                id: taskId,
+                                id: requestTaskId,
+                                contextKey: started,
+                                revision: capturedRevision,
+                                name: capturedName,
+                                variable: capturedVariable,
+                                fitIdentity,
+                                adjustmentKey: adjustmentVersion?.requestKey,
                                 canApply: response.can_apply,
                                 manualSignature,
                             };
@@ -509,12 +577,16 @@
             if (serial === runSerial) {
                 busy = false;
                 taskId = '';
-                committing = false;
+                activeAdjustment = false;
             }
         }
     }
     async function cancel() {
         if (committing) return;
+        if (activeAdjustment || adjustmentPending) {
+            discardPreview();
+            return;
+        }
         if (activePair || pairPending) {
             pairEpoch++;
             clearTimeout(pairTimer);
@@ -532,25 +604,32 @@
         }
     }
     async function applyPreview() {
-        if (
-            busy ||
-            !preview?.canApply ||
-            (preview.manualSignature !== undefined &&
-                preview.manualSignature !== JSON.stringify(edits))
-        )
-            return;
+        if (busy || adjustmentPending || committing || !previewMatches || !preview.canApply) return;
+        const candidate = preview;
         busy = true;
+        committing = true;
         error = '';
         try {
-            const snapshot = await api('reviews/' + preview.id + '/apply', rev());
-            onClear();
+            const snapshot = await api('reviews/' + candidate.id + '/apply', candidate.revision);
+            // Keep the acknowledged curves visible while saved results reload.
+            acknowledgedPreview = candidate;
+            if (bookImpact) bookImpact = { ...bookImpact, current: candidate.after_expected };
+            rememberAppliedView();
+            stopAdjustment();
+            tool = '';
+            if (name === candidate.name && selectedVariable === candidate.variable) onClear();
             preview = null;
-            await onApplied(snapshot);
-            feedback = 'Adjustments applied.';
+            try {
+                await onApplied(snapshot);
+                feedback = 'Adjustments applied.';
+            } catch (refreshError) {
+                feedback = 'Adjustments saved. Refresh the page to reload the charts.';
+            }
         } catch (e) {
             error = e.message;
         } finally {
             busy = false;
+            committing = false;
         }
     }
     async function include(row) {
@@ -580,6 +659,7 @@
     onDestroy(() => {
         pairEpoch++;
         clearTimeout(pairTimer);
+        stopAdjustment();
         destroyed = true;
         if (taskId) void api('reviews/' + taskId + '/cancel', rev()).catch(() => {});
     });
@@ -643,7 +723,7 @@
 {/snippet}
 
 {#snippet previewControls()}
-    {#if preview}<div class="preview-impact">
+    {#if previewMatches}<div class="preview-impact">
             {#if tool === 'isotonic' && preview.tool_details && preview.changes?.length === 0 && !preview.canApply && preview.before_base_rate === preview.after_base_rate}<p
                 >
                     No changes needed.
@@ -654,9 +734,11 @@
                 )}%)</strong
             >
 
-            <button class="primary" disabled={busy || !preview.canApply} onclick={applyPreview}
-                >Apply adjustment</button
-            ><button onclick={discardPreview}>Discard preview</button>
+            <button
+                class="primary"
+                disabled={busy || adjustmentPending || committing || !preview.canApply}
+                onclick={applyPreview}>Apply adjustment</button
+            ><button disabled={committing} onclick={discardPreview}>Discard preview</button>
             {#if preview.changes?.length}<details>
                     <summary>{preview.changes.length} changed rows — before and after</summary>
                     <div class="review-scroll">
@@ -714,19 +796,25 @@
         </h2>
         {#if view === 'tables' && table}
             <p class="rate-preview-state help-text">
-                {preview
-                    ? 'Preview · not applied'
-                    : info.adjustments?.length
-                      ? 'Saved adjustments'
-                      : 'Original fit'}
+                {committing && !acknowledgedMatches
+                    ? 'Applying adjustment…'
+                    : adjustmentPending
+                      ? 'Updating preview…'
+                      : previewMatches
+                        ? 'Preview · not applied'
+                        : acknowledgedMatches || info.adjustments?.length
+                          ? 'Saved adjustments'
+                          : 'Original fit'}
             </p>
             <RateChart
-                table={preview?.preview_table || table}
+                table={(previewMatches && preview.preview_table) ||
+                    (acknowledgedMatches && acknowledgedPreview.preview_table) ||
+                    table}
                 {variable}
                 label={rateLabel}
                 fittedLabel="Original fit"
                 currentLabel="Adjusted"
-                preview={!!preview?.preview_table}
+                preview={!!(previewMatches && preview.preview_table)}
             />
 
             <h3 class="adjustments-heading">Adjustments</h3>
@@ -909,7 +997,7 @@
                 >Adjustment<select
                     aria-label="Adjustment method"
                     bind:value={tool}
-                    disabled={busy}
+                    disabled={committing}
                     onchange={chooseTool}
                 >
                     <option value="">Choose adjustment…</option>
@@ -934,8 +1022,7 @@
                                 max="25"
                                 step="1"
                                 bind:value={windowSize}
-                                disabled={busy}
-                                oninput={parametersChanged}
+                                disabled={committing}
                             /></label
                         >
                     {/if}
@@ -943,8 +1030,7 @@
                             >Direction<select
                                 aria-label="Smoothing direction"
                                 bind:value={direction}
-                                disabled={busy}
-                                onchange={parametersChanged}
+                                disabled={committing}
                                 ><option value="increasing">Increasing</option><option
                                     value="decreasing">Decreasing</option
                                 ></select
@@ -958,8 +1044,7 @@
                                 min=".0001"
                                 step=".05"
                                 bind:value={floor}
-                                disabled={busy}
-                                oninput={parametersChanged}
+                                disabled={committing}
                             /></label
                         ><label
                             >Cap (empty = none)<input
@@ -968,16 +1053,14 @@
                                 min=".0001"
                                 step=".05"
                                 bind:value={cap}
-                                disabled={busy}
-                                oninput={parametersChanged}
+                                disabled={committing}
                             /></label
                         >{/if}
                     {#if tool === 'round'}<label
                             >Round to<select
                                 aria-label="Rounding mode"
                                 bind:value={rounding}
-                                disabled={busy}
-                                onchange={parametersChanged}
+                                disabled={committing}
                                 ><option value="decimals">Decimal places</option><option
                                     value="step">A step</option
                                 ></select
@@ -989,8 +1072,7 @@
                                     min="0"
                                     max="6"
                                     bind:value={decimals}
-                                    disabled={busy}
-                                    oninput={parametersChanged}
+                                    disabled={committing}
                                 /></label
                             >{:else}<label
                                 >Step<input
@@ -999,19 +1081,14 @@
                                     min=".0001"
                                     step=".01"
                                     bind:value={step}
-                                    disabled={busy}
-                                    oninput={parametersChanged}
+                                    disabled={committing}
                                 /></label
                             >
                         {/if}{/if}
                 </div>
                 {#if smoothing && tableKind === 'categorical'}<label class="ordered-confirmation"
-                        ><input
-                            type="checkbox"
-                            bind:checked={ordered}
-                            disabled={busy}
-                            onchange={parametersChanged}
-                        /> The levels of this factor are in a meaningful order</label
+                        ><input type="checkbox" bind:checked={ordered} disabled={committing} /> The levels
+                        of this factor are in a meaningful order</label
                     >
                     <p class="help-text">
                         Levels are normally ordered by exposure. Confirm only if neighbouring levels
@@ -1036,17 +1113,17 @@
                                     : `Rounds to the nearest multiple of ${num(step)}.`}{/if}
                         </p>
                     </details>{/if}
-                {#if Object.keys(edits).length}<p>
+                {#if tool !== 'manual' && Object.keys(edits).length}<p>
                         Apply or discard your {Object.keys(edits).length} manual row edits before using
                         a tool.
                     </p>{/if}
             {/if}
             <div class="adjustment-status" role="status">{error || draftError}</div>
-            {#if tool && tool !== 'manual'}<button
-                    class="primary"
-                    disabled={busy || !!draftError || !!toolError()}
-                    onclick={applyAdjustment}>Apply</button
-                >{/if}
+            {#if adjustmentPending}<div class="preview-impact" role="status">
+                    <span>Updating preview…</span>
+                    <button class="primary" disabled>Apply adjustment</button>
+                    <button onclick={discardPreview}>Discard preview</button>
+                </div>{/if}
             {@render previewControls()}
             {#if bookImpact}<p class="book-impact">
                     <strong>Current training expected: {num(bookImpact.current)}</strong> · fitted: {num(
@@ -1148,7 +1225,7 @@
                     ><DiagnosticTable rows={info.adjustments} title="Applied adjustments" />
                 </details>{/if}
         {/if}
-        {#if busy && !pairPending}<div class="message" role="status">
+        {#if busy && !pairPending && !adjustmentPending}<div class="message" role="status">
                 Computing in background… <button onclick={cancel} disabled={!taskId || committing}
                     >Cancel review</button
                 >

@@ -76,7 +76,8 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await expect(page.locator('.rate-grid')).not.toBeVisible();
     await page.locator('.rate-table-card > summary').click();
     await expect(page.getByLabel('Relativity row 2', { exact: true })).toHaveValue('2.1');
-    await button('Apply row edits (1)').click();
+    await expect(button('Apply adjustment')).toBeEnabled();
+    await button('Apply adjustment').click();
     await expect(page.getByText('Adjustments applied.', { exact: true })).toBeVisible();
     await expect(page.getByLabel('Relativity row 2', { exact: true })).toHaveValue('2.1');
     await expect(button('Preview undo')).toBeEnabled();
@@ -85,8 +86,9 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await expect(page.getByLabel('Relativity row 2', { exact: true })).not.toHaveValue('2.1');
     await page.getByLabel('Adjustment method', { exact: true }).selectOption('cap');
     await page.getByLabel('Relativity cap').fill('1.1');
-    await expect(button('Apply')).toBeEnabled();
-    await expect(page.locator('.preview-impact')).toHaveCount(0);
+    await expect(button('Apply adjustment')).toBeEnabled();
+    await expect(page.getByText('Preview · not applied', { exact: true })).toBeVisible();
+    await button('Discard preview').click();
     await page.setViewportSize({ width: 884, height: 808 });
     expect(
         await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),

@@ -23,7 +23,8 @@ test('dropdown tools apply once and preserve undo and snapshots', async ({ page 
     await page.getByLabel('Relativity row 2', { exact: true }).press('Tab');
     await page.getByLabel('Relativity row 3', { exact: true }).fill('2.41');
     await page.getByLabel('Relativity row 3', { exact: true }).press('Tab');
-    await button('Apply row edits (2)').click();
+    await expect(button('Apply adjustment')).toBeEnabled();
+    await button('Apply adjustment').click();
     await expect(page.getByText('Adjustments applied.', { exact: true })).toBeVisible();
     await page.locator('.table-snapshots > summary').click();
     await page.getByLabel('Snapshot name').fill('Manual starting point');
@@ -55,11 +56,11 @@ test('dropdown tools apply once and preserve undo and snapshots', async ({ page 
             },
         ],
     ]) {
-        const chart = await page.locator('.relativity-chart').innerHTML();
         await method.selectOption(mode);
         await parameters();
-        expect(await page.locator('.relativity-chart').innerHTML()).toBe(chart);
-        await button('Apply').click();
+        await expect(button('Apply adjustment')).toBeEnabled();
+        await expect(page.getByText('Preview · not applied', { exact: true })).toBeVisible();
+        await button('Apply adjustment').click();
         await expect(page.getByText('Adjustments applied.', { exact: true })).toBeVisible();
         await button('Preview undo').click();
         await expect(button('Apply adjustment')).toBeEnabled();
@@ -68,15 +69,15 @@ test('dropdown tools apply once and preserve undo and snapshots', async ({ page 
     }
     await page.getByLabel('Rate table variable', { exact: true }).selectOption('Region');
     await method.selectOption('moving');
-    await expect(button('Apply')).toBeDisabled();
+    await expect(button('Apply adjustment')).toHaveCount(0);
     await page
         .getByRole('checkbox', {
             name: 'The levels of this factor are in a meaningful order',
             exact: true,
         })
         .check();
-    await expect(button('Apply')).toBeEnabled();
-    await expect(page.getByText('Preview · not applied', { exact: true })).toHaveCount(0);
+    await expect(button('Apply adjustment')).toBeEnabled();
+    await expect(page.getByText('Preview · not applied', { exact: true })).toBeVisible();
     expect(
         await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
     ).toBeTruthy();

@@ -156,7 +156,8 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     const cell = page.getByRole('spinbutton', { name: /^Relativity cell / }).first();
     await cell.fill('1.7');
     await cell.press('Tab');
-    await button('Apply row edits (1)').click();
+    await expect(button('Apply adjustment')).toBeEnabled();
+    await button('Apply adjustment').click();
     await expect(page.getByText('Adjustments applied.', { exact: true })).toBeVisible();
     await expect(page.locator('.rate-relativities .relativity-heatmap')).toBeVisible();
     const proposedAE = await page.locator('.ae-heatmap').innerText();

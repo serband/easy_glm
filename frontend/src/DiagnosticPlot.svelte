@@ -33,7 +33,8 @@
 <section class="diagnostic-plot">
     <h3>{title}</h3>
     <div class="chart-legend">
-        {#each visible as s, i}<span style:color={colors[i % colors.length]}>● {s.label}</span
+        {#each visible as s, i}<span style:color={s.color || colors[i % colors.length]}
+                >● {s.label}</span
             >{/each}
     </div>
     <svg viewBox="0 0 750 250" role="img" aria-label={ariaLabel || title}>
@@ -51,7 +52,7 @@
                         .map((r, i) => (Number.isFinite(r[s.key]) ? `${x(i)},${y(r[s.key])}` : ''))
                         .join(' ')}
                     fill="none"
-                    stroke={colors[j % colors.length]}
+                    stroke={s.color || colors[j % colors.length]}
                     stroke-width="2"
                 />{/if}
             {#each shown as row, i}{#if Number.isFinite(row[s.key])}
@@ -63,14 +64,14 @@
                             y={Math.min(y(row[s.key]), y(0))}
                             {width}
                             height={Math.abs(y(row[s.key]) - y(0))}
-                            fill={colors[j % colors.length]}
+                            fill={s.color || colors[j % colors.length]}
                             ><title>{labels[i]}: {s.label} {num(row[s.key])}</title></rect
                         >
                     {:else}<circle
                             cx={x(i)}
                             cy={y(row[s.key])}
                             r={row.selected ? 6 : 3}
-                            fill={colors[j % colors.length]}
+                            fill={s.color || colors[j % colors.length]}
                             ><title
                                 >{labels[i]}: {s.label}
                                 {num(row[s.key])}{row.selected ? ' · selected' : ''}</title

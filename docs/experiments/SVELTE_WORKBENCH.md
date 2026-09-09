@@ -688,26 +688,31 @@ rows, null/empty groups and all subsets; other-factor/base/challenger invalidati
 original reuse, fit-time readiness and failure fallback; rapid cached switching,
 a delayed uncached response, applied-edit invalidation and existing preview races.
 
-### Explicit adjustment application
+### Dynamic adjustment previews and explicit Apply
 
-The adjustment panel now starts with **Choose adjustment…**. Selecting moving
-average, isotonic smoothing, cap/floor, rounding or manual rows only edits local
-settings. The original and adjusted curves and A/E remain unchanged until Apply.
-One Apply calculates and commits the result; there is no tool-preview confirmation.
-Manual row changes are applied together in one undo step. Existing persisted
-changes are labelled **Saved adjustments** and are retained on entry.
+The **Choose adjustment…** dropdown starts blank. Selecting a method or changing
+its parameters automatically previews the candidate in the relativity and A/E
+charts. Numeric input waits 180 ms to avoid computing half-typed values. The
+original fitted curve stays visible; the Adjusted curve shows either the current
+candidate or the saved adjustments. Only **Apply adjustment** commits the exact
+completed candidate. **Discard preview** restores both saved curves and leaves
+the project and undo history intact. Manual row edits use the same preview/Apply
+flow and remain editable during computation.
 
-Tool replacements still start from the original fitted factor; manual changes
-still overlay the applied table. Other factors, base rate, null/Other rows and
-snapshots retain their established behavior. Pending actions are guarded against
-double clicks, changed selections, cancellation and failed calculations. Once
-commit starts, cancellation is disabled. A successful save followed by a failed
-chart refresh reports that the adjustments were saved. Candidate data is parsed
-before edit history is mutated.
+Each candidate is bound to the model, fitted runs, project revision, variable,
+subset, comparison model and options. Superseded workers are cancelled; delayed
+responses cannot replace a newer candidate. Apply is unavailable while pending
+or invalid and locked during commit. Successful changes stay visible while saved
+results reload; a refresh failure reports that saving already succeeded.
+Automated tools still replace the selected factor from its immutable fitted
+source, preserving the established handling of other factors, null/Other rows,
+base rate and saved histories. No backend numerical change was made.
 
-Validation covers explicit Apply, all tool options, manual batch undo, snapshots,
-failed calculations, stale/cancelled results, double clicks and failed refresh
-after saving. Read-only live checking found zero tool requests or commits from
-changing methods/options or drafting manual rows; chart markup and the complete
-project/jobs/edit-history snapshot were unchanged. The live server was not
-restarted and the user's fitted model and saved adjustments were preserved.
+Focused browser validation covers transient project/history preservation, exact
+restoration of relativity and A/E curves on discard, invalid options/manual
+values, late responses, option/factor changes, the exact candidate commit with
+no extra computation, double-click protection, manual batch undo and failed
+computation/result refresh. The initial preview took 1.823 s on the isolated
+12,000-row synthetic sample, including 180 ms input debounce; the existing
+Python review worker remains the latency bottleneck. User sessions, fitted
+models and saved adjustments were not changed by validation.
