@@ -2,6 +2,7 @@
     import { onDestroy } from 'svelte';
     import ReviewPanel from './ReviewPanel.svelte';
     import RateChart from './RateChart.svelte';
+    import { rateChartKind } from './rateChartData.js';
     let tableDetails = false,
         tableReview,
         reviewBusy = false;
@@ -328,6 +329,7 @@
                     tableOffset +
                     '&limit=200',
             );
+            table = { ...table, kind: rateChartKind(table, tableName, wb) };
         } catch (e) {
             error = e.message;
         } finally {
@@ -822,9 +824,10 @@
                     >
                 </div>
                 {#if table}<div class="rate-primary">
-                        <section class="rate-table-card" aria-label="Editable rate table">
+                        <RateChart {table} variable={tableName} label={result.relativity_label} />
+                        <details class="rate-table-card" aria-label="Editable rate table">
+                            <summary>Rate table</summary>
                             <div class="table-heading">
-                                <h2>Rate table</h2>
                                 <label
                                     ><input type="checkbox" bind:checked={tableDetails} /> All columns</label
                                 >
@@ -925,8 +928,7 @@
                                     onclick={clearEdits}>Discard row edits</button
                                 >
                             </div>
-                        </section>
-                        <RateChart {table} variable={tableName} label={result.relativity_label} />
+                        </details>
                     </div>{/if}
                 <p class="help-text">
                     {result.relativity_note} The chart shows applied table values; row edits remain drafts

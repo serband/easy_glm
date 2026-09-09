@@ -1,10 +1,31 @@
+// Resolve the same kind as workflow.encoder_for from applied design and prepared type metadata.
+export function rateChartKind(table, variable, workbench) {
+    if (table.columns.includes('label_a')) return 'interaction';
+    const explicit = workbench.design.variables[variable]?.kind;
+    if (explicit) return explicit;
+    const dtype = workbench.columns.find((c) => c.name === variable)?.dtype;
+    return [
+        'Int8',
+        'Int16',
+        'Int32',
+        'Int64',
+        'UInt8',
+        'UInt16',
+        'UInt32',
+        'UInt64',
+        'Float32',
+        'Float64',
+    ].includes(dtype)
+        ? 'step'
+        : 'categorical';
+}
+
 // Geometry from canonical exported rows. Linear curves interpolate in log space.
 export function rateChartData(table) {
     const rows = table?.rows || [];
-    const linear = table?.columns?.includes('slope');
-    const interaction = table?.columns?.includes('label_a');
-    const numeric =
-        !interaction && rows.some((r) => typeof r.from === 'number' || typeof r.to === 'number');
+    const linear = ['linear', 'continuous'].includes(table?.kind);
+    const interaction = table?.kind === 'interaction';
+    const numeric = linear || table?.kind === 'step';
     const edges = rows
         .flatMap((r) => [r.from, r.to])
         .filter((v) => typeof v === 'number' && Number.isFinite(v));
@@ -24,6 +45,7 @@ export function rateChartData(table) {
             : 55 + (i * 635) / Math.max(1, rows.length - 1);
         const item = {
             row,
+            missing,
             index: i,
             x: center,
             label: row.label || `${row.label_a} × ${row.label_b}`,
@@ -63,7 +85,30 @@ export function rateChartData(table) {
         }
         points.push(item);
     });
+    // Join only adjacent numeric bands. Duplicate x at a knot draws a vertical
+    // step; nulls, gaps and an unavailable page endpoint never get connected.
+    const lines = { fitted: [], current: [] };
+    if (numeric)
+        for (const field of ['fitted', 'current']) {
+            let prior = null;
+            for (const item of points) {
+                if (item.missing || !item[field].length) {
+                    prior = null;
+                    continue;
+                }
+                const previousLine = lines[field].at(-1);
+                if (
+                    prior &&
+                    prior.row.to === item.row.from &&
+                    previousLine.at(-1).x === item[field][0].x
+                ) {
+                    previousLine.push(...item[field]);
+                } else lines[field].push([...item[field]]);
+                prior = item;
+            }
+        }
     return {
+        lines,
         points,
         linear,
         interaction,

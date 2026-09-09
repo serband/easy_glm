@@ -15,6 +15,9 @@ test('Variables → split/model → background fit → diagnostics → rate tabl
     await page.getByRole('button', { name: 'Apply split', exact: true }).click();
     await expect(page.getByText('Split applied.', { exact: true })).toBeVisible();
     await page.getByLabel('Design kind for DriverAge', { exact: true }).selectOption('continuous');
+    await page
+        .getByLabel('Design kind for VehicleAge', { exact: true })
+        .selectOption('categorical');
     await page.getByRole('button', { name: 'Create model', exact: true }).click();
     await expect(page.getByLabel('Model selection', { exact: true })).toHaveValue('Frequency');
     await expect(page.getByRole('button', { name: 'Fit model', exact: true })).toBeEnabled();
@@ -39,9 +42,20 @@ test('Variables → split/model → background fit → diagnostics → rate tabl
     await page.getByRole('button', { name: 'Rate tables', exact: true }).click();
     await expect(page.getByLabel('Rate table variable', { exact: true })).toBeVisible();
     await page.getByLabel('Rate table variable', { exact: true }).selectOption('DriverAge');
+    await expect(page.locator('.numeric-curve')).toHaveCount(2);
+    await page.locator('.rate-table-card > summary').click();
     await expect(page.locator('.rate-grid')).toContainText('relativity');
     await expect(page.locator('.rate-grid')).toContainText('slope');
     await page.screenshot({ path: 'test-results/rate-tables.png', fullPage: true });
+    await page.getByLabel('Rate table variable', { exact: true }).selectOption('Region');
+    await expect(page.locator('.category-bar').first()).toBeVisible();
+    await expect(page.locator('.numeric-curve')).toHaveCount(0);
+    await page.setViewportSize({ width: 884, height: 773 });
+    await page.screenshot({ path: '/tmp/easyglm-category-bars.png', fullPage: true });
+    await page.getByLabel('Rate table variable', { exact: true }).selectOption('VehicleAge');
+    await expect(page.locator('.category-bar').first()).toBeVisible();
+    await expect(page.locator('.numeric-curve')).toHaveCount(0);
+
     await page.getByRole('button', { name: /^Variables/ }).click();
     await page.getByLabel('Role for VehicleAge', { exact: true }).selectOption('ignore');
     await page.getByRole('button', { name: 'Preview changes', exact: true }).click();

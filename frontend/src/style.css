@@ -1067,3 +1067,22 @@ main {
         max-width: 100%;
     }
 }
+
+/* The chart leads; the retained table DOM keeps drafts while collapsed. */
+.rate-primary {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+}
+.rate-table-card > summary {
+    cursor: pointer;
+    font-weight: 650;
+    font-size: 15px;
+}
+.rate-table-card[open] > summary {
+    margin-bottom: 12px;
+}
+
+.rate-plot-scroll {
+    overflow-x: auto;
+}

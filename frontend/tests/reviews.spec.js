@@ -38,9 +38,13 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     ).toBeVisible();
     await page.setViewportSize({ width: 884, height: 773 });
     await page.evaluate(() => window.scrollTo(0, 0));
-    const grid = await page.locator('.rate-grid').boundingBox();
-    expect(grid.y).toBeLessThan(500);
-    expect(grid.y + Math.min(grid.height, 100)).toBeLessThan(773);
+    await expect(page.locator('.rate-grid')).not.toBeVisible();
+    const chart = await page.locator('.rate-chart-card').boundingBox();
+    const tableSection = await page.locator('.rate-table-card').boundingBox();
+    expect(chart.y).toBeLessThan(500);
+    expect(chart.width).toBeGreaterThan(600);
+    expect(tableSection.y).toBeGreaterThan(chart.y + chart.height - 1);
+    await expect(page.locator('.numeric-curve')).toHaveCount(2);
     await expect(
         page.getByRole('img', { name: /^Fitted and current relativities for/ }),
     ).toBeVisible();
@@ -48,8 +52,13 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await expect(button('View rate tables')).toHaveCount(0);
     await expect(button('Show variable A/E')).toHaveCount(0);
     await page.screenshot({ path: '/tmp/easyglm-rate-layout-884.png', fullPage: true });
+    await page.locator('.rate-table-card > summary').click();
     await page.getByLabel('Relativity row 2', { exact: true }).fill('2.1');
     await page.getByLabel('Relativity row 2', { exact: true }).press('Tab');
+    await page.locator('.rate-table-card > summary').click();
+    await expect(page.locator('.rate-grid')).not.toBeVisible();
+    await page.locator('.rate-table-card > summary').click();
+    await expect(page.getByLabel('Relativity row 2', { exact: true })).toHaveValue('2.1');
     await button('Preview row edits (1)').click();
     await expect(button('Apply adjustment')).toBeVisible();
     await expect(
