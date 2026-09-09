@@ -1123,7 +1123,9 @@ def fit_two_stage(
     * otherwise, when stage 1 used ``cv``, stage 2 independently uses the same
       seeded, shuffled folds and path points on its *own* cell columns; its
       offset is assembled from out-of-fold stage-1 predictions, so no row's
-      outcome has already informed the offset used to validate that row;
+      outcome has already informed the offset used to validate that row. The
+      selected penalty and L1 ratio are then used to refit the cells against
+      the final full-training stage-1 offset; the CV path stays available;
     * otherwise (a fixed-alpha main fit), stage 2 uses that fixed alpha.
 
     Per-interaction differences in strength belong in
@@ -1191,6 +1193,7 @@ def fit_two_stage(
             if k not in {"alpha", "cv", "progress", "offset"}
         }
         fold_kwargs["alpha"] = fit1.alpha
+        fold_kwargs["l1_ratio"] = float(fit1.model.l1_ratio_)
         full_offset = kwargs.get("offset")
         for fold_number, (fit_index, score_index) in enumerate(
             splitter.split(np.arange(data.height)), start=1
@@ -1245,4 +1248,31 @@ def fit_two_stage(
         fit_intercept=False,
         **kw2,
     )
+    if stage2_uses_cv:
+        # Cross-fitted offsets select the penalty; the deployed cell adjustment
+        # must be fitted on top of the same frozen mains it will score against.
+        final_kwargs = {k: v for k, v in kw2.items() if k != "cv"}
+        final_kwargs["alpha"] = fit2.alpha
+        final_kwargs["l1_ratio"] = float(fit2.model.l1_ratio_)
+        final_kwargs["progress"] = _stage_progress("Stage 2, final interaction cells")
+        final_fit = fit_glm(
+            data,
+            spec.interactions_spec(),
+            target,
+            offset=eta1,
+            fit_intercept=False,
+            **final_kwargs,
+        )
+        # Keep the CV estimator's selection and fold paths, replacing only the
+        # fitted state with the final-offset refit (including solver diagnostics).
+        # Constructor parameters retain the original CV grid and configuration.
+        parameters = final_fit.model.get_params(deep=False)
+        for key, value in vars(final_fit.model).items():
+            if key not in parameters:
+                setattr(fit2.model, key, value)
+        # glum's explicit predict(alpha=selected) reads the refit path rather
+        # than coef_. Keep that entry consistent; fold CV paths stay untouched.
+        selected = int(np.flatnonzero(fit2.model._alphas == fit2.alpha)[0])
+        fit2.model._refit_coef_path[selected] = final_fit.coef
+        fit2.model._refit_intercept_path[selected] = final_fit.intercept
     return TwoStageFit(fit1, fit2)

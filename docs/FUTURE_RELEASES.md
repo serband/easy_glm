@@ -52,7 +52,8 @@ at a given alpha.
   (`null_model_predict`, fitted on train) on both subsets.
 - **Implemented on the feature branch:** stage 2 cross-validation assembles an
   out-of-fold stage-1 offset (k extra main-effect fits) using the same seeded,
-  shuffled folds as the two CV stages.
+  shuffled folds as the two CV stages. After selecting the penalty, the final
+  interaction cells are refitted against the full-training frozen main effects.
 - Options to consider: an AGLM-style raw linear column next to a step
   factor's O-dummies (trend shrinkage); a "holdout locked" mode that shows
   train and CV numbers during design and reveals the holdout on request; a

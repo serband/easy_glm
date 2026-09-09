@@ -129,6 +129,14 @@
         acknowledgedPreview?.name === name &&
         acknowledgedPreview?.variable === variable &&
         acknowledgedPreview?.fitIdentity === fitIdentity;
+    $: savedTable = acknowledgedMatches ? acknowledgedPreview.preview_table : table;
+    $: savedFactorChanged = savedTable?.rows?.some(
+        (row) =>
+            Number.isFinite(row.fitted) &&
+            Number.isFinite(row.relativity) &&
+            Math.abs(row.relativity - row.fitted) >
+                1e-12 * Math.max(1, Math.abs(row.fitted), Math.abs(row.relativity)),
+    );
     $: previewMatches =
         !!preview &&
         preview.contextKey === key &&
@@ -851,7 +859,7 @@
                       ? 'Updating preview…'
                       : previewMatches
                         ? 'Preview · not applied'
-                        : acknowledgedMatches || info.adjustments?.length
+                        : savedFactorChanged
                           ? 'Saved adjustments'
                           : 'Original fit'}
             </p>

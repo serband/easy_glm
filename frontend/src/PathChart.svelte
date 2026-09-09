@@ -3,12 +3,18 @@
     import DiagnosticTable from './DiagnosticTable.svelte';
     export let rows = [],
         title = 'Regularisation path';
-    const series = [
+    $: isCV = shown.some((row) => Number.isFinite(row.cv_deviance));
+    $: countLabel = isCV ? 'Mean retained coefficients (CV)' : 'Retained coefficients';
+    $: series = [
         { key: 'cv_deviance', label: 'Mean CV deviance', color: '#287762' },
-        { key: 'train_deviance', label: 'Training deviance', color: '#439da5' },
+        {
+            key: 'train_deviance',
+            label: isCV ? 'Mean training deviance' : 'Training deviance',
+            color: '#439da5',
+        },
         {
             key: 'n_nonzero',
-            label: 'Retained coefficients · right axis',
+            label: countLabel + ' · right axis',
             color: '#bd8a45',
             right: true,
         },
@@ -55,9 +61,9 @@
         >
     </div>
     <svg viewBox="0 0 750 305" role="img" aria-label={title}>
-        <title>{title}: deviance on the left, retained coefficient count on the right</title>
+        <title>{title}: deviance on the left, {countLabel.toLowerCase()} on the right</title>
         <text x="80" y="25">Deviance</text><text x="670" y="25" text-anchor="end"
-            >Retained count</text
+            >{isCV ? 'Mean retained count' : 'Retained count'}</text
         >
         {#each [0, 0.5, 1] as tick}<line
                 x1="80"
@@ -69,7 +75,7 @@
                 >{num(low + tick * (high - low))}</text
             >{/each}
         {#each countTicks as tick}<text class="count-tick" x="682" y={cy(tick) + 4} fill="#9a6a30"
-                >{tick}</text
+                >{num(tick)}</text
             >{/each}
         {#each shown.filter((r) => r.selected) as row}<line
                 class="selected-penalty"

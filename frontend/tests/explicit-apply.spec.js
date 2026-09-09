@@ -197,6 +197,7 @@ test('dropdown previews are transient, latest-only and committed only by explici
         page.getByRole('heading', { name: 'Region · Holdout', exact: true }),
     ).toBeVisible();
     await expect(apply).toHaveCount(0);
+    await expect(page.locator('.rate-preview-state')).toHaveText('Original fit');
     expect(commits).toHaveLength(1);
     await page.unrouteAll({ behavior: 'wait' });
     // Manual edits stay usable while previews run and commit together in one undo step.

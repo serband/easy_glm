@@ -880,7 +880,8 @@ def residual_pair_search(
 def alpha_path(fit: GLMFit) -> pl.DataFrame:
     """One row per (stage, l1_ratio, alpha) of the fitted path with CV deviance
     (mean/std over folds), training deviance where available, the number of
-    non-zero coefficients and the selected point.
+    non-zero coefficients and the selected point. For a CV path, the non-zero
+    count is the mean across folds, not the final model's coefficient count.
 
     A two-stage interaction fit has **two** paths — the mains' and the cells' —
     and both are returned, told apart by the ``stage`` column (1 = main effects,

@@ -743,7 +743,8 @@ class TestTwoStageFit:
 
         def recording_fit(data, one_spec, target, **kwargs):
             if one_spec.interactions and kwargs.get("offset") is not None:
-                captured["stage2_offset"] = np.asarray(kwargs["offset"]).copy()
+                key = "stage2_offset" if kwargs.get("cv") else "final_offset"
+                captured[key] = np.asarray(kwargs["offset"]).copy()
             return original(data, one_spec, target, **kwargs)
 
         monkeypatch.setattr(fit_module, "fit_glm", recording_fit)
@@ -755,6 +756,7 @@ class TestTwoStageFit:
         assert np.mean(np.abs(oof - in_sample) > 1e-10) > 0.9
         assert fitted.stage2.model.cv.n_splits == 3
         assert fitted.stage2.model.cv.random_state == 17
+        np.testing.assert_allclose(captured["final_offset"], in_sample, atol=1e-13)
 
     def test_rate_model_is_exact_and_cells_are_pure_adjustments(self, book, two_stage):
         fit = two_stage
@@ -1059,3 +1061,159 @@ class TestStageTwoPenalty:
             scale_predictors=False,
         )
         assert (p1 == 0.0).all()
+
+
+@pytest.mark.parametrize("offset_kind", ["column", "array"])
+def test_cv_cells_refit_on_final_frozen_mains_and_keep_selection_path(
+    offset_kind, monkeypatch
+):
+    """CV chooses the cell penalty; final coefficients use deployed main effects."""
+    from easy_glm.workflow.diagnostics import alpha_path
+
+    rng = np.random.default_rng(731)
+    n = 480
+    x = rng.integers(0, 8, n)
+    b = rng.choice(["a", "b", "c"], n)
+    weight = rng.uniform(0.2, 1.6, n)
+    offset = rng.normal(0, 0.25, n)
+    mean = np.exp(-0.3 + 0.18 * x + 1.1 * ((x >= 4) & (b == "c")) + offset)
+    data = pl.DataFrame(
+        {
+            "x": x,
+            "b": b,
+            "weight": weight,
+            "offset": offset,
+            "y": rng.poisson(mean * weight).astype(float),
+        }
+    )
+    spec = DesignSpec(
+        {
+            "x": StepEncoder("x", [1.5, 3.5, 5.5]),
+            "b": CategoricalEncoder("b", ["a", "b", "c"]),
+        }
+    )
+    spec.add_interaction(
+        InteractionEncoder.from_data(
+            spec["x"], spec["b"], data, weights=data["weight"], min_cell_exposure=0.001
+        )
+    )
+    module = importlib.import_module("easy_glm.core.fit")
+    original = module.fit_glm
+    search = {}
+    final = {}
+
+    def recording_fit(rows, design, target, **kwargs):
+        result = original(rows, design, target, **kwargs)
+        if design.interactions:
+            if kwargs.get("cv"):
+                search.update(
+                    alpha=result.alpha,
+                    l1_ratio=result.model.l1_ratio_,
+                    path=alpha_path(result).drop("stage"),
+                    coefficients=result.coef.copy(),
+                    offset=np.asarray(kwargs["offset"]).copy(),
+                )
+            else:
+                final.update(fit=result, offset=np.asarray(kwargs["offset"]).copy())
+        return result
+
+    monkeypatch.setattr(module, "fit_glm", recording_fit)
+    offset_argument = (
+        {"offset_col": "offset"} if offset_kind == "column" else {"offset": offset}
+    )
+    kwargs = dict(
+        family="poisson",
+        weight_col="weight",
+        divide_target_by_weight=True,
+        cv=3,
+        cv_seed=17,
+        n_alphas=7,
+        l1_ratio=[0.5, 1.0],
+        **offset_argument,
+    )
+    fit = module.fit_two_stage(data, spec, "y", **kwargs)
+    standalone = original(data, spec.main_effects_spec(), "y", **kwargs)
+    np.testing.assert_allclose(fit.stage1.coef, standalone.coef, atol=1e-13)
+    assert fit.intercept == pytest.approx(standalone.intercept, abs=1e-13)
+    whole_eta = standalone.linear_predictor(data) + offset
+    np.testing.assert_allclose(final["offset"], whole_eta, atol=1e-13)
+    assert np.max(np.abs(search["offset"] - whole_eta)) > 0.01
+    assert np.max(np.abs(search["coefficients"] - fit.stage2.coef)) > 1e-5
+
+    oracle = original(
+        data,
+        spec.interactions_spec(),
+        "y",
+        family="poisson",
+        weight_col="weight",
+        divide_target_by_weight=True,
+        alpha=search["alpha"],
+        l1_ratio=search["l1_ratio"],
+        scale_predictors=False,
+        fit_intercept=False,
+        offset=whole_eta,
+    )
+    np.testing.assert_allclose(fit.stage2.coef, oracle.coef, atol=1e-13)
+    assert fit.stage2.intercept == 0
+    assert fit.alpha_stage2 == search["alpha"]
+    assert fit.stage2.model.l1_ratio_ == search["l1_ratio"]
+    assert fit.stage2.model.l1_ratio == [0.5, 1.0]
+    assert fit.stage2.model.cv.random_state == 17
+    assert fit.stage2.model.n_iter_ == final["fit"].model.n_iter_
+    assert fit.stage2.model.diagnostics_ == final["fit"].model.diagnostics_
+    assert alpha_path(fit.stage2).drop("stage").equals(search["path"])
+
+    expected = np.exp(whole_eta + oracle.linear_predictor(data))
+    score_kwargs = {} if offset_kind == "column" else {"offset": offset}
+    np.testing.assert_allclose(fit.predict(data, **score_kwargs), expected, rtol=1e-12)
+    cells = spec.interactions_spec().build(data)
+    for selected_alpha in (None, fit.alpha_stage2):
+        np.testing.assert_allclose(
+            fit.stage2.model.predict(cells, offset=whole_eta, alpha=selected_alpha),
+            expected,
+            rtol=1e-12,
+        )
+    restored = pickle.loads(pickle.dumps(fit))
+    np.testing.assert_array_equal(
+        restored.predict(data, **score_kwargs), fit.predict(data, **score_kwargs)
+    )
+    assert alpha_path(restored).equals(alpha_path(fit))
+    if offset_kind == "column":
+        rm = to_rate_model(restored, exposure_col="weight")
+        np.testing.assert_allclose(
+            rm.predict(data, exposure_col=None), expected, rtol=1e-12
+        )
+
+
+@pytest.mark.parametrize("cell_alpha", [None, 0.02])
+def test_fixed_alpha_cells_still_fit_once_against_full_mains(cell_alpha, monkeypatch):
+    data = _book(n=600)
+    spec = DesignSpec.from_data(
+        data, ["DrivAge", "Region"], n_bins=4, min_level_share=0.01
+    )
+    spec.add_interaction(
+        InteractionEncoder.from_data(
+            spec["DrivAge"],
+            spec["Region"],
+            data,
+            weights=data["Exposure"],
+            min_cell_exposure=0.001,
+        )
+    )
+    module = importlib.import_module("easy_glm.core.fit")
+    original = module.fit_glm
+    calls = []
+
+    def recording_fit(rows, design, target, **kwargs):
+        calls.append((design, kwargs))
+        return original(rows, design, target, **kwargs)
+
+    monkeypatch.setattr(module, "fit_glm", recording_fit)
+    fit = module.fit_two_stage(
+        data, spec, "ClaimNb", alpha=0.01, stage2_alpha=cell_alpha, **FIT_KW
+    )
+    assert len(calls) == 2
+    np.testing.assert_array_equal(
+        calls[1][1]["offset"], fit.stage1.linear_predictor(data)
+    )
+    assert fit.alpha_stage2 == (0.01 if cell_alpha is None else cell_alpha)

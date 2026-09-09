@@ -170,7 +170,9 @@
         table = null,
         tableOffset = 0,
         tableScroll = 0,
-        tableBusy = false;
+        tableBusy = false,
+        tableRequest = 0,
+        tableLoadedKey = '';
     let polling = false,
         timer = null;
     $: signature = state ? state.session_id + ':' + state.revision : '';
@@ -286,6 +288,10 @@
         result = null;
         resultId = '';
         table = null;
+        tableRequest += 1;
+        tableLoadedKey = '';
+        tableBusy = false;
+        reviewBusy = false;
         error = '';
         notice = '';
         if (jobs[selected]?.applicable) void loadResults();
@@ -338,7 +344,7 @@
         if (!jobs[name]?.applicable) return;
         try {
             const data = await api('results/' + encodeURIComponent(name));
-            if (name !== selected) return;
+            if (name !== selected || id !== jobs[name]?.id || !jobs[name]?.applicable) return;
             result = data;
             resultId = id;
             if (!result.metrics[subset]) subset = Object.keys(result.metrics)[0];
@@ -348,6 +354,7 @@
             tableOffset = 0;
             await loadTable(preserveEdits);
         } catch (e) {
+            if (name !== selected || id !== jobs[name]?.id || !jobs[name]?.applicable) return;
             error = e.message;
             if (preserveEdits) throw e;
         }
@@ -413,6 +420,9 @@
             error = e.message;
         }
     }
+    function setModelField(field, value) {
+        cfg = { ...cfg, [field]: value };
+    }
     function toggle(name, checked) {
         cfg = {
             ...cfg,
@@ -424,27 +434,61 @@
     function kind(name, value) {
         kinds = { ...kinds, [name]: value || null };
     }
+    function tableContext() {
+        return JSON.stringify([
+            state?.session_id,
+            selected,
+            jobs[selected]?.id,
+            resultId,
+            tableName,
+            tableOffset,
+        ]);
+    }
     async function loadTable(preserveEdits = false) {
+        const request = ++tableRequest,
+            key = tableContext(),
+            revision = state?.revision,
+            sourceResult = result,
+            name = selected,
+            variable = tableName,
+            offset = tableOffset;
         if (!preserveEdits) rowEdits = {};
-        if (!tableName || !result) return;
+        if (!preserveEdits || tableLoadedKey !== key) {
+            table = null;
+            tableLoadedKey = '';
+            reviewBusy = false;
+        }
+        if (!variable || !sourceResult || resultId !== jobs[name]?.id) {
+            tableBusy = false;
+            return;
+        }
+        const valid = () =>
+            request === tableRequest &&
+            key === tableContext() &&
+            revision === state?.revision &&
+            sourceResult === result &&
+            jobs[name]?.applicable;
         tableBusy = true;
         tableScroll = 0;
         try {
-            table = await api(
+            const data = await api(
                 'results/' +
-                    encodeURIComponent(selected) +
+                    encodeURIComponent(name) +
                     '/table?variable=' +
-                    encodeURIComponent(tableName) +
+                    encodeURIComponent(variable) +
                     '&offset=' +
-                    tableOffset +
+                    offset +
                     '&limit=200',
             );
-            table = { ...table, kind: rateChartKind(table, tableName, wb) };
+            if (!valid()) return;
+            table = { ...data, kind: rateChartKind(data, variable, wb) };
+            tableLoadedKey = key;
         } catch (e) {
+            if (!valid()) return;
             error = e.message;
             if (preserveEdits) throw e;
         } finally {
-            tableBusy = false;
+            if (valid()) tableBusy = false;
         }
     }
 
@@ -460,6 +504,7 @@
             .join(' ');
     }
     onDestroy(() => {
+        tableRequest += 1;
         if (timer) clearInterval(timer);
     });
 </script>
@@ -550,14 +595,20 @@
                     <h2 id="model-definition">Model definition</h2>
                     <div class="form-grid">
                         <label
-                            >Family<select aria-label="Model family" bind:value={cfg.family}
+                            >Family<select
+                                aria-label="Model family"
+                                bind:value={
+                                    () => cfg.family, (value) => setModelField('family', value)
+                                }
                                 >{#each wb.families as family}<option value={family}
                                         >{family.replaceAll('_', ' ')}</option
                                     >{/each}</select
                             ></label
                         >
                         <label
-                            >Link<select aria-label="Model link" bind:value={cfg.link}
+                            >Link<select
+                                aria-label="Model link"
+                                bind:value={() => cfg.link, (value) => setModelField('link', value)}
                                 ><option value={null}>Family default</option><option value="log"
                                     >Log</option
                                 ><option value="logit">Logit</option></select
@@ -566,7 +617,9 @@
                         {#each ['target', 'weight', 'offset'] as field}<label
                                 >{field.charAt(0).toUpperCase() + field.slice(1)}<select
                                     aria-label={'Model ' + field}
-                                    bind:value={cfg[field]}
+                                    bind:value={
+                                        () => cfg[field], (value) => setModelField(field, value)
+                                    }
                                     ><option value={null}>None</option
                                     >{#if cfg[field] && !wb.columns.some((c) => c.name === cfg[field])}<option
                                             value={cfg[field]}
@@ -583,14 +636,20 @@
                                     min="1.01"
                                     max="1.99"
                                     step=".05"
-                                    bind:value={cfg.tweedie_power}
+                                    bind:value={
+                                        () => cfg.tweedie_power,
+                                        (value) => setModelField('tweedie_power', value)
+                                    }
                                 /></label
                             >{/if}
                         <label class="check-label"
                             ><input
                                 aria-label="Divide target by weight"
                                 type="checkbox"
-                                bind:checked={cfg.divide_target_by_weight}
+                                bind:checked={
+                                    () => cfg.divide_target_by_weight,
+                                    (value) => setModelField('divide_target_by_weight', value)
+                                }
                             />Divide target by weight</label
                         >
                     </div>
@@ -806,7 +865,9 @@
                             /></label
                         >
                         <label
-                            >Table base<select aria-label="Table base" bind:value={cfg.base}
+                            >Table base<select
+                                aria-label="Table base"
+                                bind:value={() => cfg.base, (value) => setModelField('base', value)}
                                 ><option value="modal">Most common risk</option><option
                                     value="reference">GLM reference risk</option
                                 ></select
@@ -1259,7 +1320,7 @@
                                 </details>
                             {/snippet}
                         </ReviewPanel>
-                    </div>{/if}
+                    </div>{:else if tableBusy}<p role="status">Loading rate table…</p>{/if}
             {/if}
         {/if}
     {/if}

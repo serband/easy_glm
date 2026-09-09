@@ -11,7 +11,9 @@
     const right = 685;
     $: height = 70 + plot.rows.length * 32;
     $: x = (value) => left + ((value - plot.low) / (plot.high - plot.low)) * (right - left);
-    $: ticks = [...new Set([plot.low, 0, plot.high])].sort((a, b) => a - b);
+    $: ticks = [...new Set([plot.low, 0, plot.high])]
+        .filter((tick) => tick === 0 || Math.abs(x(tick) - x(0)) > (num(tick).length + 1) * 3 + 10)
+        .sort((a, b) => a - b);
 </script>
 
 <div class="importance-view">

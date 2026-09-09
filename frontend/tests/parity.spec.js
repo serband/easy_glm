@@ -56,7 +56,7 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     await expect(path.locator('.selected-penalty')).toHaveCount(1);
     const displayed = await path.locator('svg text, svg title').allTextContents();
     expect(displayed.some((text) => /\d\.\d{4}/.test(text))).toBeFalsy();
-    await expect(path).toContainText('Retained coefficients · right axis');
+    await expect(path).toContainText('Mean retained coefficients (CV) · right axis');
     const ticks = await path
         .locator('.alpha-tick')
         .evaluateAll((nodes) =>

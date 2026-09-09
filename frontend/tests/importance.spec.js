@@ -68,6 +68,11 @@ test('training importance is automatic, cached by original fit and compatible wi
     expect(rank.map((r) => r.importance)).toEqual(
         rank.map((r) => r.importance).sort((a, b) => b - a),
     );
+    const tickBoxes = await chart
+        .locator('.axis-tick')
+        .evaluateAll((ticks) => ticks.map((tick) => tick.getBoundingClientRect().toJSON()));
+    for (let i = 1; i < tickBoxes.length; i++)
+        expect(tickBoxes[i].left).toBeGreaterThan(tickBoxes[i - 1].right);
     const initialChart = await chart.innerHTML();
     expect(await get('project')).toEqual(originalProject);
     expect(await get('jobs')).toEqual(originalJobs);
