@@ -522,3 +522,27 @@ panel, this workflow has an explicit Preview action. Completed previews scroll t
 the updated chart instead of past it to the impact panel. Help explains exposure
 weighting, geometric averaging, re-centring, current-table input, band-count windows
 and endpoint/null handling. No numerical or scoring semantics changed.
+
+### Automatic adjustment previews
+
+Tool selection and valid parameter changes now preview automatically after a
+350 ms debounce; the separate tool Preview button is removed. Initial page entry
+has no selected tool and starts no adjustment work. Apply remains explicit.
+Apply, Discard and navigation disarm pending previews; another deliberate tool
+selection or parameter edit starts a new one. A generation guard rejects old
+responses and cancels superseded workers; Apply cannot use pending/invalid or
+superseded parameters. Manual row drafts block tools and survive preview discard.
+
+The compact controls show applicable parameters, one contextual-help disclosure,
+and expected-total impact with Apply/Discard directly underneath. Preview updates
+do not scroll or move focus. Relativity and A/E sections retain shared proposal
+state. A dedicated browser test delays an old completion, checks latest-only
+application after rapid changes, invalid bounds/windows, focus/scroll, no automatic
+restart after Apply/Discard/navigation, and manual draft preservation. A live
+French preview/discard check confirmed exact project, fit and history preservation.
+Svelte check/build and diff checks passed; mathematical/scoring code is unchanged.
+Final validation: automatic-preview race/draft case passed (24.3 seconds), and the
+existing all-tool/manual/snapshot/undo flow passed (1.4 minutes). A manual preview
+is also invalidated if its row draft changes before Apply, preventing an old
+preview from clearing a newer draft. Existing tabs and the live server were not
+restarted; the updated controls were opened in a fresh tab.

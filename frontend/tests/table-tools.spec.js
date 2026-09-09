@@ -121,7 +121,6 @@ test('visible rate adjustment methods preview, apply and undo real changes', asy
     for (const [mode, parameters] of modes) {
         await button(mode).click();
         await parameters();
-        await button('Preview adjustment').click();
         await expect(
             page.getByRole('img', {
                 name: 'Current and proposed relativities for DriverAge',
@@ -143,12 +142,10 @@ test('visible rate adjustment methods preview, apply and undo real changes', asy
         ).toBeVisible();
     }
     await button('Moving average').click();
-    await button('Preview adjustment').click();
     await expect(button('Apply adjustment')).toBeEnabled();
     await page.getByLabel('Smoothing window').fill('5');
-    await expect(button('Apply adjustment')).toHaveCount(0);
-    await expect(page.getByText(/Parameters changed/)).toBeVisible();
-    await button('Preview adjustment').click();
+    await expect(button('Apply adjustment')).toBeDisabled();
+    await expect(button('Apply adjustment')).toBeEnabled();
     await expect(button('Discard preview')).toBeVisible();
     await button('Discard preview').click();
     await expect(button('Apply adjustment')).toHaveCount(0);
@@ -185,14 +182,13 @@ test('visible rate adjustment methods preview, apply and undo real changes', asy
         page.getByRole('heading', { name: 'Region · Holdout', exact: true }),
     ).toBeVisible();
     await button('Moving average').click();
-    await expect(button('Preview adjustment')).toBeDisabled();
+    await expect(button('Apply adjustment')).toBeDisabled();
     await page
         .getByRole('checkbox', {
             name: 'The levels of this factor are in a meaningful order',
             exact: true,
         })
         .check();
-    await button('Preview adjustment').click();
     await expect(
         page.getByRole('img', {
             name: 'Current and proposed relativities for Region',

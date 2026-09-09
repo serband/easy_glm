@@ -64,7 +64,7 @@
         preview = null,
         loadedKey = '',
         destroyed = false;
-    let tool = 'moving',
+    let tool = '',
         windowSize = 3,
         direction = 'increasing',
         ordered = false,
@@ -80,34 +80,128 @@
         confirmDelete = false,
         feedback = '',
         bookImpact = null,
-        previousToolSignature = '',
         orderedVariable = '';
     $: if (variable !== orderedVariable) {
         orderedVariable = variable;
         ordered = false;
     }
-    $: toolSignature = JSON.stringify([
-        tool,
-        windowSize,
-        direction,
-        ordered,
-        floor,
-        cap,
-        rounding,
-        decimals,
-        step,
-    ]);
-    $: if (toolSignature !== previousToolSignature) {
-        previousToolSignature = toolSignature;
-        if (preview) {
-            preview = null;
-            rows = [];
-            note = 'Parameters changed. Preview again before applying.';
-        }
+    let autoEnabled = false,
+        autoPending = false,
+        autoRunning = false,
+        autoEpoch = 0,
+        autoTimer,
+        baselineRows = [],
+        autoError = '';
+    $: if (Object.keys(edits).length && autoEnabled) {
+        stopAuto();
+        preview = null;
+        rows = baselineRows;
+    }
+    $: if (
+        preview?.manualSignature !== undefined &&
+        preview.manualSignature !== JSON.stringify(edits)
+    ) {
+        preview = null;
+        rows = baselineRows;
+    }
+    function stopAuto() {
+        autoEnabled = false;
+        autoPending = false;
+        autoEpoch++;
+        clearTimeout(autoTimer);
+        if (autoRunning && taskId) void api('reviews/' + taskId + '/cancel', rev()).catch(() => {});
+    }
+    function toolOptions() {
+        if (tool === 'moving') return { window: windowSize, ordered };
+        if (tool === 'isotonic') return { direction, ordered };
+        if (tool === 'cap') return { floor: floor ?? null, cap: cap ?? null };
+        return rounding === 'decimals' ? { decimals } : { step };
+    }
+    function toolError() {
+        if (Object.keys(edits).length) return 'Preview or discard your manual row edits first.';
+        if (tableKind === 'interaction') return 'Edit interaction cells in the table.';
+        if (['moving', 'isotonic'].includes(tool) && tableKind === 'categorical' && !ordered)
+            return 'Confirm that these levels have a meaningful order.';
+        if (
+            tool === 'moving' &&
+            (!Number.isInteger(windowSize) ||
+                windowSize < 3 ||
+                windowSize > 25 ||
+                windowSize % 2 !== 1)
+        )
+            return 'Enter an odd window from 3 to 25.';
+        if (
+            tool === 'cap' &&
+            ((floor != null && (!Number.isFinite(floor) || floor <= 0)) ||
+                (cap != null && (!Number.isFinite(cap) || cap <= 0)) ||
+                (floor != null && cap != null && floor > cap))
+        )
+            return 'Use positive bounds, with floor no greater than cap.';
+        if (
+            tool === 'round' &&
+            (rounding === 'decimals'
+                ? !Number.isInteger(decimals) || decimals < 0 || decimals > 6
+                : !Number.isFinite(step) || step <= 0)
+        )
+            return 'Enter valid rounding precision.';
+        return '';
+    }
+    function parametersChanged() {
+        stopAuto();
+        preview = null;
+        rows = baselineRows;
+        error = '';
+        note = '';
+        autoError = '';
+        autoEnabled = true;
+        autoPending = true;
+        const version = autoEpoch;
+        queueMicrotask(() => {
+            if (!autoEnabled || version !== autoEpoch) return;
+            autoError = toolError();
+            if (autoError) {
+                autoPending = false;
+                return;
+            }
+            const action = tool,
+                options = toolOptions();
+            const dispatch = async () => {
+                if (!autoEnabled || version !== autoEpoch || destroyed) return;
+                if (busy) {
+                    autoTimer = setTimeout(dispatch, 100);
+                    return;
+                }
+                autoRunning = true;
+                await run(action, { options }, version);
+                autoRunning = false;
+                if (version === autoEpoch) autoPending = false;
+            };
+            autoTimer = setTimeout(dispatch, 350);
+        });
+    }
+    function chooseTool(value) {
+        tool = value;
+        parametersChanged();
+    }
+    function enterManual() {
+        stopAuto();
+        preview = null;
+        rows = baselineRows;
+        autoError = '';
+        onManual();
+    }
+    function discardPreview() {
+        stopAuto();
+        preview = null;
+        rows = baselineRows;
+        note = '';
+        error = '';
+        autoError = '';
     }
     $: smoothing = tool === 'moving' || tool === 'isotonic';
     $: selectedVariable = view === 'tables' ? variable : diagnosticVariable;
     $: key = `${name}:${state.session_id}:${state.revision}:${view}:${subset}:${variable}:${challenger}`;
+    $: if (key !== loadedKey && autoEnabled) stopAuto();
     $: if (name && key !== loadedKey && !busy) load();
     $: series = [
         { key: 'actual_rate', label: 'Actual', color: '#287762' },
@@ -149,6 +243,9 @@
             : `rgba(39,119,98,${0.15 + strength})`;
     }
     async function load() {
+        stopAuto();
+        autoError = '';
+        baselineRows = [];
         const startedKey = key;
         loadedKey = startedKey;
         error = '';
@@ -176,13 +273,9 @@
     }
     export async function previewRowEdits() {
         await run('edit', { edits });
-        requestAnimationFrame(() =>
-            document
-                .querySelector('.rate-preview-state')
-                ?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
-        );
     }
-    async function run(action, extra = {}) {
+    async function run(action, extra = {}, autoVersion = null) {
+        if (autoVersion === null) stopAuto();
         if (busy || destroyed) return;
         busy = true;
         error = '';
@@ -190,6 +283,13 @@
         if (action !== 'variable') feedback = '';
         preview = null;
         const started = key;
+        const manualSignature = action === 'edit' ? JSON.stringify(edits) : undefined;
+        const valid = () =>
+            !destroyed &&
+            started === key &&
+            (manualSignature === undefined || manualSignature === JSON.stringify(edits)) &&
+            (autoVersion === null ||
+                (autoVersion === autoEpoch && autoEnabled && !Object.keys(edits).length));
         try {
             const response = await api('review/' + encodeURIComponent(name), {
                 ...rev(),
@@ -212,14 +312,19 @@
                 return;
             }
             taskId = response.id;
-            if (destroyed || started !== key) {
+            if (!valid()) {
                 await api('reviews/' + taskId + '/cancel', rev());
                 return;
             }
             while (!destroyed) {
+                if (!valid()) {
+                    await api('reviews/' + taskId + '/cancel', rev());
+                    return;
+                }
                 const response = await api('reviews/' + taskId);
+                if (!valid()) return;
                 if (response.status === 'complete') {
-                    if (started !== key) return;
+                    if (!valid()) return;
                     const data = response.data;
                     if (data.book_impact) bookImpact = data.book_impact;
                     note = data.note || '';
@@ -244,6 +349,7 @@
                                 : [];
                     } else {
                         rows = data.rows || [];
+                        if (action === 'variable') baselineRows = rows;
                         if (!rows.some((r) => r[pairMetric] !== undefined)) pairMetric = 'ae';
                         aeSets = data.ae_sets || [];
                         aeKind = data.kind || 'numeric';
@@ -257,12 +363,13 @@
                             data.subset || extra.subset || subset
                         ];
                         if (response.can_apply || data.preview_table) {
-                            preview = { ...data, id: taskId, canApply: response.can_apply };
-                            requestAnimationFrame(() =>
-                                document
-                                    .querySelector('.rate-preview-state')
-                                    ?.scrollIntoView({ block: 'start', behavior: 'instant' }),
-                            );
+                            preview = {
+                                ...data,
+                                id: taskId,
+                                canApply: response.can_apply,
+                                autoVersion,
+                                manualSignature,
+                            };
                         }
                     }
                     break;
@@ -278,16 +385,27 @@
                 await new Promise((resolve) => setTimeout(resolve, 250));
             }
         } catch (e) {
-            error = e.message;
+            if (valid()) error = e.message;
         } finally {
             busy = false;
             taskId = '';
         }
     }
     async function cancel() {
+        stopAuto();
         if (taskId) await api('reviews/' + taskId + '/cancel', rev());
     }
     async function applyPreview() {
+        if (
+            busy ||
+            autoPending ||
+            !preview?.canApply ||
+            (preview.manualSignature !== undefined &&
+                preview.manualSignature !== JSON.stringify(edits)) ||
+            (preview.autoVersion != null && preview.autoVersion !== autoEpoch)
+        )
+            return;
+        stopAuto();
         busy = true;
         error = '';
         try {
@@ -297,22 +415,11 @@
             await onApplied(snapshot);
             feedback =
                 'Adjustments applied. Rates and actual versus expected are updated; the fitted model is unchanged.';
-            requestAnimationFrame(() =>
-                document.querySelector('.review-feedback')?.scrollIntoView({ block: 'nearest' }),
-            );
         } catch (e) {
             error = e.message;
         } finally {
             busy = false;
         }
-    }
-    function previewTool() {
-        let options = {};
-        if (tool === 'moving') options = { window: windowSize, ordered };
-        if (tool === 'isotonic') options = { direction, ordered };
-        if (tool === 'cap') options = { floor: floor ?? null, cap: cap ?? null };
-        if (tool === 'round') options = rounding === 'decimals' ? { decimals } : { step };
-        run(tool, { options });
     }
     async function include(row) {
         busy = true;
@@ -339,6 +446,7 @@
         }
     }
     onDestroy(() => {
+        stopAuto();
         destroyed = true;
         if (taskId) void api('reviews/' + taskId + '/cancel', rev()).catch(() => {});
     });
@@ -398,6 +506,55 @@
     {/if}
 {/snippet}
 
+{#snippet previewControls()}
+    {#if preview}<div class="preview-impact">
+            <strong
+                >Training expected: {num(preview.before_expected)} → {num(preview.after_expected)} ({num(
+                    (preview.change || 0) * 100,
+                )}%)</strong
+            >
+
+            <button
+                class="primary"
+                disabled={busy || autoPending || !preview.canApply}
+                onclick={applyPreview}>Apply adjustment</button
+            ><button onclick={discardPreview}>Discard preview</button>
+            {#if preview.changes?.length}<details>
+                    <summary>{preview.changes.length} changed rows — before and after</summary>
+                    <div class="review-scroll">
+                        <table>
+                            <thead
+                                ><tr
+                                    ><th>Row</th><th>Band / cell</th><th>Before</th><th>After</th
+                                    ><th>Slope before</th><th>Slope after</th></tr
+                                ></thead
+                            ><tbody
+                                >{#each preview.changes.slice(0, 200) as change}<tr
+                                        ><td>{change.row}</td><td>{change.label}</td><td
+                                            >{num(change.before)}</td
+                                        ><td>{num(change.after)}</td><td
+                                            >{num(change.before_slope)}</td
+                                        ><td>{num(change.after_slope)}</td></tr
+                                    >{/each}</tbody
+                            >
+                        </table>
+                        {#if preview.changes.length > 200}<p>First 200 changed rows shown.</p>{/if}
+                    </div>
+                </details>{/if}
+            {#if preview.before_base_rate !== preview.after_base_rate}<p>
+                    Base rate: {num(preview.before_base_rate)} → {num(preview.after_base_rate)}
+                </p>{/if}
+            {#if preview.tool_details}<details>
+                    <summary>Calculation details</summary>
+                    <p class="help-text">
+                        Weighted mean log relativity: {num(preview.tool_details.log_mean_before)} → {num(
+                            preview.tool_details.log_mean_after,
+                        )}. {note}
+                    </p>
+                </details>{/if}
+        </div>{/if}
+{/snippet}
+
 <div class="review-layout">
     <section
         class="model-card review-panel"
@@ -418,15 +575,8 @@
                     }[diagnosticTab] || 'Actual versus expected'}
         </h2>
         {#if view === 'tables' && table}
-            <p class="rate-preview-state" role="status">
-                {#if preview}
-                    <strong>Preview — not applied</strong> · {preview.changes?.length || 0} rows would
-                    change. The chart compares Current with Proposed; use Apply adjustment below to save
-                    it.
-                {:else}
-                    <strong>Applied table — no adjustment preview</strong>. Selecting a tool does
-                    not change this chart. Use Preview adjustment to see its effect.
-                {/if}
+            <p class="rate-preview-state help-text">
+                {preview ? 'Preview · not applied' : 'Current tables'}
             </p>
             <RateChart
                 table={preview?.preview_table || table}
@@ -436,13 +586,13 @@
                 currentLabel={preview?.preview_table ? 'Proposed' : 'Current'}
                 preview={!!preview?.preview_table}
             />
-            <p class="help-text">{rateNote} Changes remain previews until applied.</p>
+
             <h3 class="adjustments-heading">Adjustments</h3>
         {/if}
         {#if feedback}<div class="message success review-feedback" role="status">
                 {feedback}
             </div>{/if}
-        {#if error}<div class="message error" role="alert">{error}</div>{/if}
+        {#if error && view !== 'tables'}<div class="message error" role="alert">{error}</div>{/if}
         {#if view === 'diagnostics'}
             {#if ['lift', 'double_lift'].includes(diagnosticTab) || (['variable', 'pair'].includes(diagnosticTab) && temporaryBins)}<div
                     class="results-toolbar"
@@ -601,18 +751,19 @@
                 </div>
             </div>
         {:else}
-            <p class="help-text">
-                Choose an adjustment, set its parameters, then preview its effect before applying.
-            </p>
             <div class="adjustment-modes" role="group" aria-label="Adjustment method">
                 {#each [['moving', 'Moving average'], ['isotonic', 'Isotonic smoothing'], ['cap', 'Cap / floor'], ['round', 'Round']] as [value, label]}
                     <button
                         aria-pressed={tool === value}
-                        disabled={busy || tableKind === 'interaction'}
-                        onclick={() => (tool = value)}>{label}</button
+                        disabled={(busy && !autoRunning) ||
+                            tableKind === 'interaction' ||
+                            Object.keys(edits).length > 0}
+                        onclick={() => chooseTool(value)}>{label}</button
                     >
                 {/each}
-                <button disabled={busy} onclick={onManual}>Edit individual or multiple rows</button>
+                <button disabled={busy} onclick={enterManual}
+                    >Edit individual or multiple rows</button
+                >
             </div>
             {#if tableKind === 'interaction'}<p>
                     Interaction cells are edited individually in the rate table. Smoothing applies
@@ -628,46 +779,21 @@
                                 max="25"
                                 step="2"
                                 bind:value={windowSize}
+                                oninput={parametersChanged}
                             /></label
                         >
-                        <p>
-                            Window 3 uses this band and one neighbour on each side, weighted by
-                            training exposure. The end bands use fewer neighbours. Use an odd window
-                            from 3 to 25.
-                            {#if ['step', 'numeric'].includes(tableKind)}This averages the heights
-                                of the steps; it does not interpolate between bands.{/if}
-                        </p>
-                        <details class="moving-explanation">
-                            <summary>How the average is calculated</summary>
-                            <p>
-                                We average log relativities, then exponentiate: an exposure-weighted
-                                geometric average. Finally, all averaged values receive the same
-                                multiplier to preserve the table's exposure-weighted mean log
-                                relativity. This can still change the expected total.
-                            </p>
-                            <p>
-                                The input is the current adjusted table, including earlier
-                                smoothing. Equal neighbouring values stay flat apart from the common
-                                multiplier. The window counts bands, not years or units. Other /
-                                Unknown is excluded.
-                            </p>
-                            {#if ['linear', 'continuous'].includes(tableKind)}<p>
-                                    For a linear factor, averaging operates on curve nodes and
-                                    recalculates the connecting slopes.
-                                </p>{/if}
-                        </details>{/if}
+                    {/if}
                     {#if tool === 'isotonic'}<label
                             >Direction<select
                                 aria-label="Smoothing direction"
                                 bind:value={direction}
+                                onchange={parametersChanged}
                                 ><option value="increasing">Increasing</option><option
                                     value="decreasing">Decreasing</option
                                 ></select
                             ></label
                         >
-                        <p>
-                            Pool neighbouring bands until the curve follows the chosen direction.
-                        </p>{/if}
+                    {/if}
                     {#if tool === 'cap'}<label
                             >Floor (empty = none)<input
                                 aria-label="Relativity floor"
@@ -675,6 +801,7 @@
                                 min=".0001"
                                 step=".05"
                                 bind:value={floor}
+                                oninput={parametersChanged}
                             /></label
                         ><label
                             >Cap (empty = none)<input
@@ -683,10 +810,14 @@
                                 min=".0001"
                                 step=".05"
                                 bind:value={cap}
+                                oninput={parametersChanged}
                             /></label
                         >{/if}
                     {#if tool === 'round'}<label
-                            >Round to<select aria-label="Rounding mode" bind:value={rounding}
+                            >Round to<select
+                                aria-label="Rounding mode"
+                                bind:value={rounding}
+                                onchange={parametersChanged}
                                 ><option value="decimals">Decimal places</option><option
                                     value="step">A step</option
                                 ></select
@@ -698,6 +829,7 @@
                                     min="0"
                                     max="6"
                                     bind:value={decimals}
+                                    oninput={parametersChanged}
                                 /></label
                             >{:else}<label
                                 >Step<input
@@ -706,37 +838,72 @@
                                     min=".0001"
                                     step=".01"
                                     bind:value={step}
+                                    oninput={parametersChanged}
                                 /></label
                             >
-                            <p>A step of 0.05 rounds 1.083 to 1.10.</p>{/if}{/if}
+                        {/if}{/if}
                 </div>
                 {#if smoothing && tableKind === 'categorical'}<label class="ordered-confirmation"
-                        ><input type="checkbox" bind:checked={ordered} /> The levels of this factor are
-                        in a meaningful order</label
+                        ><input
+                            type="checkbox"
+                            bind:checked={ordered}
+                            onchange={parametersChanged}
+                        /> The levels of this factor are in a meaningful order</label
                     >
                     <p class="help-text">
                         Levels are normally ordered by exposure. Confirm only if neighbouring levels
                         represent a real ordered scale.
                     </p>{/if}
-                <p class="help-text">
-                    {smoothing
-                        ? 'Smoothing preserves the exposure-weighted mean log relativity, not total expected claims. '
-                        : ''}Null / Other rows are excluded from these tools.{#if ['linear', 'continuous'].includes(tableKind)}
-                        Linear curves are adjusted at their nodes; slopes are recalculated to keep
-                        the curve continuous.{/if}
-                </p>
-                <button
-                    class="primary"
-                    disabled={busy ||
-                        (smoothing && tableKind === 'categorical' && !ordered) ||
-                        Object.keys(edits).length > 0}
-                    onclick={previewTool}>Preview adjustment</button
-                >
+                <details class="tool-help">
+                    <summary>About this adjustment</summary>
+                    {#if tool === 'moving'}
+                        <p>
+                            Window 3 uses this band and one neighbour on each side, weighted by
+                            training exposure. The end bands use fewer neighbours. Use an odd window
+                            from 3 to 25.
+                            {#if ['step', 'numeric'].includes(tableKind)}This averages the heights
+                                of the steps; it does not interpolate between bands.{/if}
+                        </p>
+
+                        <p>
+                            We average log relativities, then exponentiate: an exposure-weighted
+                            geometric average. Finally, all averaged values receive the same
+                            multiplier to preserve the table's exposure-weighted mean log
+                            relativity. This can still change the expected total.
+                        </p>
+                        <p>
+                            The input is the current adjusted table, including earlier smoothing.
+                            Equal neighbouring values stay flat apart from the common multiplier.
+                            The window counts bands, not years or units. Other / Unknown is
+                            excluded.
+                        </p>
+                        {#if ['linear', 'continuous'].includes(tableKind)}<p>
+                                For a linear factor, averaging operates on curve nodes and
+                                recalculates the connecting slopes.
+                            </p>{/if}
+                    {/if}
+                    <p>
+                        {rateNote}
+                        Tools use current tables and exclude Null / Other. Smoothing preserves the exposure-weighted
+                        mean log relativity, not total expected claims. Linear factors are adjusted at
+                        nodes, with slopes recalculated.
+                    </p>
+                </details>
                 {#if Object.keys(edits).length}<p>
                         Preview or discard your {Object.keys(edits).length} manual row edits before using
                         a tool.
                     </p>{/if}
             {/if}
+            <div class="auto-preview-status" role="status">
+                {#if error || autoError}{error || autoError}{:else if autoPending}Updating preview…{:else if !preview}Choose
+                    a tool to preview its effect.{/if}
+                {#if autoEnabled && !preview}<div class="auto-preview-actions">
+                        <button disabled>Apply adjustment</button><button onclick={discardPreview}
+                            >Discard preview</button
+                        >
+                    </div>{/if}
+            </div>
+            {@render previewControls()}
             {#if bookImpact}<p class="book-impact">
                     <strong>Current training expected: {num(bookImpact.current)}</strong> · fitted: {num(
                         bookImpact.fitted,
@@ -837,59 +1004,13 @@
                     ><DiagnosticTable rows={info.adjustments} title="Applied adjustments" />
                 </details>{/if}
         {/if}
-        {#if busy}<div class="message" role="status">
+        {#if busy && !autoRunning}<div class="message" role="status">
                 Computing in background… <button onclick={cancel} disabled={!taskId}
                     >Cancel review</button
                 >
             </div>{/if}
-        {#if note}<p class="help-text">{note}</p>{/if}
-        {#if preview}<div class="preview-impact">
-                <strong
-                    >Training expected: {num(preview.before_expected)} → {num(
-                        preview.after_expected,
-                    )} ({num((preview.change || 0) * 100)}%)</strong
-                >
-                <p>
-                    Original fitted total: {num(preview.fitted_expected)}. Preview only; no settings
-                    have changed.
-                </p>
-                {#if preview.changes?.length}<details>
-                        <summary>{preview.changes.length} changed rows — before and after</summary>
-                        <div class="review-scroll">
-                            <table>
-                                <thead
-                                    ><tr
-                                        ><th>Row</th><th>Band / cell</th><th>Before</th><th
-                                            >After</th
-                                        ><th>Slope before</th><th>Slope after</th></tr
-                                    ></thead
-                                ><tbody
-                                    >{#each preview.changes.slice(0, 200) as change}<tr
-                                            ><td>{change.row}</td><td>{change.label}</td><td
-                                                >{num(change.before)}</td
-                                            ><td>{num(change.after)}</td><td
-                                                >{num(change.before_slope)}</td
-                                            ><td>{num(change.after_slope)}</td></tr
-                                        >{/each}</tbody
-                                >
-                            </table>
-                            {#if preview.changes.length > 200}<p>
-                                    First 200 changed rows shown.
-                                </p>{/if}
-                        </div>
-                    </details>{/if}
-                {#if preview.before_base_rate !== preview.after_base_rate}<p>
-                        Base rate: {num(preview.before_base_rate)} → {num(preview.after_base_rate)}
-                    </p>{/if}
-                {#if preview.tool_details}<p class="help-text">
-                        Weighted mean log relativity: {num(preview.tool_details.log_mean_before)} → {num(
-                            preview.tool_details.log_mean_after,
-                        )}. The expected total above measures the actual effect on the book.
-                    </p>{/if}
-                <button class="primary" disabled={busy || !preview.canApply} onclick={applyPreview}
-                    >Apply adjustment</button
-                ><button disabled={busy} onclick={() => run('variable')}>Discard preview</button>
-            </div>{/if}
+        {#if note && view !== 'tables'}<p class="help-text">{note}</p>{/if}
+        {#if view !== 'tables'}{@render previewControls()}{/if}
         {#if analysis}
             {#if analysis.base_rate_change !== undefined}<p>
                     Base rate change: {num(100 * analysis.base_rate_change)}%

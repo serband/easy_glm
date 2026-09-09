@@ -89,10 +89,9 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await expect(page.getByLabel('Relativity row 2', { exact: true })).not.toHaveValue('2.1');
     await button('Cap / floor').click();
     await page.getByLabel('Relativity cap').fill('1.1');
-    await expect(button('Preview adjustment')).toBeEnabled();
-    await button('Preview adjustment').click();
+    await expect(button('Apply adjustment')).toBeEnabled();
     await expect(button('Apply adjustment')).toBeVisible();
-    await page.locator('.preview-impact summary').click();
+    await page.locator('.preview-impact summary').first().click();
     await expect(page.locator('.preview-impact table')).toContainText('Before');
     await page.setViewportSize({ width: 884, height: 808 });
     expect(
