@@ -73,3 +73,8 @@ french_motor.easyglm
 # macOS "keep both" duplicates (e.g. "test_x 2.py") must never be committed or
 # collected by pytest
 * 2.*
+
+# Svelte experiment build tooling
+node_modules/
+frontend/test-results/
+frontend/playwright-report/
