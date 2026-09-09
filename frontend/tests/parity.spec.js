@@ -128,7 +128,7 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     expect(interactionName).toBeTruthy();
     await page.getByLabel('Rate table variable', { exact: true }).selectOption(interactionName);
     await expect(
-        page.locator('.rate-primary > .rate-chart-card .relativity-heatmap'),
+        page.locator('.rate-relativities > .rate-chart-card .relativity-heatmap'),
     ).toBeVisible();
     await button('Edit individual or multiple rows').click();
     await expect(page.locator('.cell-edit-matrix')).toBeVisible();
@@ -136,10 +136,11 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     await cell.fill('1.7');
     await cell.press('Tab');
     await button('Preview row edits (1)').click();
-    await expect(page.locator('.preview-impact .relativity-heatmap')).toBeVisible();
+    await expect(button('Apply adjustment')).toBeVisible();
+    await expect(page.locator('.rate-relativities .relativity-heatmap')).toBeVisible();
     const proposedAE = await page.locator('.ae-heatmap').innerText();
     await page.getByLabel('Heatmap model').selectOption('before_ae');
-    expect(await page.locator('.ae-heatmap').innerText()).not.toBe(proposedAE);
+    await expect(page.locator('.ae-heatmap')).not.toHaveText(proposedAE);
     await button('Apply adjustment').click();
     await expect(
         page.getByText(/Adjustments applied. Rates and actual versus expected are updated/),

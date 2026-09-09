@@ -1338,3 +1338,34 @@ main {
 .cell-edit-matrix input {
     width: 95px;
 }
+
+.review-layout {
+    display: grid;
+    gap: 20px;
+    min-width: 0;
+}
+.rate-relativities > .rate-chart-card {
+    border: 0;
+    padding: 0 0 18px;
+    margin: 0;
+    box-shadow: none;
+}
+.rate-relativities > .rate-chart-card h2 {
+    font-size: 18px;
+}
+.rate-relativities > .adjustments-heading {
+    border-top: 1px solid var(--border, #dde5df);
+    padding-top: 18px;
+}
+.rate-relativities > .rate-table-card {
+    border: 0;
+    border-top: 1px solid #dde5df;
+    padding: 12px 0 0;
+    margin-top: 16px;
+}
+.rate-ae .table-ae-subset {
+    margin: 0 0 16px;
+}
+.review-ae:empty {
+    display: none;
+}

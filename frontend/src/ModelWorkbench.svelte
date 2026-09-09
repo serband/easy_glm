@@ -1,7 +1,6 @@
 <script>
     import { onDestroy } from 'svelte';
     import ReviewPanel from './ReviewPanel.svelte';
-    import RateChart from './RateChart.svelte';
     import DiagnosticTable from './DiagnosticTable.svelte';
     import { rateChartKind } from './rateChartData.js';
     export let comparison = '',
@@ -932,7 +931,6 @@
                     >
                 </div>
                 {#if table}<div class="rate-primary">
-                        <RateChart {table} variable={tableName} label={result.relativity_label} />
                         <ReviewPanel
                             challenger={effectiveChallenger}
                             bind:this={tableReview}
@@ -943,7 +941,9 @@
                             {view}
                             bind:subset
                             tableKind={table?.kind}
+                            {table}
                             rateLabel={result.relativity_label}
+                            rateNote={result.relativity_note}
                             onManual={() => {
                                 tableEditorOpen = true;
                                 requestAnimationFrame(() =>
@@ -957,177 +957,191 @@
                             onApplied={reviewed}
                             onClear={clearEdits}
                             {onNavigate}
-                        />
-                        <details
-                            bind:open={tableEditorOpen}
-                            class="rate-table-card"
-                            aria-label="Editable rate table"
                         >
-                            <summary>Rate table</summary>
-                            <div class="table-heading">
-                                <label
-                                    ><input type="checkbox" bind:checked={tableDetails} /> All columns</label
+                            {#snippet children()}
+                                <details
+                                    bind:open={tableEditorOpen}
+                                    class="rate-table-card"
+                                    aria-label="Editable rate table"
                                 >
-                            </div>
-                            <p class="help-text">
-                                {['linear', 'continuous'].includes(table.kind)
-                                    ? 'Edit the relativity at each band start. The neighbouring slopes are recalculated so the curve stays continuous.'
-                                    : 'Edit one or several relativities, then preview all your row changes together before applying.'}
-                            </p>
-                            {#if table.kind === 'interaction' && cellRowNames.length * cellColNames.length <= 1600}
-                                <p class="help-text">
-                                    Kept interaction cells on this page. Blank cells are not fitted
-                                    or are on another page.
-                                </p>
-                                <div class="cell-edit-scroll">
-                                    <table class="cell-edit-matrix">
-                                        <thead
-                                            ><tr
-                                                ><th>Rows / columns</th
-                                                >{#each cellColNames as label}<th>{label}</th
-                                                    >{/each}</tr
-                                            ></thead
-                                        ><tbody
-                                            >{#each cellRowNames as a}<tr
-                                                    ><th>{a}</th
-                                                    >{#each cellColNames as b}{@const cell =
-                                                            editableCells.get(
-                                                                JSON.stringify([a, b]),
-                                                            )}<td
-                                                            >{#if cell}<input
-                                                                    aria-label={'Relativity cell ' +
-                                                                        a +
-                                                                        ' × ' +
-                                                                        b}
-                                                                    title={'Fitted ' +
-                                                                        cell.row.fitted +
-                                                                        '; exposure ' +
-                                                                        cell.row.exposure}
-                                                                    type="number"
-                                                                    min=".000000001"
-                                                                    step="any"
-                                                                    value={rowEdits[
-                                                                        table.offset + cell.index
-                                                                    ] ?? cell.row.relativity}
-                                                                    onchange={(e) =>
-                                                                        editRow(
-                                                                            table.offset +
-                                                                                cell.index,
-                                                                            e.currentTarget.value,
-                                                                        )}
-                                                                />{:else}—{/if}</td
-                                                        >{/each}</tr
-                                                >{/each}</tbody
+                                    <summary>Rate table</summary>
+                                    <div class="table-heading">
+                                        <label
+                                            ><input type="checkbox" bind:checked={tableDetails} /> All
+                                            columns</label
                                         >
-                                    </table>
-                                </div>
-                            {:else}
-                                <div
-                                    class="rate-grid"
-                                    onscroll={(e) => (tableScroll = e.currentTarget.scrollTop)}
-                                >
-                                    <table>
-                                        <thead
-                                            ><tr
-                                                >{#each visibleColumns as column}<th
-                                                        >{column === 'relativity'
-                                                            ? 'Current relativity'
-                                                            : column === 'label'
-                                                              ? 'Band / level'
-                                                              : column.replaceAll('_', ' ')}</th
-                                                    >{/each}</tr
-                                            ></thead
-                                        ><tbody
-                                            >{#if tableStart > 0}<tr
-                                                    aria-hidden="true"
-                                                    style:height={tableStart * 32 + 'px'}
-                                                    ><td colspan={visibleColumns.length}></td></tr
-                                                >{/if}{#each table.rows.slice(tableStart, tableStart + 24) as row, rowIndex}<tr
-                                                    >{#each visibleColumns as column}<td
-                                                            title={String(row[column] ?? '')}
-                                                            >{#if column === 'relativity'}<input
-                                                                    class="relativity-input"
-                                                                    aria-label={'Relativity row ' +
-                                                                        (table.offset +
-                                                                            tableStart +
-                                                                            rowIndex +
-                                                                            1)}
-                                                                    type="number"
-                                                                    min="0.000000001"
-                                                                    step="any"
-                                                                    value={rowEdits[
-                                                                        table.offset +
-                                                                            tableStart +
-                                                                            rowIndex
-                                                                    ] ?? row[column]}
-                                                                    onchange={(e) =>
-                                                                        editRow(
-                                                                            table.offset +
-                                                                                tableStart +
-                                                                                rowIndex,
-                                                                            e.currentTarget.value,
-                                                                        )}
-                                                                />{:else}{num(
-                                                                    row[column],
-                                                                    8,
-                                                                )}{/if}</td
-                                                        >{/each}</tr
-                                                >{/each}{#if tableStart + 24 < table.rows.length}<tr
-                                                    aria-hidden="true"
-                                                    style:height={(table.rows.length -
-                                                        tableStart -
-                                                        24) *
-                                                        32 +
-                                                        'px'}
-                                                    ><td colspan={visibleColumns.length}></td></tr
-                                                >{/if}</tbody
+                                    </div>
+                                    <p class="help-text">
+                                        {['linear', 'continuous'].includes(table.kind)
+                                            ? 'Edit the relativity at each band start. The neighbouring slopes are recalculated so the curve stays continuous.'
+                                            : 'Edit one or several relativities, then preview all your row changes together before applying.'}
+                                    </p>
+                                    {#if table.kind === 'interaction' && cellRowNames.length * cellColNames.length <= 1600}
+                                        <p class="help-text">
+                                            Kept interaction cells on this page. Blank cells are not
+                                            fitted or are on another page.
+                                        </p>
+                                        <div class="cell-edit-scroll">
+                                            <table class="cell-edit-matrix">
+                                                <thead
+                                                    ><tr
+                                                        ><th>Rows / columns</th
+                                                        >{#each cellColNames as label}<th
+                                                                >{label}</th
+                                                            >{/each}</tr
+                                                    ></thead
+                                                ><tbody
+                                                    >{#each cellRowNames as a}<tr
+                                                            ><th>{a}</th
+                                                            >{#each cellColNames as b}{@const cell =
+                                                                    editableCells.get(
+                                                                        JSON.stringify([a, b]),
+                                                                    )}<td
+                                                                    >{#if cell}<input
+                                                                            aria-label={'Relativity cell ' +
+                                                                                a +
+                                                                                ' × ' +
+                                                                                b}
+                                                                            title={'Fitted ' +
+                                                                                cell.row.fitted +
+                                                                                '; exposure ' +
+                                                                                cell.row.exposure}
+                                                                            type="number"
+                                                                            min=".000000001"
+                                                                            step="any"
+                                                                            value={rowEdits[
+                                                                                table.offset +
+                                                                                    cell.index
+                                                                            ] ??
+                                                                                cell.row.relativity}
+                                                                            onchange={(e) =>
+                                                                                editRow(
+                                                                                    table.offset +
+                                                                                        cell.index,
+                                                                                    e.currentTarget
+                                                                                        .value,
+                                                                                )}
+                                                                        />{:else}—{/if}</td
+                                                                >{/each}</tr
+                                                        >{/each}</tbody
+                                                >
+                                            </table>
+                                        </div>
+                                    {:else}
+                                        <div
+                                            class="rate-grid"
+                                            onscroll={(e) =>
+                                                (tableScroll = e.currentTarget.scrollTop)}
                                         >
-                                    </table>
-                                </div>
-                            {/if}
-                            <div class="results-toolbar table-paging">
-                                <span
-                                    >Rows {table.offset + 1}–{Math.min(
-                                        table.offset + table.rows.length,
-                                        table.total,
-                                    )} of {table.total}</span
-                                >
-                                <div class="spacer"></div>
-                                <button
-                                    disabled={tableBusy ||
-                                        Object.keys(rowEdits).length > 0 ||
-                                        tableOffset === 0}
-                                    onclick={() => {
-                                        tableOffset = Math.max(0, tableOffset - 200);
-                                        loadTable();
-                                    }}>Previous rows</button
-                                ><button
-                                    disabled={tableBusy ||
-                                        Object.keys(rowEdits).length > 0 ||
-                                        tableOffset + 200 >= table.total}
-                                    onclick={() => {
-                                        tableOffset += 200;
-                                        loadTable();
-                                    }}>Next rows</button
-                                >
-                            </div>
-                            <div class="table-edit-actions">
-                                <button
-                                    class="primary"
-                                    disabled={reviewBusy || !Object.keys(rowEdits).length}
-                                    onclick={() => tableReview.previewRowEdits()}
-                                    >Preview row edits ({Object.keys(rowEdits).length})</button
-                                ><button
-                                    disabled={reviewBusy || !Object.keys(rowEdits).length}
-                                    onclick={clearEdits}>Discard row edits</button
-                                >
-                            </div>
-                        </details>
+                                            <table>
+                                                <thead
+                                                    ><tr
+                                                        >{#each visibleColumns as column}<th
+                                                                >{column === 'relativity'
+                                                                    ? 'Current relativity'
+                                                                    : column === 'label'
+                                                                      ? 'Band / level'
+                                                                      : column.replaceAll(
+                                                                            '_',
+                                                                            ' ',
+                                                                        )}</th
+                                                            >{/each}</tr
+                                                    ></thead
+                                                ><tbody
+                                                    >{#if tableStart > 0}<tr
+                                                            aria-hidden="true"
+                                                            style:height={tableStart * 32 + 'px'}
+                                                            ><td colspan={visibleColumns.length}
+                                                            ></td></tr
+                                                        >{/if}{#each table.rows.slice(tableStart, tableStart + 24) as row, rowIndex}<tr
+                                                            >{#each visibleColumns as column}<td
+                                                                    title={String(
+                                                                        row[column] ?? '',
+                                                                    )}
+                                                                    >{#if column === 'relativity'}<input
+                                                                            class="relativity-input"
+                                                                            aria-label={'Relativity row ' +
+                                                                                (table.offset +
+                                                                                    tableStart +
+                                                                                    rowIndex +
+                                                                                    1)}
+                                                                            type="number"
+                                                                            min="0.000000001"
+                                                                            step="any"
+                                                                            value={rowEdits[
+                                                                                table.offset +
+                                                                                    tableStart +
+                                                                                    rowIndex
+                                                                            ] ?? row[column]}
+                                                                            onchange={(e) =>
+                                                                                editRow(
+                                                                                    table.offset +
+                                                                                        tableStart +
+                                                                                        rowIndex,
+                                                                                    e.currentTarget
+                                                                                        .value,
+                                                                                )}
+                                                                        />{:else}{num(
+                                                                            row[column],
+                                                                            8,
+                                                                        )}{/if}</td
+                                                                >{/each}</tr
+                                                        >{/each}{#if tableStart + 24 < table.rows.length}<tr
+                                                            aria-hidden="true"
+                                                            style:height={(table.rows.length -
+                                                                tableStart -
+                                                                24) *
+                                                                32 +
+                                                                'px'}
+                                                            ><td colspan={visibleColumns.length}
+                                                            ></td></tr
+                                                        >{/if}</tbody
+                                                >
+                                            </table>
+                                        </div>
+                                    {/if}
+                                    <div class="results-toolbar table-paging">
+                                        <span
+                                            >Rows {table.offset + 1}–{Math.min(
+                                                table.offset + table.rows.length,
+                                                table.total,
+                                            )} of {table.total}</span
+                                        >
+                                        <div class="spacer"></div>
+                                        <button
+                                            disabled={tableBusy ||
+                                                Object.keys(rowEdits).length > 0 ||
+                                                tableOffset === 0}
+                                            onclick={() => {
+                                                tableOffset = Math.max(0, tableOffset - 200);
+                                                loadTable();
+                                            }}>Previous rows</button
+                                        ><button
+                                            disabled={tableBusy ||
+                                                Object.keys(rowEdits).length > 0 ||
+                                                tableOffset + 200 >= table.total}
+                                            onclick={() => {
+                                                tableOffset += 200;
+                                                loadTable();
+                                            }}>Next rows</button
+                                        >
+                                    </div>
+                                    <div class="table-edit-actions">
+                                        <button
+                                            class="primary"
+                                            disabled={reviewBusy || !Object.keys(rowEdits).length}
+                                            onclick={() => tableReview.previewRowEdits()}
+                                            >Preview row edits ({Object.keys(rowEdits)
+                                                .length})</button
+                                        ><button
+                                            disabled={reviewBusy || !Object.keys(rowEdits).length}
+                                            onclick={clearEdits}>Discard row edits</button
+                                        >
+                                    </div>
+                                </details>
+                            {/snippet}
+                        </ReviewPanel>
                     </div>{/if}
-                <p class="help-text">
-                    {result.relativity_note} The chart shows applied table values; row edits remain drafts
-                    until applied.
-                </p>
             {/if}
         {/if}
     {/if}

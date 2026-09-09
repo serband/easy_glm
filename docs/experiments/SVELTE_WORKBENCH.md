@@ -490,3 +490,18 @@ The focused browser parity case covers CV and fixed-alpha single-point paths,
 selected markers, non-overlapping scientific ticks and both fitted stages. Svelte
 check/build and `git diff --check` passed. Only frontend components and static
 assets changed; the server and existing draft tabs were not restarted or reloaded.
+
+### Rate table section grouping
+
+Rate tables now has one Relativities card containing its single chart, visible
+adjustment tools, preview impact/actions, history/snapshots and expandable manual
+table. A proposal replaces that chart with Current/Proposed values instead of
+adding a second chart. Actual versus expected is a separate card underneath, with
+its own subset selector, shared preview values, exposure and expandable table.
+The explanatory relativity note stays with the relativity chart. Other diagnostics
+retain their layout. A live 884 × 773 preview/discard check confirmed both sections
+update, only one relativity chart exists, and project, fit and history are unchanged.
+The focused table-tools flow passed (all tool modes, manual apply/undo, snapshots
+and section geometry), as did the interaction/diagnostic parity case with an
+explicit preview-ready wait. Svelte check/build and diff checks passed. This was
+a static-only update, without restarting the server or reloading existing tabs.

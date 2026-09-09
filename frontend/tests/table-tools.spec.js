@@ -19,14 +19,18 @@ test('visible rate adjustment methods preview, apply and undo real changes', asy
         page.getByRole('img', { name: 'Actual fitted and adjusted by variable', exact: true }),
     ).toBeVisible();
     await page.setViewportSize({ width: 884, height: 773 });
-    const chart = await page.locator('.rate-primary > .rate-chart-card').boundingBox();
-    const tools = (await page.getByRole('region', { name: 'Table adjustments' }).count())
-        ? page.getByRole('region', { name: 'Table adjustments' })
-        : page.locator('.review-panel');
+    const chart = await page.locator('.rate-relativities > .rate-chart-card').boundingBox();
+    const tools = page.locator('.adjustments-heading');
     const toolBox = await tools.boundingBox();
     const grid = await page.locator('.rate-table-card').boundingBox();
+    const aeBox = await page.locator('.rate-ae').boundingBox();
     expect(toolBox.y).toBeGreaterThan(chart.y + chart.height - 2);
     expect(grid.y).toBeGreaterThan(toolBox.y);
+    expect(aeBox.y).toBeGreaterThan(grid.y + grid.height);
+    await expect(page.locator('.rate-relativities .rate-chart-card')).toHaveCount(1);
+    await expect(
+        page.locator('.rate-ae').getByRole('button', { name: 'Preview adjustment', exact: true }),
+    ).toHaveCount(0);
     await expect(page.locator('.rate-grid')).not.toBeVisible();
     for (const name of [
         'Moving average',
@@ -51,6 +55,13 @@ test('visible rate adjustment methods preview, apply and undo real changes', asy
         }),
     ).toBeVisible();
     await expect(page.locator('.preview-impact')).toContainText('Training expected:');
+    await expect(page.locator('.rate-ae')).toContainText('Proposed');
+    await expect(page.locator('.rate-relativities .rate-chart-card')).toHaveCount(1);
+    await expect(
+        page
+            .locator('.rate-relativities')
+            .getByRole('button', { name: 'Apply adjustment', exact: true }),
+    ).toHaveCount(1);
     await page.screenshot({ path: '/tmp/easyglm-manual-rate-preview.png' });
     await button('Apply adjustment').click();
     await expect(
