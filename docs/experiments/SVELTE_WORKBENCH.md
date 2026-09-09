@@ -546,3 +546,26 @@ existing all-tool/manual/snapshot/undo flow passed (1.4 minutes). A manual previ
 is also invalidated if its row draft changes before Apply, preventing an old
 preview from clearing a newer draft. Existing tabs and the live server were not
 restarted; the updated controls were opened in a fresh tab.
+
+### Diagnostics precision and containment
+
+Diagnostics no longer repeats the metrics/model-facts comparison block. That
+block remains on the dedicated Compare page. A shared display formatter limits
+numbers to three decimal places, uses compact scientific notation for small
+nonzero values, preserves integer counts, normalises negative zero and renders
+nonfinite values as a dash. Metrics, totals, chart values/axes/hover, preview values
+and diagnostic/rate table displays share the rule. Editable numbers, underlying
+arrays and CSV exports retain full precision.
+
+Range labels are compacted for display, retain original identities in tooltips,
+and are disambiguated if rounding would merge bands; a range that would falsely
+become zero-width uses a unique band label. Numeric axis labels use lower edges
+with complete ranges available in tooltips/tables. Width constraints on cards and
+tables contain scrolling inside the work area instead of under the sidebar.
+Three formatter tests passed. Live read-only checks at 884 × 773 covered metrics,
+both regularisation stages, tables/hover, full-precision CSV download, coefficients,
+A/E and Compare containment, with exact project/fit/history preservation.
+The focused two-model browser parity case passed (38.3 seconds), including block
+visibility, three-decimal path values and comparison width assertions. Svelte
+check/build and diff checks passed. Updated Diagnostics was opened in a fresh tab;
+existing draft tabs and the live server were not reloaded or restarted.

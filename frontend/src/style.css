@@ -1403,3 +1403,43 @@ main {
     margin-top: 8px;
     padding-top: 8px;
 }
+/* Keep intrinsic table widths inside their scroll containers, including Compare. */
+main,
+.model-workbench,
+.model-card,
+.review-layout,
+.review-panel,
+.diagnostic-table,
+.diagnostic-plot,
+.review-scroll,
+.heatmap-scroll {
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+.model-workbench > *,
+.review-layout > * {
+    min-width: 0;
+}
+.review-scroll,
+.heatmap-scroll {
+    width: 100%;
+    overflow-x: auto;
+}
+.diagnostic-table table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 12px;
+}
+.diagnostic-table th,
+.diagnostic-table td {
+    padding: 8px;
+    text-align: left;
+    white-space: nowrap;
+    border-bottom: 1px solid #e1e9e4;
+}
+.results-toolbar > *,
+.result-totals > * {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}

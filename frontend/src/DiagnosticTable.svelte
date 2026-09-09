@@ -1,17 +1,15 @@
 <script>
+    import { formatNumber as num, formatLabels } from './format.js';
     export let rows = [],
         title = 'Table';
     let page = 0;
     $: columns = Object.keys(rows[0] || {});
     $: if (page * 100 >= rows.length) page = 0;
-    const num = (v) =>
-        typeof v === 'number'
-            ? Math.abs(v) > 0 && Math.abs(v) < 0.00001
-                ? v.toExponential(3)
-                : v.toLocaleString(undefined, { maximumSignificantDigits: 7 })
-            : v === null || v === undefined
-              ? '—'
-              : String(v);
+    $: labels = Object.fromEntries(
+        columns
+            .filter((c) => c === 'label' || c === 'label_a' || c === 'label_b')
+            .map((c) => [c, formatLabels(rows.map((r) => r[c]))]),
+    );
     function download() {
         const quote = (value) => {
             const v = typeof value === 'string' && /^[=+\-@]/.test(value) ? "'" + value : value;
@@ -43,8 +41,10 @@
                         >{#each columns as c}<th>{c.replaceAll('_', ' ')}</th>{/each}</tr
                     ></thead
                 ><tbody
-                    >{#each rows.slice(page * 100, (page + 1) * 100) as row}<tr
-                            >{#each columns as c}<td>{num(row[c])}</td>{/each}</tr
+                    >{#each rows.slice(page * 100, (page + 1) * 100) as row, i}<tr
+                            >{#each columns as c}<td title={labels[c] ? String(row[c]) : undefined}
+                                    >{labels[c]?.[page * 100 + i] ?? num(row[c])}</td
+                                >{/each}</tr
                         >{/each}</tbody
                 >
             </table>

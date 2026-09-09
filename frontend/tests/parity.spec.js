@@ -21,6 +21,9 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 30000 });
     await button('Diagnostics').click();
     await expect(
+        page.getByText('Metrics and model facts side by side', { exact: true }),
+    ).toHaveCount(0);
+    await expect(
         page.getByRole('img', { name: 'Actual fitted and adjusted by variable', exact: true }),
     ).toBeVisible();
     await expect(page.getByRole('heading', { name: /DriverAge · train/ })).toBeVisible();
@@ -44,6 +47,8 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     const path = page.locator('.path-chart').first();
     await expect(path.locator('.alpha-tick')).toHaveCount(5);
     await expect(path.locator('.selected-penalty')).toHaveCount(1);
+    const displayed = await path.locator('svg text, svg title').allTextContents();
+    expect(displayed.some((text) => /\d\.\d{4}/.test(text))).toBeFalsy();
     await expect(path).toContainText('Retained coefficients · right axis');
     const ticks = await path
         .locator('.alpha-tick')
@@ -90,6 +95,12 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     ).toBeTruthy();
     await page.screenshot({ path: '/tmp/easyglm-parity-double-lift.png', fullPage: true });
     await button('Compare').click();
+    await expect(
+        page.getByText('Metrics and model facts side by side', { exact: true }),
+    ).toBeVisible();
+    expect(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+    ).toBeTruthy();
     await expect(page.getByLabel('Compare with challenger')).toHaveValue('Challenger');
     await button('Make selected model champion').click();
     await expect(

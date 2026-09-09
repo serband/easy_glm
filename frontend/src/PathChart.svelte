@@ -1,4 +1,5 @@
 <script>
+    import { formatNumber as num } from './format.js';
     import DiagnosticTable from './DiagnosticTable.svelte';
     export let rows = [],
         title = 'Regularisation path';
@@ -42,8 +43,7 @@
         first === last
             ? [shown[0]?.alpha ?? 1]
             : Array.from({ length: 5 }, (_, i) => 10 ** (start + ((end - start) * i) / 4));
-    const label = (n) =>
-        n === 0 ? '0' : n.toExponential(1).replace('.0e', 'e').replace('e+', 'e');
+    const label = (n) => num(n, { scientific: n !== 0 });
     $: countTicks = [...new Set([0, Math.round(countMax / 2), countMax])];
 </script>
 
@@ -66,7 +66,7 @@
                 y2={240 - tick * 190}
                 stroke="#dde5df"
             /><text x="70" y={244 - tick * 190} text-anchor="end"
-                >{(low + tick * (high - low)).toPrecision(5)}</text
+                >{num(low + tick * (high - low))}</text
             >{/each}
         {#each countTicks as tick}<text class="count-tick" x="682" y={cy(tick) + 4} fill="#9a6a30"
                 >{tick}</text
@@ -78,7 +78,7 @@
                 y1="42"
                 y2="240"
                 stroke="#287762"
-                stroke-dasharray="5 4"><title>Selected alpha: {row.alpha}</title></line
+                stroke-dasharray="5 4"><title>Selected alpha: {num(row.alpha)}</title></line
             >{/each}
         {#each visible as s}
             <path
@@ -108,9 +108,9 @@
                         r={row.selected ? 5 : 3}
                         fill={s.color}
                         ><title
-                            >Alpha: {row.alpha} · {s.label}: {row[s.key]}{s.key === 'cv_deviance' &&
-                            Number.isFinite(row.cv_deviance_std)
-                                ? ' · CV standard deviation: ' + row.cv_deviance_std
+                            >Alpha: {num(row.alpha)} · {s.label}: {num(row[s.key])}{s.key ===
+                                'cv_deviance' && Number.isFinite(row.cv_deviance_std)
+                                ? ' · CV standard deviation: ' + num(row.cv_deviance_std)
                                 : ''}{row.selected ? ' · selected' : ''}</title
                         ></circle
                     >

@@ -1,4 +1,5 @@
 <script>
+    import { formatNumber as num, formatLabels } from './format.js';
     import { onDestroy } from 'svelte';
     import RateChart from './RateChart.svelte';
     import DiagnosticPlot from './DiagnosticPlot.svelte';
@@ -219,11 +220,9 @@
     $: pairRows = rows.length && 'label_a' in rows[0];
     $: pairA = [...new Set(rows.map((r) => r.label_a))];
     $: pairB = [...new Set(rows.map((r) => r.label_b))];
-    function num(v) {
-        return typeof v === 'number'
-            ? v.toLocaleString(undefined, { maximumSignificantDigits: 6 })
-            : (v ?? '—');
-    }
+
+    $: pairLabelsA = formatLabels(pairA);
+    $: pairLabelsB = formatLabels(pairB);
     function rev() {
         return { session_id: state.session_id, revision: state.revision };
     }
@@ -470,11 +469,14 @@
                 <table class="ae-heatmap">
                     <thead
                         ><tr
-                            ><th>A \ B</th>{#each pairB as label}<th>{label}</th>{/each}</tr
+                            ><th>A \ B</th>{#each pairB as label, i}<th title={label}
+                                    >{pairLabelsB[i]}</th
+                                >{/each}</tr
                         ></thead
                     ><tbody
-                        >{#each pairA as label}<tr
-                                ><th>{label}</th>{#each pairB as other}{@const cell = rows.find(
+                        >{#each pairA as label, i}<tr
+                                ><th title={label}>{pairLabelsA[i]}</th
+                                >{#each pairB as other}{@const cell = rows.find(
                                         (r) => r.label_a === label && r.label_b === other,
                                     )}<td
                                         style:background={heat(cell?.[pairMetric])}
@@ -1032,7 +1034,11 @@
                             rows={analysis.path.filter(
                                 (r) => r.stage === stage && r.l1_ratio === ratio,
                             )}
-                            title={'Stage ' + stage + ' · L1 ' + ratio + ' · regularisation path'}
+                            title={'Stage ' +
+                                stage +
+                                ' · L1 ' +
+                                num(ratio) +
+                                ' · regularisation path'}
                         />{/each}{/each}{/if}
             {#each analysis.tables || [] as table}<DiagnosticTable
                     rows={table.rows}

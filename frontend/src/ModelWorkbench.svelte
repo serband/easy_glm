@@ -1,4 +1,5 @@
 <script>
+    import { formatNumber as num } from './format.js';
     import { onDestroy } from 'svelte';
     import ReviewPanel from './ReviewPanel.svelte';
     import DiagnosticTable from './DiagnosticTable.svelte';
@@ -419,15 +420,7 @@
             tableBusy = false;
         }
     }
-    function num(value, digits = 5) {
-        return value === null || value === undefined
-            ? '—'
-            : typeof value === 'number'
-              ? Math.abs(value) > 0 && Math.abs(value) < 0.00001
-                  ? value.toExponential(2)
-                  : value.toLocaleString(undefined, { maximumSignificantDigits: digits })
-              : String(value);
-    }
+
     function points(field) {
         return lift
             .map(
@@ -825,7 +818,7 @@
                     >
                     <p>{job.message}</p>
                 </div>
-                <span>{num(job.elapsed, 3)} s</span
+                <span>{num(job.elapsed)} s</span
                 >{#if ['queued', 'running'].includes(job.status)}<button onclick={cancel}
                         >Cancel fit</button
                     >{/if}{#if applicable && view !== 'diagnostics'}<button
@@ -865,25 +858,25 @@
                 </div>
                 <div class="result-totals">
                     {#each ['rows', 'exposure', 'actual', 'expected'] as key}<span
-                            >{key}: <b>{num(result.metrics[subset]?.[key], 7)}</b></span
+                            >{key}: <b>{num(result.metrics[subset]?.[key])}</b></span
                         >{/each}
                 </div>
                 <p class="help-text">{result.diagnostic_info?.gini_note || ''}</p>
-                <details class="model-card" open={view === 'compare'}>
-                    <summary>Metrics and model facts side by side</summary><DiagnosticTable
-                        rows={metricRows}
-                        title="Metrics by model and subset"
-                    /><DiagnosticTable
-                        rows={factRows}
-                        title="Model facts"
-                    />{#if savedVersionRows.length}<DiagnosticTable
-                            rows={savedVersionRows}
-                            title="Saved versions of the rate tables"
-                        />{/if}{#if comparisonResult && comparisonResult.summary.family !== result.summary.family}<p
-                        >
-                            Deviances from different families are not directly comparable.
-                        </p>{/if}
-                </details>
+                {#if view === 'compare'}<details class="model-card" open>
+                        <summary>Metrics and model facts side by side</summary><DiagnosticTable
+                            rows={metricRows}
+                            title="Metrics by model and subset"
+                        /><DiagnosticTable
+                            rows={factRows}
+                            title="Model facts"
+                        />{#if savedVersionRows.length}<DiagnosticTable
+                                rows={savedVersionRows}
+                                title="Saved versions of the rate tables"
+                            />{/if}{#if comparisonResult && comparisonResult.summary.family !== result.summary.family}<p
+                            >
+                                Deviances from different families are not directly comparable.
+                            </p>{/if}
+                    </details>{/if}
                 <div class="workflow-tabs" role="tablist" aria-label="Diagnostics views">
                     {#each [['variable', 'A/E by variable'], ['pair', 'A/E by pair'], ['lift', 'Lift'], ['double_lift', 'Double lift'], ['residual', 'Residual factors'], ['path', 'Regularisation path'], ['coefficients', 'Coefficients'], ['compare', 'Relativities that differ']] as [key, label]}<button
                             role="tab"
@@ -926,7 +919,7 @@
                                     >{item.name} · {item.rows} rows</option
                                 >{/each}</select
                         ></label
-                    ><strong>Base rate {num(result.base_rate, 8)}</strong><span
+                    ><strong>Base rate {num(result.base_rate)}</strong><span
                         >{result.link} link · {result.relativity_label}</span
                     >
                 </div>
@@ -1003,9 +996,14 @@
                                                                                 ' × ' +
                                                                                 b}
                                                                             title={'Fitted ' +
-                                                                                cell.row.fitted +
+                                                                                num(
+                                                                                    cell.row.fitted,
+                                                                                ) +
                                                                                 '; exposure ' +
-                                                                                cell.row.exposure}
+                                                                                num(
+                                                                                    cell.row
+                                                                                        .exposure,
+                                                                                )}
                                                                             type="number"
                                                                             min=".000000001"
                                                                             step="any"
@@ -1055,9 +1053,7 @@
                                                             ></td></tr
                                                         >{/if}{#each table.rows.slice(tableStart, tableStart + 24) as row, rowIndex}<tr
                                                             >{#each visibleColumns as column}<td
-                                                                    title={String(
-                                                                        row[column] ?? '',
-                                                                    )}
+                                                                    title={num(row[column])}
                                                                     >{#if column === 'relativity'}<input
                                                                             class="relativity-input"
                                                                             aria-label={'Relativity row ' +

@@ -1,4 +1,5 @@
 <script>
+    import { formatNumber as num, formatLabels, axisLabel } from './format.js';
     import { rateChartData } from './rateChartData.js';
     export let table,
         variable,
@@ -8,13 +9,12 @@
         preview = false;
     let cellView = 'relativity';
     $: plot = rateChartData(table);
+    $: displayLabels = formatLabels((table?.rows || []).map((r) => r.label));
     $: rowNames = [...new Set((table?.rows || []).map((r) => r.label_a))];
     $: colNames = [...new Set((table?.rows || []).map((r) => r.label_b))];
-    function num(v) {
-        return Number.isFinite(v)
-            ? v.toLocaleString(undefined, { maximumSignificantDigits: 5 })
-            : '—';
-    }
+
+    $: rowLabels = formatLabels(rowNames);
+    $: colLabels = formatLabels(colNames);
     function path(points) {
         return points.map((p) => `${p.x},${190 - (p.value / plot.max) * 150}`).join(' ');
     }
@@ -43,11 +43,13 @@
             <table class="relativity-heatmap">
                 <thead
                     ><tr
-                        ><th></th>{#each colNames as name}<th>{name}</th>{/each}</tr
+                        ><th></th>{#each colNames as name, i}<th title={name}>{colLabels[i]}</th
+                            >{/each}</tr
                     ></thead
                 ><tbody
-                    >{#each rowNames as name}<tr
-                            ><th>{name}</th>{#each colNames as other}{@const cell = table.rows.find(
+                    >{#each rowNames as name, i}<tr
+                            ><th title={name}>{rowLabels[i]}</th
+                            >{#each colNames as other}{@const cell = table.rows.find(
                                     (r) => r.label_a === name && r.label_b === other,
                                 )}<td
                                     style:background={color(cell)}
@@ -141,7 +143,9 @@
                                 y="222"
                                 text-anchor={plot.numeric ? 'middle' : 'end'}
                                 transform={plot.numeric ? undefined : `rotate(-45 ${item.x} 222)`}
-                                ><title>{item.label}</title>{String(item.label).slice(0, 22)}</text
+                                ><title>{item.label}</title>{axisLabel(
+                                    displayLabels[item.index],
+                                )}</text
                             >{/if}{/each}
                 </svg>
                 <div class="exposure-caption">

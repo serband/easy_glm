@@ -1,4 +1,5 @@
 <script>
+    import { formatNumber as num, formatLabels, axisLabel } from './format.js';
     import DiagnosticTable from './DiagnosticTable.svelte';
     export let rows = [],
         title = 'Diagnostic chart',
@@ -13,6 +14,7 @@
         showTable = true;
     const colors = ['#287762', '#c35b48', '#737e9b', '#bd8a45', '#439da5'];
     $: shown = rows.filter((r) => r.exposure === undefined || r.exposure > 0);
+    $: labels = formatLabels(shown.map((r, i) => r.label ?? r[xKey] ?? i + 1));
     $: visible = series.filter((s) => shown.some((r) => Number.isFinite(r[s.key])));
     $: values = shown.flatMap((r) => visible.map((s) => r[s.key])).filter(Number.isFinite);
     $: lo = Math.min(0, ...values);
@@ -42,8 +44,7 @@
                 y1={190 - tick * 150}
                 y2={190 - tick * 150}
                 stroke="#dde5df"
-            /><text x="0" y={194 - tick * 150}>{(lo + tick * (hi - lo)).toPrecision(4)}</text
-            >{/each}
+            /><text x="0" y={194 - tick * 150}>{num(lo + tick * (hi - lo))}</text>{/each}
         {#each visible as s, j}
             {#if kind !== 'categorical'}<polyline
                     points={shown
@@ -63,7 +64,7 @@
                             {width}
                             height={Math.abs(y(row[s.key]) - y(0))}
                             fill={colors[j % colors.length]}
-                            ><title>{row.label}: {s.label} {row[s.key]}</title></rect
+                            ><title>{labels[i]}: {s.label} {num(row[s.key])}</title></rect
                         >
                     {:else}<circle
                             cx={x(i)}
@@ -71,8 +72,8 @@
                             r={row.selected ? 6 : 3}
                             fill={colors[j % colors.length]}
                             ><title
-                                >{row.label || row[xKey]}: {s.label}
-                                {row[s.key]}{row.selected ? ' · selected' : ''}</title
+                                >{labels[i]}: {s.label}
+                                {num(row[s.key])}{row.selected ? ' · selected' : ''}</title
                             ></circle
                         >{/if}
                 {/if}{/each}
@@ -81,7 +82,9 @@
                     x={x(i)}
                     y="220"
                     text-anchor="middle"
-                    >{String(row.label ?? row[xKey] ?? i + 1).slice(0, 18)}</text
+                    ><title>{String(row.label ?? row[xKey] ?? i + 1)}</title>{axisLabel(
+                        labels[i],
+                    )}</text
                 >{/if}{/each}
     </svg>
     {#if shown.some((r) => r.exposure !== undefined)}<div class="exposure-caption">
@@ -93,7 +96,7 @@
                     y={75 - ((row.exposure || 0) / maxExposure) * 65}
                     width="10"
                     height={((row.exposure || 0) / maxExposure) * 65}
-                    fill="#91afa1"><title>{row.label || row.bin}: {row.exposure}</title></rect
+                    fill="#91afa1"><title>{labels[i]}: {num(row.exposure)}</title></rect
                 >{/each}</svg
         >{/if}
     {#if showTable}<details>
