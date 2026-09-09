@@ -569,3 +569,27 @@ The focused two-model browser parity case passed (38.3 seconds), including block
 visibility, three-decimal path values and comparison width assertions. Svelte
 check/build and diff checks passed. Updated Diagnostics was opened in a fresh tab;
 existing draft tabs and the live server were not reloaded or restarted.
+
+### Automatic pair A/E
+
+Pair A/E recomputes automatically from either variable, relevant temporary bins,
+or model/subset/challenger context. The separate Show pair A/E button is removed;
+two equal-height dropdowns share a responsive grid. The full request identity
+includes both fit identities and context as well as pair/bins; server reviews
+already enforce those fit bindings. Debouncing, cancellation and generation guards
+prevent superseded results from being displayed. Pending, duplicate and invalid
+pairs clear the previous heatmap; duplicate pairs request nothing and show a brief
+hint. Hidden pair controls do not launch jobs. Fitted groups ignore temporary bins.
+
+The dedicated browser test passed (25.3 seconds), including a delayed old response,
+rapid variable/bin changes, duplicate/invalid clearing, subset/model/challenger
+switches, no hidden-tab requests, aligned controls and preserved fit identities.
+A read-only live check at 884 × 773 verified the same selection/context behaviour
+and exact project/fit/history preservation. Three-decimal display and contained
+heatmaps remain in place; no fitting or scoring code changed.
+Final checks: the two-model/search/refit/interaction-edit parity case passed
+(42.3 seconds). The pair test with a deterministic temporary server refusal and
+delayed old result passed (27.5 seconds). Navigation now briefly retries only the
+explicit "review is running" refusal while the old view's worker finishes; all
+context guards remain active. Svelte check/build and diff checks passed. This was
+a static-only update with no server restart or changes to existing draft tabs.

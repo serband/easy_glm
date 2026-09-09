@@ -1443,3 +1443,34 @@ main,
     min-width: 0;
     overflow-wrap: anywhere;
 }
+.pair-controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    align-items: end;
+    margin: 16px 0;
+}
+.pair-controls[hidden] {
+    display: none;
+}
+.pair-controls label {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+}
+.pair-controls select,
+.pair-controls input {
+    width: 100%;
+    min-width: 0;
+    height: 36px;
+    box-sizing: border-box;
+}
+.pair-status {
+    font-size: 13px;
+    color: #557467;
+}
+@media (max-width: 560px) {
+    .pair-controls {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}

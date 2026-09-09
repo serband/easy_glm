@@ -41,6 +41,13 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
         .evaluateAll((rects) => rects.map((rect) => Number(rect.getAttribute('x'))));
     expect(exposureX.length).toBe(4);
     expect(exposureX.at(-1) - exposureX[0]).toBeCloseTo(650);
+    await tab('A/E by pair').click();
+    await expect(button('Show pair A/E')).toHaveCount(0);
+    await page.getByLabel('Pair first variable').selectOption('DriverAge');
+    await page.getByLabel('Pair second variable').selectOption('Region');
+    await expect(
+        page.getByRole('heading', { name: 'DriverAge × Region · Holdout', exact: true }),
+    ).toBeVisible();
     await tab('Regularisation path').click();
     await expect(page.getByRole('img', { name: /Stage 1.*regularisation path$/ })).toBeVisible();
     await page.setViewportSize({ width: 884, height: 773 });

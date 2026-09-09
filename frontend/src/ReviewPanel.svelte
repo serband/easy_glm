@@ -5,7 +5,9 @@
     import DiagnosticPlot from './DiagnosticPlot.svelte';
     import PathChart from './PathChart.svelte';
     import DiagnosticTable from './DiagnosticTable.svelte';
-    export let rateNote = '',
+    export let fitIdentity = '',
+        comparisonFitIdentity = '',
+        rateNote = '',
         table = null,
         children,
         api,
@@ -42,7 +44,7 @@
     function runTab() {
         if (diagnosticTab === 'variable' && diagnosticVariable)
             return run('variable', { variable: diagnosticVariable });
-        if (diagnosticTab === 'pair' && a && b && a !== b) return run('pair', { a, b });
+        // Pair diagnostics are scheduled from their complete selection/context key.
         if (['lift', 'double_lift', 'path', 'coefficients', 'compare'].includes(diagnosticTab))
             return run(diagnosticTab, { options: { kept } });
     }
@@ -201,7 +203,59 @@
     }
     $: smoothing = tool === 'moving' || tool === 'isotonic';
     $: selectedVariable = view === 'tables' ? variable : diagnosticVariable;
-    $: key = `${name}:${state.session_id}:${state.revision}:${view}:${subset}:${variable}:${challenger}`;
+    $: key = `${name}:${state.session_id}:${state.revision}:${view}:${subset}:${variable}:${challenger}:${fitIdentity}:${comparisonFitIdentity}`;
+    let scheduledPairKey = '',
+        pairEpoch = 0,
+        pairTimer,
+        pairPending = false,
+        pairMessage = '',
+        activePair = false;
+    $: pairRequestKey =
+        view === 'diagnostics' && diagnosticTab === 'pair'
+            ? JSON.stringify([key, a, b, temporaryBins ? bins : 10])
+            : '';
+    $: if (pairRequestKey !== scheduledPairKey) {
+        scheduledPairKey = pairRequestKey;
+        schedulePair();
+    }
+    function schedulePair() {
+        const version = ++pairEpoch;
+        clearTimeout(pairTimer);
+        if (activePair && taskId) void api('reviews/' + taskId + '/cancel', rev()).catch(() => {});
+        pairPending = false;
+        pairMessage = '';
+        rows = [];
+        aeSets = [];
+        shownTitle = '';
+        analysis = null;
+        if (!pairRequestKey) return;
+        error = '';
+        note = '';
+        if (!a || !b || a === b) {
+            pairMessage = 'Choose two different variables.';
+            return;
+        }
+        if (temporaryBins && (!Number.isInteger(bins) || bins < 3 || bins > 50)) {
+            pairMessage = 'Enter a whole number of bands from 3 to 50.';
+            return;
+        }
+        const requestKey = pairRequestKey,
+            selection = { a, b, n_bins: temporaryBins ? bins : 10 };
+        pairPending = true;
+        const dispatch = async () => {
+            if (destroyed || version !== pairEpoch || requestKey !== pairRequestKey) return;
+            if (busy || loadedKey !== key) {
+                pairTimer = setTimeout(dispatch, 100);
+                return;
+            }
+            activePair = true;
+            await run('pair', selection, null, { version, requestKey });
+            activePair = false;
+            if (version === pairEpoch) pairPending = false;
+        };
+        pairTimer = setTimeout(dispatch, 200);
+    }
+
     $: if (key !== loadedKey && autoEnabled) stopAuto();
     $: if (name && key !== loadedKey && !busy) load();
     $: series = [
@@ -273,7 +327,7 @@
     export async function previewRowEdits() {
         await run('edit', { edits });
     }
-    async function run(action, extra = {}, autoVersion = null) {
+    async function run(action, extra = {}, autoVersion = null, pairVersion = null) {
         if (autoVersion === null) stopAuto();
         if (busy || destroyed) return;
         busy = true;
@@ -282,15 +336,19 @@
         if (action !== 'variable') feedback = '';
         preview = null;
         const started = key;
+        const startedTab = diagnosticTab;
         const manualSignature = action === 'edit' ? JSON.stringify(edits) : undefined;
         const valid = () =>
             !destroyed &&
             started === key &&
+            (view !== 'diagnostics' || startedTab === diagnosticTab) &&
+            (pairVersion === null ||
+                (pairVersion.version === pairEpoch && pairVersion.requestKey === pairRequestKey)) &&
             (manualSignature === undefined || manualSignature === JSON.stringify(edits)) &&
             (autoVersion === null ||
                 (autoVersion === autoEpoch && autoEnabled && !Object.keys(edits).length));
         try {
-            const response = await api('review/' + encodeURIComponent(name), {
+            const payload = {
                 ...rev(),
                 action,
                 variable: selectedVariable || null,
@@ -300,7 +358,20 @@
                 tolerance: Number(tolerance),
                 options: { both_subsets: view === 'diagnostics' },
                 ...extra,
-            });
+            };
+            let response;
+            // A previous view can still be cancelling its worker during navigation.
+            // Retry only this explicit refusal, before any new work was started.
+            for (let attempt = 0; attempt < 50; attempt++) {
+                if (!valid()) return;
+                try {
+                    response = await api('review/' + encodeURIComponent(name), payload);
+                    break;
+                } catch (e) {
+                    if (!e.message.includes('A review is running') || attempt === 49) throw e;
+                    await new Promise((resolve) => setTimeout(resolve, 100));
+                }
+            }
             if (response.snapshot) {
                 await onApplied(response.snapshot);
                 feedback =
@@ -392,6 +463,12 @@
     }
     async function cancel() {
         stopAuto();
+        if (activePair || pairPending) {
+            pairEpoch++;
+            clearTimeout(pairTimer);
+            pairPending = false;
+            pairMessage = 'Pair review cancelled.';
+        }
         if (taskId) await api('reviews/' + taskId + '/cancel', rev());
     }
     async function applyPreview() {
@@ -445,6 +522,8 @@
         }
     }
     onDestroy(() => {
+        pairEpoch++;
+        clearTimeout(pairTimer);
         stopAuto();
         destroyed = true;
         if (taskId) void api('reviews/' + taskId + '/cancel', rev()).catch(() => {});
@@ -596,7 +675,7 @@
             </div>{/if}
         {#if error && view !== 'tables'}<div class="message error" role="alert">{error}</div>{/if}
         {#if view === 'diagnostics'}
-            {#if ['lift', 'double_lift'].includes(diagnosticTab) || (['variable', 'pair'].includes(diagnosticTab) && temporaryBins)}<div
+            {#if ['lift', 'double_lift'].includes(diagnosticTab) || (diagnosticTab === 'variable' && temporaryBins)}<div
                     class="results-toolbar"
                 >
                     <label
@@ -644,7 +723,7 @@
                 >
             </div>
             <div>
-                <div class="results-toolbar" hidden={diagnosticTab !== 'pair'}>
+                <div class="pair-controls" hidden={diagnosticTab !== 'pair'}>
                     <label
                         >First variable<select aria-label="Pair first variable" bind:value={a}
                             >{#each info.variables as v}<option value={v}
@@ -663,10 +742,23 @@
                                 >{/each}</select
                         ></label
                     >
-                    <button disabled={busy || a === b} onclick={() => run('pair', { a, b })}
-                        >Show pair A/E</button
-                    >
+                    {#if temporaryBins}<label
+                            >Temporary bands<input
+                                aria-label="Pair diagnostic bins"
+                                type="number"
+                                min="3"
+                                max="50"
+                                step="1"
+                                bind:value={bins}
+                            /></label
+                        >{/if}
                 </div>
+                {#if diagnosticTab === 'pair' && (pairMessage || pairPending)}<p
+                        class="pair-status"
+                        role="status"
+                    >
+                        {pairMessage || 'Updating pair A/E…'}
+                    </p>{/if}
                 <div hidden={diagnosticTab !== 'residual'}>
                     <p class="help-text">
                         Searches rank residual signal on training data only. Holdout is reserved for
@@ -1006,7 +1098,7 @@
                     ><DiagnosticTable rows={info.adjustments} title="Applied adjustments" />
                 </details>{/if}
         {/if}
-        {#if busy && !autoRunning}<div class="message" role="status">
+        {#if busy && !autoRunning && !pairPending}<div class="message" role="status">
                 Computing in background… <button onclick={cancel} disabled={!taskId}
                     >Cancel review</button
                 >

@@ -893,6 +893,8 @@
                     <ReviewPanel
                         {diagnosticTab}
                         challenger={effectiveChallenger}
+                        fitIdentity={job?.id || ''}
+                        comparisonFitIdentity={jobs[effectiveChallenger]?.id || ''}
                         {api}
                         {state}
                         name={selected}
@@ -926,6 +928,8 @@
                 {#if table}<div class="rate-primary">
                         <ReviewPanel
                             challenger={effectiveChallenger}
+                            fitIdentity={job?.id || ''}
+                            comparisonFitIdentity={jobs[effectiveChallenger]?.id || ''}
                             bind:this={tableReview}
                             bind:busy={reviewBusy}
                             {api}
