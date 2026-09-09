@@ -799,7 +799,7 @@
                 </section>
             </fieldset>
         {/if}
-        {#if job}<section
+        {#if job && !(view === 'diagnostics' && job.status === 'complete')}<section
                 class="job-card"
                 class:compact-result-status={view !== 'model' && job.status === 'complete'}
                 role="status"
