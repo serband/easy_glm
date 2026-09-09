@@ -10,6 +10,7 @@ export default defineConfig({
         viewport: { width: 1440, height: 1000 },
     },
     webServer: {
+        env: process.env.EASYGLM_TEST_SOURCE ? { PYTHONPATH: process.env.EASYGLM_TEST_SOURCE } : {},
         command: '../.venv/bin/python -m easy_glm.desktop --port 8770',
         url: 'http://127.0.0.1:8770/health',
         reuseExistingServer: false,

@@ -55,7 +55,12 @@ def test_role_snapshot_and_roundtrip(session):
     assert state["setup"]["roles"]["unassigned"] == ["spare"]
     before = deepcopy(project.to_dict())
     response = client.post(
-        "/api/variables/apply", json={"revision": 0, "setup": state["setup"]}
+        "/api/variables/apply",
+        json={
+            "session_id": state["session_id"],
+            "revision": 0,
+            "setup": state["setup"],
+        },
     )
     assert response.status_code == 200
     assert response.json()["revision"] == 0
@@ -69,7 +74,11 @@ def test_atomic_preview_apply_rename_and_role_model_sync(session):
     setup["roles"]["predictor"] = ["area"]
     setup["roles"]["ignore"].append("age")
     setup["types"] = {"categorical": ["area"]}
-    body = {"revision": 0, "setup": setup}
+    body = {
+        "session_id": client.get("/api/session").json()["session_id"],
+        "revision": 0,
+        "setup": setup,
+    }
     preview = client.post("/api/variables/preview", json=body)
     assert preview.status_code == 200
     assert preview.json()["notices"]
@@ -98,7 +107,14 @@ def test_invalid_drafts_leave_project_untouched(session, invalid):
         setup["assignments"]["target"] = "missing"
     else:
         setup["types"] = {"date": ["age"]}
-    response = client.post("/api/variables/apply", json={"revision": 0, "setup": setup})
+    response = client.post(
+        "/api/variables/apply",
+        json={
+            "session_id": client.get("/api/session").json()["session_id"],
+            "revision": 0,
+            "setup": setup,
+        },
+    )
     assert response.status_code == 422
     assert client.get("/api/project").json() == original.to_dict()
 
@@ -115,7 +131,12 @@ def test_plot_and_no_fit_on_edit(session, monkeypatch):
     setup["renames"] = {"age": "DriverAge"}
     assert (
         client.post(
-            "/api/variables/apply", json={"revision": 0, "setup": setup}
+            "/api/variables/apply",
+            json={
+                "session_id": client.get("/api/session").json()["session_id"],
+                "revision": 0,
+                "setup": setup,
+            },
         ).status_code
         == 200
     )
@@ -143,7 +164,7 @@ def test_loopback_origin_token_and_static_assets(session):
     )
     assert (
         client.get("/api/variables", headers={"x-easyglm-token": "wrong"}).status_code
-        == 403
+        == 401
     )
     assert (
         client.post(
@@ -217,3 +238,37 @@ def test_slow_plot_does_not_block_health_or_variables(session, monkeypatch):
         finally:
             release.set()
         assert pending.result(timeout=5).status_code == 200
+
+
+def test_session_stable_across_tabs_but_changes_on_restart(session):
+    client, project = session
+    first = client.get("/api/session").json()
+    assert client.get("/api/session").json() == first
+    assert client.get("/api/session").headers["cache-control"] == "no-store"
+    setup = client.get("/api/variables").json()["setup"]
+    raw = pl.DataFrame(
+        {
+            "claims": [0, 1],
+            "age": [30, 40],
+            "area": ["A", "B"],
+            "id": [1, 2],
+            "spare": [3, 4],
+        }
+    )
+    with TestClient(
+        create_app(project, raw, port=8765), base_url="http://127.0.0.1:8765"
+    ) as restarted:
+        second = restarted.get("/api/session").json()
+        assert first["token"] != second["token"]
+        assert first["session_id"] != second["session_id"]
+        expired = restarted.get(
+            "/api/variables", headers={"x-easyglm-token": first["token"]}
+        )
+        assert expired.status_code == 401
+        assert expired.json()["code"] == "session_expired"
+        assert expired.headers["cache-control"] == "no-store"
+        restarted.headers["x-easyglm-token"] = second["token"]
+        # Even with the new token and coincidentally equal revision 0, an old write is refused.
+        old_write = {"session_id": first["session_id"], "revision": 0, "setup": setup}
+        assert restarted.post("/api/variables/apply", json=old_write).status_code == 409
+        assert restarted.get("/api/project").json() == project.to_dict()

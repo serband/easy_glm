@@ -10,6 +10,7 @@ export default defineConfig({
         viewport: { width: 1440, height: 1000 },
     },
     webServer: {
+        env: process.env.EASYGLM_TEST_SOURCE ? { PYTHONPATH: process.env.EASYGLM_TEST_SOURCE } : {},
         command: '../.venv/bin/python ../scripts/desktop_wide_fixture.py',
         url: 'http://127.0.0.1:8771/health',
         reuseExistingServer: false,

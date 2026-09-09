@@ -179,3 +179,38 @@ and [FastAPI's middleware guidance](https://fastapi.tiangolo.com/advanced/middle
    packaging/dependency review. Only then consider replacing Streamlit defaults.
 
 Do not infer completion of later slices from the sidebar placeholders.
+
+## Session recovery correction (9 September 2026)
+
+An open tab could survive a development-server restart with its old API token.
+The server correctly rejected that token, but the client fetched credentials
+only on initial mount; even its old "Reload applied settings" action reused the
+expired token. The exact reported alert came from this token check. A direct
+request for the VehBrand plot returned 200 with the current token and the same
+reported 403 message with a stale token. This does not diagnose the separate
+Windows/corporate-network issue.
+
+The client now re-bootstraps same-origin credentials once on an explicit
+`session_expired` response, sharing concurrent bootstrap requests. Session
+responses and fetches are non-cached. Read requests recover without replacing
+table drafts or raw JSON, including incomplete JSON. Host/Origin refusals still
+fail; no general 403 bypass or token persistence was added.
+
+Every edit is bound to a server session as well as a revision. After a restart,
+an old Apply is refused even if both servers happen to be at revision 0. The
+applied baseline is refreshed while the draft is kept; the user previews it again
+before applying. A different project at the same address cannot inherit that
+draft. Reconnect keeps the draft; **Discard draft and reload** explicitly replaces
+it, and **Download draft** retains names/types plus raw role JSON when needed.
+No page reload is used for recovery by the corrected client.
+
+The one-time upgrade cannot replace JavaScript already running in an old tab.
+Keep that tab open if it contains a draft and open the workbench URL in a new tab.
+Copy any old draft before refreshing the old tab; this change does not claim to
+recover unobservable drafts from an already-loaded old client.
+
+Verification: 13 API/launcher checks and nine browser cases passed, including
+actual process restarts, bare URL, refresh/new tab, plot selection, table/JSON
+draft preservation, stale Apply rejection, Preview/Apply after recovery, origin
+refusal, and a simulated different-project response. Existing Variables and wide
+schema tests remained green. No additional core/modelling changes were made.

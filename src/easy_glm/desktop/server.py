@@ -5,6 +5,7 @@ The project is an in-memory copy. No endpoint writes source files or fits a mode
 
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 import threading
@@ -34,6 +35,7 @@ class Edit(BaseModel):
     """A complete variable draft based on a specific server revision."""
 
     model_config = ConfigDict(extra="forbid")
+    session_id: str
     revision: int = Field(ge=0)
     setup: dict[str, Any]
 
@@ -47,6 +49,17 @@ def create_app(
     revision = 0
     lock = threading.RLock()
     token = secrets.token_urlsafe(32)
+    session_id = secrets.token_urlsafe(16)
+    project_id = hashlib.sha256(
+        json.dumps(
+            {
+                "name": project.name,
+                "source": project.to_dict()["data"]["source"],
+                "schema": [(name, str(dtype)) for name, dtype in raw.schema.items()],
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
     host = f"127.0.0.1:{port}"
     origin = f"http://{host}"
     static = Path(__file__).with_name("static")
@@ -73,7 +86,14 @@ def create_app(
             if not secrets.compare_digest(
                 request.headers.get("x-easyglm-token", ""), token
             ):
-                return JSONResponse({"detail": "Reopen the local workbench tab."}, 403)
+                return JSONResponse(
+                    {
+                        "detail": "The local session changed. Reconnect to keep your draft.",
+                        "code": "session_expired",
+                    },
+                    401,
+                    headers={"Cache-Control": "no-store"},
+                )
         if request.method == "POST":
             if (
                 request.headers.get("content-type", "").split(";")[0]
@@ -101,6 +121,8 @@ def create_app(
     def snapshot() -> dict[str, Any]:
         return {
             "name": current.name,
+            "session_id": session_id,
+            "project_id": project_id,
             "revision": revision,
             "row_count": raw.height,
             "columns": [
@@ -119,7 +141,7 @@ def create_app(
 
     @app.get("/api/session")
     def session() -> dict[str, str]:
-        return {"token": token}
+        return {"token": token, "session_id": session_id}
 
     @app.get("/api/variables")
     def variables() -> dict[str, Any]:
@@ -129,6 +151,11 @@ def create_app(
     def candidate(
         edit: Edit,
     ) -> tuple[Project, list[dict[str, str]], list[tuple[str, str]]]:
+        if edit.session_id != session_id:
+            raise HTTPException(
+                409,
+                "The server restarted. Reconnect and preview your draft again before applying.",
+            )
         if edit.revision != revision:
             raise HTTPException(
                 409,

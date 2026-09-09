@@ -1,7 +1,6 @@
 <script>
     import { onMount } from 'svelte';
     let state = null,
-        token = '',
         draft = null,
         tab = 'table',
         query = '',
@@ -57,18 +56,148 @@
               }))
             : [];
 
-    async function api(path, body) {
-        const response = await fetch('/api/' + path, {
+    let token = '',
+        serverSession = '',
+        bootstrapPending = null,
+        reconcilePending = null;
+    let differentProject = false;
+
+    function responseError(data, fallback) {
+        return new Error(
+            typeof data.detail === 'string'
+                ? data.detail
+                : data.detail
+                  ? JSON.stringify(data.detail)
+                  : fallback,
+        );
+    }
+    async function bootstrap() {
+        if (!bootstrapPending) {
+            bootstrapPending = (async () => {
+                const response = await fetch('/api/session', {
+                    cache: 'no-store',
+                    credentials: 'same-origin',
+                });
+                const data = await response.json();
+                if (!response.ok)
+                    throw responseError(data, 'Cannot reconnect to the local server.');
+                if (!data.token || !data.session_id)
+                    throw new Error(
+                        'The server needs the current workbench build. Your draft is kept.',
+                    );
+                token = data.token;
+                serverSession = data.session_id;
+            })().finally(() => {
+                bootstrapPending = null;
+            });
+        }
+        return bootstrapPending;
+    }
+    async function send(path, body) {
+        return fetch('/api/' + path, {
             method: body ? 'POST' : 'GET',
+            cache: 'no-store',
+            credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json', 'X-EasyGLM-Token': token },
             ...(body ? { body: JSON.stringify(body) } : {}),
         });
-        const data = await response.json();
-        if (!response.ok)
+    }
+    async function reconcile(force = false) {
+        if (!state || (!force && state.session_id === serverSession)) return;
+        if (!reconcilePending) {
+            reconcilePending = (async () => {
+                const response = await send('variables');
+                const fresh = await response.json();
+                if (!response.ok)
+                    throw responseError(fresh, 'Cannot read current settings. Your draft is kept.');
+                if (fresh.project_id !== state.project_id) {
+                    differentProject = true;
+                    preview = null;
+                    error =
+                        'This address now serves a different project. Your draft is kept. Download it before discarding and loading the new project.';
+                    throw new Error(error);
+                }
+                // Update only the applied baseline. Never replace the browser draft or raw JSON text.
+                state = fresh;
+                preview = null;
+                error = '';
+                notice =
+                    'Reconnected to the local server. Your draft is kept; preview changes before applying.';
+            })().finally(() => {
+                reconcilePending = null;
+            });
+        }
+        return reconcilePending;
+    }
+    async function api(path, body) {
+        if (differentProject)
             throw new Error(
-                typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail),
+                'This address serves a different project. Download your kept draft before discarding and reloading.',
             );
+        if (!token) await bootstrap();
+        const requestToken = token;
+        let response;
+        try {
+            response = await send(path, body);
+        } catch {
+            throw new Error(
+                'Cannot reach the local server. Your draft is kept. Start the server, then reconnect.',
+            );
+        }
+        let data = await response.json();
+        if (response.status === 401 && data.code === 'session_expired') {
+            // Concurrent failed reads share one bootstrap. Never retry origin/host denials.
+            if (requestToken === token) await bootstrap();
+            await reconcile();
+            if (body && body.session_id !== serverSession) {
+                throw new Error(
+                    'The server reconnected. Your draft is kept. Preview changes again before applying.',
+                );
+            }
+            response = await send(path, body);
+            data = await response.json();
+        }
+        if (!response.ok) throw responseError(data, 'The request failed. Your draft is kept.');
         return data;
+    }
+    async function reconnect() {
+        busy = true;
+        try {
+            await bootstrap();
+            await reconcile(true);
+            if (!state) await reload();
+            else {
+                error = '';
+                void loadPlot();
+            }
+        } catch (e) {
+            error = e.message;
+        } finally {
+            busy = false;
+        }
+    }
+    function downloadDraft() {
+        const blob = new Blob(
+            [
+                JSON.stringify(
+                    {
+                        project: state?.name,
+                        columns: state?.columns,
+                        setup: draft,
+                        role_json: jsonText,
+                    },
+                    null,
+                    2,
+                ),
+            ],
+            { type: 'application/json' },
+        );
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'easyglm-variable-draft.json';
+        link.click();
+        URL.revokeObjectURL(url);
     }
     function roleJson() {
         return JSON.stringify({ ...draft.assignments, ...draft.roles }, null, 2);
@@ -168,10 +297,16 @@
     async function reload() {
         busy = true;
         try {
-            state = await api('variables');
+            await bootstrap();
+            const response = await send('variables');
+            const fresh = await response.json();
+            if (!response.ok) throw responseError(fresh, 'Cannot load the local project.');
+            state = fresh;
+            differentProject = false;
             reset();
             notice = '';
-            if (!selected) selected = state.setup.roles.predictor[0] || state.columns[0]?.name;
+            if (!state.columns.some((c) => c.name === selected))
+                selected = state.setup.roles.predictor[0] || state.columns[0]?.name;
             void loadPlot();
         } catch (e) {
             error = e.message;
@@ -184,7 +319,11 @@
         busy = true;
         error = '';
         try {
-            preview = await api('variables/preview', { revision: state.revision, setup: draft });
+            preview = await api('variables/preview', {
+                session_id: state.session_id,
+                revision: state.revision,
+                setup: draft,
+            });
             previewScroll = 0;
         } catch (e) {
             error = e.message;
@@ -196,7 +335,11 @@
         busy = true;
         error = '';
         try {
-            state = await api('variables/apply', { revision: state.revision, setup: draft });
+            state = await api('variables/apply', {
+                session_id: state.session_id,
+                revision: state.revision,
+                setup: draft,
+            });
             draft = structuredClone(state.setup);
             jsonText = roleJson();
             preview = null;
@@ -239,7 +382,6 @@
     }
     onMount(async () => {
         try {
-            token = (await api('session')).token;
             await reload();
         } catch (e) {
             error = e.message;
@@ -299,7 +441,13 @@
                 Source files are unchanged.
             </div>
             {#if error}<div class="message error" role="alert">
-                    {error}<button onclick={reload}>Reload applied settings</button>
+                    <span>{error}</span><button onclick={reconnect} disabled={busy}
+                        >Reconnect</button
+                    >
+                    {#if draft}<button onclick={downloadDraft}>Download draft</button><button
+                            onclick={reload}
+                            disabled={busy}>Discard draft and reload</button
+                        >{/if}
                 </div>{/if}
             {#if notice}<div class="message" role="status">{notice}</div>{/if}
             {#if state && draft}
@@ -334,7 +482,7 @@
                             <button onclick={reset} disabled={busy}>Reset</button><button
                                 class="primary"
                                 onclick={review}
-                                disabled={busy}>Preview changes</button
+                                disabled={busy || differentProject}>Preview changes</button
                             >
                         </div>
                         {#if tab === 'table'}
@@ -436,7 +584,7 @@
                             <div class="preview-title">
                                 <strong>{preview.changes.length} variable changes</strong><button
                                     class="primary"
-                                    disabled={busy || !preview.changes.length}
+                                    disabled={busy || differentProject || !preview.changes.length}
                                     onclick={apply}>Apply changes</button
                                 >
                             </div>
@@ -490,9 +638,11 @@
                             /></label
                         >
                     </div>
-                    {#if plotError}<div class="message error">{plotError}</div>{:else if plot}<div
-                            class="chart-scroll"
-                        >
+                    {#if plotError}<div class="message error">
+                            <span>{plotError}</span><button onclick={reconnect} disabled={busy}
+                                >Reconnect</button
+                            >
+                        </div>{:else if plot}<div class="chart-scroll">
                             <div class="chart" style:width={zoom + '%'}>
                                 <svg
                                     viewBox="0 0 1000 180"
