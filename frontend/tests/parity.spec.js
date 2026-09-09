@@ -163,8 +163,6 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     await page.getByLabel('Heatmap model').selectOption('before_ae');
     await expect(page.locator('.ae-heatmap')).not.toHaveText(proposedAE);
     await button('Apply adjustment').click();
-    await expect(
-        page.getByText(/Adjustments applied. Rates and actual versus expected are updated/),
-    ).toBeVisible();
+    await expect(page.getByText(/Adjustments applied\./)).toBeVisible();
     expect(errors).toEqual([]);
 });

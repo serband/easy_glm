@@ -7,7 +7,6 @@
     import DiagnosticTable from './DiagnosticTable.svelte';
     export let fitIdentity = '',
         comparisonFitIdentity = '',
-        rateNote = '',
         table = null,
         children,
         api,
@@ -486,8 +485,7 @@
             onClear();
             preview = null;
             await onApplied(snapshot);
-            feedback =
-                'Adjustments applied. Rates and actual versus expected are updated; the fitted model is unchanged.';
+            feedback = 'Adjustments applied.';
         } catch (e) {
             error = e.message;
         } finally {
@@ -947,27 +945,20 @@
                     </p>{/if}
                 <details class="tool-help">
                     <summary>About this adjustment</summary>
-                    {#if tool === 'moving'}
-                        <p>
-                            Window 3 averages this point and the previous two: add their current
-                            relativities and divide by three. At the start, use the available points
-                            only.
-                        </p>
-                        <p>
-                            Every point has equal weight. There is no log transformation, exposure
-                            weighting or level recentering. The input is the current adjusted table,
-                            including earlier edits. Null / Other is excluded.
-                        </p>
-                        {#if ['linear', 'continuous'].includes(tableKind)}<p>
-                                Linear factors use distinct curve nodes; the lower clamp is counted
-                                once. Connecting log slopes are recalculated.
-                            </p>{/if}
-                    {:else if tool === 'isotonic'}<p>
-                            Isotonic smoothing preserves the exposure-weighted mean log relativity.
-                        </p>{/if}
                     <p>
-                        {rateNote} Tools use current tables and exclude Null / Other. Total expected claims
-                        can change; review the preview before applying.
+                        {#if tool === 'moving'}{windowSize === 1
+                                ? 'Keeps each point unchanged.'
+                                : windowSize === 2
+                                  ? 'Averages the current point and the previous point.'
+                                  : windowSize === 3
+                                    ? 'Averages the current point and the previous two.'
+                                    : `Averages the current point and the previous ${windowSize - 1} points.`}{:else if tool === 'isotonic'}Makes
+                            values {direction === 'increasing'
+                                ? 'non-decreasing'
+                                : 'non-increasing'}.{:else if tool === 'cap'}Keeps values within the
+                            limits you set.{:else if tool === 'round'}{rounding === 'decimals'
+                                ? `Rounds to ${decimals} decimal ${decimals === 1 ? 'place' : 'places'}.`
+                                : `Rounds to the nearest multiple of ${num(step)}.`}{/if}
                     </p>
                 </details>
                 {#if Object.keys(edits).length}<p>

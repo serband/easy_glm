@@ -1009,7 +1009,6 @@
                             tableKind={table?.kind}
                             {table}
                             rateLabel={result.relativity_label}
-                            rateNote={result.relativity_note}
                             onManual={() => {
                                 tableEditorOpen = true;
                                 requestAnimationFrame(() =>

@@ -64,9 +64,7 @@ test('visible rate adjustment methods preview, apply and undo real changes', asy
     ).toHaveCount(1);
     await page.screenshot({ path: '/tmp/easyglm-manual-rate-preview.png' });
     await button('Apply adjustment').click();
-    await expect(
-        page.getByText(/Adjustments applied. Rates and actual versus expected are updated/),
-    ).toBeVisible();
+    await expect(page.getByText(/Adjustments applied\./)).toBeVisible();
     await page.locator('.rate-table-card > summary').click();
     await page.locator('.table-snapshots > summary').click();
     await page.getByLabel('Snapshot name').fill('Manual starting point');
@@ -130,16 +128,12 @@ test('visible rate adjustment methods preview, apply and undo real changes', asy
         await expect(button('Apply adjustment')).toBeEnabled();
         await expect(page.locator('.preview-impact')).toContainText('changed rows');
         await button('Apply adjustment').click();
-        await expect(
-            page.getByText(/Adjustments applied. Rates and actual versus expected are updated/),
-        ).toBeVisible();
+        await expect(page.getByText(/Adjustments applied\./)).toBeVisible();
         await expect(button('Preview undo')).toBeEnabled();
         await button('Preview undo').click();
         await expect(button('Apply adjustment')).toBeEnabled();
         await button('Apply adjustment').click();
-        await expect(
-            page.getByText(/Adjustments applied. Rates and actual versus expected are updated/),
-        ).toBeVisible();
+        await expect(page.getByText(/Adjustments applied\./)).toBeVisible();
     }
     await button('Moving average').click();
     await expect(button('Apply adjustment')).toBeEnabled();
@@ -152,22 +146,16 @@ test('visible rate adjustment methods preview, apply and undo real changes', asy
     await button('Preview rebalance base rate').click();
     await expect(page.locator('.preview-impact')).toContainText('Base rate:');
     await button('Apply adjustment').click();
-    await expect(
-        page.getByText(/Adjustments applied. Rates and actual versus expected are updated/),
-    ).toBeVisible();
+    await expect(page.getByText(/Adjustments applied\./)).toBeVisible();
     await button('Reset this variable').click();
     await expect(button('Apply adjustment')).toBeEnabled();
     await button('Apply adjustment').click();
-    await expect(
-        page.getByText(/Adjustments applied. Rates and actual versus expected are updated/),
-    ).toBeVisible();
+    await expect(page.getByText(/Adjustments applied\./)).toBeVisible();
     await page.getByLabel('Saved snapshot').selectOption('Manual starting point');
     await button('Preview snapshot restore').click();
     await expect(button('Apply adjustment')).toBeEnabled();
     await button('Apply adjustment').click();
-    await expect(
-        page.getByText(/Adjustments applied. Rates and actual versus expected are updated/),
-    ).toBeVisible();
+    await expect(page.getByText(/Adjustments applied\./)).toBeVisible();
     await page.getByLabel('Second table version').selectOption('Manual starting point');
     await button('Compare table versions').click();
     await expect(page.getByText('Snapshot differences', { exact: true })).toBeVisible();
