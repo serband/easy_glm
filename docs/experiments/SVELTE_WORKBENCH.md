@@ -687,3 +687,27 @@ Checks cover exact canonical numeric/linear/categorical and probability-link
 rows, null/empty groups and all subsets; other-factor/base/challenger invalidation;
 original reuse, fit-time readiness and failure fallback; rapid cached switching,
 a delayed uncached response, applied-edit invalidation and existing preview races.
+
+### Explicit adjustment application
+
+The adjustment panel now starts with **Choose adjustment…**. Selecting moving
+average, isotonic smoothing, cap/floor, rounding or manual rows only edits local
+settings. The original and adjusted curves and A/E remain unchanged until Apply.
+One Apply calculates and commits the result; there is no tool-preview confirmation.
+Manual row changes are applied together in one undo step. Existing persisted
+changes are labelled **Saved adjustments** and are retained on entry.
+
+Tool replacements still start from the original fitted factor; manual changes
+still overlay the applied table. Other factors, base rate, null/Other rows and
+snapshots retain their established behavior. Pending actions are guarded against
+double clicks, changed selections, cancellation and failed calculations. Once
+commit starts, cancellation is disabled. A successful save followed by a failed
+chart refresh reports that the adjustments were saved. Candidate data is parsed
+before edit history is mutated.
+
+Validation covers explicit Apply, all tool options, manual batch undo, snapshots,
+failed calculations, stale/cancelled results, double clicks and failed refresh
+after saving. Read-only live checking found zero tool requests or commits from
+changing methods/options or drafting manual rows; chart markup and the complete
+project/jobs/edit-history snapshot were unchanged. The live server was not
+restarted and the user's fitted model and saved adjustments were preserved.

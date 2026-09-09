@@ -88,31 +88,15 @@
         orderedVariable = variable;
         ordered = false;
     }
-    let autoEnabled = false,
-        autoPending = false,
-        autoRunning = false,
-        autoEpoch = 0,
-        autoTimer,
-        baselineRows = [],
-        autoError = '';
-    $: if (Object.keys(edits).length && autoEnabled) {
-        stopAuto();
-        preview = null;
-        rows = baselineRows;
-    }
+    let baselineRows = [],
+        draftError = '',
+        committing = false;
     $: if (
         preview?.manualSignature !== undefined &&
         preview.manualSignature !== JSON.stringify(edits)
     ) {
         preview = null;
         rows = baselineRows;
-    }
-    function stopAuto() {
-        autoEnabled = false;
-        autoPending = false;
-        autoEpoch++;
-        clearTimeout(autoTimer);
-        if (autoRunning && taskId) void api('reviews/' + taskId + '/cancel', rev()).catch(() => {});
     }
     function toolOptions() {
         if (tool === 'moving') return { window: windowSize, ordered };
@@ -121,7 +105,8 @@
         return rounding === 'decimals' ? { decimals } : { step };
     }
     function toolError() {
-        if (Object.keys(edits).length) return 'Preview or discard your manual row edits first.';
+        if (tool === 'manual') return '';
+        if (Object.keys(edits).length) return 'Apply or discard your row edits first.';
         if (tableKind === 'interaction') return 'Edit interaction cells in the table.';
         if (['moving', 'isotonic'].includes(tool) && tableKind === 'categorical' && !ordered)
             return 'Confirm that these levels have a meaningful order.';
@@ -147,56 +132,27 @@
         return '';
     }
     function parametersChanged() {
-        stopAuto();
-        preview = null;
-        rows = baselineRows;
         error = '';
-        note = '';
-        autoError = '';
-        autoEnabled = true;
-        autoPending = true;
-        const version = autoEpoch;
+        feedback = '';
         queueMicrotask(() => {
-            if (!autoEnabled || version !== autoEpoch) return;
-            autoError = toolError();
-            if (autoError) {
-                autoPending = false;
-                return;
-            }
-            const action = tool,
-                options = toolOptions();
-            const dispatch = async () => {
-                if (!autoEnabled || version !== autoEpoch || destroyed) return;
-                if (busy) {
-                    autoTimer = setTimeout(dispatch, 100);
-                    return;
-                }
-                autoRunning = true;
-                await run(action, { options }, version);
-                autoRunning = false;
-                if (version === autoEpoch) autoPending = false;
-            };
-            autoTimer = setTimeout(dispatch, 350);
+            draftError = tool ? toolError() : '';
         });
     }
-    function chooseTool(value) {
-        tool = value;
+    function chooseTool() {
         parametersChanged();
+        if (tool === 'manual') onManual();
     }
-    function enterManual() {
-        stopAuto();
-        preview = null;
-        rows = baselineRows;
-        autoError = '';
-        onManual();
+    async function applyAdjustment() {
+        if (busy || !tool || tool === 'manual') return;
+        draftError = toolError();
+        if (!draftError) await run(tool, { options: toolOptions() }, null, true);
     }
     function discardPreview() {
-        stopAuto();
         preview = null;
         rows = baselineRows;
         note = '';
         error = '';
-        autoError = '';
+        draftError = '';
     }
     $: smoothing = tool === 'moving' || tool === 'isotonic';
     $: selectedVariable = view === 'tables' ? variable : diagnosticVariable;
@@ -246,14 +202,13 @@
                 return;
             }
             activePair = true;
-            await run('pair', selection, null, { version, requestKey });
+            await run('pair', selection, { version, requestKey });
             activePair = false;
             if (version === pairEpoch) pairPending = false;
         };
         pairTimer = setTimeout(dispatch, 200);
     }
 
-    $: if (key !== loadedKey && autoEnabled) stopAuto();
     $: if (name && key !== loadedKey && !busy) load();
     let attemptedVariableKey = '',
         runSerial = 0;
@@ -323,8 +278,7 @@
             : `rgba(39,119,98,${0.15 + strength})`;
     }
     async function load() {
-        stopAuto();
-        autoError = '';
+        draftError = '';
         baselineRows = [];
         const startedKey = key;
         loadedKey = startedKey;
@@ -351,11 +305,11 @@
             else await runTab();
         } else if (variable) await run('variable', { variable });
     }
-    export async function previewRowEdits() {
-        await run('edit', { edits });
+    export async function applyRowEdits() {
+        if (!busy && Object.keys(edits).length)
+            await run('edit', { edits: { ...edits } }, null, true);
     }
-    async function run(action, extra = {}, autoVersion = null, pairVersion = null) {
-        if (autoVersion === null) stopAuto();
+    async function run(action, extra = {}, pairVersion = null, commit = false) {
         if (destroyed) return;
         if (action === 'variable') {
             const ready = cachedAe(
@@ -386,6 +340,10 @@
         let requestTaskId = '';
         const variableKey = desiredVariableKey;
         const cacheContext = aeContext;
+        const capturedRevision = rev();
+        const capturedVariable = selectedVariable;
+        const capturedName = name;
+        const settings = commit && action !== 'edit' ? JSON.stringify([tool, toolOptions()]) : null;
         if (action === 'variable') {
             attemptedVariableKey = variableKey;
             rows = [];
@@ -408,11 +366,10 @@
             (pairVersion === null ||
                 (pairVersion.version === pairEpoch && pairVersion.requestKey === pairRequestKey)) &&
             (manualSignature === undefined || manualSignature === JSON.stringify(edits)) &&
-            (autoVersion === null ||
-                (autoVersion === autoEpoch && autoEnabled && !Object.keys(edits).length));
+            (settings === null || settings === JSON.stringify([tool, toolOptions()]));
         try {
             const payload = {
-                ...rev(),
+                ...capturedRevision,
                 action,
                 variable: selectedVariable || null,
                 subset,
@@ -460,6 +417,33 @@
                 if (response.status === 'complete') {
                     if (!valid()) return;
                     const data = response.data;
+                    if (commit) {
+                        if (!response.can_apply) {
+                            feedback = 'No changes needed.';
+                            return;
+                        }
+                        if (!valid()) return;
+                        committing = true;
+                        const snapshot = await api(
+                            'reviews/' + requestTaskId + '/apply',
+                            capturedRevision,
+                        );
+                        const matching =
+                            name === capturedName &&
+                            selectedVariable === capturedVariable &&
+                            (manualSignature === undefined ||
+                                manualSignature === JSON.stringify(edits));
+                        if (matching) onClear();
+                        preview = null;
+                        feedback = 'Adjustments applied.';
+                        try {
+                            await onApplied(snapshot);
+                        } catch (refreshError) {
+                            feedback = 'Adjustments saved. Refresh the page to reload the charts.';
+                        }
+                        return;
+                    }
+
                     if (action === 'variable' && data.ae_cache)
                         rememberAe(cacheContext, data.ae_cache);
                     if (data.book_impact) bookImpact = data.book_impact;
@@ -503,7 +487,6 @@
                                 ...data,
                                 id: taskId,
                                 canApply: response.can_apply,
-                                autoVersion,
                                 manualSignature,
                             };
                         }
@@ -526,30 +509,36 @@
             if (serial === runSerial) {
                 busy = false;
                 taskId = '';
+                committing = false;
             }
         }
     }
     async function cancel() {
-        stopAuto();
+        if (committing) return;
         if (activePair || pairPending) {
             pairEpoch++;
             clearTimeout(pairTimer);
             pairPending = false;
             pairMessage = 'Pair review cancelled.';
         }
-        if (taskId) await api('reviews/' + requestTaskId + '/cancel', rev());
+        runSerial++;
+        try {
+            if (taskId) await api('reviews/' + taskId + '/cancel', rev());
+        } catch (cancelError) {
+            error = cancelError.message;
+        } finally {
+            taskId = '';
+            busy = false;
+        }
     }
     async function applyPreview() {
         if (
             busy ||
-            autoPending ||
             !preview?.canApply ||
             (preview.manualSignature !== undefined &&
-                preview.manualSignature !== JSON.stringify(edits)) ||
-            (preview.autoVersion != null && preview.autoVersion !== autoEpoch)
+                preview.manualSignature !== JSON.stringify(edits))
         )
             return;
-        stopAuto();
         busy = true;
         error = '';
         try {
@@ -591,7 +580,6 @@
     onDestroy(() => {
         pairEpoch++;
         clearTimeout(pairTimer);
-        stopAuto();
         destroyed = true;
         if (taskId) void api('reviews/' + taskId + '/cancel', rev()).catch(() => {});
     });
@@ -666,10 +654,8 @@
                 )}%)</strong
             >
 
-            <button
-                class="primary"
-                disabled={busy || autoPending || !preview.canApply}
-                onclick={applyPreview}>Apply adjustment</button
+            <button class="primary" disabled={busy || !preview.canApply} onclick={applyPreview}
+                >Apply adjustment</button
             ><button onclick={discardPreview}>Discard preview</button>
             {#if preview.changes?.length}<details>
                     <summary>{preview.changes.length} changed rows — before and after</summary>
@@ -728,7 +714,11 @@
         </h2>
         {#if view === 'tables' && table}
             <p class="rate-preview-state help-text">
-                {preview ? 'Preview · not applied' : 'Applied adjustments'}
+                {preview
+                    ? 'Preview · not applied'
+                    : info.adjustments?.length
+                      ? 'Saved adjustments'
+                      : 'Original fit'}
             </p>
             <RateChart
                 table={preview?.preview_table || table}
@@ -915,20 +905,21 @@
                 </div>
             </div>
         {:else}
-            <div class="adjustment-modes" role="group" aria-label="Adjustment method">
-                {#each [['moving', 'Moving average'], ['isotonic', 'Isotonic smoothing'], ['cap', 'Cap / floor'], ['round', 'Round']] as [value, label]}
-                    <button
-                        aria-pressed={tool === value}
-                        disabled={(busy && !autoRunning) ||
-                            tableKind === 'interaction' ||
-                            Object.keys(edits).length > 0}
-                        onclick={() => chooseTool(value)}>{label}</button
-                    >
-                {/each}
-                <button disabled={busy} onclick={enterManual}
-                    >Edit individual or multiple rows</button
+            <label
+                >Adjustment<select
+                    aria-label="Adjustment method"
+                    bind:value={tool}
+                    disabled={busy}
+                    onchange={chooseTool}
                 >
-            </div>
+                    <option value="">Choose adjustment…</option>
+                    {#each [['moving', 'Moving average'], ['isotonic', 'Isotonic smoothing'], ['cap', 'Cap / floor'], ['round', 'Round'], ['manual', 'Manual rows']] as [value, label]}<option
+                            {value}
+                            disabled={tableKind === 'interaction' && value !== 'manual'}
+                            >{label}</option
+                        >{/each}
+                </select></label
+            >
             {#if tableKind === 'interaction'}<p>
                     Interaction cells are edited individually in the rate table. Smoothing applies
                     to main factors.
@@ -943,6 +934,7 @@
                                 max="25"
                                 step="1"
                                 bind:value={windowSize}
+                                disabled={busy}
                                 oninput={parametersChanged}
                             /></label
                         >
@@ -951,6 +943,7 @@
                             >Direction<select
                                 aria-label="Smoothing direction"
                                 bind:value={direction}
+                                disabled={busy}
                                 onchange={parametersChanged}
                                 ><option value="increasing">Increasing</option><option
                                     value="decreasing">Decreasing</option
@@ -965,6 +958,7 @@
                                 min=".0001"
                                 step=".05"
                                 bind:value={floor}
+                                disabled={busy}
                                 oninput={parametersChanged}
                             /></label
                         ><label
@@ -974,6 +968,7 @@
                                 min=".0001"
                                 step=".05"
                                 bind:value={cap}
+                                disabled={busy}
                                 oninput={parametersChanged}
                             /></label
                         >{/if}
@@ -981,6 +976,7 @@
                             >Round to<select
                                 aria-label="Rounding mode"
                                 bind:value={rounding}
+                                disabled={busy}
                                 onchange={parametersChanged}
                                 ><option value="decimals">Decimal places</option><option
                                     value="step">A step</option
@@ -993,6 +989,7 @@
                                     min="0"
                                     max="6"
                                     bind:value={decimals}
+                                    disabled={busy}
                                     oninput={parametersChanged}
                                 /></label
                             >{:else}<label
@@ -1002,6 +999,7 @@
                                     min=".0001"
                                     step=".01"
                                     bind:value={step}
+                                    disabled={busy}
                                     oninput={parametersChanged}
                                 /></label
                             >
@@ -1011,6 +1009,7 @@
                         ><input
                             type="checkbox"
                             bind:checked={ordered}
+                            disabled={busy}
                             onchange={parametersChanged}
                         /> The levels of this factor are in a meaningful order</label
                     >
@@ -1018,39 +1017,36 @@
                         Levels are normally ordered by exposure. Confirm only if neighbouring levels
                         represent a real ordered scale.
                     </p>{/if}
-                <details class="tool-help">
-                    <summary>About this adjustment</summary>
-                    <p>
-                        {#if tool === 'moving'}{windowSize === 1
-                                ? 'Keeps each point unchanged.'
-                                : windowSize === 2
-                                  ? 'Averages the current point and the previous point.'
-                                  : windowSize === 3
-                                    ? 'Averages the current point and the previous two.'
-                                    : `Averages the current point and the previous ${windowSize - 1} points.`}{:else if tool === 'isotonic'}{direction ===
-                            'increasing'
-                                ? 'Removes dips so rates only rise or stay flat. Rates already following this pattern stay unchanged.'
-                                : 'Removes upward reversals so rates only fall or stay flat. Rates already following this pattern stay unchanged.'}{:else if tool === 'cap'}Keeps
-                            values within the limits you set.{:else if tool === 'round'}{rounding ===
-                            'decimals'
-                                ? `Rounds to ${decimals} decimal ${decimals === 1 ? 'place' : 'places'}.`
-                                : `Rounds to the nearest multiple of ${num(step)}.`}{/if}
-                    </p>
-                </details>
+                {#if tool && tool !== 'manual'}<details class="tool-help">
+                        <summary>About this adjustment</summary>
+                        <p>
+                            {#if tool === 'moving'}{windowSize === 1
+                                    ? 'Keeps each point unchanged.'
+                                    : windowSize === 2
+                                      ? 'Averages the current point and the previous point.'
+                                      : windowSize === 3
+                                        ? 'Averages the current point and the previous two.'
+                                        : `Averages the current point and the previous ${windowSize - 1} points.`}{:else if tool === 'isotonic'}{direction ===
+                                'increasing'
+                                    ? 'Removes dips so rates only rise or stay flat. Rates already following this pattern stay unchanged.'
+                                    : 'Removes upward reversals so rates only fall or stay flat. Rates already following this pattern stay unchanged.'}{:else if tool === 'cap'}Keeps
+                                values within the limits you set.{:else if tool === 'round'}{rounding ===
+                                'decimals'
+                                    ? `Rounds to ${decimals} decimal ${decimals === 1 ? 'place' : 'places'}.`
+                                    : `Rounds to the nearest multiple of ${num(step)}.`}{/if}
+                        </p>
+                    </details>{/if}
                 {#if Object.keys(edits).length}<p>
-                        Preview or discard your {Object.keys(edits).length} manual row edits before using
+                        Apply or discard your {Object.keys(edits).length} manual row edits before using
                         a tool.
                     </p>{/if}
             {/if}
-            <div class="auto-preview-status" role="status">
-                {#if error || autoError}{error || autoError}{:else if autoPending}Updating preview…{:else if !preview}Choose
-                    a tool to preview its effect.{/if}
-                {#if autoEnabled && !preview}<div class="auto-preview-actions">
-                        <button disabled>Apply adjustment</button><button onclick={discardPreview}
-                            >Discard preview</button
-                        >
-                    </div>{/if}
-            </div>
+            <div class="adjustment-status" role="status">{error || draftError}</div>
+            {#if tool && tool !== 'manual'}<button
+                    class="primary"
+                    disabled={busy || !!draftError || !!toolError()}
+                    onclick={applyAdjustment}>Apply</button
+                >{/if}
             {@render previewControls()}
             {#if bookImpact}<p class="book-impact">
                     <strong>Current training expected: {num(bookImpact.current)}</strong> · fitted: {num(
@@ -1152,8 +1148,8 @@
                     ><DiagnosticTable rows={info.adjustments} title="Applied adjustments" />
                 </details>{/if}
         {/if}
-        {#if busy && !autoRunning && !pairPending}<div class="message" role="status">
-                Computing in background… <button onclick={cancel} disabled={!taskId}
+        {#if busy && !pairPending}<div class="message" role="status">
+                Computing in background… <button onclick={cancel} disabled={!taskId || committing}
                     >Cancel review</button
                 >
             </div>{/if}

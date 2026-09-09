@@ -76,30 +76,21 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await expect(page.locator('.rate-grid')).not.toBeVisible();
     await page.locator('.rate-table-card > summary').click();
     await expect(page.getByLabel('Relativity row 2', { exact: true })).toHaveValue('2.1');
-    await button('Preview row edits (1)').click();
-    await expect(button('Apply adjustment')).toBeVisible();
-    await expect(
-        page.getByText('Preview only; no settings have changed.', { exact: false }),
-    ).toBeVisible();
-    await button('Apply adjustment').click();
+    await button('Apply row edits (1)').click();
+    await expect(page.getByText('Adjustments applied.', { exact: true })).toBeVisible();
     await expect(page.getByLabel('Relativity row 2', { exact: true })).toHaveValue('2.1');
     await expect(button('Preview undo')).toBeEnabled();
     await button('Preview undo').click();
     await button('Apply adjustment').click();
     await expect(page.getByLabel('Relativity row 2', { exact: true })).not.toHaveValue('2.1');
-    await button('Cap / floor').click();
+    await page.getByLabel('Adjustment method', { exact: true }).selectOption('cap');
     await page.getByLabel('Relativity cap').fill('1.1');
-    await expect(button('Apply adjustment')).toBeEnabled();
-    await expect(button('Apply adjustment')).toBeVisible();
-    await page.locator('.preview-impact summary').first().click();
-    await expect(page.locator('.preview-impact table')).toContainText('Before');
+    await expect(button('Apply')).toBeEnabled();
+    await expect(page.locator('.preview-impact')).toHaveCount(0);
     await page.setViewportSize({ width: 884, height: 808 });
     expect(
         await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
     ).toBeTruthy();
-    await page.screenshot({ path: 'test-results/restored-adjustments.png', fullPage: true });
-    await page.setViewportSize({ width: 1440, height: 1000 });
-    await button('Discard preview').click();
     await expect(button('Preview rebalance base rate')).toBeEnabled();
     await button('Preview rebalance base rate').click();
     await expect(button('Apply adjustment')).toBeVisible();

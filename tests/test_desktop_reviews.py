@@ -156,3 +156,28 @@ def test_include_interaction_and_edit_cell_without_refitting(review_session):
         "/api/results/Frequency/table", params={"variable": "Age×Region", "limit": 500}
     ).json()
     assert edited["rows"][index]["relativity"] == 1.8
+
+
+def test_invalid_candidate_cannot_change_edit_history(review_session):
+    import copy
+    import inspect
+
+    client, _, _ = review_session
+    fitted(client)
+    before = client.get("/api/project").json()
+    task = review(client, "edit", variable="Age", edits={"1": 2.1})
+    endpoint = next(
+        route.endpoint
+        for route in client.app.routes
+        if getattr(route, "path", "") == "/api/reviews/{key}/apply"
+    )
+    jobs = inspect.getclosurevars(endpoint).nonlocals["reviews"]
+    invalid = copy.deepcopy(jobs.get(task["id"])["data"]["project"])
+    invalid["models"] = {}
+    jobs.get(task["id"])["data"]["project"] = invalid
+    response = client.post(
+        "/api/reviews/" + task["id"] + "/apply", json=revision(client)
+    )
+    assert response.status_code == 409
+    assert client.get("/api/project").json() == before
+    assert not client.get("/api/review-info/Frequency").json()["undo"]

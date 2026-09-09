@@ -84,13 +84,11 @@ test('fitted variable cache is immediate, invalidates after edits and rejects la
     ).toHaveCount(0);
     await page.unrouteAll({ behavior: 'wait' });
     await button('Rate tables').click();
-    await button('Edit individual or multiple rows').click();
+    await page.getByLabel('Adjustment method', { exact: true }).selectOption('manual');
     await page.getByLabel('Relativity row 2', { exact: true }).fill('2.5');
     await page.getByLabel('Relativity row 2', { exact: true }).press('Tab');
-    await button('Preview row edits (1)').click();
-    await expect(button('Apply adjustment')).toBeEnabled();
     const edited = starts;
-    await button('Apply adjustment').click();
+    await button('Apply row edits (1)').click();
     await expect(page.getByText('Adjustments applied.', { exact: true })).toBeVisible();
     await button('Diagnostics').click();
     await expect(page.getByRole('heading', { name: / · Holdout$/ }).first()).toBeVisible();

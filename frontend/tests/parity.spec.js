@@ -151,18 +151,16 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     await expect(
         page.locator('.rate-relativities > .rate-chart-card .relativity-heatmap'),
     ).toBeVisible();
-    await button('Edit individual or multiple rows').click();
+    await page.getByLabel('Adjustment method', { exact: true }).selectOption('manual');
     await expect(page.locator('.cell-edit-matrix')).toBeVisible();
     const cell = page.getByRole('spinbutton', { name: /^Relativity cell / }).first();
     await cell.fill('1.7');
     await cell.press('Tab');
-    await button('Preview row edits (1)').click();
-    await expect(button('Apply adjustment')).toBeVisible();
+    await button('Apply row edits (1)').click();
+    await expect(page.getByText('Adjustments applied.', { exact: true })).toBeVisible();
     await expect(page.locator('.rate-relativities .relativity-heatmap')).toBeVisible();
     const proposedAE = await page.locator('.ae-heatmap').innerText();
-    await page.getByLabel('Heatmap model').selectOption('before_ae');
+    await page.getByLabel('Heatmap model').selectOption('fitted_ae');
     await expect(page.locator('.ae-heatmap')).not.toHaveText(proposedAE);
-    await button('Apply adjustment').click();
-    await expect(page.getByText(/Adjustments applied\./)).toBeVisible();
     expect(errors).toEqual([]);
 });

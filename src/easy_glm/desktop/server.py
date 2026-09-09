@@ -565,6 +565,9 @@ def create_app(
                 name = task["request"]["model"]
                 jobs.result(current, name)
                 cfg = current.models[name]
+                candidate_project = Project.from_dict(task["data"]["project"])
+                candidate_config = candidate_project.models[name]
+                candidate_result = task["data"]["result"]
                 before = (deepcopy(cfg.adjustments), cfg.base_rate_override)
                 action = task["request"]["original_action"]
                 if action == "undo":
@@ -577,13 +580,10 @@ def create_app(
                         redo_steps[name].pop()
                     else:
                         redo_steps[name] = []
-                candidate_project = Project.from_dict(task["data"]["project"])
-                cfg.adjustments = candidate_project.models[name].adjustments
-                cfg.base_rate_override = candidate_project.models[
-                    name
-                ].base_rate_override
+                cfg.adjustments = candidate_config.adjustments
+                cfg.base_rate_override = candidate_config.base_rate_override
                 revision += 1
-                jobs.edited(current, name, task["data"]["result"])
+                jobs.edited(current, name, candidate_result)
                 return snapshot()
             except (ValueError, KeyError) as exc:
                 raise HTTPException(409, str(exc)) from exc

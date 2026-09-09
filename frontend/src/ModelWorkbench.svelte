@@ -110,14 +110,13 @@
         // Post-fit edits keep the adjustment controls and their local choices mounted.
         known = snapshot.session_id + ':' + snapshot.revision;
         onState(snapshot);
-        clearEdits();
         wb = await api('workbench');
         jobs = wb.jobs;
         known = wb.session_id + ':' + wb.revision;
         if (!jobs[selected]?.applicable || view === 'model') pickModel();
         else {
             cfg = structuredClone(wb.models[selected]);
-            await loadResults();
+            await loadResults(true);
         }
     }
     export let api;
@@ -315,7 +314,7 @@
             polling = false;
         }
     }
-    async function loadResults() {
+    async function loadResults(preserveEdits = false) {
         const name = selected,
             id = jobs[name]?.id;
         if (!jobs[name]?.applicable) return;
@@ -329,9 +328,10 @@
                 ? tableName
                 : result.table_index[0]?.name || '';
             tableOffset = 0;
-            await loadTable();
+            await loadTable(preserveEdits);
         } catch (e) {
             error = e.message;
+            if (preserveEdits) throw e;
         }
     }
     async function saveModel() {
@@ -402,8 +402,8 @@
     function kind(name, value) {
         kinds = { ...kinds, [name]: value || null };
     }
-    async function loadTable() {
-        rowEdits = {};
+    async function loadTable(preserveEdits = false) {
+        if (!preserveEdits) rowEdits = {};
         if (!tableName || !result) return;
         tableBusy = true;
         tableScroll = 0;
@@ -420,6 +420,7 @@
             table = { ...table, kind: rateChartKind(table, tableName, wb) };
         } catch (e) {
             error = e.message;
+            if (preserveEdits) throw e;
         } finally {
             tableBusy = false;
         }
@@ -1039,7 +1040,7 @@
                                     <p class="help-text">
                                         {['linear', 'continuous'].includes(table.kind)
                                             ? 'Edit the relativity at each band start. The neighbouring slopes are recalculated so the curve stays continuous.'
-                                            : 'Edit one or several relativities, then preview all your row changes together before applying.'}
+                                            : 'Edit one or several relativities, then apply your row changes together.'}
                                     </p>
                                     {#if table.kind === 'interaction' && cellRowNames.length * cellColNames.length <= 1600}
                                         <p class="help-text">
@@ -1063,6 +1064,7 @@
                                                                         JSON.stringify([a, b]),
                                                                     )}<td
                                                                     >{#if cell}<input
+                                                                            disabled={reviewBusy}
                                                                             aria-label={'Relativity cell ' +
                                                                                 a +
                                                                                 ' × ' +
@@ -1128,6 +1130,7 @@
                                                                     title={num(row[column])}
                                                                     >{#if column === 'relativity'}<input
                                                                             class="relativity-input"
+                                                                            disabled={reviewBusy}
                                                                             aria-label={'Relativity row ' +
                                                                                 (table.offset +
                                                                                     tableStart +
@@ -1198,8 +1201,8 @@
                                         <button
                                             class="primary"
                                             disabled={reviewBusy || !Object.keys(rowEdits).length}
-                                            onclick={() => tableReview.previewRowEdits()}
-                                            >Preview row edits ({Object.keys(rowEdits)
+                                            onclick={() => tableReview.applyRowEdits()}
+                                            >Apply row edits ({Object.keys(rowEdits)
                                                 .length})</button
                                         ><button
                                             disabled={reviewBusy || !Object.keys(rowEdits).length}
