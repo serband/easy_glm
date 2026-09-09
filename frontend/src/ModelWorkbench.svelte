@@ -3,6 +3,7 @@
     import ReviewPanel from './ReviewPanel.svelte';
     import RateChart from './RateChart.svelte';
     import { rateChartKind } from './rateChartData.js';
+    let diagnosticTab = 'variable';
     let tableDetails = false,
         tableReview,
         reviewBusy = false;
@@ -75,7 +76,7 @@
         timer = null;
     $: signature = state ? state.session_id + ':' + state.revision : '';
     $: if (
-        (view !== 'variables' || state?.models?.length) &&
+        (['model', 'diagnostics', 'tables'].includes(view) || state?.models?.length) &&
         state &&
         !loading &&
         !saving &&
@@ -359,13 +360,13 @@
     });
 </script>
 
-<div hidden={view === 'variables'} class="model-workbench">
+<div hidden={!['model', 'diagnostics', 'tables'].includes(view)} class="model-workbench">
     <div class="heading">
         <div>
             <div class="eyebrow">{view === 'model' ? 'MODEL SETUP' : 'FITTED RESULTS'}</div>
             <h1>
                 {view === 'model'
-                    ? 'Design & models'
+                    ? 'Model design and fit'
                     : view === 'diagnostics'
                       ? 'Diagnostics'
                       : 'Rate tables'}
@@ -407,76 +408,14 @@
             >
         </div>
         {#if view === 'model'}
-            <section class="model-card">
-                <div class="section-heading">
-                    <h2>Train / holdout split</h2>
-                    <span
-                        >{wb.counts.train.toLocaleString()} train · {wb.counts.holdout.toLocaleString()}
-                        holdout</span
-                    >
-                </div>
-                <p class="help-text">
-                    A generated random split is valid without a source column assigned the split
-                    role.
-                </p>
-                <div class="form-grid split-form">
-                    <label
-                        >Method<select aria-label="Split method" bind:value={splitDraft.mode}
-                            ><option value="random">Seeded random</option><option value="column"
-                                >Existing column</option
-                            ></select
-                        ></label
-                    >
-                    {#if splitDraft.mode === 'random'}<label
-                            >Generated column<input
-                                aria-label="Split column name"
-                                bind:value={splitDraft.column}
-                            /></label
-                        ><label
-                            >Training fraction<input
-                                aria-label="Training fraction"
-                                type="number"
-                                min=".01"
-                                max=".99"
-                                step=".05"
-                                bind:value={splitDraft.fraction}
-                            /></label
-                        ><label
-                            >Seed<input
-                                aria-label="Split seed"
-                                type="number"
-                                min="0"
-                                step="1"
-                                bind:value={splitDraft.seed}
-                            /></label
-                        >{:else}<label
-                            >Column<select
-                                aria-label="Existing split column"
-                                bind:value={splitDraft.column}
-                                >{#if !wb.columns.some((c) => c.name === splitDraft.column)}<option
-                                        value={splitDraft.column}
-                                        >{splitDraft.column} (missing)</option
-                                    >{/if}{#each wb.columns as column}<option value={column.name}
-                                        >{column.name}</option
-                                    >{/each}</select
-                            ></label
-                        ><label
-                            >Training value<input
-                                aria-label="Training value"
-                                bind:value={splitDraft.train_value}
-                            /></label
-                        >{/if}
-                    <button onclick={saveSplit} disabled={saving || loading}>Apply split</button>
-                </div>
-                {#if wb.problems.length}<div class="prerequisites">
-                        <strong>Before fitting</strong>{#each wb.problems as problem}<p>
-                                {problem}
-                            </p>{/each}
-                    </div>{/if}
-            </section>
+            <nav class="section-nav" aria-label="Model sections">
+                <a href="#model-definition">Model definition</a><a href="#factor-design"
+                    >Factor design</a
+                ><a href="#fit-settings">Fit and results</a>
+            </nav>
             <fieldset disabled={saving} class="edit-fieldset">
                 <section class="model-card">
-                    <h2>Response & regularisation</h2>
+                    <h2 id="model-definition">Model definition</h2>
                     <div class="form-grid">
                         <label
                             >Family<select aria-label="Model family" bind:value={cfg.family}
@@ -493,7 +432,7 @@
                             ></label
                         >
                         {#each ['target', 'weight', 'offset'] as field}<label
-                                >{field}<select
+                                >{field.charAt(0).toUpperCase() + field.slice(1)}<select
                                     aria-label={'Model ' + field}
                                     bind:value={cfg[field]}
                                     ><option value={null}>None</option
@@ -522,6 +461,173 @@
                                 bind:checked={cfg.divide_target_by_weight}
                             />Divide target by weight</label
                         >
+                    </div>
+                </section>
+                <section class="model-card">
+                    <div class="section-heading">
+                        <h2 id="factor-design">Factor design</h2>
+                        <span>{cfg.predictors.length} selected</span>
+                    </div>
+                    <p class="help-text">
+                        Roles make columns eligible; this selection defines this model. Design kinds
+                        and defaults are shared across models.
+                    </p>
+                    <details>
+                        <summary>Defaults for every predictor</summary>
+                        <div class="form-grid compact">
+                            <label
+                                >Default bins<input
+                                    aria-label="Default bins"
+                                    type="number"
+                                    min="2"
+                                    max="200"
+                                    bind:value={nBins}
+                                /></label
+                            ><label
+                                >Minimum category share<input
+                                    aria-label="Minimum category share"
+                                    type="number"
+                                    min="0"
+                                    max=".99"
+                                    step=".001"
+                                    bind:value={levelShare}
+                                /></label
+                            >
+                        </div>
+                    </details>
+                    <input
+                        class="factor-search"
+                        aria-label="Search predictor terms"
+                        placeholder="Find a predictor…"
+                        bind:value={termSearch}
+                        oninput={() => (termScroll = 0)}
+                    />
+                    <div
+                        class="terms-list"
+                        onscroll={(e) => (termScroll = e.currentTarget.scrollTop)}
+                    >
+                        <div style:height={filteredTerms.length * 34 + 'px'} class="virtual-space">
+                            <div
+                                class="virtual-rows"
+                                style:transform={'translateY(' + termStart * 34 + 'px)'}
+                            >
+                                {#each filteredTerms.slice(termStart, termStart + 18) as name}<div
+                                        class="term-row"
+                                    >
+                                        <label
+                                            ><input
+                                                aria-label={'Include ' + name}
+                                                type="checkbox"
+                                                checked={cfg.predictors.includes(name)}
+                                                onchange={(e) =>
+                                                    toggle(name, e.currentTarget.checked)}
+                                            />{name}</label
+                                        ><select
+                                            aria-label={'Design kind for ' + name}
+                                            value={kinds[name] || ''}
+                                            onchange={(e) => kind(name, e.currentTarget.value)}
+                                            ><option value="">Infer from type</option><option
+                                                value="step">Step bands</option
+                                            ><option value="linear">Piecewise linear</option><option
+                                                value="continuous">Continuous slope</option
+                                            ><option value="categorical">Categorical</option
+                                            ></select
+                                        >
+                                    </div>{/each}
+                            </div>
+                        </div>
+                    </div>
+                    {#if cfg.interactions?.length}<div class="preserved">
+                            Retained two-stage interactions: {cfg.interactions
+                                .map((i) => i.a + ' × ' + i.b)
+                                .join(', ')}. Their detailed editor is not yet available here.
+                        </div>{/if}
+                    {#if Object.keys(cfg.monotone || {}).length}<div class="preserved">
+                            Retained monotone constraints: {Object.entries(cfg.monotone)
+                                .map(([n, v]) => n + ' ' + v)
+                                .join(', ')}.
+                        </div>{/if}
+                    <div class="help-text">
+                        Existing knots, clamps, per-term penalties, adjustments and notes are
+                        retained. Unsupported combinations are reported when saving or fitting.
+                    </div>
+                </section>
+                <section class="model-card">
+                    <h2 id="fit-settings">Fit and results</h2>
+                    <details class="split-settings" open={!wb.counts.holdout}>
+                        <summary>Train / holdout split</summary>
+                        <div class="section-heading">
+                            <span>Applied split</span>
+                            <span
+                                >{wb.counts.train.toLocaleString()} train · {wb.counts.holdout.toLocaleString()}
+                                holdout</span
+                            >
+                        </div>
+                        <p class="help-text">
+                            A generated random split is valid without a source column assigned the
+                            split role.
+                        </p>
+                        <div class="form-grid split-form">
+                            <label
+                                >Method<select
+                                    aria-label="Split method"
+                                    bind:value={splitDraft.mode}
+                                    ><option value="random">Seeded random</option><option
+                                        value="column">Existing column</option
+                                    ></select
+                                ></label
+                            >
+                            {#if splitDraft.mode === 'random'}<label
+                                    >Generated column<input
+                                        aria-label="Split column name"
+                                        bind:value={splitDraft.column}
+                                    /></label
+                                ><label
+                                    >Training fraction<input
+                                        aria-label="Training fraction"
+                                        type="number"
+                                        min=".01"
+                                        max=".99"
+                                        step=".05"
+                                        bind:value={splitDraft.fraction}
+                                    /></label
+                                ><label
+                                    >Seed<input
+                                        aria-label="Split seed"
+                                        type="number"
+                                        min="0"
+                                        step="1"
+                                        bind:value={splitDraft.seed}
+                                    /></label
+                                >{:else}<label
+                                    >Column<select
+                                        aria-label="Existing split column"
+                                        bind:value={splitDraft.column}
+                                        >{#if !wb.columns.some((c) => c.name === splitDraft.column)}<option
+                                                value={splitDraft.column}
+                                                >{splitDraft.column} (missing)</option
+                                            >{/if}{#each wb.columns as column}<option
+                                                value={column.name}>{column.name}</option
+                                            >{/each}</select
+                                    ></label
+                                ><label
+                                    >Training value<input
+                                        aria-label="Training value"
+                                        bind:value={splitDraft.train_value}
+                                    /></label
+                                >{/if}
+                            <button onclick={saveSplit} disabled={saving || loading}
+                                >Apply split</button
+                            >
+                        </div>
+                        {#if wb.problems.length}<div class="prerequisites">
+                                <strong>Before fitting</strong>{#each wb.problems as problem}<p>
+                                        {problem}
+                                    </p>{/each}
+                            </div>{/if}
+                    </details>
+                    <h3>Fit settings</h3>
+                    <div class="form-grid">
                         <label
                             >Penalty<select aria-label="Penalty mode" bind:value={mode}
                                 ><option value="fixed">Fixed alpha</option><option value="cv"
@@ -573,93 +679,8 @@
                         >
                     </div>
                     <p class="help-text">
-                        L1 ratio 1 is lasso; 0 is ridge. With an exposure weight and claim-count
-                        target, divide the target by weight to fit claim frequency.
+                        L1 ratio 1 is lasso; 0 is ridge. Save changes before fitting.
                     </p>
-                </section>
-                <section class="model-card">
-                    <div class="section-heading">
-                        <h2>Predictor terms</h2>
-                        <span>{cfg.predictors.length} selected</span>
-                    </div>
-                    <p class="help-text">
-                        Roles make columns eligible; this selection defines this model. Design kinds
-                        and defaults are shared across models.
-                    </p>
-                    <div class="form-grid compact">
-                        <label
-                            >Default bins<input
-                                aria-label="Default bins"
-                                type="number"
-                                min="2"
-                                max="200"
-                                bind:value={nBins}
-                            /></label
-                        ><label
-                            >Minimum category share<input
-                                aria-label="Minimum category share"
-                                type="number"
-                                min="0"
-                                max=".99"
-                                step=".001"
-                                bind:value={levelShare}
-                            /></label
-                        ><input
-                            aria-label="Search predictor terms"
-                            placeholder="Find a predictor…"
-                            bind:value={termSearch}
-                            oninput={() => (termScroll = 0)}
-                        />
-                    </div>
-                    <div
-                        class="terms-list"
-                        onscroll={(e) => (termScroll = e.currentTarget.scrollTop)}
-                    >
-                        <div style:height={filteredTerms.length * 34 + 'px'} class="virtual-space">
-                            <div
-                                class="virtual-rows"
-                                style:transform={'translateY(' + termStart * 34 + 'px)'}
-                            >
-                                {#each filteredTerms.slice(termStart, termStart + 18) as name}<div
-                                        class="term-row"
-                                    >
-                                        <label
-                                            ><input
-                                                aria-label={'Include ' + name}
-                                                type="checkbox"
-                                                checked={cfg.predictors.includes(name)}
-                                                onchange={(e) =>
-                                                    toggle(name, e.currentTarget.checked)}
-                                            />{name}</label
-                                        ><select
-                                            aria-label={'Design kind for ' + name}
-                                            value={kinds[name] || ''}
-                                            onchange={(e) => kind(name, e.currentTarget.value)}
-                                            ><option value="">Infer from type</option><option
-                                                value="step">Step bands</option
-                                            ><option value="linear">Piecewise linear</option><option
-                                                value="continuous">Continuous slope</option
-                                            ><option value="categorical">Categorical</option
-                                            ></select
-                                        >
-                                    </div>{/each}
-                            </div>
-                        </div>
-                    </div>
-                    {#if cfg.interactions?.length}<div class="preserved">
-                            Retained two-stage interactions: {cfg.interactions
-                                .map((i) => i.a + ' × ' + i.b)
-                                .join(', ')}. Their detailed editor is not yet available here.
-                        </div>{/if}
-                    {#if Object.keys(cfg.monotone || {}).length}<div class="preserved">
-                            Retained monotone constraints: {Object.entries(cfg.monotone)
-                                .map(([n, v]) => n + ' ' + v)
-                                .join(', ')}.
-                        </div>{/if}
-                    <div class="help-text">
-                        Existing knots, clamps, per-term penalties, adjustments and notes are
-                        retained. Unsupported combinations are reported when saving or fitting.
-                    </div>
                     <div class="model-actions">
                         <button class="primary" onclick={saveModel}
                             >{selected === '__new__'
@@ -682,7 +703,7 @@
         {/if}
         {#if job}<section
                 class="job-card"
-                class:compact-result-status={view === 'tables' && job.status === 'complete'}
+                class:compact-result-status={view !== 'model' && job.status === 'complete'}
                 role="status"
             >
                 <div>
@@ -708,10 +729,10 @@
                         onclick={() => onNavigate('tables')}>View rate tables</button
                     >{/if}
             </section>{/if}
-        {#if view !== 'model'}
+        {#if ['diagnostics', 'tables'].includes(view)}
             {#if !applicable}<div class="message">
-                    A completed fit matching the current applied settings is required. Open Design &
-                    models and fit the model.
+                    A completed fit matching the current applied settings is required. Open Model
+                    and fit the model.
                 </div>{:else if !result}<p>
                     Loading fitted results…
                 </p>{:else if view === 'diagnostics'}
@@ -740,7 +761,14 @@
                             >{key}: <b>{num(result.metrics[subset]?.[key], 7)}</b></span
                         >{/each}
                 </div>
-                <section class="model-card">
+                <div class="workflow-tabs" role="tablist" aria-label="Diagnostics views">
+                    {#each [['variable', 'A/E by variable'], ['pair', 'A/E by pair'], ['lift', 'Lift'], ['residual', 'Residual factors']] as [key, label]}<button
+                            role="tab"
+                            aria-selected={diagnosticTab === key}
+                            onclick={() => (diagnosticTab = key)}>{label}</button
+                        >{/each}
+                </div>
+                <section class="model-card" hidden={diagnosticTab !== 'lift'}>
                     <h2>Actual vs expected by predicted risk</h2>
                     <p class="help-text">
                         Equal-exposure bins, ordered from lowest to highest predicted rate. Hover a
@@ -793,16 +821,19 @@
                             ', ',
                         )}.
                     </div>{/if}
-                <ReviewPanel
-                    {api}
-                    {state}
-                    name={selected}
-                    {view}
-                    {subset}
-                    onApplied={reviewed}
-                    onClear={clearEdits}
-                    {onNavigate}
-                />
+                <div hidden={diagnosticTab === 'lift'}>
+                    <ReviewPanel
+                        {diagnosticTab}
+                        {api}
+                        {state}
+                        name={selected}
+                        {view}
+                        {subset}
+                        onApplied={reviewed}
+                        onClear={clearEdits}
+                        {onNavigate}
+                    />
+                </div>
                 {#each result.warnings as warning}<div class="message">{warning}</div>{/each}
             {:else}
                 <div class="results-toolbar">

@@ -58,11 +58,13 @@ test('bare URL, refresh and new tabs use independent bootstrap without rotating 
     const second = await context.newPage();
     await second.goto(base);
     await expect(second.getByLabel('Role for Claims', { exact: true })).toHaveValue('target');
+    await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await page.getByLabel('Plot variable', { exact: true }).selectOption('Region');
     await expect(
         page.getByRole('img', { name: 'Distribution of Region', exact: true }),
     ).toBeVisible();
     await page.reload();
+    await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await expect(page.getByRole('img', { name: /Distribution of/ }).first()).toBeVisible();
     await expect(page.getByRole('alert')).toHaveCount(0);
     await second.close();
@@ -82,10 +84,12 @@ test('actual server restart reconnects plot while retaining names, types, roles 
     await editor.fill(raw + '\n');
     await stop();
     await start();
+    await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await page.getByLabel('Plot variable', { exact: true }).selectOption('Region');
     await expect(
         page.getByRole('img', { name: 'Distribution of Region', exact: true }),
     ).toBeVisible();
+    await page.getByRole('button', { name: /^Variables/ }).click();
     await expect(editor).toHaveValue(raw + '\n');
     await expect(page.getByRole('alert')).toHaveCount(0);
     await page.getByRole('button', { name: 'Table', exact: true }).click();
@@ -108,6 +112,7 @@ test('restart refuses a previously previewed Apply even when revision is again z
     await stop();
     await start();
     await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
+    await page.getByRole('button', { name: /^Variables/ }).click();
     await expect(page.getByRole('alert')).toContainText('Preview changes again');
     expect((await readProject()).data.roles.Region).toBe('predictor');
     await expect(page.getByLabel('Role for Region', { exact: true })).toHaveValue('ignore');
@@ -123,6 +128,7 @@ test('host and origin rejection does not trigger a bootstrap retry', async ({ pa
         if (r.url().endsWith('/api/session')) bootstraps++;
     });
     await page.goto('/');
+    await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await expect(page.getByRole('img', { name: /Distribution of/ }).first()).toBeVisible();
     const before = bootstraps;
     await page.route('**/api/plot?column=Region', (route) =>
@@ -132,6 +138,7 @@ test('host and origin rejection does not trigger a bootstrap retry', async ({ pa
             body: JSON.stringify({ detail: 'Cross-origin access is refused.' }),
         }),
     );
+    await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await page.getByLabel('Plot variable', { exact: true }).selectOption('Region');
     await expect(page.getByText('Cross-origin access is refused.', { exact: true })).toBeVisible();
     expect(bootstraps).toBe(before);
@@ -146,10 +153,12 @@ test('incomplete JSON survives reconnection and a changed project cannot receive
     await editor.fill('{unfinished');
     await stop();
     await start();
+    await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await page.getByLabel('Plot variable', { exact: true }).selectOption('Region');
     await expect(
         page.getByRole('img', { name: 'Distribution of Region', exact: true }),
     ).toBeVisible();
+    await page.getByRole('button', { name: /^Variables/ }).click();
     await expect(editor).toHaveValue('{unfinished');
     await expect(page.getByRole('alert')).toHaveCount(0);
     await page.getByRole('button', { name: 'Reset', exact: true }).click();
@@ -164,8 +173,11 @@ test('incomplete JSON survives reconnection and a changed project cannot receive
             json: { ...data, project_id: 'another-project', name: 'Another project' },
         });
     });
+    await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await page.getByLabel('Plot variable', { exact: true }).selectOption('DriverAge');
+    await page.getByRole('button', { name: /^Variables/ }).click();
     await expect(page.getByRole('alert')).toContainText('different project');
+    await page.getByRole('button', { name: /^Variables/ }).click();
     await expect(editor).toHaveValue(kept);
     await expect(page.getByRole('button', { name: 'Preview changes', exact: true })).toBeDisabled();
     await expect(page.getByRole('button', { name: 'Download draft', exact: true })).toBeVisible();

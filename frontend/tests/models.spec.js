@@ -8,9 +8,13 @@ test('Variables → split/model → background fit → diagnostics → rate tabl
     await page.goto('/');
     await expect(page.getByLabel('Role for Claims', { exact: true })).toHaveValue('target');
     await expect(page.getByRole('button', { name: 'Diagnostics', exact: true })).toBeDisabled();
-    await page.getByRole('button', { name: 'Design & models', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Design & models', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Model', exact: true }).click();
+    await expect(
+        page.getByRole('heading', { name: 'Model design and fit', exact: true }),
+    ).toBeVisible();
     await expect(page.getByRole('button', { name: 'Fit model', exact: true })).toBeDisabled();
+    if (!(await page.locator('.split-settings').evaluate((el) => el.open)))
+        await page.locator('.split-settings > summary').click();
     await page.getByLabel('Split method', { exact: true }).selectOption('random');
     await page.getByRole('button', { name: 'Apply split', exact: true }).click();
     await expect(page.getByText('Split applied.', { exact: true })).toBeVisible();
@@ -21,16 +25,25 @@ test('Variables → split/model → background fit → diagnostics → rate tabl
     await page.getByRole('button', { name: 'Create model', exact: true }).click();
     await expect(page.getByLabel('Model selection', { exact: true })).toHaveValue('Frequency');
     await expect(page.getByRole('button', { name: 'Fit model', exact: true })).toBeEnabled();
-    await page.screenshot({ path: 'test-results/model-setup.png', fullPage: true });
+    await page.setViewportSize({ width: 884, height: 773 });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const definition = await page.locator('#model-definition').boundingBox();
+    const factor = await page.locator('#factor-design').boundingBox();
+    const fitSection = await page.locator('#fit-settings').boundingBox();
+    expect(definition.y).toBeLessThan(factor.y);
+    expect(factor.y).toBeLessThan(fitSection.y);
+    await page.screenshot({ path: '/tmp/easyglm-workflow-model.png', fullPage: true });
+
     await page.getByRole('button', { name: 'Fit model', exact: true }).click();
     const started = performance.now();
     await page.getByRole('button', { name: /^Variables/ }).click();
     await expect(page.getByLabel('Role for Claims', { exact: true })).toBeVisible();
     expect(performance.now() - started).toBeLessThan(1000);
-    await page.getByRole('button', { name: 'Design & models', exact: true }).click();
+    await page.getByRole('button', { name: 'Model', exact: true }).click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 30000 });
     await page.getByRole('button', { name: 'Diagnostics', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Diagnostics', exact: true })).toBeVisible();
+    await page.getByRole('tab', { name: 'Lift', exact: true }).click();
     await expect(
         page.getByRole('img', { name: 'Actual and expected lift on holdout', exact: true }),
     ).toBeVisible();
@@ -62,7 +75,7 @@ test('Variables → split/model → background fit → diagnostics → rate tabl
     await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Diagnostics', exact: true })).toBeDisabled();
     await expect(page.getByRole('button', { name: 'Rate tables', exact: true })).toBeDisabled();
-    await page.getByRole('button', { name: 'Design & models', exact: true }).click();
+    await page.getByRole('button', { name: 'Model', exact: true }).click();
     await expect(page.getByText('Fit needs updating', { exact: true })).toBeVisible();
     expect(errors).toEqual([]);
 });
@@ -71,7 +84,7 @@ test('unapplied Variables draft survives navigation through model setup', async 
     await page.goto('/');
     await page.getByLabel('Name for Claims', { exact: true }).fill('UnappliedClaims');
     await page.getByLabel('Name for Claims', { exact: true }).press('Tab');
-    await page.getByRole('button', { name: 'Design & models', exact: true }).click();
+    await page.getByRole('button', { name: 'Model', exact: true }).click();
     await expect(page.getByLabel('Model target', { exact: true })).toHaveValue('Claims');
     await page.getByRole('button', { name: /^Variables/ }).click();
     await expect(page.getByLabel('Name for Claims', { exact: true })).toHaveValue(

@@ -348,3 +348,39 @@ resolution, collapsed order and draft retention, preview/apply/undo, model and
 Variables navigation, and visual checks at 884 × 773. This update changes static
 assets only; the live applied project, fit identities and server session survive
 without restarting or refitting. Current-page navigation buttons remain hidden.
+
+## Workflow layout alignment
+
+Reference: the running Streamlit Model page and `app/main.py`,
+`pages_variables.py`, `pages_model.py`, `pages_diagnostics.py`, and
+`pages_tables.py`. The Svelte colours and asynchronous workers remain intact.
+
+| Streamlit pattern | Svelte layout |
+| --- | --- |
+| Ordered Workflow navigation and setup checklist | Project & data, Variables, Explore, Model, Diagnostics, Rate tables, Export; applied setup progress in sidebar |
+| Project context before setup | Read-only project/data overview, applied settings expander and next-step actions |
+| Roles, names and types separate from exploration | Variables retains grid/JSON/preview; distribution moves into Explore |
+| Model definition → Factor design → Fit and results | Same section order, in-page links, collapsed shared defaults and a split expander by fit settings |
+| Compact metrics then diagnostic tabs | A/E by variable (default), A/E by pair, Lift, Residual factors/interactions |
+| Chart, table and optional adjustment tools | Chart first; expandable editable Rate table below; tools/snapshots remain expandable |
+| Export as a workflow step | Applied project JSON download with precise contents and limitations |
+
+Model selection is shared across the model/results pages; Variables drafts stay
+mounted across navigation. Diagnostic tab switching retains its component and
+uses background reviews for the selected view. Navigation and chart/table edits
+remain client-side, with revision checks unchanged.
+
+This is layout alignment for the implemented subset, not full feature parity.
+Source upload/selection, recodes/derived/filter editors, leakage exploration,
+detailed knot/clamp/monotonicity/interaction editors, champion comparisons,
+double lift, coefficients/regularisation paths and Excel/report/script/scorer
+exports remain in Streamlit. Project & data lists these gaps; saved settings
+continue to be retained. No placeholder pages imply that these features work.
+
+Alignment validation: 13 browser cases passed across restored reviews, model
+setup, Variables/workflow navigation, real restart recovery and the wide-schema
+editor. At 2,000 rows × 2,000 columns, at most 28 rows rendered; median edit paint
+time was 24.2 ms. Model and diagnostics layouts were visually inspected at
+884 × 773. Svelte check/build and whitespace checks passed. The static-only live
+update retained the applied project, fit identities/status and server session;
+original main, project/data/cache hashes and Streamlit health were verified.

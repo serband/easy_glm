@@ -620,6 +620,9 @@ main {
     display: none !important;
 }
 .nav-link {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     width: 100%;
     text-align: left;
     margin-top: 8px;
@@ -1085,4 +1088,118 @@ main {
 
 .rate-plot-scroll {
     overflow-x: auto;
+}
+
+/* Streamlit workflow grouping with the Svelte palette. */
+[hidden] {
+    display: none !important;
+}
+.setup-progress {
+    display: grid;
+    gap: 7px;
+    margin-top: 22px;
+    font-size: 11px;
+    color: #afc4ba;
+}
+.setup-progress strong {
+    color: #dbe9e2;
+    margin-bottom: 3px;
+}
+.workflow-page .model-card p {
+    margin-top: 12px;
+    line-height: 1.6;
+}
+.project-facts {
+    display: grid;
+    grid-template-columns: 100px minmax(0, 1fr);
+    gap: 12px;
+}
+.project-facts dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+.workflow-page pre {
+    overflow: auto;
+    max-height: 380px;
+    font-size: 11px;
+}
+.section-nav,
+.workflow-tabs {
+    display: flex;
+    gap: 18px;
+    border-bottom: 1px solid #d8e2dc;
+    margin: 14px 0;
+    overflow-x: auto;
+}
+.section-nav a {
+    color: #446e5d;
+    padding: 8px 0;
+    white-space: nowrap;
+    text-decoration: none;
+}
+.workflow-tabs button {
+    border: 0;
+    border-bottom: 3px solid transparent;
+    border-radius: 0;
+    padding: 10px 2px;
+    background: transparent;
+}
+.workflow-tabs button[aria-selected='true'] {
+    border-bottom-color: #287762;
+    color: #205e4e;
+    font-weight: 650;
+}
+.factor-search {
+    margin-top: 14px;
+    width: 100%;
+}
+.split-settings {
+    margin: 14px 0;
+    padding-bottom: 14px;
+    border-bottom: 1px solid #e1e7e3;
+}
+.split-settings > summary,
+.model-card > summary {
+    font-weight: 600;
+    cursor: pointer;
+}
+.model-card details {
+    margin-top: 12px;
+}
+.metrics-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px;
+}
+.metrics-grid > div {
+    padding: 12px 14px;
+}
+.metrics-grid strong {
+    font-size: 25px;
+}
+.model-card .form-grid {
+    margin-top: 12px;
+}
+@media (max-width: 900px) {
+    main {
+        padding-top: 20px;
+    }
+    .metrics-grid {
+        gap: 6px;
+    }
+    .metrics-grid > div {
+        padding: 10px 8px;
+    }
+    .metrics-grid strong {
+        font-size: 21px;
+    }
+    .metrics-grid span {
+        font-size: 10px;
+    }
+    .section-nav,
+    .workflow-tabs {
+        gap: 12px;
+    }
+    .setup-progress {
+        font-size: 10px;
+    }
 }

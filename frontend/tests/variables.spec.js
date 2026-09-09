@@ -9,7 +9,9 @@ test('bidirectional roles, name/type preservation, invalid reset and explicit ap
     page.on('request', (r) => requests.push(r.url()));
     await page.goto('/');
     await expect(page.getByLabel('Role for DriverAge', { exact: true })).toHaveValue('predictor');
+    await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await expect(page.getByRole('img', { name: /Distribution of/ }).first()).toBeVisible();
+    await page.getByRole('button', { name: /^Variables/ }).click();
     const base = requests.length;
     await page.getByLabel('Name for DriverAge', { exact: true }).fill('Age');
     await page.getByLabel('Name for DriverAge', { exact: true }).press('Tab');
@@ -47,6 +49,7 @@ test('bidirectional roles, name/type preservation, invalid reset and explicit ap
     expect(reset.unassigned).toContain('VehicleAge');
     await page.getByRole('button', { name: 'Table', exact: true }).click();
     await expect(page.getByLabel('Name for DriverAge', { exact: true })).toHaveValue('Age');
+    await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await page.getByLabel('Plot variable', { exact: true }).selectOption('Region');
     await expect(
         page.getByRole('img', { name: 'Distribution of Region', exact: true }),
@@ -92,4 +95,25 @@ test('pending preview freezes the draft until its result is reviewable', async (
     release();
     await expect(page.getByLabel('Role for Region', { exact: true })).toBeEnabled();
     await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeVisible();
+});
+
+test('workflow pages keep a Variables draft and expose honest project/export scope', async ({
+    page,
+}) => {
+    await page.goto('/');
+    await page.getByLabel('Name for Claims', { exact: true }).fill('KeptDraft');
+    await page.getByLabel('Name for Claims', { exact: true }).press('Tab');
+    for (const name of ['Project & data', 'Explore', 'Export']) {
+        await page.getByRole('button', { name, exact: true }).click();
+        await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
+    }
+    await expect(
+        page.getByRole('button', { name: 'Download project JSON', exact: true }),
+    ).toBeEnabled();
+    await page.getByRole('button', { name: /^Variables/ }).click();
+    await expect(page.getByLabel('Name for Claims', { exact: true })).toHaveValue('KeptDraft');
+    await page.setViewportSize({ width: 884, height: 773 });
+    expect(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+    ).toBeTruthy();
 });

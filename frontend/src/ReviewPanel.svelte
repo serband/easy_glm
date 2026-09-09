@@ -5,11 +5,21 @@
         name,
         view,
         subset = 'train',
+        diagnosticTab = 'variable',
         variable = '',
         edits = {},
         onApplied,
         onClear,
         onNavigate;
+    let activeDiagnosticTab = 'variable',
+        inspectedResidual = false;
+    $: if (view === 'diagnostics' && diagnosticTab !== activeDiagnosticTab && !busy) {
+        activeDiagnosticTab = diagnosticTab;
+        inspectedResidual = false;
+        if (diagnosticTab === 'variable' && diagnosticVariable)
+            run('variable', { variable: diagnosticVariable });
+        if (diagnosticTab === 'pair' && a && b && a !== b) run('pair', { a, b });
+    }
     let info = { variables: [], snapshots: [], undo: false, redo: false };
     let shownTitle = '',
         shownSubset = '';
@@ -100,7 +110,13 @@
         }
         if (destroyed || key !== startedKey) return;
         const v = view === 'tables' ? variable : diagnosticVariable;
-        if (v) await run('variable', { variable: v });
+        if (view === 'diagnostics' && diagnosticTab === 'residual') {
+            inspectedResidual = false;
+            return;
+        }
+        if (view === 'diagnostics' && diagnosticTab === 'pair' && a !== b)
+            await run('pair', { a, b });
+        else if (v) await run('variable', { variable: v });
     }
     export function previewRowEdits() {
         return run('edit', { edits });
@@ -141,6 +157,7 @@
                         searchKind = action;
                     } else {
                         rows = data.rows || [];
+                        if (diagnosticTab === 'residual') inspectedResidual = true;
                         shownTitle =
                             action === 'pair'
                                 ? `${extra.a || a} × ${extra.b || b}`
@@ -223,11 +240,15 @@
     aria-label={view === 'tables' ? 'Table adjustments' : 'Detailed diagnostics'}
 >
     <h2>
-        {view === 'tables' ? 'Adjustments & actual versus expected' : 'Actual versus expected'}
+        {view === 'tables'
+            ? 'Adjustments & actual versus expected'
+            : diagnosticTab === 'residual'
+              ? 'Residual factors and interactions'
+              : 'Actual versus expected'}
     </h2>
     {#if error}<div class="message error" role="alert">{error}</div>{/if}
     {#if view === 'diagnostics'}
-        <div class="results-toolbar">
+        <div class="results-toolbar" hidden={diagnosticTab !== 'variable'}>
             <label
                 >Variable<select
                     aria-label="Diagnostic variable"
@@ -238,9 +259,8 @@
                 ></label
             >
         </div>
-        <details>
-            <summary>Two-variable A/E and missing terms</summary>
-            <div class="results-toolbar">
+        <div>
+            <div class="results-toolbar" hidden={diagnosticTab !== 'pair'}>
                 <label
                     >First variable<select aria-label="Pair first variable" bind:value={a}
                         >{#each info.variables as v}<option value={v}>{v}</option>{/each}</select
@@ -255,60 +275,66 @@
                     >Show pair A/E</button
                 >
             </div>
-            <p class="help-text">
-                Searches rank residual signal on training data only. Holdout is reserved for
-                validation. Missing-factor search excludes IDs, explicitly ignored columns and model
-                response/weight fields. Interaction search removes main-effect misfit before ranking
-                pairs.
-            </p>
-            <div class="results-toolbar">
-                <button disabled={busy} onclick={() => run('factors')}>Find missing factors</button
-                ><button disabled={busy} onclick={() => run('interactions')}
-                    >Find missing interactions</button
-                >
-            </div>
-            {#if searchKind}<h3>
-                    {searchKind === 'factors' ? 'Missing factors' : 'Missing interactions'}
-                </h3>
-                {#if !searchRows.length}<p>No eligible residual candidates returned.</p>{:else}<div
-                        class="review-scroll"
+            <div hidden={diagnosticTab !== 'residual'}>
+                <p class="help-text">
+                    Searches rank residual signal on training data only. Holdout is reserved for
+                    validation. Missing-factor search excludes IDs, explicitly ignored columns and
+                    model response/weight fields. Interaction search removes main-effect misfit
+                    before ranking pairs.
+                </p>
+                <div class="results-toolbar">
+                    <button disabled={busy} onclick={() => run('factors')}
+                        >Find missing factors</button
+                    ><button disabled={busy} onclick={() => run('interactions')}
+                        >Find missing interactions</button
                     >
-                        <table>
-                            <thead
-                                ><tr
-                                    ><th>Candidate</th><th>Signal</th><th>Review</th><th>Model</th
-                                    ></tr
-                                ></thead
-                            ><tbody
-                                >{#each searchRows.slice(0, 200) as row}<tr
-                                        ><td>{row.variable || row.pair}</td><td
-                                            >{num(row.signal)}</td
-                                        ><td
-                                            ><button
-                                                disabled={busy}
-                                                onclick={() =>
-                                                    searchKind === 'factors'
-                                                        ? run('variable', {
-                                                              variable: row.variable,
-                                                              subset: 'train',
-                                                          })
-                                                        : run('pair', {
-                                                              a: row.a,
-                                                              b: row.b,
-                                                              subset: 'train',
-                                                          })}>Inspect</button
-                                            ></td
-                                        ><td
-                                            ><button disabled={busy} onclick={() => include(row)}
-                                                >Add and review model</button
-                                            ></td
+                </div>
+                {#if searchKind}<h3>
+                        {searchKind === 'factors' ? 'Missing factors' : 'Missing interactions'}
+                    </h3>
+                    {#if !searchRows.length}<p>
+                            No eligible residual candidates returned.
+                        </p>{:else}<div class="review-scroll">
+                            <table>
+                                <thead
+                                    ><tr
+                                        ><th>Candidate</th><th>Signal</th><th>Review</th><th
+                                            >Model</th
                                         ></tr
-                                    >{/each}</tbody
-                            >
-                        </table>
-                    </div>{/if}
-            {/if}
-        </details>
+                                    ></thead
+                                ><tbody
+                                    >{#each searchRows.slice(0, 200) as row}<tr
+                                            ><td>{row.variable || row.pair}</td><td
+                                                >{num(row.signal)}</td
+                                            ><td
+                                                ><button
+                                                    disabled={busy}
+                                                    onclick={() =>
+                                                        searchKind === 'factors'
+                                                            ? run('variable', {
+                                                                  variable: row.variable,
+                                                                  subset: 'train',
+                                                              })
+                                                            : run('pair', {
+                                                                  a: row.a,
+                                                                  b: row.b,
+                                                                  subset: 'train',
+                                                              })}>Inspect</button
+                                                ></td
+                                            ><td
+                                                ><button
+                                                    disabled={busy}
+                                                    onclick={() => include(row)}
+                                                    >Add and review model</button
+                                                ></td
+                                            ></tr
+                                        >{/each}</tbody
+                                >
+                            </table>
+                        </div>{/if}
+                {/if}
+            </div>
+        </div>
     {:else}
         <p class="help-text">
             Edit individual relativities in the table above, then preview. The original fitted model
@@ -467,7 +493,7 @@
             <button class="primary" disabled={busy} onclick={applyPreview}>Apply adjustment</button
             ><button disabled={busy} onclick={() => run('variable')}>Discard preview</button>
         </div>{/if}
-    {#if rows.length}
+    {#if rows.length && (view === 'tables' || (diagnosticTab === 'variable' && !pairRows) || (diagnosticTab === 'pair' && pairRows) || (diagnosticTab === 'residual' && inspectedResidual))}
         <h3>{shownTitle} · {shownSubset}</h3>
         {#if pairRows}<h3>Actual / expected by cell</h3>
             <div class="heatmap-scroll">

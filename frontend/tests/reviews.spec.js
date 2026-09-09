@@ -8,7 +8,9 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await page.getByLabel('Role for AnnualMileage', { exact: true }).selectOption('unassigned');
     await button('Preview changes').click();
     await button('Apply changes').click();
-    await button('Design & models').click();
+    await button('Model').click();
+    if (!(await page.locator('.split-settings').evaluate((el) => el.open)))
+        await page.locator('.split-settings > summary').click();
     await page.getByLabel('Split method').selectOption('random');
     await button('Apply split').click();
     await expect(page.getByText('Split applied.', { exact: true })).toBeVisible();
@@ -18,10 +20,11 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await page.reload();
     await expect(button('Diagnostics')).toBeEnabled();
     await button('Diagnostics').click();
+    await page.getByRole('tab', { name: 'A/E by variable', exact: true }).click();
     await expect(
         page.getByRole('img', { name: 'Actual fitted and adjusted by variable', exact: true }),
     ).toBeVisible();
-    await page.getByText('Two-variable A/E and missing terms', { exact: true }).click();
+    await page.getByRole('tab', { name: 'Residual factors', exact: true }).click();
     await button('Find missing factors').click();
     await expect(page.getByRole('heading', { name: 'Missing factors', exact: true })).toBeVisible();
     await expect(page.locator('.review-scroll').first()).toContainText('AnnualMileage');
@@ -29,9 +32,21 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await expect(
         page.getByRole('heading', { name: 'Missing interactions', exact: true }),
     ).toBeVisible();
-    await button('Show pair A/E').click();
+    await page.getByRole('tab', { name: 'A/E by pair', exact: true }).click();
     await expect(page.locator('.ae-heatmap')).toBeVisible();
-    await page.screenshot({ path: 'test-results/restored-diagnostics.png', fullPage: true });
+    await page.getByLabel('Diagnostic subset', { exact: true }).selectOption('train');
+    await expect(page.getByRole('heading', { name: /Training/ })).toBeVisible();
+    await page.getByRole('tab', { name: 'A/E by variable', exact: true }).click();
+    await expect(
+        page.getByRole('img', { name: 'Actual fitted and adjusted by variable', exact: true }),
+    ).toBeVisible();
+    await page.setViewportSize({ width: 884, height: 773 });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    expect(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+    ).toBeTruthy();
+    await page.screenshot({ path: '/tmp/easyglm-workflow-diagnostics.png', fullPage: true });
+
     await button('Rate tables').click();
     await expect(
         page.getByRole('img', { name: 'Actual fitted and adjusted by variable', exact: true }),
@@ -90,10 +105,11 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await expect(button('Apply adjustment')).toBeVisible();
     await button('Discard preview').click();
     await button('Diagnostics').click();
+    await page.getByRole('tab', { name: 'A/E by variable', exact: true }).click();
     await expect(
         page.getByRole('img', { name: 'Actual fitted and adjusted by variable', exact: true }),
     ).toBeVisible();
-    await page.getByText('Two-variable A/E and missing terms', { exact: true }).click();
+    await page.getByRole('tab', { name: 'Residual factors', exact: true }).click();
     await button('Find missing factors').click();
     await page
         .getByRole('row')

@@ -12,8 +12,27 @@
             jsonText = roleJson();
         }
     }
-    function navigate(next) {
+    const pageTitles = {
+        project: 'Project & data',
+        variables: 'Variables',
+        explore: 'Explore',
+        model: 'Model',
+        diagnostics: 'Diagnostics',
+        tables: 'Rate tables',
+        export: 'Export',
+    };
+    let projectInfo = null,
+        projectError = '';
+    async function navigate(next) {
         view = next;
+        if (next === 'project' || next === 'export') {
+            try {
+                projectInfo = await api('project');
+                projectError = '';
+            } catch (e) {
+                projectError = e.message;
+            }
+        }
     }
     let state = null,
         draft = null,
@@ -404,17 +423,7 @@
     });
 </script>
 
-<svelte:head
-    ><title
-        >EasyGLM · {view === 'variables'
-            ? 'Variables'
-            : view === 'model'
-              ? 'Design & models'
-              : view === 'diagnostics'
-                ? 'Diagnostics'
-                : 'Rate tables'}</title
-    ></svelte:head
->
+<svelte:head><title>EasyGLM · {pageTitles[view]}</title></svelte:head>
 <div class="shell">
     <aside class="rail">
         <div class="brand">
@@ -423,36 +432,29 @@
         <div class="workspace-label">LOCAL WORKSPACE</div>
         <div class="portfolio">{state?.name || 'Opening portfolio…'}</div>
         <nav aria-label="Workbench">
-            <div class="nav-label">DATA & SETUP</div>
-            <button
-                class="nav-link"
-                class:active={view === 'variables'}
-                onclick={() => navigate('variables')}
-                >Variables <span class="nav-count">{state?.columns.length || '—'}</span></button
-            >
-            <button
-                class="nav-link"
-                class:active={view === 'model'}
-                onclick={() => navigate('model')}
-                disabled={!state}>Design & models</button
-            >
-            <div class="nav-label next">FITTED RESULTS</div>
-            <button
-                class="nav-link"
-                class:active={view === 'diagnostics'}
-                onclick={() => navigate('diagnostics')}
-                disabled={!resultsReady}>Diagnostics</button
-            >
-            <button
-                class="nav-link"
-                class:active={view === 'tables'}
-                onclick={() => navigate('tables')}
-                disabled={!resultsReady}>Rate tables</button
-            >
-            {#if !resultsReady}<div class="nav-help">
-                    Fit a model with the applied settings to open its results.
-                </div>{/if}
+            <div class="nav-label">WORKFLOW</div>
+            {#each Object.entries(pageTitles) as [key, title]}
+                <button
+                    class="nav-link"
+                    class:active={view === key}
+                    disabled={!state || (['diagnostics', 'tables'].includes(key) && !resultsReady)}
+                    onclick={() => navigate(key)}
+                    >{title}{#if key === 'variables'}
+                        <span class="nav-count">{state?.columns.length || '—'}</span>{/if}</button
+                >
+            {/each}
         </nav>
+        <div class="setup-progress" aria-label="Setup progress">
+            <strong>Setup progress</strong>
+            <span>{state ? '✓' : '○'} Data loaded</span>
+            <span
+                >{state?.setup.assignments.target && state?.setup.roles.predictor.length
+                    ? '✓'
+                    : '○'} Target and predictors</span
+            >
+            <span>{state?.models.length ? '✓' : '○'} Model defined</span>
+            <span>{resultsReady ? '✓' : '○'} Model fitted</span>
+        </div>
         <div class="rail-bottom">
             <span class="status-dot"></span> Local session
             <div class="version">Svelte experiment · model workbench</div>
@@ -462,15 +464,7 @@
         <header>
             <div class="breadcrumb">
                 Workbench <span>/</span>
-                <strong
-                    >{view === 'variables'
-                        ? 'Variables'
-                        : view === 'model'
-                          ? 'Design & models'
-                          : view === 'diagnostics'
-                            ? 'Diagnostics'
-                            : 'Rate tables'}</strong
-                >
+                <strong>{pageTitles[view]}</strong>
             </div>
             <div class="header-actions">
                 <span class="pill">EXPERIMENT</span><button
@@ -486,7 +480,7 @@
                     <div>
                         <div class="eyebrow">PORTFOLIO SETUP</div>
                         <h1>Variables</h1>
-                        <p>Assign roles, refine names and set data types.</p>
+                        <p>Roles, names and types</p>
                     </div>
                     <div class="dataset-meta">
                         <strong>{state?.row_count.toLocaleString() || '—'}</strong> rows<span
@@ -590,6 +584,7 @@
                                                         onclick={() => {
                                                             selected = column.name;
                                                             loadPlot();
+                                                            view = 'explore';
                                                         }}>{column.name}</button
                                                     ><input
                                                         aria-label={'Name for ' + column.name}
@@ -689,6 +684,79 @@
                                 {#each preview.notices as item}<p>{item[1]}</p>{/each}
                             </section>{/if}
                     </fieldset>
+                {:else}<div class="loading">Opening local data…</div>{/if}
+            </div>
+            <section hidden={view !== 'project'} class="workflow-page">
+                <div class="heading">
+                    <div>
+                        <h1>Project & data</h1>
+                        <p>Review the loaded portfolio, then work through the setup.</p>
+                    </div>
+                </div>
+                {#if projectError}<p role="alert">{projectError}</p>{/if}
+                <div class="model-card">
+                    <h2>{state?.name || 'Current project'}</h2>
+                    <div class="result-totals">
+                        <span><b>{state?.row_count.toLocaleString()}</b> rows</span><span
+                            ><b>{state?.columns.length}</b> source variables</span
+                        ><span><b>{state?.models.length}</b> models</span>
+                    </div>
+                    <p>
+                        Applied settings are held in this local session. Export the project to keep
+                        them.
+                    </p>
+                    <div class="model-actions">
+                        <button class="primary" onclick={() => navigate('variables')}
+                            >Set up variables</button
+                        ><button onclick={() => navigate('model')}>Review model</button>
+                    </div>
+                </div>
+                {#if projectInfo}<div class="model-card">
+                        <h2>Applied data setup</h2>
+                        <dl class="project-facts">
+                            <dt>Source</dt>
+                            <dd>
+                                {projectInfo.data?.source?.path ||
+                                    'Data loaded into the local session'}
+                            </dd>
+                            <dt>Target</dt>
+                            <dd>{state?.setup.assignments.target || 'Not assigned'}</dd>
+                            <dt>Weight</dt>
+                            <dd>{state?.setup.assignments.weight || 'None'}</dd>
+                            <dt>Split</dt>
+                            <dd>
+                                {projectInfo.data?.split?.mode || 'Not configured'} · {projectInfo
+                                    .data?.split?.column || 'No column'}
+                            </dd>
+                        </dl>
+                        <details>
+                            <summary>Applied project settings</summary>
+                            <pre>{JSON.stringify(projectInfo, null, 2)}</pre>
+                        </details>
+                    </div>{/if}
+                <details class="model-card">
+                    <summary>Features still available in Streamlit</summary>
+                    <p>
+                        Source selection and upload; recodes, derived columns and filters; leakage
+                        analysis; detailed knots, clamps, monotone constraints and interaction
+                        editing; champion comparisons, double lift, coefficient and
+                        regularisation-path views; Excel, report and script export. Existing project
+                        settings are retained here.
+                    </p>
+                </details>
+            </section>
+            <section hidden={view !== 'explore'} class="workflow-page">
+                <div class="heading">
+                    <div>
+                        <h1>Explore</h1>
+                        <p>Inspect variable distributions before designing the model.</p>
+                    </div>
+                </div>
+                <p class="help-text">
+                    Distributions use applied settings. Apply any Variables draft before reviewing
+                    its effect.
+                </p>
+                {#if state && draft}
                     <section class="plot-card">
                         <div class="plot-heading">
                             <div>
@@ -769,8 +837,34 @@
                                 >
                             </div>{:else}<p>Loading distribution…</p>{/if}
                     </section>
-                {:else}<div class="loading">Opening local data…</div>{/if}
-            </div>
+                {/if}
+            </section>
+            <section hidden={view !== 'export'} class="workflow-page">
+                <div class="heading">
+                    <div>
+                        <h1>Export</h1>
+                        <p>Keep the applied project and its modelling decisions.</p>
+                    </div>
+                </div>
+                <div class="model-card">
+                    <h2>Project JSON</h2>
+                    <p>
+                        Includes applied variable setup, model definitions, adjustments and named
+                        snapshots. Browser drafts, fitted runs and session undo history are not
+                        included.
+                    </p>
+                    <div class="model-actions">
+                        <button class="primary" onclick={download} disabled={!state}
+                            >Download project JSON</button
+                        >
+                    </div>
+                    {#if state?.models.length}<p>Models: {state.models.join(', ')}</p>{/if}
+                </div>
+                <p class="help-text">
+                    Excel rate tables, reports, scripts and scorer exports remain available in
+                    Streamlit.
+                </p>
+            </section>
             {#if state && draft}<ModelWorkbench
                     {api}
                     {state}

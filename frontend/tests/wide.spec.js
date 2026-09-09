@@ -8,7 +8,8 @@ test('2000-column virtualization and local interaction timings', async ({ page }
     page.on('pageerror', (e) => errors.push(e.message));
     const navigationStart = performance.now();
     await page.goto('/');
-    await expect(page.getByRole('img', { name: /Distribution of/ }).first()).toBeVisible();
+    await expect(page.locator('.plot-card svg').first()).toBeAttached();
+    await expect(page.locator('.data-row').first()).toBeVisible();
     const navigationReadyMs = performance.now() - navigationStart;
     expect(await page.locator('.data-row').count()).toBeLessThanOrEqual(28);
     const before = requests.length;
