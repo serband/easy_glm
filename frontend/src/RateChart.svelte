@@ -143,9 +143,9 @@
                                 y="222"
                                 text-anchor={plot.numeric ? 'middle' : 'end'}
                                 transform={plot.numeric ? undefined : `rotate(-45 ${item.x} 222)`}
-                                ><title>{item.label}</title>{axisLabel(
-                                    displayLabels[item.index],
-                                )}</text
+                                ><title>{item.label}</title>{plot.numeric && !plot.linear
+                                    ? displayLabels[item.index]
+                                    : axisLabel(displayLabels[item.index])}</text
                             >{/if}{/each}
                 </svg>
                 <div class="exposure-caption">
@@ -176,6 +176,9 @@
         {#if plot.linear}<p class="help-text">
                 Curves follow the exported log slopes; open end bands stay flat. Fitted endpoints
                 use the original fitted values.
+            </p>{:else if plot.numeric}<p class="help-text">
+                Points show each band’s relativity; lines connect them to show the trend. Scoring
+                uses the value within each band.
             </p>{/if}
     {/if}
     {#if table.total > table.rows.length}<p class="help-text">

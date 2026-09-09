@@ -127,12 +127,9 @@
             return 'Confirm that these levels have a meaningful order.';
         if (
             tool === 'moving' &&
-            (!Number.isInteger(windowSize) ||
-                windowSize < 3 ||
-                windowSize > 25 ||
-                windowSize % 2 !== 1)
+            (!Number.isInteger(windowSize) || windowSize < 1 || windowSize > 25)
         )
-            return 'Enter an odd window from 3 to 25.';
+            return 'Enter a whole-number window from 1 to 25.';
         if (
             tool === 'cap' &&
             ((floor != null && (!Number.isFinite(floor) || floor <= 0)) ||
@@ -866,12 +863,12 @@
             {:else}
                 <div class="adjustment-parameters">
                     {#if tool === 'moving'}<label
-                            >Window (bands)<input
+                            >Window (points)<input
                                 aria-label="Smoothing window"
                                 type="number"
-                                min="3"
+                                min="1"
                                 max="25"
-                                step="2"
+                                step="1"
                                 bind:value={windowSize}
                                 oninput={parametersChanged}
                             /></label
@@ -952,35 +949,25 @@
                     <summary>About this adjustment</summary>
                     {#if tool === 'moving'}
                         <p>
-                            Window 3 uses this band and one neighbour on each side, weighted by
-                            training exposure. The end bands use fewer neighbours. Use an odd window
-                            from 3 to 25.
-                            {#if ['step', 'numeric'].includes(tableKind)}This averages the heights
-                                of the steps; it does not interpolate between bands.{/if}
-                        </p>
-
-                        <p>
-                            We average log relativities, then exponentiate: an exposure-weighted
-                            geometric average. Finally, all averaged values receive the same
-                            multiplier to preserve the table's exposure-weighted mean log
-                            relativity. This can still change the expected total.
+                            Window 3 averages this point and the previous two: add their current
+                            relativities and divide by three. At the start, use the available points
+                            only.
                         </p>
                         <p>
-                            The input is the current adjusted table, including earlier smoothing.
-                            Equal neighbouring values stay flat apart from the common multiplier.
-                            The window counts bands, not years or units. Other / Unknown is
-                            excluded.
+                            Every point has equal weight. There is no log transformation, exposure
+                            weighting or level recentering. The input is the current adjusted table,
+                            including earlier edits. Null / Other is excluded.
                         </p>
                         {#if ['linear', 'continuous'].includes(tableKind)}<p>
-                                For a linear factor, averaging operates on curve nodes and
-                                recalculates the connecting slopes.
+                                Linear factors use distinct curve nodes; the lower clamp is counted
+                                once. Connecting log slopes are recalculated.
                             </p>{/if}
-                    {/if}
+                    {:else if tool === 'isotonic'}<p>
+                            Isotonic smoothing preserves the exposure-weighted mean log relativity.
+                        </p>{/if}
                     <p>
-                        {rateNote}
-                        Tools use current tables and exclude Null / Other. Smoothing preserves the exposure-weighted
-                        mean log relativity, not total expected claims. Linear factors are adjusted at
-                        nodes, with slopes recalculated.
+                        {rateNote} Tools use current tables and exclude Null / Other. Total expected claims
+                        can change; review the preview before applying.
                     </p>
                 </details>
                 {#if Object.keys(edits).length}<p>

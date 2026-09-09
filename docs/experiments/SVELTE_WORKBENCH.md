@@ -610,3 +610,25 @@ two-model parity workflow; focused 884 × 773 browser checks for missing and
 incompatible challengers, subset deltas, containment and navigation. The live
 single-model session was checked read-only, preserving the exact project, fit jobs
 and review history; no live refit or server restart was required.
+
+### Trailing point moving average
+
+The Svelte Moving average now uses an equal-weight arithmetic average of the
+current point and preceding N−1 points, with available points at the start.
+For example, [1, 1, 1, 4, 4, 4] with window 3 produces [1, 1, 1, 2, 3, 4].
+There is no exposure weighting, logarithmic averaging or recentering. Windows
+1–25 include even sizes. The existing public log-space moving-average function
+is retained separately; the desktop tool calls `smooth_trailing_average`.
+
+Numeric band charts join the band sample values with lines and points, as the
+original Streamlit chart did. Scoring still uses constant values within each
+band. Linear factors average distinct nodes and retain canonical log slopes;
+Null / Other is excluded. Preview starts from current tables and applies only
+through the existing explicit adjustment action, without refitting.
+
+Validation covers endpoint arithmetic, future-point causality, exposure
+invariance, window 1/even windows, ordered categoricals, unique linear nodes and
+slope continuity; desktop preview/money/history tests and automatic-preview
+race tests. A live BonusMalus preview independently matched every trailing mean,
+rendered nine joined band points with no vertical staircase, and was discarded.
+The exact live project, fitted jobs and review history were unchanged.

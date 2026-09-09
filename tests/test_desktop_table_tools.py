@@ -57,7 +57,7 @@ def test_preview_modes_match_canonical_values_and_money(kind, action, options):
     before = run.rate_model.clone()
     coefs = run.fit.coef.copy()
     functions = {
-        "moving": tooling.smooth_moving_average,
+        "moving": tooling.smooth_trailing_average,
         "isotonic": tooling.smooth_isotonic,
         "cap": tooling.cap_floor,
         "round": tooling.round_relativities,
@@ -94,7 +94,7 @@ def test_preview_modes_match_canonical_values_and_money(kind, action, options):
             predicted.predict(frame, exposure_col=None),
             rtol=1e-12,
         )
-    if action in ("moving", "isotonic"):
+    if action == "isotonic":
         assert data["tool_details"]["log_mean_before"] == pytest.approx(
             data["tool_details"]["log_mean_after"], abs=1e-12
         )

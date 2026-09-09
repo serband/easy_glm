@@ -20,7 +20,7 @@ export function rateChartKind(table, variable, workbench) {
         : 'categorical';
 }
 
-// Geometry from canonical exported rows. Linear curves interpolate in log space.
+// Band values are joined as a point trend; linear curves follow exported log slopes.
 export function rateChartData(table) {
     const rows = table?.rows || [];
     const linear = ['linear', 'continuous'].includes(table?.kind);
@@ -52,7 +52,11 @@ export function rateChartData(table) {
             fitted: [],
             current: [],
         };
-        if (numeric && !missing) {
+        if (numeric && !linear && !missing) {
+            if (Number.isFinite(row.fitted)) item.fitted = [{ x: center, value: row.fitted }];
+            if (Number.isFinite(row.relativity))
+                item.current = [{ x: center, value: row.relativity }];
+        } else if (numeric && !missing) {
             const start = row.from ?? lo - pad,
                 end = row.to ?? hi + pad;
             const neighbor = rows.find((r) => r.from === row.to && r.from !== null);
@@ -85,8 +89,8 @@ export function rateChartData(table) {
         }
         points.push(item);
     });
-    // Join only adjacent numeric bands. Duplicate x at a knot draws a vertical
-    // step; nulls, gaps and an unavailable page endpoint never get connected.
+    // Join adjacent band sample points or continuous linear segments.
+    // Nulls, gaps and unavailable page endpoints are never connected.
     const lines = { fitted: [], current: [] };
     if (numeric)
         for (const field of ['fitted', 'current']) {
@@ -100,7 +104,7 @@ export function rateChartData(table) {
                 if (
                     prior &&
                     prior.row.to === item.row.from &&
-                    previousLine.at(-1).x === item[field][0].x
+                    (!linear || previousLine.at(-1).x === item[field][0].x)
                 ) {
                     previousLine.push(...item[field]);
                 } else lines[field].push([...item[field]]);

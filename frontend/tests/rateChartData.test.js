@@ -19,11 +19,11 @@ test('linear curves follow log slopes, with separate null and flat clamps', () =
     assert.equal(plot.points[3].current.length, 1);
     assert.ok(plot.points[3].x > plot.points[2].current.at(-1).x);
 });
-test('step and categorical values stay flat or unconnected, page boundaries do not invent fitted slopes', () => {
+test('band points preserve values and page boundaries do not invent fitted slopes', () => {
     const rows = [{ from: 0, to: 10, fitted: 1, relativity: 2, exposure: 7 }];
     assert.deepEqual(
         rateChartData({ kind: 'step', columns: [], rows }).points[0].current.map((p) => p.value),
-        [2, 2],
+        [2],
     );
     assert.equal(
         rateChartData({ kind: 'linear', columns: ['slope'], rows: [{ ...rows[0], slope: 0 }] })
@@ -41,7 +41,7 @@ test('step and categorical values stay flat or unconnected, page boundaries do n
     );
 });
 
-test('connected step path has vertical jumps, skips null, and keeps exposure row alignment', () => {
+test('connected band trend has one point per band, skips null, and keeps exposure row alignment', () => {
     const p = rateChartData({
         kind: 'step',
         columns: [],
@@ -54,9 +54,9 @@ test('connected step path has vertical jumps, skips null, and keeps exposure row
     assert.equal(p.lines.current.length, 1);
     assert.deepEqual(
         p.lines.current[0].map((v) => v.value),
-        [2, 2, 4, 4],
+        [2, 4],
     );
-    assert.equal(p.lines.current[0][1].x, p.lines.current[0][2].x);
+    assert.ok(p.lines.current[0][1].x > p.lines.current[0][0].x);
     assert.deepEqual(
         p.points.map((p) => p.row.exposure),
         [4, 8, 1],

@@ -355,7 +355,7 @@ def review(
         else:
             options = request.get("options", {})
             functions = {
-                "moving": tooling.smooth_moving_average,
+                "moving": tooling.smooth_trailing_average,
                 "isotonic": tooling.smooth_isotonic,
                 "cap": tooling.cap_floor,
                 "round": tooling.round_relativities,

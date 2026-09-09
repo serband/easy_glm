@@ -5,25 +5,24 @@ returns a :class:`ToolResult` holding **one relativity per row of the table, in
 table order** — nothing is mutated, so a page can draw the result as a preview
 and only then turn it into adjustments.
 
-Three rules hold for every tool:
+Tool conventions:
 
 * **The null / Other row is never touched.** It is not part of the curve (a
   numeric table's missing-value row) or of any order (a categorical's catch-all
   bucket), so smoothing it would mix it with real bands and capping it would
   quietly change how unknown risks are rated. It keeps its value and its own
   editor row.
-* **Smoothing preserves the exposure-weighted mean of the *log* relativities**
-  (§R6 of the 0.4 plan). The base rate is not refitted when a table is edited,
-  so a smoothing that moved that mean would move the overall premium level;
-  keeping the mean of the *logs* is what keeps the level, because relativities
-  multiply. The moving average is re-centred to achieve it; the weighted
-  isotonic fit preserves it on its own (each pooled block is replaced by its
-  weighted mean).
+* **The legacy log-space moving average and isotonic smoother preserve the
+  exposure-weighted mean log relativity**, not total expected claims. The former
+  is re-centred; weighted isotonic pooling preserves this mean directly.
+* **The trailing arithmetic average uses equal-weight point values**, including
+  the current point and available preceding points. It does not use exposure,
+  logarithms or recentering. Neither a log-mean nor a monetary level is preserved.
 * **Cap / floor and round are idempotent**: applying either twice changes
   nothing the second time. Neither is re-centred — a cap that was then shifted
   back up would not be a cap.
 
-The weights are the **training exposure per band** carried by the table rows
+The weights for log-space tools and level diagnostics are the **training exposure per band** carried by the table rows
 (``FromToRow.exposure`` / ``BandRow.exposure``, filled in by ``to_rate_model``
 from ``GLMFit.row_exposure``). A table with no exposure recorded (hand-built, or
 read back from a file written before 0.4) falls back to equal weights and says
@@ -34,7 +33,7 @@ so in :attr:`ToolResult.uniform_weights`.
 * ``numeric`` (step) — one group per bin, in ascending order of the lower edge.
 * ``categorical`` — one group per level, in the table's own order. That order is
   the encoder's (most exposed level first), which is *not* an order of the risk,
-  so the two smoothers refuse a categorical unless the caller passes
+  so smoothers refuse a categorical unless the caller passes
   ``ordered=True`` to say the levels do read in order (e.g. "small / medium /
   large" after a recode).
 * ``linear`` — one group per **node** of the curve, in ascending order. A node is
@@ -107,7 +106,7 @@ class ToolResult:
     @property
     def level_shift(self) -> float:
         """``exp(mean of logs after − before) − 1``: the change in the overall
-        level this result would make. 0.0 for a smoothing (that is the point)."""
+        level this result would make. Zero for the log-mean-preserving smoothers."""
         return float(np.exp(self.log_mean_after - self.log_mean_before) - 1.0)
 
 
@@ -267,6 +266,45 @@ def _smoothable(cfg: VariableConfig, variable: str, ordered: bool) -> None:
         raise ToolingError(
             f"{variable!r} has only one band, so there is nothing to smooth."
         )
+
+
+def smooth_trailing_average(
+    cfg: VariableConfig,
+    variable: str,
+    *,
+    window: int = DEFAULT_WINDOW,
+    ordered: bool = False,
+) -> ToolResult:
+    """Equal-weight arithmetic mean of this point and the preceding points.
+
+    Initial windows use available points only. Numeric bands follow curve order;
+    linear tables use distinct nodes, with the lower clamp counted once. Null /
+    Other is excluded. No exposure weighting or level recentering is applied.
+    """
+    _smoothable(cfg, variable, ordered)
+    if (
+        isinstance(window, bool)
+        or not isinstance(window, (int, np.integer))
+        or window < 1
+    ):
+        raise ToolingError("The moving average needs a positive whole-number window.")
+    values = group_values(cfg)
+    if np.any(~np.isfinite(values)) or np.any(values <= 0):
+        raise ToolingError(
+            f"{variable!r} needs finite positive relativities before averaging."
+        )
+    averaged = np.array(
+        [np.mean(values[max(0, i - window + 1) : i + 1]) for i in range(len(values))]
+    )
+    return _result(
+        cfg,
+        variable,
+        "Moving average (trailing arithmetic)",
+        averaged,
+        f"Trailing arithmetic average of up to {window} points, including the current point. "
+        "Equal weights; initial windows use available points. Null / Other unchanged. "
+        "No level recentering; total expected claims may change.",
+    )
 
 
 def smooth_moving_average(

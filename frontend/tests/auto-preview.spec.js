@@ -96,7 +96,8 @@ test('automatic previews debounce, reject stale results and preserve manual draf
     await expect(cell).toHaveValue('1.37');
     await button('Preview row edits (1)').click();
     await expect(button('Apply adjustment')).toBeEnabled();
-    await cell.fill('1.41'); await cell.press('Tab');
+    await cell.fill('1.41');
+    await cell.press('Tab');
     await expect(button('Apply adjustment')).toHaveCount(0);
     await button('Preview row edits (1)').click();
     await expect(button('Apply adjustment')).toBeEnabled();
@@ -105,10 +106,10 @@ test('automatic previews debounce, reject stale results and preserve manual draf
     await button('Discard row edits').click();
     await button('Moving average').click();
     await expect(button('Apply adjustment')).toBeEnabled();
-    await page.getByLabel('Smoothing window').fill('4');
+    await page.getByLabel('Smoothing window').fill('0');
     await expect(button('Apply adjustment')).toBeDisabled();
     await expect(page.locator('.auto-preview-status')).toContainText(
-        'Enter an odd window from 3 to 25.',
+        'Enter a whole-number window from 1 to 25.',
     );
     await button('Discard preview').click();
     await button('Diagnostics').click();
