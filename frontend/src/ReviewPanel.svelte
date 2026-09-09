@@ -178,7 +178,7 @@
         await run('edit', { edits });
         requestAnimationFrame(() =>
             document
-                .querySelector('.preview-impact')
+                .querySelector('.rate-preview-state')
                 ?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
         );
     }
@@ -260,7 +260,7 @@
                             preview = { ...data, id: taskId, canApply: response.can_apply };
                             requestAnimationFrame(() =>
                                 document
-                                    .querySelector('.preview-impact')
+                                    .querySelector('.rate-preview-state')
                                     ?.scrollIntoView({ block: 'start', behavior: 'instant' }),
                             );
                         }
@@ -418,6 +418,16 @@
                     }[diagnosticTab] || 'Actual versus expected'}
         </h2>
         {#if view === 'tables' && table}
+            <p class="rate-preview-state" role="status">
+                {#if preview}
+                    <strong>Preview — not applied</strong> · {preview.changes?.length || 0} rows would
+                    change. The chart compares Current with Proposed; use Apply adjustment below to save
+                    it.
+                {:else}
+                    <strong>Applied table — no adjustment preview</strong>. Selecting a tool does
+                    not change this chart. Use Preview adjustment to see its effect.
+                {/if}
+            </p>
             <RateChart
                 table={preview?.preview_table || table}
                 {variable}
@@ -621,9 +631,31 @@
                             /></label
                         >
                         <p>
-                            Average each band with its neighbours in log space. Use an odd window,
+                            Window 3 uses this band and one neighbour on each side, weighted by
+                            training exposure. The end bands use fewer neighbours. Use an odd window
                             from 3 to 25.
-                        </p>{/if}
+                            {#if ['step', 'numeric'].includes(tableKind)}This averages the heights
+                                of the steps; it does not interpolate between bands.{/if}
+                        </p>
+                        <details class="moving-explanation">
+                            <summary>How the average is calculated</summary>
+                            <p>
+                                We average log relativities, then exponentiate: an exposure-weighted
+                                geometric average. Finally, all averaged values receive the same
+                                multiplier to preserve the table's exposure-weighted mean log
+                                relativity. This can still change the expected total.
+                            </p>
+                            <p>
+                                The input is the current adjusted table, including earlier
+                                smoothing. Equal neighbouring values stay flat apart from the common
+                                multiplier. The window counts bands, not years or units. Other /
+                                Unknown is excluded.
+                            </p>
+                            {#if ['linear', 'continuous'].includes(tableKind)}<p>
+                                    For a linear factor, averaging operates on curve nodes and
+                                    recalculates the connecting slopes.
+                                </p>{/if}
+                        </details>{/if}
                     {#if tool === 'isotonic'}<label
                             >Direction<select
                                 aria-label="Smoothing direction"

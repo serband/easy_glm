@@ -505,3 +505,20 @@ The focused table-tools flow passed (all tool modes, manual apply/undo, snapshot
 and section geometry), as did the interaction/diagnostic parity case with an
 explicit preview-ready wait. Svelte check/build and diff checks passed. This was
 a static-only update, without restarting the server or reloading existing tabs.
+
+### Moving-average diagnosis and preview clarity
+
+The live DrivAge three-band calculation was independently reproduced from current
+band values and training exposures: every proposed band matched within 1e-12;
+endpoints used shorter windows and Other / Unknown was untouched. For 32–34,
+current 0.65199094 and its two neighbours give weighted geometric mean 0.66470448,
+then the common re-centring factor 0.999735314 gives 0.66452854. The existing flat
+upper-age bands remain flat. Step boundaries are retained because scoring remains
+a step table; smoothing does not silently convert the factor to a continuous curve.
+
+The chart now explicitly distinguishes the applied table from an unapplied preview.
+Tool selection alone does not calculate a preview; unlike the older Streamlit tool
+panel, this workflow has an explicit Preview action. Completed previews scroll to
+the updated chart instead of past it to the impact panel. Help explains exposure
+weighting, geometric averaging, re-centring, current-table input, band-count windows
+and endpoint/null handling. No numerical or scoring semantics changed.
