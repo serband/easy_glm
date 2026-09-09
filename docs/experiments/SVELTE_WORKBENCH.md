@@ -474,3 +474,19 @@ was initiated in the live session after the restart; that newer fit was retained
 with its normal empty undo/redo history. Final read-only checks confirmed the
 project, table values and train/holdout/all diagnostic totals, and unapplied live
 previews passed.
+
+### Combined regularisation chart
+
+Each stage/L1 path now combines CV and training deviance on the left axis with
+retained coefficient counts on the right, following the Streamlit reference.
+CV standard-deviation bars and selected-penalty markers are retained. The shared
+log-alpha axis uses at most five compact scientific labels; deviance uses a padded
+data range instead of starting at zero. Each combined chart has one expandable
+numeric table. Missing CV values omit that series, and fixed-alpha paths retain
+the single point. The live two-stage French fit was visually checked at 884 × 773,
+with non-overlapping ticks and no horizontal overflow; project, jobs and review
+history were unchanged by the static update.
+The focused browser parity case covers CV and fixed-alpha single-point paths,
+selected markers, non-overlapping scientific ticks and both fitted stages. Svelte
+check/build and `git diff --check` passed. Only frontend components and static
+assets changed; the server and existing draft tabs were not restarted or reloaded.

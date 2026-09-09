@@ -2,6 +2,7 @@
     import { onDestroy } from 'svelte';
     import RateChart from './RateChart.svelte';
     import DiagnosticPlot from './DiagnosticPlot.svelte';
+    import PathChart from './PathChart.svelte';
     import DiagnosticTable from './DiagnosticTable.svelte';
     export let api,
         state,
@@ -804,25 +805,11 @@
             />{/each}
         {#if analysis.path}{#each [...new Set(analysis.path.map((r) => r.stage))] as stage}{#each [...new Set(analysis.path
                             .filter((r) => r.stage === stage)
-                            .map((r) => r.l1_ratio))] as ratio}<DiagnosticPlot
+                            .map((r) => r.l1_ratio))] as ratio}<PathChart
                         rows={analysis.path.filter(
                             (r) => r.stage === stage && r.l1_ratio === ratio,
                         )}
                         title={'Stage ' + stage + ' · L1 ' + ratio + ' · regularisation path'}
-                        xKey="alpha"
-                        logX={true}
-                        series={[
-                            { key: 'cv_deviance', label: 'Mean CV deviance' },
-                            { key: 'train_deviance', label: 'Training deviance' },
-                        ]}
-                    /><DiagnosticPlot
-                        rows={analysis.path.filter(
-                            (r) => r.stage === stage && r.l1_ratio === ratio,
-                        )}
-                        title={'Stage ' + stage + ' · L1 ' + ratio + ' · retained coefficients'}
-                        xKey="alpha"
-                        logX={true}
-                        series={[{ key: 'n_nonzero', label: 'Nonzero coefficients' }]}
                     />{/each}{/each}{/if}
         {#each analysis.tables || [] as table}<DiagnosticTable
                 rows={table.rows}

@@ -40,6 +40,20 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     expect(exposureX.at(-1) - exposureX[0]).toBeCloseTo(650);
     await tab('Regularisation path').click();
     await expect(page.getByRole('img', { name: /Stage 1.*regularisation path$/ })).toBeVisible();
+    await page.setViewportSize({ width: 884, height: 773 });
+    const path = page.locator('.path-chart').first();
+    await expect(path.locator('.alpha-tick')).toHaveCount(5);
+    await expect(path.locator('.selected-penalty')).toHaveCount(1);
+    await expect(path).toContainText('Retained coefficients · right axis');
+    const ticks = await path
+        .locator('.alpha-tick')
+        .evaluateAll((nodes) =>
+            nodes.map((n) => ({ text: n.textContent, box: n.getBoundingClientRect().toJSON() })),
+        );
+    expect(ticks.every((t) => t.text.length <= 8)).toBeTruthy();
+    for (let i = 1; i < ticks.length; i++)
+        expect(ticks[i].box.x).toBeGreaterThan(ticks[i - 1].box.right);
+    await expect(page.getByRole('img', { name: /retained coefficients$/ })).toHaveCount(0);
     await tab('Coefficients').click();
     await expect(page.locator('.diagnostic-table').last()).toContainText('exp coef');
     await tab('Double lift').click();
@@ -52,6 +66,11 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     await button('Create model').click();
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 30000 });
+    await button('Diagnostics').click();
+    await tab('Regularisation path').click();
+    await expect(page.locator('.path-chart .alpha-tick')).toHaveCount(1);
+    await expect(page.locator('.path-chart .selected-penalty')).toHaveCount(1);
+    await button('Model').click();
     await page.getByLabel('Model selection').selectOption('Frequency');
     await button('Diagnostics').click();
     await page.getByLabel('Compare with challenger').selectOption('Challenger');
@@ -108,7 +127,9 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
         .evaluateAll((options) => options.map((o) => o.value).find((v) => v.includes('×')));
     expect(interactionName).toBeTruthy();
     await page.getByLabel('Rate table variable', { exact: true }).selectOption(interactionName);
-    await expect(page.locator('.rate-primary > .rate-chart-card .relativity-heatmap')).toBeVisible();
+    await expect(
+        page.locator('.rate-primary > .rate-chart-card .relativity-heatmap'),
+    ).toBeVisible();
     await button('Edit individual or multiple rows').click();
     await expect(page.locator('.cell-edit-matrix')).toBeVisible();
     const cell = page.getByRole('spinbutton', { name: /^Relativity cell / }).first();
