@@ -584,6 +584,10 @@
 
 {#snippet previewControls()}
     {#if preview}<div class="preview-impact">
+            {#if tool === 'isotonic' && preview.tool_details && preview.changes?.length === 0 && !preview.canApply && preview.before_base_rate === preview.after_base_rate}<p
+                >
+                    No changes needed.
+                </p>{/if}
             <strong
                 >Training expected: {num(preview.before_expected)} → {num(preview.after_expected)} ({num(
                     (preview.change || 0) * 100,
@@ -952,11 +956,12 @@
                                   ? 'Averages the current point and the previous point.'
                                   : windowSize === 3
                                     ? 'Averages the current point and the previous two.'
-                                    : `Averages the current point and the previous ${windowSize - 1} points.`}{:else if tool === 'isotonic'}Makes
-                            values {direction === 'increasing'
-                                ? 'non-decreasing'
-                                : 'non-increasing'}.{:else if tool === 'cap'}Keeps values within the
-                            limits you set.{:else if tool === 'round'}{rounding === 'decimals'
+                                    : `Averages the current point and the previous ${windowSize - 1} points.`}{:else if tool === 'isotonic'}{direction ===
+                            'increasing'
+                                ? 'Removes dips so rates only rise or stay flat. Rates already following this pattern stay unchanged.'
+                                : 'Removes upward reversals so rates only fall or stay flat. Rates already following this pattern stay unchanged.'}{:else if tool === 'cap'}Keeps
+                            values within the limits you set.{:else if tool === 'round'}{rounding ===
+                            'decimals'
                                 ? `Rounds to ${decimals} decimal ${decimals === 1 ? 'place' : 'places'}.`
                                 : `Rounds to the nearest multiple of ${num(step)}.`}{/if}
                     </p>
