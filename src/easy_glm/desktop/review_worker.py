@@ -91,7 +91,11 @@ def ae_detail(
 
     table = aggregate(expected)
     fitted_table = aggregate(fitted_expected)
-    table = table.with_columns(pl.Series("fitted_rate", fitted_table["expected_rate"]))
+    table = table.with_columns(
+        pl.Series("fitted_rate", fitted_table["expected_rate"]),
+        pl.Series("fitted_ae", fitted_table["ae"]),
+        pl.Series("fitted_expected", fitted_table["expected"]),
+    )
     if challenger is not None:
         from easy_glm.desktop.diagnostic_views import compatible
 
@@ -330,6 +334,7 @@ def review(
             ),
         }
     before = run.rate_model.clone()
+    original = rate_model_for(project, run, [], base_rate_override=None)
     config = project.models[run.name]
     before_adjustments = copy.deepcopy(config.adjustments)
     before_base = config.base_rate_override
@@ -360,8 +365,16 @@ def review(
                 "cap": tooling.cap_floor,
                 "round": tooling.round_relativities,
             }
-            result = functions[action](table, variable, **options)
+            result = functions[action](
+                original.variables[variable], variable, **options
+            )
             values, note = list(result.values), result.note
+            # Tools replace the factor overlay, but excluded Null / Other rows
+            # retain any explicit manual adjustment.
+            included = {i for group in tooling.groups(table) for i in group}
+            for i, row in enumerate(table.table):
+                if i not in included:
+                    values[i] = float(row.relativity)
             tool_details = {
                 "name": result.tool,
                 "log_mean_before": result.log_mean_before,
@@ -383,13 +396,28 @@ def review(
                         edited[i][j] = lookup[key]
             _, errors = apply_cell_edits(config, variable, grid, edited)
         else:
-            fitted = rate_model_for(project, run, [], base_rate_override=None)
+            original_rows = original.variables[variable].table
+            indices = list(range(len(table.table)))
+            edit_rows = table.table
+            if action != "edit":
+                indices = sorted(included)
+                keys = {(original_rows[i].from_, original_rows[i].to_) for i in indices}
+                config.adjustments = [
+                    adj
+                    for adj in config.adjustments
+                    if not (
+                        adj.variable == variable
+                        and not adj.cell
+                        and (adj.from_, adj.to_) in keys
+                    )
+                ]
+                edit_rows = original_rows
             _, errors = apply_row_edits(
                 config,
                 variable,
-                table.table,
-                [r.relativity for r in fitted.variables[variable].table],
-                values,
+                [edit_rows[i] for i in indices],
+                [original_rows[i].relativity for i in indices],
+                [values[i] for i in indices],
                 require_positive=True,
                 other_label=table.other_label,
             )
@@ -460,8 +488,10 @@ def review(
             {
                 "columns": list(new_rows[0]) if new_rows else [],
                 "rows": [
-                    dict(new, fitted=old["relativity"])
-                    for old, new in zip(old_rows, new_rows, strict=True)
+                    dict(new, fitted=fit_row.relativity)
+                    for fit_row, new in zip(
+                        original.variables[variable].table, new_rows, strict=True
+                    )
                 ],
                 "kind": (
                     "step"

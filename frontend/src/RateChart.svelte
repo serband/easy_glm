@@ -4,8 +4,8 @@
     export let table,
         variable,
         label = 'relativity',
-        fittedLabel = 'Fitted',
-        currentLabel = 'Current',
+        fittedLabel = 'Original fit',
+        currentLabel = 'Adjusted',
         preview = false;
     let cellView = 'relativity';
     $: plot = rateChartData(table);
@@ -78,10 +78,10 @@
                     viewBox={plot.numeric ? '0 0 740 240' : '0 0 740 310'}
                     role="img"
                     aria-label={(preview
-                        ? 'Current and proposed relativities for '
-                        : 'Fitted and current relativities for ') + variable}
+                        ? 'Original fit and adjusted preview for '
+                        : 'Original fit and adjusted relativities for ') + variable}
                 >
-                    <title>Canonical fitted and current {label} by band or level</title>
+                    <title>Original fit and adjusted {label} by band or level</title>
                     {#each [0, 0.5, 1] as tick}<line
                             x1="55"
                             x2="705"

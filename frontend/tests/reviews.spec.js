@@ -63,7 +63,7 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     expect(tableSection.y).toBeGreaterThan(chart.y + chart.height - 1);
     await expect(page.locator('.numeric-curve')).toHaveCount(2);
     await expect(
-        page.getByRole('img', { name: /^Fitted and current relativities for/ }),
+        page.getByRole('img', { name: /^Original fit and adjusted relativities for/ }),
     ).toBeVisible();
     await expect(page.getByRole('img', { name: /^Exposure for/ })).toBeVisible();
     await expect(button('View rate tables')).toHaveCount(0);

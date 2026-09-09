@@ -632,3 +632,23 @@ slope continuity; desktop preview/money/history tests and automatic-preview
 race tests. A live BonusMalus preview independently matched every trailing mean,
 rendered nine joined band points with no vertical staircase, and was discarded.
 The exact live project, fitted jobs and review history were unchanged.
+
+### Original fit and adjusted slots
+
+Rate charts now retain two permanent series: Original fit and Adjusted. An
+active preview replaces only the adjusted series; Discard returns it to the
+applied values. A/E uses Actual, Original fit and Adjusted with matching model
+colours. Tool previews now start from the original fitted factor, rather than
+compounding the current table. Applying replaces eligible rows of that factor's
+adjustment overlay; other factors, base-rate overrides, Null / Other manual
+adjustments and saved snapshots remain intact. Manual row edits retain other
+rows in the adjusted overlay.
+
+Candidate impact and Apply eligibility still compare against the applied book.
+Thus an original-equal candidate can remove a prior adjustment. Sequential-tool
+checks cover this case, retained other-factor/null/base/snapshot values, exact
+original coefficients and predictions, and successive manual edits. Backend
+preview/history checks and automatic-preview race checks pass. Read-only live
+verification matched the Original fit to the retained fit artifact, checked
+window 3 and window 1 previews, and verified stable series during preview,
+switching and discard without changing the project, fit artifact or history.

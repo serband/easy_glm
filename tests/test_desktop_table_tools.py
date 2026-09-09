@@ -14,7 +14,7 @@ from easy_glm.engine import tooling
 from easy_glm.workflow.diagnostics import expected_claims
 from easy_glm.workflow.prep import prepare, train_holdout
 from easy_glm.workflow.project import Adjustment, ModelConfig, Project, VariableDesign
-from easy_glm.workflow.run import rebuild_rate_model, run_model
+from easy_glm.workflow.run import rate_model_for, rebuild_rate_model, run_model
 
 
 @pytest.mark.parametrize("kind", ["step", "linear", "categorical"])
@@ -62,7 +62,8 @@ def test_preview_modes_match_canonical_values_and_money(kind, action, options):
         "cap": tooling.cap_floor,
         "round": tooling.round_relativities,
     }
-    expected = functions[action](before.variables["x"], "x", **options)
+    original = rate_model_for(p, run, [], base_rate_override=None)
+    expected = functions[action](original.variables["x"], "x", **options)
     predicted = tooling.preview_model(before, "x", expected.values)
     train, _ = train_holdout(frame, p.data.split)
     data = worker_review(
@@ -78,7 +79,7 @@ def test_preview_modes_match_canonical_values_and_money(kind, action, options):
     )
     np.testing.assert_allclose(
         [r["fitted"] for r in data["preview_table"]["rows"]],
-        [r.relativity for r in before.variables["x"].table],
+        [r.relativity for r in original.variables["x"].table],
         rtol=1e-12,
     )
     assert data["after_expected"] == pytest.approx(
@@ -179,3 +180,84 @@ def test_upgrade_restores_undo_and_redo_without_touching_fit(model_session, tmp_
         apply(restored, review(restored, "redo", variable="Age"))
         assert restored.get("/api/project").json() == saved
         assert restored.get("/api/jobs").json()["Frequency"]["id"] == job["id"]
+
+
+def test_tools_replace_overlay_from_original_and_keep_other_factor_and_history():
+    from easy_glm.workflow.project import TableSnapshot
+
+    rng = np.random.default_rng(91)
+    raw = pl.DataFrame(
+        {
+            "x": rng.integers(1, 10, 300),
+            "z": rng.choice(["A", "B"], 300),
+            "y": rng.poisson(1, 300),
+            "w": np.ones(300),
+        }
+    )
+    p = Project(name="Two slots")
+    p.data.roles = {"x": "predictor", "z": "predictor", "y": "target", "w": "weight"}
+    p.data.split.mode = "random"
+    p.models["Model"] = ModelConfig(
+        target="y", weight="w", divide_target_by_weight=True, predictors=["x", "z"]
+    )
+    frame = prepare(p, raw)
+    run = run_model(p, frame, "Model")
+    original = rate_model_for(p, run, [], base_rate_override=None)
+    original_prediction = original.predict(frame, exposure_col=None)
+    coefficients = run.fit.coef.copy()
+    xrow, zrow = original.variables["x"].table[1], original.variables["z"].table[0]
+    other = Adjustment("z", zrow.from_, zrow.to_, 1.7)
+    null = Adjustment("x", None, None, 1.8)
+    cfg = p.models["Model"]
+    cfg.adjustments = [other, null, Adjustment("x", xrow.from_, xrow.to_, 8)]
+    cfg.base_rate_override = original.base_rate * 1.1
+    cfg.snapshots = [TableSnapshot("Keep", adjustments=copy.deepcopy(cfg.adjustments))]
+    saved = copy.deepcopy(cfg.snapshots)
+    for action, options, function in [
+        ("moving", {"window": 3}, tooling.smooth_trailing_average),
+        ("round", {"decimals": 1}, tooling.round_relativities),
+        ("moving", {"window": 2}, tooling.smooth_trailing_average),
+        ("cap", {"floor": 1.2}, tooling.cap_floor),
+        ("moving", {"window": 1}, tooling.smooth_trailing_average),
+    ]:
+        data = worker_review(
+            p,
+            run,
+            raw,
+            {
+                "action": action,
+                "variable": "x",
+                "subset": "holdout",
+                "options": options,
+            },
+        )
+        expected = function(original.variables["x"], "x", **options).values
+        expected[-1] = 1.8
+        np.testing.assert_allclose(
+            [r["relativity"] for r in data["preview_table"]["rows"]], expected
+        )
+        np.testing.assert_array_equal(
+            [r["fitted"] for r in data["preview_table"]["rows"]],
+            [r.relativity for r in original.variables["x"].table],
+        )
+        assert other in cfg.adjustments and null in cfg.adjustments
+        assert cfg.base_rate_override == original.base_rate * 1.1
+        assert cfg.snapshots == saved
+        np.testing.assert_array_equal(run.fit.coef, coefficients)
+        np.testing.assert_array_equal(
+            rate_model_for(p, run, [], base_rate_override=None).predict(
+                frame, exposure_col=None
+            ),
+            original_prediction,
+        )
+    assert data["changed"]  # Window 1 removes the preceding cap overlay.
+    assert cfg.adjustments == [other, null]
+    first = worker_review(
+        p, run, raw, {"action": "edit", "variable": "x", "edits": {"1": 2.2}}
+    )
+    second = worker_review(
+        p, run, raw, {"action": "edit", "variable": "x", "edits": {"2": 3.3}}
+    )
+    assert first["preview_table"]["rows"][1]["relativity"] == 2.2
+    assert second["preview_table"]["rows"][1]["relativity"] == 2.2
+    assert second["preview_table"]["rows"][2]["relativity"] == 3.3

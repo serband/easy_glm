@@ -255,14 +255,13 @@
     $: if (key !== loadedKey && autoEnabled) stopAuto();
     $: if (name && key !== loadedKey && !busy) load();
     $: series = [
-        { key: 'actual_rate', label: 'Actual', color: '#287762' },
-        { key: 'fitted_rate', label: 'Original fitted', color: '#737e9b' },
+        { key: 'actual_rate', label: 'Actual', color: '#c35b48' },
+        { key: 'fitted_rate', label: 'Original fit', color: '#737e9b' },
         { key: 'challenger_rate', label: challenger || 'Challenger', color: '#439da5' },
-        { key: 'before_rate', label: 'Current', color: '#a27c48' },
         {
             key: 'expected_rate',
-            label: preview ? 'Proposed' : 'Current adjusted',
-            color: '#c35b48',
+            label: 'Adjusted',
+            color: '#287762',
         },
     ].filter((s) => rows.some((r) => Number.isFinite(r[s.key])));
     $: chartRows = rows.filter((r) => r.exposure > 0);
@@ -529,11 +528,11 @@
     {#if rows.length && (view === 'tables' || (diagnosticTab === 'variable' && !pairRows) || (diagnosticTab === 'pair' && pairRows) || (diagnosticTab === 'residual' && inspectedResidual))}
         {#if pairRows}<h3>{shownTitle} · {shownSubset}</h3>
             <h3>Actual / expected by cell</h3>
-            {#if rows.some((r) => r.challenger_ae !== undefined || r.before_ae !== undefined)}<label
+            {#if rows.some((r) => r.challenger_ae !== undefined || r.fitted_ae !== undefined)}<label
                     >Heatmap model<select bind:value={pairMetric}
-                        ><option value="ae">{preview ? 'Proposed' : name}</option
-                        >{#if rows.some((r) => r.before_ae !== undefined)}<option value="before_ae"
-                                >Current</option
+                        ><option value="ae">Adjusted</option
+                        >{#if rows.some((r) => r.fitted_ae !== undefined)}<option value="fitted_ae"
+                                >Original fit</option
                             >{/if}{#if rows.some((r) => r.challenger_ae !== undefined)}<option
                                 value="challenger_ae">{challenger}</option
                             >{/if}</select
@@ -554,7 +553,7 @@
                                         (r) => r.label_a === label && r.label_b === other,
                                     )}<td
                                         style:background={heat(cell?.[pairMetric])}
-                                        title={`Actual ${num(cell?.actual)}; expected ${num(pairMetric === 'challenger_ae' ? cell?.challenger_expected : pairMetric === 'before_ae' ? cell?.before_expected : cell?.expected)}; exposure ${num(cell?.exposure)}`}
+                                        title={`Actual ${num(cell?.actual)}; expected ${num(pairMetric === 'challenger_ae' ? cell?.challenger_expected : pairMetric === 'fitted_ae' ? cell?.fitted_expected : cell?.expected)}; exposure ${num(cell?.exposure)}`}
                                         >{num(cell?.[pairMetric])}</td
                                     >{/each}</tr
                             >{/each}</tbody
@@ -656,14 +655,14 @@
         </h2>
         {#if view === 'tables' && table}
             <p class="rate-preview-state help-text">
-                {preview ? 'Preview · not applied' : 'Current tables'}
+                {preview ? 'Preview · not applied' : 'Applied adjustments'}
             </p>
             <RateChart
                 table={preview?.preview_table || table}
                 {variable}
                 label={rateLabel}
-                fittedLabel={preview?.preview_table ? 'Current' : 'Fitted'}
-                currentLabel={preview?.preview_table ? 'Proposed' : 'Current'}
+                fittedLabel="Original fit"
+                currentLabel="Adjusted"
                 preview={!!preview?.preview_table}
             />
 

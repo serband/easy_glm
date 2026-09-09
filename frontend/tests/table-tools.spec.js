@@ -50,12 +50,12 @@ test('visible rate adjustment methods preview, apply and undo real changes', asy
     await button('Preview row edits (2)').click();
     await expect(
         page.getByRole('img', {
-            name: 'Current and proposed relativities for DriverAge',
+            name: 'Original fit and adjusted preview for DriverAge',
             exact: true,
         }),
     ).toBeVisible();
     await expect(page.locator('.preview-impact')).toContainText('Training expected:');
-    await expect(page.locator('.rate-ae')).toContainText('Proposed');
+    await expect(page.locator('.rate-ae')).toContainText('Adjusted');
     await expect(page.locator('.rate-relativities .rate-chart-card')).toHaveCount(1);
     await expect(
         page
@@ -121,7 +121,7 @@ test('visible rate adjustment methods preview, apply and undo real changes', asy
         await parameters();
         await expect(
             page.getByRole('img', {
-                name: 'Current and proposed relativities for DriverAge',
+                name: 'Original fit and adjusted preview for DriverAge',
                 exact: true,
             }),
         ).toBeVisible();
@@ -179,7 +179,7 @@ test('visible rate adjustment methods preview, apply and undo real changes', asy
         .check();
     await expect(
         page.getByRole('img', {
-            name: 'Current and proposed relativities for Region',
+            name: 'Original fit and adjusted preview for Region',
             exact: true,
         }),
     ).toBeVisible();
