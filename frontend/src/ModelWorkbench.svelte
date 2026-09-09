@@ -1,5 +1,19 @@
 <script>
     import { onDestroy } from 'svelte';
+    import ReviewPanel from './ReviewPanel.svelte';
+    let rowEdits = {};
+    function editRow(index, value) {
+        rowEdits = { ...rowEdits, [index]: Number(value) };
+    }
+    function clearEdits() {
+        rowEdits = {};
+    }
+    async function reviewed(snapshot) {
+        onState(snapshot);
+        resultId = '';
+        clearEdits();
+        await refresh(false);
+    }
     export let api;
     export let state;
     export let view;
@@ -40,7 +54,13 @@
     let polling = false,
         timer = null;
     $: signature = state ? state.session_id + ':' + state.revision : '';
-    $: if (view !== 'variables' && state && !loading && !saving && (!loaded || known !== signature))
+    $: if (
+        (view !== 'variables' || state?.models?.length) &&
+        state &&
+        !loading &&
+        !saving &&
+        (!loaded || known !== signature)
+    )
         refresh(true);
     $: if (loaded && known !== signature && !loading && !saving) refresh(true);
     $: payload = cfg
@@ -197,7 +217,9 @@
             result = data;
             resultId = id;
             if (!result.metrics[subset]) subset = Object.keys(result.metrics)[0];
-            tableName = result.table_index[0]?.name || '';
+            tableName = result.table_index.some((t) => t.name === tableName)
+                ? tableName
+                : result.table_index[0]?.name || '';
             tableOffset = 0;
             await loadTable();
         } catch (e) {
@@ -273,6 +295,7 @@
         kinds = { ...kinds, [name]: value || null };
     }
     async function loadTable() {
+        rowEdits = {};
         if (!tableName || !result) return;
         tableBusy = true;
         tableScroll = 0;
@@ -743,12 +766,23 @@
                             ', ',
                         )}.
                     </div>{/if}
+                <ReviewPanel
+                    {api}
+                    {state}
+                    name={selected}
+                    {view}
+                    {subset}
+                    onApplied={reviewed}
+                    onClear={clearEdits}
+                    {onNavigate}
+                />
                 {#each result.warnings as warning}<div class="message">{warning}</div>{/each}
             {:else}
                 <div class="results-toolbar">
                     <label
                         >Variable<select
                             aria-label="Rate table variable"
+                            disabled={Object.keys(rowEdits).length > 0}
                             bind:value={tableName}
                             onchange={() => {
                                 tableOffset = 0;
@@ -763,9 +797,29 @@
                     >
                 </div>
                 <p class="help-text">
-                    {result.relativity_note} Tables are read-only here. Saved manual adjustments are included;
-                    table editing and champion comparison are not part of this slice.
+                    {result.relativity_note}
                 </p>
+                <div class="results-toolbar">
+                    <label
+                        >A/E subset<select aria-label="Table diagnostic subset" bind:value={subset}
+                            ><option value="train">Training</option><option value="holdout"
+                                >Holdout</option
+                            ></select
+                        ></label
+                    >
+                </div>
+                <ReviewPanel
+                    {api}
+                    {state}
+                    name={selected}
+                    {view}
+                    {subset}
+                    variable={tableName}
+                    edits={rowEdits}
+                    onApplied={reviewed}
+                    onClear={clearEdits}
+                    {onNavigate}
+                />
                 {#if table}<div
                         class="rate-grid"
                         onscroll={(e) => (tableScroll = e.currentTarget.scrollTop)}
@@ -782,10 +836,30 @@
                                         aria-hidden="true"
                                         style:height={tableStart * 32 + 'px'}
                                         ><td colspan={table.columns.length}></td></tr
-                                    >{/if}{#each table.rows.slice(tableStart, tableStart + 24) as row}<tr
+                                    >{/if}{#each table.rows.slice(tableStart, tableStart + 24) as row, rowIndex}<tr
                                         >{#each table.columns as column}<td
                                                 title={String(row[column] ?? '')}
-                                                >{num(row[column], 8)}</td
+                                                >{#if column === 'relativity'}<input
+                                                        class="relativity-input"
+                                                        aria-label={'Relativity row ' +
+                                                            (table.offset +
+                                                                tableStart +
+                                                                rowIndex +
+                                                                1)}
+                                                        type="number"
+                                                        min="0.000000001"
+                                                        step="any"
+                                                        value={rowEdits[
+                                                            table.offset + tableStart + rowIndex
+                                                        ] ?? row[column]}
+                                                        onchange={(e) =>
+                                                            editRow(
+                                                                table.offset +
+                                                                    tableStart +
+                                                                    rowIndex,
+                                                                e.currentTarget.value,
+                                                            )}
+                                                    />{:else}{num(row[column], 8)}{/if}</td
                                             >{/each}</tr
                                     >{/each}{#if tableStart + 24 < table.rows.length}<tr
                                         aria-hidden="true"
@@ -804,13 +878,17 @@
                         >
                         <div class="spacer"></div>
                         <button
-                            disabled={tableBusy || tableOffset === 0}
+                            disabled={tableBusy ||
+                                Object.keys(rowEdits).length > 0 ||
+                                tableOffset === 0}
                             onclick={() => {
                                 tableOffset = Math.max(0, tableOffset - 200);
                                 loadTable();
                             }}>Previous rows</button
                         ><button
-                            disabled={tableBusy || tableOffset + 200 >= table.total}
+                            disabled={tableBusy ||
+                                Object.keys(rowEdits).length > 0 ||
+                                tableOffset + 200 >= table.total}
                             onclick={() => {
                                 tableOffset += 200;
                                 loadTable();

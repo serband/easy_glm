@@ -31,3 +31,15 @@ def test_occupied_port_never_returns_unrelated_server():
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_launcher_accepts_identity_starting_with_dash(monkeypatch):
+    monkeypatch.setattr(
+        "easy_glm.desktop.secrets.token_urlsafe", lambda _: "-leading-dash"
+    )
+    process = launch(open_browser=False)
+    try:
+        assert process.poll() is None
+    finally:
+        process.terminate()
+        process.wait(timeout=10)

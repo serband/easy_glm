@@ -173,6 +173,15 @@ class FitJobs:
                 )
             return job["result"]
 
+    def artifact(self, project: Project, name: str) -> Path:
+        with self.lock:
+            self.result(project, name)
+            return Path(self.folder.name) / self.jobs[name]["id"]
+
+    def edited(self, project: Project, name: str, result: dict[str, Any]) -> None:
+        with self.lock:
+            self.jobs[name].update(key=model_key(project, name), result=result)
+
     def close(self) -> None:
         with self.lock:
             for name in self.jobs:

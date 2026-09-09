@@ -4,7 +4,13 @@
     let view = 'variables',
         resultsReady = false;
     function modelState(snapshot) {
+        const keepDraft = dirty;
         state = snapshot;
+        preview = null;
+        if (!keepDraft) {
+            draft = structuredClone(snapshot.setup);
+            jsonText = roleJson();
+        }
     }
     function navigate(next) {
         view = next;

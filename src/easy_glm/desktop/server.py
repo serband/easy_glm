@@ -29,6 +29,7 @@ from easy_glm.desktop.modeling import (
     edit_model,
     setup_info,
 )
+from easy_glm.desktop.reviews import ReviewEdit, ReviewJobs
 from easy_glm.workflow.explore import univariate
 from easy_glm.workflow.prep import apply_variables
 from easy_glm.workflow.project import SINGLE_ROLES, Project
@@ -55,10 +56,14 @@ def create_app(
 ) -> FastAPI:
     """Serve one local, in-memory project and bundled assets."""
     jobs = FitJobs()
+    reviews = ReviewJobs()
+    undo_steps = {}
+    redo_steps = {}
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         yield
+        reviews.close()
         jobs.close()
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -269,7 +274,10 @@ def create_app(
             if problems:
                 raise HTTPException(422, "; ".join(problems))
             try:
-                return jobs.start(deepcopy(current), raw.clone(), name)
+                started = jobs.start(deepcopy(current), raw.clone(), name)
+                undo_steps.pop(name, None)
+                redo_steps.pop(name, None)
+                return started
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
 
@@ -321,6 +329,195 @@ def create_app(
                 "rows": table["rows"][offset : offset + limit],
                 "total": len(table["rows"]),
                 "offset": offset,
+            }
+
+    @app.post("/api/review/{name}", status_code=202)
+    def review_start(name: str, edit: ReviewEdit) -> dict[str, Any]:
+        nonlocal revision
+        from easy_glm.workflow.project import TableSnapshot
+
+        with lock:
+            check_revision(edit)
+            try:
+                source = jobs.artifact(current, name)
+                request = edit.model_dump(exclude={"session_id", "revision"})
+                saved = deepcopy(current)
+                cfg = saved.models[name]
+                if edit.action in ("include_factor", "include_pair"):
+                    from easy_glm.workflow.project import Interaction
+
+                    if edit.action == "include_factor":
+                        eligible = jobs.result(current, name)["review_variables"]
+                        if (
+                            edit.variable not in eligible
+                            or saved.data.roles.get(edit.variable)
+                            not in (None, "unassigned", "predictor")
+                            or edit.variable == saved.data.split.column
+                        ):
+                            raise ValueError("Choose an eligible missing factor.")
+                        if edit.variable in cfg.predictors:
+                            raise ValueError("This factor is already included.")
+                        saved.apply_role_change(edit.variable, "predictor")
+                        cfg.predictors.append(edit.variable)
+                    else:
+                        if (
+                            edit.a == edit.b
+                            or edit.a not in cfg.predictors
+                            or edit.b not in cfg.predictors
+                        ):
+                            raise ValueError(
+                                "Choose two distinct predictors in this model."
+                            )
+                        if any(
+                            {i.a, i.b} == {edit.a, edit.b} for i in cfg.interactions
+                        ):
+                            raise ValueError("This interaction is already included.")
+                        cfg.interactions.append(Interaction(edit.a, edit.b))
+                    problems = saved.validate(name)
+                    if problems:
+                        raise ValueError("; ".join(problems))
+                    current.data = saved.data
+                    current.models = saved.models
+                    revision += 1
+                    jobs.invalidate(current)
+                    return {"snapshot": snapshot()}
+                if edit.action == "snapshot":
+                    label = edit.snapshot.strip()
+                    if not label or any(s.name == label for s in cfg.snapshots):
+                        raise ValueError("Give this snapshot a new, non-empty name.")
+                    cfg.snapshots.append(
+                        TableSnapshot(
+                            label,
+                            adjustments=deepcopy(cfg.adjustments),
+                            base_rate_override=cfg.base_rate_override,
+                        )
+                    )
+                    current.models[name].snapshots = cfg.snapshots
+                    revision += 1
+                    jobs.edited(current, name, jobs.jobs[name]["result"])
+                    return {"snapshot": snapshot()}
+                if edit.action in ("undo", "redo", "restore_snapshot", "reset"):
+                    if edit.action in ("undo", "redo"):
+                        stack = (
+                            undo_steps if edit.action == "undo" else redo_steps
+                        ).get(name, [])
+                        if not stack:
+                            raise ValueError("No table edit to " + edit.action + ".")
+                        restore = stack[-1]
+                        cfg.adjustments = deepcopy(restore[0])
+                        cfg.base_rate_override = restore[1]
+                    elif edit.action == "restore_snapshot":
+                        matched = next(
+                            (s for s in cfg.snapshots if s.name == edit.snapshot), None
+                        )
+                        if matched is None:
+                            raise ValueError("Choose an existing snapshot.")
+                        cfg.adjustments = deepcopy(matched.adjustments)
+                        cfg.base_rate_override = matched.base_rate_override
+                    else:
+                        cfg.adjustments = []
+                        cfg.base_rate_override = None
+                    request.update(action="restore", restore_project=saved.to_dict())
+                request["original_action"] = edit.action
+                request["model"] = name
+                request["fit_id"] = source.name
+                return reviews.start(deepcopy(current), source, request, revision)
+            except (ValueError, KeyError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/reviews/{key}")
+    def review_status(key: str) -> dict[str, Any]:
+        with lock:
+            try:
+                task = reviews.get(key)
+            except ValueError as exc:
+                raise HTTPException(404, str(exc)) from exc
+            stale = (
+                task["revision"] != revision
+                or jobs.jobs.get(task["request"]["model"], {}).get("id")
+                != task["request"]["fit_id"]
+            )
+            data = task.get("data", {})
+            return {
+                "id": key,
+                "status": "stale" if stale else task["status"],
+                "data": {
+                    k: v for k, v in data.items() if k not in ("project", "result")
+                },
+                "can_apply": not stale
+                and "project" in data
+                and data.get("changed", True)
+                and task["status"] == "complete",
+            }
+
+    @app.post("/api/reviews/{key}/cancel")
+    def review_cancel(key: str, edit: Revision) -> dict[str, Any]:
+        with lock:
+            check_revision(edit)
+            try:
+                reviews.cancel(key)
+            except ValueError as exc:
+                raise HTTPException(404, str(exc)) from exc
+            return {"cancelled": True}
+
+    @app.post("/api/reviews/{key}/apply")
+    def review_apply(key: str, edit: Revision) -> dict[str, Any]:
+        nonlocal current, revision
+        with lock:
+            check_revision(edit)
+            try:
+                task = reviews.get(key)
+                if (
+                    task["revision"] != revision
+                    or jobs.jobs.get(task["request"]["model"], {}).get("id")
+                    != task["request"]["fit_id"]
+                    or task["status"] != "complete"
+                    or "project" not in task.get("data", {})
+                    or not task.get("data", {}).get("changed", True)
+                ):
+                    raise ValueError(
+                        "Preview is no longer applicable. Preview the edit again."
+                    )
+                name = task["request"]["model"]
+                jobs.result(current, name)
+                cfg = current.models[name]
+                before = (deepcopy(cfg.adjustments), cfg.base_rate_override)
+                action = task["request"]["original_action"]
+                if action == "undo":
+                    undo_steps[name].pop()
+                    redo_steps.setdefault(name, []).append(before)
+                else:
+                    undo_steps.setdefault(name, []).append(before)
+                    undo_steps[name] = undo_steps[name][-50:]
+                    if action == "redo":
+                        redo_steps[name].pop()
+                    else:
+                        redo_steps[name] = []
+                candidate_project = Project.from_dict(task["data"]["project"])
+                cfg.adjustments = candidate_project.models[name].adjustments
+                cfg.base_rate_override = candidate_project.models[
+                    name
+                ].base_rate_override
+                revision += 1
+                jobs.edited(current, name, task["data"]["result"])
+                return snapshot()
+            except (ValueError, KeyError) as exc:
+                raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/api/review-info/{name}")
+    def review_info(name: str) -> dict[str, Any]:
+        with lock:
+            if name not in current.models:
+                raise HTTPException(404, "Unknown model")
+            try:
+                columns = jobs.result(current, name)["review_variables"]
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            return {
+                "variables": columns,
+                "snapshots": [s.name for s in current.models[name].snapshots],
+                "undo": bool(undo_steps.get(name)),
+                "redo": bool(redo_steps.get(name)),
             }
 
     @app.get("/api/project")

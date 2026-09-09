@@ -892,3 +892,58 @@ main {
         padding: 16px;
     }
 }
+.review-panel details {
+    margin: 14px 0;
+    border-top: 1px solid #e1e9e4;
+    padding-top: 12px;
+}
+.review-panel summary {
+    cursor: pointer;
+    font-weight: 600;
+}
+.review-panel .results-toolbar {
+    flex-wrap: wrap;
+    gap: 10px;
+}
+.review-panel .chart-legend {
+    flex-wrap: wrap;
+}
+.review-scroll,
+.heatmap-scroll {
+    max-height: 380px;
+    overflow: auto;
+    margin-top: 12px;
+}
+.review-panel table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 12px;
+}
+.review-panel th,
+.review-panel td {
+    padding: 8px;
+    border-bottom: 1px solid #e1e9e4;
+    text-align: left;
+    white-space: nowrap;
+}
+.review-panel th {
+    position: sticky;
+    top: 0;
+    background: #f1f5f2;
+}
+.preview-impact {
+    padding: 16px;
+    background: #edf4eb;
+    border: 1px solid #9ebaab;
+    margin: 14px 0;
+}
+.preview-impact button {
+    margin-right: 10px;
+}
+.relativity-input {
+    width: 120px;
+    padding: 4px 6px;
+}
+.ae-heatmap td {
+    min-width: 65px;
+}

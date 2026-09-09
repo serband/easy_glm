@@ -48,8 +48,7 @@ def launch(
         "easy_glm.desktop",
         "--port",
         str(port),
-        "--launch-id",
-        launch_id,
+        f"--launch-id={launch_id}",
     ]
     if project_path is not None:
         args += ["--project", str(Path(project_path).resolve())]

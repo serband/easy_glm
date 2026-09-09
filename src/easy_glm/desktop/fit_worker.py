@@ -30,11 +30,11 @@ def write_json(path: Path, value: Any) -> None:
     os.replace(temporary, path)
 
 
-def fit_result(project: Any, raw: Any, name: str, progress: Any) -> dict[str, Any]:
+def fit_result(
+    project: Any, raw: Any, name: str, progress: Any, artifact: Path | None = None
+) -> dict[str, Any]:
     """A JSON result, including current adjusted tables, from the canonical engine."""
-    from easy_glm.core.excel import rate_model_tables
-    from easy_glm.workflow.diagnostics import lift_table, totals
-    from easy_glm.workflow.prep import prepare, train_holdout
+    from easy_glm.workflow.prep import prepare
     from easy_glm.workflow.run import run_model
 
     progress("Preparing full data and train/holdout split…")
@@ -46,7 +46,21 @@ def fit_result(project: Any, raw: Any, name: str, progress: Any) -> dict[str, An
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         run = run_model(project, frame, name, progress=progress)
-    progress("Computing diagnostics and rate tables…")
+    if artifact is not None:
+        import pickle
+
+        with (artifact / "fit.pkl").open("wb") as handle:
+            pickle.dump(run, handle)
+    return result_for(project, frame, run, [str(w.message) for w in caught])
+
+
+def result_for(
+    project: Any, frame: Any, run: Any, notices: list[str] | None = None
+) -> dict[str, Any]:
+    from easy_glm.core.excel import rate_model_tables
+    from easy_glm.workflow.diagnostics import lift_table, totals
+    from easy_glm.workflow.prep import train_holdout
+
     train, holdout = train_holdout(frame, project.data.split)
     charts = {}
     for subset, part in (("train", train), ("holdout", holdout)):
@@ -59,6 +73,28 @@ def fit_result(project: Any, raw: Any, name: str, progress: Any) -> dict[str, An
     }
     return json_safe(
         {
+            "review_variables": [
+                c
+                for c in frame.columns
+                if project.data.roles.get(c)
+                not in (
+                    "target",
+                    "weight",
+                    "exposure",
+                    "offset",
+                    "current_premium",
+                    "id",
+                    "split",
+                    "ignore",
+                )
+                and c
+                not in (
+                    project.data.split.column,
+                    run.config.target,
+                    run.config.weight,
+                    run.config.offset,
+                )
+            ],
             "summary": run.summary(),
             "metrics": run.metrics,
             "lift": charts,
@@ -68,7 +104,7 @@ def fit_result(project: Any, raw: Any, name: str, progress: Any) -> dict[str, An
             "relativity_label": run.rate_model.relativity_label,
             "relativity_note": run.rate_model.relativity_note,
             "dropped_predictors": run.dropped_predictors,
-            "warnings": list(dict.fromkeys(str(w.message) for w in caught)),
+            "warnings": list(dict.fromkeys(notices or [])),
         }
     )
 
@@ -89,6 +125,7 @@ def main() -> None:
             pl.read_parquet(folder / "raw.parquet"),
             name,
             progress,
+            folder,
         )
     except (
         Exception

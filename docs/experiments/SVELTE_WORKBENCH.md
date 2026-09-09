@@ -194,8 +194,8 @@ and paging. Results are available only for a completed fit matching the applied
 settings. Variable, split or model changes invalidate affected results and never
 start a fit automatically.
 
-Tables are read-only. Champion comparison, table adjustments/tooling, undo,
-snapshots, result exports and durable fit recovery remain unimplemented. The
+Table editing and detailed diagnostics are described in the restoration below.
+Champion comparison, result exports and durable fit recovery remain unimplemented. The
 existing **Export project** downloads the applied specification. Server restarts
 retain neither in-memory edits nor fits unless the specification was exported
 and supplied at launch. Open a fresh tab for a new UI build; keep an older tab
@@ -210,7 +210,7 @@ regressions are also run. See the final validation record below.
 ## Remaining work
 
 Windows/Positron validation, advanced design and interaction editing, comparison,
-table editing/tooling, exports, and an explicit durable Save / Close / Resume
+exports, and an explicit durable Save / Close / Resume
 policy are separate follow-ups before any replacement of Streamlit defaults.
 
 ## Session recovery correction (9 September 2026)
@@ -273,3 +273,61 @@ Full Python regression: **945 passed, 1 skipped, 1 slow deselected** in 316 s.
 Two additional failure/invalidation tests and the strengthened running-process
 cancellation check passed in the final 19-test focused run. Benchmark convergence
 warnings and dependency deprecation warnings were reported; no tests failed.
+
+## Restored diagnostics and table editing
+
+The Diagnostics page now includes variable A/E charts and values, two-variable
+A/E heatmaps, missing-factor search and missing-interaction search. Searches run
+only on training rows through the existing noise-adjusted residual functions.
+Inspect a candidate before adding it; **Add and review model** updates the model
+(and promotes an eligible unassigned factor), then returns to setup for an
+explicit refit. No search changes model settings by itself.
+
+The Rate tables page supports individual row and interaction-cell relativity
+edits, moving-average and isotonic smoothing, cap/floor, decimal/increment
+rounding, base-rate rebalancing, undo/redo, named snapshots and reset to fitted.
+Changes are previewed before applying. Charts show actual rates, the original
+fitted rates, current adjusted rates and proposed rates. The preview reports
+real training expected claims before/after and the fitted total. A/E tables
+retain exposure counts; empty groups are omitted from the rate chart.
+
+The original fit is retained in an application-owned temporary worker artifact.
+Reviews run in separate processes and re-use that fit: they do not call the GLM
+solver. Worker inputs and output paths are internal, never supplied as browser
+file paths. Review previews are bound to both project revision and fit identity,
+so a stale tab or a new fit cannot apply an old preview. Reads, searches and
+previews do not mutate the project; Apply changes only adjustments/base rate.
+Named snapshots store those settings in the exported project. Undo/redo holds
+up to 50 steps in the server session and includes the base rate.
+
+Canonical table edit rules are shared with Streamlit. A failed multi-row edit
+is refused atomically; smoothing leaves null/Other rows unchanged, requires an
+explicit meaningful order for categories, and refuses interaction tables.
+Manual interaction-cell editing is supported where exposure exists. Rebalancing
+logit probabilities by scaling their base rate is refused. Existing fit warnings
+remain visible after table edits.
+
+Navigation stays usable during reviews. Closing a panel cancels its unfinished
+review, and late asynchronous responses cannot start an orphan review. Variables
+continues to keep its unsaved table and JSON drafts. The one-time live upgrade
+backs up the applied specification and rebuilds its previously fitted models;
+subsequent table adjustments use those retained fits without refitting. Fits and
+undo history are still temporary, so Export project remains the retention path
+for applied settings and named snapshots.
+
+Restoration validation: full suite **950 passed, 1 skipped, 1 slow deselected**
+in 361 seconds; the final focused desktop run passed **23 checks**, including
+interaction inclusion and cell editing added after full-suite collection. The
+12 browser cases cover the restored workflow, model setup, Variables, restarts
+and wide schemas. The restored flow also passed at an 884-pixel viewport without
+page overflow. Wide-variable edits remained approximately 25 ms median, with 28
+rows rendered. Svelte checks, Black, Ruff and core/workflow mypy passed. Main,
+source data, original project/cache hashes and the separate Streamlit session
+were preserved. No push, merge or release is part of this experiment.
+
+Final installed-wheel smoke: a real fit and background variable A/E review passed
+with Node absent from PATH. The check exposed a pre-existing launcher edge case
+when a random identity began with a dash; passing it as one option/value argument
+fixed it, and both launcher regression checks passed. A fresh browser tab now
+recognises existing fits immediately. Adding a previously unassigned factor also
+updates the clean Variables view, while an existing draft remains intact.
