@@ -677,9 +677,11 @@
                 <span>{num(job.elapsed, 3)} s</span
                 >{#if ['queued', 'running'].includes(job.status)}<button onclick={cancel}
                         >Cancel fit</button
-                    >{/if}{#if applicable}<button onclick={() => onNavigate('diagnostics')}
-                        >View diagnostics</button
-                    ><button onclick={() => onNavigate('tables')}>View rate tables</button>{/if}
+                    >{/if}{#if applicable && view !== 'diagnostics'}<button
+                        onclick={() => onNavigate('diagnostics')}>View diagnostics</button
+                    >{/if}{#if applicable && view !== 'tables'}<button
+                        onclick={() => onNavigate('tables')}>View rate tables</button
+                    >{/if}
             </section>{/if}
         {#if view !== 'model'}
             {#if !applicable}<div class="message">
