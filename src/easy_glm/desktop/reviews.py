@@ -28,6 +28,7 @@ class ReviewEdit(Revision):
         "double_lift",
         "path",
         "coefficients",
+        "importance",
         "compare",
         "include_factors",
         "include_factor",
@@ -72,8 +73,18 @@ class ReviewJobs:
     ) -> dict[str, str]:
         with self.lock:
             from easy_glm.desktop.ae_cache import read_packet, variable_view
+            from easy_glm.desktop.importance_cache import is_importance
 
-            packet = read_packet(project, source, request)
+            if is_importance(request):
+                from easy_glm.desktop.importance_cache import (
+                    read_packet as read_importance,
+                )
+
+                packet = read_importance(source)
+                data = packet
+            else:
+                packet = read_packet(project, source, request)
+                data = variable_view(packet, request) if packet is not None else None
             if packet is not None:
                 key = str(time.time_ns())
                 self.tasks[key] = {
@@ -81,7 +92,7 @@ class ReviewJobs:
                     "revision": revision,
                     "request": request,
                     "status": "complete",
-                    "data": variable_view(packet, request),
+                    "data": data,
                     "cancel": False,
                     "process": None,
                 }

@@ -373,7 +373,11 @@ def create_app(
                     current.champion = name
                     revision += 1
                     return {"snapshot": snapshot()}
-                if edit.challenger:
+                from easy_glm.desktop.importance_cache import is_importance
+
+                if is_importance(request):
+                    request["challenger"] = None
+                if edit.challenger and not is_importance(request):
                     if edit.challenger == name:
                         raise ValueError("Choose a different challenger.")
                     other_source = jobs.artifact(current, edit.challenger)
@@ -512,6 +516,16 @@ def create_app(
                 or jobs.jobs.get(task["request"]["model"], {}).get("id")
                 != task["request"]["fit_id"]
             )
+            from easy_glm.desktop.importance_cache import is_importance
+
+            if is_importance(task["request"]):
+                try:
+                    stale = (
+                        jobs.artifact(current, task["request"]["model"]).name
+                        != task["request"]["fit_id"]
+                    )
+                except ValueError:
+                    stale = True
             if task["request"].get("challenger"):
                 stale = stale or jobs.jobs.get(task["request"]["challenger"], {}).get(
                     "id"

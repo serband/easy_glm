@@ -59,6 +59,13 @@ def fit_result(
         except Exception:
             # Optional acceleration must never turn a successful fit into failure.
             progress("Fitted diagnostics will be prepared on demand.")
+        from easy_glm.desktop.importance_cache import build_packet as build_importance
+
+        progress("Preparing variable importance…")
+        try:
+            build_importance(project, run, frame, artifact)
+        except Exception:
+            progress("Variable importance will be prepared on demand.")
     return result_for(project, frame, run, [str(w.message) for w in caught])
 
 

@@ -716,3 +716,43 @@ computation/result refresh. The initial preview took 1.823 s on the isolated
 12,000-row synthetic sample, including 180 ms input debounce; the existing
 Python review worker remains the latency bottleneck. User sessions, fitted
 models and saved adjustments were not changed by validation.
+
+### Permutation importance (9 September 2026)
+
+Diagnostics now has an original-fit variable importance result. Each prepared
+predictor column is shuffled on the complete training subset and rescored by
+`GLMFit.predict`; every main-effect expansion and interaction using that column
+therefore sees the same shuffled input. Targets, weights, offsets and the split
+stay fixed. No model is refitted and no design matrix is built.
+
+The ranking is the mean increase in weighted mean deviance over five permutations
+(seed 42); the returned standard deviation describes variation across those five
+shuffles. Negative results are retained. The same repeat permutations are used
+for every predictor. Importance refers to the original fit and is independent of
+applied rate-table adjustments. Correlated predictors can share signal, so these
+are predictive contributions under shuffling, not causal effects.
+
+Future fits prepare this small result before publishing completion. Cache files
+use an additive, versioned key derived from the immutable fit/data/project
+artifact identities and permutation settings. They survive adjustment, base-rate,
+subset and challenger changes; new fits have a new identity. Optional preparation
+or cache-write failures never discard a successful fit. Existing fitted sessions
+compute once on demand, using the original artifact's preparation/split settings.
+The proper API action is `importance`; an already-running prototype whose action
+schema predates it may use the strictly read-only
+`coefficients` / `options.view = "importance"` bridge. No server restart or live
+refit is required.
+
+Measured on the French motor fixture, with eight predictors and five shuffles
+per predictor: 12,000 training rows took 0.138 seconds; 50,000 training rows took
+0.346 seconds. The result packet was about 1.6 KB. These timings exclude initial
+Python process startup and fitting. Whole-process peaks were 290 MiB and 334 MiB,
+including imports, data and fitting; they are not incremental importance memory.
+
+Validation: 15 new mathematical/cache/API tests cover seeded reference values,
+Poisson counts and rates, Gaussian/Gamma/binomial responses, fixed weights and
+offsets, zero effects, negative importance, null and categorical values, two-stage
+interaction parents, immutable model/data, read-only compatibility, optional
+cache failure, and fit-versus-adjustment cache invalidation. The existing eight
+A/E cache tests also passed. `ruff`, `black --check`, and the core/workflow mypy
+check passed. No persisted model representation or scoring meaning changed.

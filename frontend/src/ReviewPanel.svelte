@@ -1,4 +1,7 @@
 <script>
+    import { cachedImportance, importanceCacheKey, rememberImportance } from './importanceCache.js';
+    import { unsupportedImportanceAction } from './importanceApi.js';
+    import ImportanceChart from './ImportanceChart.svelte';
     import { cachedAe, rememberAe } from './aeCache.js';
     import { formatNumber as num, formatLabels, formatRelativity } from './format.js';
     import { onDestroy } from 'svelte';
@@ -35,13 +38,21 @@
         aeKind = 'numeric',
         selectedFactors = [],
         pairMetric = 'ae';
-    $: if (view === 'diagnostics' && diagnosticTab !== activeDiagnosticTab && !busy) {
+    $: if (
+        view === 'diagnostics' &&
+        key &&
+        loadedKey === key &&
+        diagnosticTab !== activeDiagnosticTab &&
+        !busy
+    ) {
         activeDiagnosticTab = diagnosticTab;
         inspectedResidual = false;
         analysis = null;
         runTab();
     }
     function runTab() {
+        if (diagnosticTab === 'importance')
+            return run('importance', { subset: 'train', challenger: null });
         if (diagnosticTab === 'variable' && diagnosticVariable)
             return run('variable', { variable: diagnosticVariable });
         // Pair diagnostics are scheduled from their complete selection/context key.
@@ -289,6 +300,9 @@
         challenger,
         comparisonFitIdentity,
     ]);
+    $: importanceContext = importanceCacheKey(state?.session_id, name, fitIdentity);
+    $: if (analysis?.chart_kind === 'importance' && analysis.fit_context !== importanceContext)
+        analysis = null;
     $: desiredVariableKey = JSON.stringify([key, selectedVariable, bins, diagnosticTab]);
     $: if (
         !busy &&
@@ -352,6 +366,7 @@
     async function load() {
         draftError = '';
         baselineView = null;
+        analysis = null;
         stopAdjustment();
         tool = '';
         const startedKey = key;
@@ -375,12 +390,30 @@
         }
         if (destroyed || key !== startedKey) return;
         if (view === 'diagnostics') {
+            activeDiagnosticTab = diagnosticTab;
             if (diagnosticTab === 'residual') inspectedResidual = false;
             else await runTab();
         } else if (variable) await run('variable', { variable });
     }
     async function run(action, extra = {}, pairVersion = null, adjustmentVersion = null) {
         if (destroyed) return;
+        if (action === 'importance') {
+            const ready = cachedImportance(importanceContext);
+            if (ready) {
+                runSerial++;
+                if (busy && taskId)
+                    void api('reviews/' + taskId + '/cancel', rev()).catch(() => {});
+                analysis = { ...ready, chart_kind: 'importance', fit_context: importanceContext };
+                rows = [];
+                aeSets = [];
+                preview = null;
+                error = '';
+                note = '';
+                busy = false;
+                taskId = '';
+                return;
+            }
+        }
         if (action === 'variable') {
             const ready = cachedAe(
                 aeContext,
@@ -410,6 +443,7 @@
         let requestTaskId = '';
         const variableKey = desiredVariableKey;
         const cacheContext = aeContext;
+        const capturedImportanceContext = importanceContext;
         const capturedRevision = rev();
         const capturedVariable = selectedVariable;
         const capturedName = name;
@@ -455,6 +489,12 @@
                 options: { both_subsets: view === 'diagnostics' },
                 ...extra,
             };
+            if (action === 'importance') {
+                delete payload.challenger;
+                delete payload.variable;
+                payload.subset = 'train';
+                payload.options = {};
+            }
             let response;
             // A previous view can still be cancelling its worker during navigation.
             // Retry only this explicit refusal, before any new work was started.
@@ -464,6 +504,15 @@
                     response = await api('review/' + encodeURIComponent(name), payload);
                     break;
                 } catch (e) {
+                    if (
+                        action === 'importance' &&
+                        payload.action === 'importance' &&
+                        unsupportedImportanceAction(e)
+                    ) {
+                        payload.action = 'coefficients';
+                        payload.options = { view: 'importance' };
+                        continue;
+                    }
                     if (!e.message.includes('A review is running') || attempt === 49) throw e;
                     await new Promise((resolve) => setTimeout(resolve, 100));
                 }
@@ -495,6 +544,18 @@
                     const data = response.data;
                     if (action === 'variable' && data.ae_cache)
                         rememberAe(cacheContext, data.ae_cache);
+                    if (action === 'importance') {
+                        rememberImportance(capturedImportanceContext, data);
+                        analysis = {
+                            ...data,
+                            chart_kind: 'importance',
+                            fit_context: capturedImportanceContext,
+                        };
+                        rows = [];
+                        aeSets = [];
+                        note = data.note || '';
+                        break;
+                    }
                     if (data.book_impact) bookImpact = data.book_impact;
                     note = data.note || '';
                     if (
@@ -776,6 +837,7 @@
                   : {
                         lift: 'Lift',
                         double_lift: 'Double lift',
+                        importance: 'Permutation importance',
                         path: 'Regularisation path',
                         coefficients: 'Coefficients',
                         compare: 'Relativities that differ',
@@ -1187,7 +1249,8 @@
             </div>{/if}
         {#if note && view !== 'tables'}<p class="help-text">{note}</p>{/if}
         {#if view !== 'tables'}{@render previewControls()}{/if}
-        {#if analysis}
+        {#if analysis?.chart_kind === 'importance'}<ImportanceChart result={analysis} />
+        {:else if analysis}
             {#if analysis.base_rate_change !== undefined}<p>
                     Base rate change: {num(100 * analysis.base_rate_change)}%
                 </p>{/if}

@@ -473,7 +473,9 @@
                     ? 'Configure the model, prepare the split and fit in the background.'
                     : view === 'compare'
                       ? 'Compare two fitted models on the same rows, including applied table adjustments.'
-                      : 'Results from the current applied model and full prepared data.'}
+                      : view === 'diagnostics' && diagnosticTab === 'importance'
+                        ? 'Predictor importance in the original fit.'
+                        : 'Results from the current applied model and full prepared data.'}
             </p>
         </div>
     </div>
@@ -932,36 +934,42 @@
                 </div>{:else if !result}<p>
                     Loading fitted results…
                 </p>{:else if view === 'diagnostics'}
-                <div class="results-toolbar">
-                    <label
-                        >Data subset<select aria-label="Diagnostic subset" bind:value={subset}
-                            >{#each Object.keys(result.metrics) as name}<option value={name}
-                                    >{{ train: 'Training', holdout: 'Holdout', all: 'All rows' }[
-                                        name
-                                    ]}</option
-                                >{/each}</select
-                        ></label
-                    ><span
-                        >Fit alpha {num(result.summary.alpha)} · {result.summary.features} features ·
-                        {result.summary.non_zero} nonzero{#if result.summary.alpha_stage2 !== null}
-                            · stage 2 alpha {num(result.summary.alpha_stage2)}{/if}</span
-                    >
-                </div>
-                <div class="metrics-grid">
-                    {#each [['ae', 'Actual / expected'], ['gini', 'Normalised Gini'], ['deviance_explained', 'Deviance explained'], ['mean_deviance', 'Mean deviance']] as [key, label]}<div
+                {#if diagnosticTab !== 'importance'}
+                    <div class="results-toolbar">
+                        <label
+                            >Data subset<select aria-label="Diagnostic subset" bind:value={subset}
+                                >{#each Object.keys(result.metrics) as name}<option value={name}
+                                        >{{
+                                            train: 'Training',
+                                            holdout: 'Holdout',
+                                            all: 'All rows',
+                                        }[name]}</option
+                                    >{/each}</select
+                            ></label
+                        ><span
+                            >Fit alpha {num(result.summary.alpha)} · {result.summary.features} features
+                            ·
+                            {result.summary.non_zero} nonzero{#if result.summary.alpha_stage2 !== null}
+                                · stage 2 alpha {num(result.summary.alpha_stage2)}{/if}</span
                         >
-                            <span>{label}</span><strong>{num(result.metrics[subset]?.[key])}</strong
+                    </div>
+                    <div class="metrics-grid">
+                        {#each [['ae', 'Actual / expected'], ['gini', 'Normalised Gini'], ['deviance_explained', 'Deviance explained'], ['mean_deviance', 'Mean deviance']] as [key, label]}<div
                             >
-                        </div>{/each}
-                </div>
-                <div class="result-totals">
-                    {#each ['rows', 'exposure', 'actual', 'expected'] as key}<span
-                            >{key}: <b>{num(result.metrics[subset]?.[key])}</b></span
-                        >{/each}
-                </div>
-                <p class="help-text">{result.diagnostic_info?.gini_note || ''}</p>
+                                <span>{label}</span><strong
+                                    >{num(result.metrics[subset]?.[key])}</strong
+                                >
+                            </div>{/each}
+                    </div>
+                    <div class="result-totals">
+                        {#each ['rows', 'exposure', 'actual', 'expected'] as key}<span
+                                >{key}: <b>{num(result.metrics[subset]?.[key])}</b></span
+                            >{/each}
+                    </div>
+                    <p class="help-text">{result.diagnostic_info?.gini_note || ''}</p>
+                {/if}
                 <div class="workflow-tabs" role="tablist" aria-label="Diagnostics views">
-                    {#each [['variable', 'A/E by variable'], ['pair', 'A/E by pair'], ['lift', 'Lift'], ['double_lift', 'Double lift'], ['residual', 'Residual factors'], ['path', 'Regularisation path'], ['coefficients', 'Coefficients'], ['compare', 'Relativities that differ']] as [key, label]}<button
+                    {#each [['variable', 'A/E by variable'], ['pair', 'A/E by pair'], ['lift', 'Lift'], ['double_lift', 'Double lift'], ['residual', 'Residual factors'], ['importance', 'Variable importance'], ['path', 'Regularisation path'], ['coefficients', 'Coefficients'], ['compare', 'Relativities that differ']] as [key, label]}<button
                             role="tab"
                             aria-selected={diagnosticTab === key}
                             onclick={() => (diagnosticTab = key)}>{label}</button

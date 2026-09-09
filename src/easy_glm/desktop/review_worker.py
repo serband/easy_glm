@@ -125,6 +125,19 @@ def review(
     challenger: ModelRun | None = None,
     source: Path | None = None,
 ) -> dict[str, Any]:
+    from easy_glm.desktop.importance_cache import is_importance
+
+    if is_importance(request):
+        from easy_glm.desktop.importance_cache import build_packet, read_packet
+
+        if source is not None:
+            cached = read_packet(source)
+            if cached is not None:
+                return cached
+            original_project = source / "project.json"
+            if original_project.exists():
+                project = Project.from_json(original_project)
+        return build_packet(project, run, prepare(project, raw), source)
     frame = prepare(project, raw)
     rebuild_rate_model(project, run, frame)
     if challenger is not None:
@@ -547,7 +560,9 @@ def main() -> None:
         with (source / "fit.pkl").open("rb") as handle:
             run = pickle.load(handle)  # only our own private temporary worker artifact
         challenger = None
-        if request.get("_challenger_source"):
+        from easy_glm.desktop.importance_cache import is_importance
+
+        if request.get("_challenger_source") and not is_importance(request):
             with (Path(request["_challenger_source"]) / "fit.pkl").open("rb") as handle:
                 challenger = pickle.load(handle)
         result = review(

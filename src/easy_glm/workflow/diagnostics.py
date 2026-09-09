@@ -141,6 +141,82 @@ def deviance_stats(
     }
 
 
+def permutation_importance(
+    fit: GLMFit,
+    train: pl.DataFrame,
+    *,
+    repeats: int = 5,
+    seed: int = 42,
+    protected_columns: tuple[str, ...] = (),
+) -> pl.DataFrame:
+    """Rank original predictors by the training mean-deviance increase on shuffle.
+
+    Each repeat permutes one prepared source column, before every main and
+    interaction encoder reads it. The fitted model, other columns, target,
+    weights and offset stay fixed. No fitting or design-matrix expansion occurs.
+    The same seeded permutations are used for each predictor; ``std`` is their
+    population standard deviation. Negative increases are retained.
+    """
+    if isinstance(repeats, bool) or not isinstance(repeats, int) or repeats < 1:
+        raise ValueError("repeats must be a positive integer")
+    if train.height < 2:
+        raise ValueError("Variable importance needs at least two training rows.")
+    fixed = {fit.target, fit.weight_col, fit.offset_col, *protected_columns}
+    variables = [name for name in fit.spec.main_effects if name not in fixed]
+    for interaction in fit.spec.interactions:
+        for encoder in (interaction.a, interaction.b):
+            if encoder.variable not in fixed and encoder.variable not in variables:
+                variables.append(encoder.variable)
+    y, weights = unit_values(train, fit)
+    weight = weights if fit.weight_col else None
+    denominator = float(weights.sum())
+    if denominator <= 0 or not np.isfinite(denominator):
+        raise ValueError("Variable importance needs positive finite total weight.")
+    offset = fit.scoring_offset(train)
+    if fit.offset_col and offset is None:
+        raise ValueError(f"Offset column {fit.offset_col!r} is missing.")
+    family = fit.model.family_instance
+
+    def loss(frame: pl.DataFrame) -> float:
+        prediction = np.asarray(fit.predict(frame, offset=offset), dtype=np.float64)
+        value = (
+            float(family.deviance(y, prediction, sample_weight=weight)) / denominator
+        )
+        if not np.isfinite(value):
+            raise ValueError("Variable importance produced non-finite deviance.")
+        return value
+
+    baseline = loss(train)
+    rows = []
+    for variable in variables:
+        rng = np.random.default_rng(seed)
+        losses = np.empty(repeats, dtype=np.float64)
+        original = train[variable]
+        for repeat in range(repeats):
+            shuffled = original.gather(rng.permutation(train.height))
+            losses[repeat] = loss(train.with_columns(shuffled))
+        changes = losses - baseline
+        rows.append(
+            {
+                "variable": variable,
+                "importance": float(changes.mean()),
+                "std": float(changes.std(ddof=0)),
+                "baseline_deviance": baseline,
+                "shuffled_deviance": float(losses.mean()),
+            }
+        )
+    return pl.DataFrame(
+        rows,
+        schema={
+            "variable": pl.Utf8,
+            "importance": pl.Float64,
+            "std": pl.Float64,
+            "baseline_deviance": pl.Float64,
+            "shuffled_deviance": pl.Float64,
+        },
+    ).sort(["importance", "variable"], descending=[True, False])
+
+
 # --------------------------------------------------------------------------
 # lift / gini / double lift
 # --------------------------------------------------------------------------
