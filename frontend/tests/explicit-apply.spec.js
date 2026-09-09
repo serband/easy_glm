@@ -16,7 +16,7 @@ test('dropdown previews are transient, latest-only and committed only by explici
         if (
             r.method() === 'POST' &&
             /\/api\/review\/[^/]+$/.test(r.url()) &&
-            ['moving', 'isotonic', 'cap', 'round', 'edit'].includes(r.postDataJSON().action)
+            ['moving', 'isotonic', 'cap', 'edit'].includes(r.postDataJSON().action)
         ) {
             starts.push(r.postDataJSON());
             firstRequestAt ??= Date.now();
@@ -55,6 +55,20 @@ test('dropdown previews are transient, latest-only and committed only by explici
     const initialChart = await chart.innerHTML();
     const initialAe = await ae.innerHTML();
     await expect(method).toHaveValue('');
+    await expect(method.locator('option[value="round"]')).toHaveCount(0);
+    // Four-decimal display must not turn an unchanged input into a saved edit.
+    await method.selectOption('manual');
+    const untouched = page.getByLabel('Relativity row 1', { exact: true });
+    const displayedValue = await untouched.inputValue();
+    expect(displayedValue).toMatch(/^[-+]?\d+(?:\.\d{1,4})?$/);
+    await untouched.focus();
+    await untouched.press('Tab');
+    await untouched.fill(displayedValue);
+    await untouched.press('Tab');
+    await page.waitForTimeout(250);
+    expect(await get('project')).toEqual(initial);
+    await expect(apply).toHaveCount(0);
+    await method.selectOption('');
     await page.waitForTimeout(250);
     expect(starts).toHaveLength(0);
     await expect(button('Moving average')).toHaveCount(0);
@@ -147,13 +161,13 @@ test('dropdown previews are transient, latest-only and committed only by explici
     await page.route('**/api/review/Frequency', (route) =>
         route.fulfill({ status: 422, json: { detail: 'Calculation failed for test' } }),
     );
-    await method.selectOption('round');
+    await method.selectOption('isotonic');
     await expect(page.getByText('Calculation failed for test', { exact: true })).toBeVisible();
     expect(await get('project')).toEqual(applied);
     expect(await chart.innerHTML()).toBe(savedChart);
     expect(await ae.innerHTML()).toBe(savedAe);
     await page.unroute('**/api/review/Frequency');
-    await page.getByLabel('Decimal places').fill('1');
+    await page.getByLabel('Smoothing direction').selectOption('decreasing');
     await expect(apply).toBeEnabled();
     await button('Discard preview').click();
     expect(await chart.innerHTML()).toBe(savedChart);

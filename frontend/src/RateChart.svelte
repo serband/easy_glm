@@ -1,5 +1,10 @@
 <script>
-    import { formatNumber as num, formatLabels, axisLabel } from './format.js';
+    import {
+        formatNumber as num,
+        formatRelativity as rel,
+        formatLabels,
+        axisLabel,
+    } from './format.js';
     import { rateChartData } from './rateChartData.js';
     export let table,
         variable,
@@ -53,8 +58,12 @@
                                     (r) => r.label_a === name && r.label_b === other,
                                 )}<td
                                     style:background={color(cell)}
-                                    title={`${fittedLabel} ${num(cell?.fitted)}; ${currentLabel} ${num(cell?.relativity)}; exposure ${num(cell?.exposure)}`}
-                                    >{cell?.exposure ? num(cell[cellView]) : '—'}</td
+                                    title={`${fittedLabel} ${rel(cell?.fitted)}; ${currentLabel} ${rel(cell?.relativity)}; exposure ${num(cell?.exposure)}`}
+                                    >{cell?.exposure
+                                        ? cellView === 'exposure'
+                                            ? num(cell[cellView])
+                                            : rel(cell[cellView])
+                                        : '—'}</td
                                 >{/each}</tr
                         >{/each}</tbody
                 >
@@ -88,7 +97,7 @@
                             y1={190 - tick * 150}
                             y2={190 - tick * 150}
                             stroke="#e1e9e4"
-                        /><text x="0" y={194 - tick * 150}>{num(plot.max * tick)}</text>{/each}
+                        /><text x="0" y={194 - tick * 150}>{rel(plot.max * tick)}</text>{/each}
                     <line
                         x1="55"
                         x2="705"
@@ -113,7 +122,7 @@
                                         r={field === 'fitted' ? 5 : 3}
                                         fill={field === 'fitted' ? '#737e9b' : '#287762'}
                                     >
-                                        <title>{item.label}: {field} {num(point.value)}</title>
+                                        <title>{item.label}: {field} {rel(point.value)}</title>
                                     </circle>{/each}
                             {/each}
                         {/each}
@@ -132,7 +141,7 @@
                                         height={(point.value / plot.max) * 150}
                                         fill={field === 'fitted' ? '#737e9b' : '#287762'}
                                     >
-                                        <title>{item.label}: {field} {num(point.value)}</title>
+                                        <title>{item.label}: {field} {rel(point.value)}</title>
                                     </rect>
                                 {/each}
                             {/each}

@@ -1,5 +1,5 @@
 <script>
-    import { formatNumber as num, formatLabels } from './format.js';
+    import { formatNumber as num, formatRelativity as rel, formatLabels } from './format.js';
     export let rows = [],
         title = 'Table';
     let page = 0;
@@ -43,7 +43,10 @@
                 ><tbody
                     >{#each rows.slice(page * 100, (page + 1) * 100) as row, i}<tr
                             >{#each columns as c}<td title={labels[c] ? String(row[c]) : undefined}
-                                    >{labels[c]?.[page * 100 + i] ?? num(row[c])}</td
+                                    >{labels[c]?.[page * 100 + i] ??
+                                        (c === 'relativity' || c.startsWith('relativity_')
+                                            ? rel(row[c])
+                                            : num(row[c]))}</td
                                 >{/each}</tr
                         >{/each}</tbody
                 >

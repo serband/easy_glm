@@ -17,6 +17,7 @@ test('dropdown tools apply once and preserve undo and snapshots', async ({ page 
         page.getByRole('img', { name: 'Actual fitted and adjusted by variable', exact: true }),
     ).toBeVisible();
     await expect(method).toHaveValue('');
+    await expect(method.locator('option[value="round"]')).toHaveCount(0);
     await expect(button('Moving average')).toHaveCount(0);
     await method.selectOption('manual');
     await page.getByLabel('Relativity row 2', { exact: true }).fill('1.37');
@@ -39,20 +40,6 @@ test('dropdown tools apply once and preserve undo and snapshots', async ({ page 
             async () => {
                 await page.getByLabel('Relativity floor').fill('1.1');
                 await page.getByLabel('Relativity cap').fill('1.2');
-            },
-        ],
-        [
-            'round',
-            async () => {
-                await page.getByLabel('Rounding mode').selectOption('decimals');
-                await page.getByLabel('Decimal places').fill('1');
-            },
-        ],
-        [
-            'round',
-            async () => {
-                await page.getByLabel('Rounding mode').selectOption('step');
-                await page.getByLabel('Rounding step').fill('.25');
             },
         ],
     ]) {

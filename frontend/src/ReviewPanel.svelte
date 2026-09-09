@@ -1,6 +1,6 @@
 <script>
     import { cachedAe, rememberAe } from './aeCache.js';
-    import { formatNumber as num, formatLabels } from './format.js';
+    import { formatNumber as num, formatLabels, formatRelativity } from './format.js';
     import { onDestroy } from 'svelte';
     import RateChart from './RateChart.svelte';
     import DiagnosticPlot from './DiagnosticPlot.svelte';
@@ -76,9 +76,6 @@
         ordered = false,
         floor = null,
         cap = 2,
-        rounding = 'decimals',
-        decimals = 2,
-        step = 0.05,
         snapshotName = '',
         chosenSnapshot = '',
         snapshotLeft = '__fitted__',
@@ -105,9 +102,6 @@
         ordered,
         floor,
         cap,
-        rounding,
-        decimals,
-        step,
         edits,
     ]);
     $: adjustmentRequestKey =
@@ -187,7 +181,7 @@
         if (tool === 'moving') return { window: windowSize, ordered };
         if (tool === 'isotonic') return { direction, ordered };
         if (tool === 'cap') return { floor: floor ?? null, cap: cap ?? null };
-        return rounding === 'decimals' ? { decimals } : { step };
+        return {};
     }
     function toolError() {
         if (tool === 'manual')
@@ -210,13 +204,6 @@
                 (floor != null && cap != null && floor > cap))
         )
             return 'Use positive bounds, with floor no greater than cap.';
-        if (
-            tool === 'round' &&
-            (rounding === 'decimals'
-                ? !Number.isInteger(decimals) || decimals < 0 || decimals > 6
-                : !Number.isFinite(step) || step <= 0)
-        )
-            return 'Enter valid rounding precision.';
         return '';
     }
     function chooseTool() {
@@ -751,8 +738,8 @@
                             ><tbody
                                 >{#each preview.changes.slice(0, 200) as change}<tr
                                         ><td>{change.row}</td><td>{change.label}</td><td
-                                            >{num(change.before)}</td
-                                        ><td>{num(change.after)}</td><td
+                                            >{formatRelativity(change.before)}</td
+                                        ><td>{formatRelativity(change.after)}</td><td
                                             >{num(change.before_slope)}</td
                                         ><td>{num(change.after_slope)}</td></tr
                                     >{/each}</tbody
@@ -1001,7 +988,7 @@
                     onchange={chooseTool}
                 >
                     <option value="">Choose adjustment…</option>
-                    {#each [['moving', 'Moving average'], ['isotonic', 'Isotonic smoothing'], ['cap', 'Cap / floor'], ['round', 'Round'], ['manual', 'Manual rows']] as [value, label]}<option
+                    {#each [['moving', 'Moving average'], ['isotonic', 'Isotonic smoothing'], ['cap', 'Cap / floor'], ['manual', 'Manual rows']] as [value, label]}<option
                             {value}
                             disabled={tableKind === 'interaction' && value !== 'manual'}
                             >{label}</option
@@ -1056,35 +1043,6 @@
                                 disabled={committing}
                             /></label
                         >{/if}
-                    {#if tool === 'round'}<label
-                            >Round to<select
-                                aria-label="Rounding mode"
-                                bind:value={rounding}
-                                disabled={committing}
-                                ><option value="decimals">Decimal places</option><option
-                                    value="step">A step</option
-                                ></select
-                            ></label
-                        >{#if rounding === 'decimals'}<label
-                                >Decimal places<input
-                                    aria-label="Decimal places"
-                                    type="number"
-                                    min="0"
-                                    max="6"
-                                    bind:value={decimals}
-                                    disabled={committing}
-                                /></label
-                            >{:else}<label
-                                >Step<input
-                                    aria-label="Rounding step"
-                                    type="number"
-                                    min=".0001"
-                                    step=".01"
-                                    bind:value={step}
-                                    disabled={committing}
-                                /></label
-                            >
-                        {/if}{/if}
                 </div>
                 {#if smoothing && tableKind === 'categorical'}<label class="ordered-confirmation"
                         ><input type="checkbox" bind:checked={ordered} disabled={committing} /> The levels
@@ -1107,10 +1065,7 @@
                                 'increasing'
                                     ? 'Removes dips so rates only rise or stay flat. Rates already following this pattern stay unchanged.'
                                     : 'Removes upward reversals so rates only fall or stay flat. Rates already following this pattern stay unchanged.'}{:else if tool === 'cap'}Keeps
-                                values within the limits you set.{:else if tool === 'round'}{rounding ===
-                                'decimals'
-                                    ? `Rounds to ${decimals} decimal ${decimals === 1 ? 'place' : 'places'}.`
-                                    : `Rounds to the nearest multiple of ${num(step)}.`}{/if}
+                                values within the limits you set.{/if}
                         </p>
                     </details>{/if}
                 {#if tool !== 'manual' && Object.keys(edits).length}<p>

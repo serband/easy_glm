@@ -20,6 +20,16 @@ export function formatNumber(value, options = {}) {
     });
 }
 
+// Relativities use four decimal places; the underlying model value stays exact.
+export function formatRelativity(value, options = {}) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return formatNumber(value);
+    const rounded = Number(value.toFixed(4));
+    return (rounded === 0 ? 0 : rounded).toLocaleString('en-GB', {
+        maximumFractionDigits: 4,
+        useGrouping: options.grouping !== false,
+    });
+}
+
 // Range labels carry identity: keep the original in tooltips and disambiguate
 // labels that collapse at display precision. Ordinary categorical names stay exact.
 export function formatLabels(labels) {

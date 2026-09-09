@@ -1,5 +1,5 @@
 <script>
-    import { formatNumber as num } from './format.js';
+    import { formatNumber as num, formatRelativity as rel } from './format.js';
     import { onDestroy } from 'svelte';
     import ReviewPanel from './ReviewPanel.svelte';
     import DiagnosticTable from './DiagnosticTable.svelte';
@@ -102,8 +102,19 @@
         ]),
     );
     function editRow(index, value) {
+        const number = Number(value);
+        const saved = table?.rows[index - table.offset]?.relativity;
+        // Re-entering the displayed value must not round the stored rate.
+        if (value !== '' && number === Number(rel(saved, { grouping: false }))) {
+            if (Object.hasOwn(rowEdits, index)) {
+                const remaining = { ...rowEdits };
+                delete remaining[index];
+                rowEdits = remaining;
+            }
+            return;
+        }
         tableReview?.selectManual();
-        rowEdits = { ...rowEdits, [index]: Number(value) };
+        rowEdits = { ...rowEdits, [index]: number };
     }
     function clearEdits() {
         rowEdits = {};
@@ -1073,7 +1084,7 @@
                                                                                 ' × ' +
                                                                                 b}
                                                                             title={'Fitted ' +
-                                                                                num(
+                                                                                rel(
                                                                                     cell.row.fitted,
                                                                                 ) +
                                                                                 '; exposure ' +
@@ -1082,13 +1093,19 @@
                                                                                         .exposure,
                                                                                 )}
                                                                             type="number"
-                                                                            min=".000000001"
-                                                                            step="any"
+                                                                            min="0"
+                                                                            step="0.0001"
                                                                             value={rowEdits[
                                                                                 table.offset +
                                                                                     cell.index
                                                                             ] ??
-                                                                                cell.row.relativity}
+                                                                                rel(
+                                                                                    cell.row
+                                                                                        .relativity,
+                                                                                    {
+                                                                                        grouping: false,
+                                                                                    },
+                                                                                )}
                                                                             oninput={(e) =>
                                                                                 editRow(
                                                                                     table.offset +
@@ -1130,7 +1147,12 @@
                                                             ></td></tr
                                                         >{/if}{#each table.rows.slice(tableStart, tableStart + 24) as row, rowIndex}<tr
                                                             >{#each visibleColumns as column}<td
-                                                                    title={num(row[column])}
+                                                                    title={[
+                                                                        'fitted',
+                                                                        'relativity',
+                                                                    ].includes(column)
+                                                                        ? rel(row[column])
+                                                                        : num(row[column])}
                                                                     >{#if column === 'relativity'}<input
                                                                             class="relativity-input"
                                                                             disabled={reviewCommitting}
@@ -1140,13 +1162,16 @@
                                                                                     rowIndex +
                                                                                     1)}
                                                                             type="number"
-                                                                            min="0.000000001"
-                                                                            step="any"
+                                                                            min="0"
+                                                                            step="0.0001"
                                                                             value={rowEdits[
                                                                                 table.offset +
                                                                                     tableStart +
                                                                                     rowIndex
-                                                                            ] ?? row[column]}
+                                                                            ] ??
+                                                                                rel(row[column], {
+                                                                                    grouping: false,
+                                                                                })}
                                                                             oninput={(e) =>
                                                                                 editRow(
                                                                                     table.offset +
@@ -1155,10 +1180,12 @@
                                                                                     e.currentTarget
                                                                                         .value,
                                                                                 )}
-                                                                        />{:else}{num(
-                                                                            row[column],
-                                                                            8,
-                                                                        )}{/if}</td
+                                                                        />{:else}{column ===
+                                                                        'fitted'
+                                                                            ? rel(row[column])
+                                                                            : num(
+                                                                                  row[column],
+                                                                              )}{/if}</td
                                                                 >{/each}</tr
                                                         >{/each}{#if tableStart + 24 < table.rows.length}<tr
                                                             aria-hidden="true"
