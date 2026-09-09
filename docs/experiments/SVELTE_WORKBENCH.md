@@ -1,7 +1,8 @@
 # Svelte workbench experiment
 
 Branch: `codex/svelte-workbench`, based on main `0828b89` (0.452).
-This is a runnable Variables slice, not a replacement for the full workbench.
+This is a runnable Variables → Model → Diagnostics → Rate tables slice.
+It does not replace the full workbench.
 No version bump, publication, merge or migration of saved workspaces is part of it.
 
 ## Try it
@@ -89,14 +90,17 @@ project files. Other processes running as the same user are inside its boundary.
 Browser drafts, filtering, role counts, view switches, resets and chart hover/zoom
 run in JavaScript. Preview/Apply call the shared workflow layer. A short lock
 protects atomic project changes. Plot aggregation uses FastAPI's worker thread
-pool and releases the project lock before computation. There is **no fitting
-endpoint** yet. Long fits in the next slice must use a separate worker process,
-with immutable project revisions, progress/cancellation and stale-result checks;
-never run fits inside a request handler or block the UI loop.
+pool and releases the project lock before computation. Fits run in a separate Python process using immutable project/data copies in a
+temporary directory. Requests only start jobs or poll their status. Progress,
+cancellation and setting fingerprints prevent an obsolete result from being
+used. The worker calls canonical preparation, `workflow.run_model`, diagnostics
+and rate-table functions. One fit runs at a time. Completed results are temporary
+and are lost when the server stops; existing Streamlit caches are untouched.
 
 ## Acceptance goals and measured results
 
-These targets are goals for this first slice, not promises for corporate laptops:
+These measurements describe the original Variables slice, not the expanded model
+UI or corporate laptops:
 
 | Measure | Goal | Observed on this Mac |
 | --- | --- | --- |
@@ -129,6 +133,8 @@ npm run build
 npx playwright install chromium  # only on a test machine without its browser
 npm test
 npm test -- --config playwright.wide.config.js
+npm test -- --config playwright.session.config.js
+npm test -- --config playwright.models.config.js
 ```
 
 For an installed Chrome, set `PLAYWRIGHT_CHANNEL=chrome` in the test environment.
@@ -164,21 +170,48 @@ in AGENTS.md; the separately installed wheel did not require that workaround.
 Reference implementation choices follow [Vite's production build guidance](https://vite.dev/guide/build)
 and [FastAPI's middleware guidance](https://fastapi.tiangolo.com/advanced/middleware/).
 
-## Next slices, in order
+## Model and results slice (9 September 2026)
 
-1. Review this Variables interaction on the actual Windows/Positron laptop; collect
-   readiness and edit timings plus any browser or server errors. Investigate the
-   existing network problem separately using its logs.
-2. Design and model selection, preserving independent roles versus model terms;
-   virtualise both axes when a raw-data or interaction matrix grid is introduced.
-3. Process-based fitting jobs: polling/progress, cancellation, revision-bound
-   results, and a proven idle UI while a long fit runs. Reuse `workflow.run_model`.
-4. Diagnostics and rate tables with current engine tooling and undo/snapshots;
-   test that main and two-stage interaction invariants survive the new UI.
-5. Explicit durable workspace design, conflict policy, Save / Close / Resume and
-   packaging/dependency review. Only then consider replacing Streamlit defaults.
+Open **Design & models** after applying Variables. Choose an existing split column, or
+select **Seeded random** and **Apply split**. A generated random split does not
+need a source column with the split role. The page reports actual training and
+holdout row counts and missing prerequisites.
 
-Do not infer completion of later slices from the sidebar placeholders.
+Create or select a model, choose predictors and their inferred/step/linear/
+continuous/categorical designs, family/link, target, weight, offset, fixed alpha
+or cross-validation, L1 ratio and table base. **Create model** / **Save model**
+apply settings; **Fit model** starts a separate worker. Navigation and Variables
+drafts remain available during fitting. The job shows progress, errors and
+**Cancel fit**. Existing interactions, monotone rules, custom knots/clamps,
+penalty weights and adjustments survive basic edits; unsupported combinations
+are refused. Editing these advanced settings is outside this slice. Design
+kinds and defaults are project-wide, matching the canonical project model.
+
+After completion, **Diagnostics** shows training/holdout totals, A/E, Gini,
+deviance measures and an actual-versus-expected risk-decile chart. **Rate tables**
+shows canonical exported rows, including linear slopes, with bounded rendering
+and paging. Results are available only for a completed fit matching the applied
+settings. Variable, split or model changes invalidate affected results and never
+start a fit automatically.
+
+Tables are read-only. Champion comparison, table adjustments/tooling, undo,
+snapshots, result exports and durable fit recovery remain unimplemented. The
+existing **Export project** downloads the applied specification. Server restarts
+retain neither in-memory edits nor fits unless the specification was exported
+and supplied at launch. Open a fresh tab for a new UI build; keep an older tab
+open until any unsaved draft has been copied.
+
+Model browser checks cover split/create/fit, responsive navigation, both metric
+subsets, a real lift chart, continuous slope tables, invalidation and Variables
+draft retention. Backend checks exercise the actual worker, cancellation,
+readiness and preservation of expert settings. Existing session and wide-schema
+regressions are also run. See the final validation record below.
+
+## Remaining work
+
+Windows/Positron validation, advanced design and interaction editing, comparison,
+table editing/tooling, exports, and an explicit durable Save / Close / Resume
+policy are separate follow-ups before any replacement of Streamlit defaults.
 
 ## Session recovery correction (9 September 2026)
 
@@ -214,3 +247,29 @@ actual process restarts, bare URL, refresh/new tab, plot selection, table/JSON
 draft preservation, stale Apply rejection, Preview/Apply after recovery, origin
 refusal, and a simulated different-project response. Existing Variables and wide
 schema tests remained green. No additional core/modelling changes were made.
+
+## Model slice validation record
+
+The 11 browser cases passed: two model flows, three Variables cases, five session
+recovery cases and one wide-schema case. All 19 focused API/worker/launcher
+checks passed, including cancelling a running process, worker failure, and
+invalidation after variable, model and split edits. Svelte reported zero errors
+and warnings; Black, Ruff, mypy and the production build passed. An installed
+wheel completed a real child-worker fit with Node absent from PATH.
+
+A separate copy of the French motor 50,000-row fixture fitted with the existing
+two-stage DrivAge × BonusMalus interaction and returned nine rate tables plus
+training and holdout diagnostics. No live review settings were changed for this
+check. Visual inspection covered model setup, diagnostics and linear rate tables.
+The expanded compiled JS/CSS totals 100,509 bytes (35,715 bytes gzip). The repeated
+wide-schema check measured 24.9 ms median edit-to-paint, 32.3 ms table-to-JSON,
+32.5 ms reset and 28 rendered rows. These remain Mac-only measurements.
+
+The live review upgrade backed up the old assets and applied project, and
+verified exact project-spec equality after restart. Original project/data/cache
+hashes, main branch state and the Streamlit health endpoint were checked.
+
+Full Python regression: **945 passed, 1 skipped, 1 slow deselected** in 316 s.
+Two additional failure/invalidation tests and the strengthened running-process
+cancellation check passed in the final 19-test focused run. Benchmark convergence
+warnings and dependency deprecation warnings were reported; no tests failed.

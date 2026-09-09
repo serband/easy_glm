@@ -1,6 +1,7 @@
 """Loopback API for the experimental Svelte Variables workbench.
 
-The project is an in-memory copy. No endpoint writes source files or fits a model.
+The project is an in-memory copy. Fits run in isolated child processes.
+No endpoint overwrites source files or existing Streamlit fit caches.
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ import hashlib
 import json
 import secrets
 import threading
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from easy_glm.desktop.jobs import FitJobs
+from easy_glm.desktop.modeling import (
+    ModelEdit,
+    Revision,
+    SplitEdit,
+    edit_model,
+    setup_info,
+)
 from easy_glm.workflow.explore import univariate
 from easy_glm.workflow.prep import apply_variables
 from easy_glm.workflow.project import SINGLE_ROLES, Project
@@ -44,7 +54,14 @@ def create_app(
     project: Project, raw: pl.DataFrame, *, port: int, launch_id: str = ""
 ) -> FastAPI:
     """Serve one local, in-memory project and bundled assets."""
-    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    jobs = FitJobs()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        jobs.close()
+
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     current = deepcopy(project)
     revision = 0
     lock = threading.RLock()
@@ -184,7 +201,127 @@ def create_app(
             if changes:
                 current = result
                 revision += 1
+                jobs.invalidate(current)
             return {**snapshot(), "notices": notices}
+
+    def check_revision(edit: Revision) -> None:
+        if edit.session_id != session_id or edit.revision != revision:
+            raise HTTPException(
+                409,
+                "Applied settings changed. Reconnect and review the current settings before saving or fitting.",
+            )
+
+    @app.get("/api/workbench")
+    def workbench() -> dict[str, Any]:
+        with lock:
+            saved, saved_revision = deepcopy(current), revision
+        return {
+            **setup_info(saved, raw),
+            "revision": saved_revision,
+            "session_id": session_id,
+            "jobs": jobs.status(saved),
+        }
+
+    @app.post("/api/models/save")
+    def save_model(edit: ModelEdit) -> dict[str, Any]:
+        nonlocal current, revision
+        with lock:
+            check_revision(edit)
+            try:
+                candidate_project = edit_model(current, edit)
+            except (ValueError, TypeError, KeyError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+            if candidate_project.to_dict() != current.to_dict():
+                current = candidate_project
+                revision += 1
+                jobs.invalidate(current)
+            return snapshot()
+
+    @app.post("/api/split")
+    def save_split(edit: SplitEdit) -> dict[str, Any]:
+        nonlocal current, revision
+        with lock:
+            check_revision(edit)
+            candidate_project = deepcopy(current)
+            for key, value in edit.model_dump(
+                exclude={"session_id", "revision"}
+            ).items():
+                setattr(candidate_project.data.split, key, value)
+        # Preparation is outside the project lock. The revision is rechecked on commit.
+        info = setup_info(candidate_project, raw)
+        if info["problems"]:
+            raise HTTPException(422, "; ".join(info["problems"]))
+        with lock:
+            check_revision(edit)
+            if candidate_project.to_dict() != current.to_dict():
+                current = candidate_project
+                revision += 1
+                jobs.invalidate(current)
+            return snapshot()
+
+    @app.post("/api/models/{name}/fit", status_code=202)
+    def start_fit(name: str, edit: Revision) -> dict[str, Any]:
+        with lock:
+            check_revision(edit)
+            if name not in current.models:
+                raise HTTPException(404, "Save a model definition before fitting.")
+            problems = current.validate(name)
+            if problems:
+                raise HTTPException(422, "; ".join(problems))
+            try:
+                return jobs.start(deepcopy(current), raw.clone(), name)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/models/{name}/cancel")
+    def cancel_fit(name: str, edit: Revision) -> dict[str, Any]:
+        with lock:
+            check_revision(edit)
+            jobs.cancel(name)
+            return jobs.status(current)
+
+    @app.get("/api/jobs")
+    def job_status() -> dict[str, Any]:
+        with lock:
+            return jobs.status(current)
+
+    @app.get("/api/results/{name}")
+    def results(name: str) -> dict[str, Any]:
+        with lock:
+            try:
+                result = jobs.result(current, name)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            return {
+                **{k: v for k, v in result.items() if k != "tables"},
+                "table_index": [
+                    {"name": key, "rows": len(table["rows"])}
+                    for key, table in result["tables"].items()
+                ],
+            }
+
+    @app.get("/api/results/{name}/table")
+    def result_table(
+        name: str, variable: str, offset: int = 0, limit: int = 200
+    ) -> dict[str, Any]:
+        if offset < 0 or not 1 <= limit <= 500:
+            raise HTTPException(
+                422, "Use a nonnegative offset and a page of 1–500 rows."
+            )
+        with lock:
+            try:
+                result = jobs.result(current, name)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            if variable not in result["tables"]:
+                raise HTTPException(404, "Unknown fitted variable.")
+            table = result["tables"][variable]
+            return {
+                "columns": table["columns"],
+                "rows": table["rows"][offset : offset + limit],
+                "total": len(table["rows"]),
+                "offset": offset,
+            }
 
     @app.get("/api/project")
     def export_project() -> dict[str, Any]:
