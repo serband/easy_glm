@@ -1,4 +1,5 @@
 <script>
+    import { cachedAe, rememberAe } from './aeCache.js';
     import { formatNumber as num, formatLabels } from './format.js';
     import { onDestroy } from 'svelte';
     import RateChart from './RateChart.svelte';
@@ -254,6 +255,37 @@
 
     $: if (key !== loadedKey && autoEnabled) stopAuto();
     $: if (name && key !== loadedKey && !busy) load();
+    let attemptedVariableKey = '',
+        runSerial = 0;
+    $: aeContext = JSON.stringify([
+        state?.session_id,
+        state?.revision,
+        name,
+        fitIdentity,
+        challenger,
+        comparisonFitIdentity,
+    ]);
+    $: desiredVariableKey = JSON.stringify([key, selectedVariable, bins, diagnosticTab]);
+    $: if (
+        !busy &&
+        loadedKey === key &&
+        selectedVariable &&
+        (view === 'tables' || diagnosticTab === 'variable') &&
+        attemptedVariableKey !== desiredVariableKey
+    )
+        run('variable');
+    function showVariable(data, selected) {
+        rows = data.rows || [];
+        baselineRows = rows;
+        aeSets = data.ae_sets || [];
+        aeKind = data.kind || 'numeric';
+        bookImpact = data.book_impact || bookImpact;
+        shownTitle = selected;
+        shownSubset = { train: 'Training', holdout: 'Holdout', all: 'All rows' }[data.subset];
+        analysis = null;
+        preview = null;
+        note = '';
+    }
     $: series = [
         { key: 'actual_rate', label: 'Actual', color: '#c35b48' },
         { key: 'fitted_rate', label: 'Original fit', color: '#737e9b' },
@@ -324,7 +356,41 @@
     }
     async function run(action, extra = {}, autoVersion = null, pairVersion = null) {
         if (autoVersion === null) stopAuto();
-        if (busy || destroyed) return;
+        if (destroyed) return;
+        if (action === 'variable') {
+            const ready = cachedAe(
+                aeContext,
+                extra.variable || selectedVariable,
+                subset,
+                view === 'diagnostics',
+            );
+            if (ready) {
+                runSerial++;
+                attemptedVariableKey = desiredVariableKey;
+                if (busy && taskId)
+                    void api('reviews/' + taskId + '/cancel', rev()).catch(() => {});
+                showVariable(ready, extra.variable || selectedVariable);
+                error = '';
+                busy = false;
+                return;
+            }
+        }
+        if (busy) {
+            if (action === 'variable') {
+                rows = [];
+                aeSets = [];
+            }
+            return;
+        }
+        const serial = ++runSerial;
+        let requestTaskId = '';
+        const variableKey = desiredVariableKey;
+        const cacheContext = aeContext;
+        if (action === 'variable') {
+            attemptedVariableKey = variableKey;
+            rows = [];
+            aeSets = [];
+        }
         busy = true;
         error = '';
         note = '';
@@ -335,7 +401,9 @@
         const manualSignature = action === 'edit' ? JSON.stringify(edits) : undefined;
         const valid = () =>
             !destroyed &&
+            serial === runSerial &&
             started === key &&
+            (action !== 'variable' || variableKey === desiredVariableKey) &&
             (view !== 'diagnostics' || startedTab === diagnosticTab) &&
             (pairVersion === null ||
                 (pairVersion.version === pairEpoch && pairVersion.requestKey === pairRequestKey)) &&
@@ -376,21 +444,24 @@
                 confirmDelete = false;
                 return;
             }
-            taskId = response.id;
+            requestTaskId = response.id;
+            taskId = requestTaskId;
             if (!valid()) {
-                await api('reviews/' + taskId + '/cancel', rev());
+                await api('reviews/' + requestTaskId + '/cancel', rev());
                 return;
             }
             while (!destroyed) {
                 if (!valid()) {
-                    await api('reviews/' + taskId + '/cancel', rev());
+                    await api('reviews/' + requestTaskId + '/cancel', rev());
                     return;
                 }
-                const response = await api('reviews/' + taskId);
+                const response = await api('reviews/' + requestTaskId);
                 if (!valid()) return;
                 if (response.status === 'complete') {
                     if (!valid()) return;
                     const data = response.data;
+                    if (action === 'variable' && data.ae_cache)
+                        rememberAe(cacheContext, data.ae_cache);
                     if (data.book_impact) bookImpact = data.book_impact;
                     note = data.note || '';
                     if (
@@ -452,8 +523,10 @@
         } catch (e) {
             if (valid()) error = e.message;
         } finally {
-            busy = false;
-            taskId = '';
+            if (serial === runSerial) {
+                busy = false;
+                taskId = '';
+            }
         }
     }
     async function cancel() {
@@ -464,7 +537,7 @@
             pairPending = false;
             pairMessage = 'Pair review cancelled.';
         }
-        if (taskId) await api('reviews/' + taskId + '/cancel', rev());
+        if (taskId) await api('reviews/' + requestTaskId + '/cancel', rev());
     }
     async function applyPreview() {
         if (
@@ -710,7 +783,6 @@
                     >Variable<select
                         aria-label="Diagnostic variable"
                         bind:value={diagnosticVariable}
-                        disabled={busy}
                         onchange={() => run('variable', { variable: diagnosticVariable })}
                         >{#each info.variables as v}<option value={v}
                                 >{v}{info.variable_info?.find((x) => x.name === v)?.kind

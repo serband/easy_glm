@@ -71,6 +71,33 @@ class ReviewJobs:
         self, project: Project, source: Path, request: dict[str, Any], revision: int
     ) -> dict[str, str]:
         with self.lock:
+            from easy_glm.desktop.ae_cache import read_packet, variable_view
+
+            packet = read_packet(project, source, request)
+            if packet is not None:
+                key = str(time.time_ns())
+                self.tasks[key] = {
+                    "id": key,
+                    "revision": revision,
+                    "request": request,
+                    "status": "complete",
+                    "data": variable_view(packet, request),
+                    "cancel": False,
+                    "process": None,
+                }
+                while len(self.tasks) > 64:
+                    removable = next(
+                        (
+                            k
+                            for k, t in self.tasks.items()
+                            if t["status"] not in ("queued", "running") and k != key
+                        ),
+                        None,
+                    )
+                    if removable is None:
+                        break
+                    self.tasks.pop(removable)
+                return {"id": key}
             if any(t["status"] in ("queued", "running") for t in self.tasks.values()):
                 raise ValueError("A review is running. Wait for it or cancel it first.")
             if len(self.tasks) >= 64:
@@ -146,7 +173,8 @@ class ReviewJobs:
         for key in list(self.tasks):
             self.cancel(key)
         for task in list(self.tasks.values()):
-            task["thread"].join(timeout=5)
+            if task.get("thread"):
+                task["thread"].join(timeout=5)
             process = task.get("process")
             if process and process.poll() is None:
                 process.kill()

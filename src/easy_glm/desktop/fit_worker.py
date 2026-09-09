@@ -51,6 +51,14 @@ def fit_result(
 
         with (artifact / "fit.pkl").open("wb") as handle:
             pickle.dump(run, handle)
+        from easy_glm.desktop.ae_cache import build_packet
+
+        progress("Preparing fitted-variable diagnostics…")
+        try:
+            build_packet(project, run, frame, artifact, {"model": name})
+        except Exception:
+            # Optional acceleration must never turn a successful fit into failure.
+            progress("Fitted diagnostics will be prepared on demand.")
     return result_for(project, frame, run, [str(w.message) for w in caught])
 
 

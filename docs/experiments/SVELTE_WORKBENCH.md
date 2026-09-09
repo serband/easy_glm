@@ -652,3 +652,38 @@ preview/history checks and automatic-preview race checks pass. Read-only live
 verification matched the Original fit to the retained fit artifact, checked
 window 3 and window 1 previews, and verified stable series during preview,
 switching and discard without changing the project, fit artifact or history.
+
+### Fitted-variable A/E cache
+
+Fit completion now writes aggregate A/E rows for ordinary fitted main effects,
+using shared full-frame predictions for training, holdout and all rows. The
+immutable original cache is separate from the applied-model cache. Keys include
+fit/raw artifact identity, preparation and grouping settings, the entire model's
+adjustments/base override, and any challenger's fit and adjustment basis.
+Challenger predictions are grouped using the selected model's fitted groups.
+Original summaries survive adjustment changes; any factor/base change invalidates
+all adjusted factor summaries. Undo can reuse an earlier valid cache.
+
+Precomputation excludes unfitted columns and pairs and is bounded to 128 factors,
+500 groups per factor and 10,000 total groups; eight adjusted cache versions are
+retained. Cache failure falls back to canonical on-demand diagnostics and cannot
+fail a successful fit. Tool previews do not precompute all factors. The server
+returns cached results without starting a worker, even while unrelated review
+work is running. The browser keeps bounded aggregate packets; ordinary variable
+and subset switches then make no request. Selection generations prevent a late
+uncached response from replacing a newer cached choice.
+
+Measured on the live 50,000-row French motor model at 884 × 773: ordinary variable
+switches fell from 1,795–1,800 ms (one cold switch 4,542 ms) to 11–22 ms, with zero
+warm review requests. Preparing eight fitted factors took 226 ms; adjusted and
+original packets together occupied 166,717 bytes. The standalone measurement
+process peaked at 307.56 MiB including interpreter, imports, data and model.
+The live fit was warmed read-only. Its existing server was deliberately not
+restarted, preserving the session/history: a fresh browser's first load still
+costs about 1.87 seconds there. The server cache fast path is active on the next
+normal launch and was verified with an isolated server.
+
+Checks cover exact canonical numeric/linear/categorical and probability-link
+rows, null/empty groups and all subsets; other-factor/base/challenger invalidation;
+original reuse, fit-time readiness and failure fallback; rapid cached switching,
+a delayed uncached response, applied-edit invalidation and existing preview races.

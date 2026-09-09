@@ -123,6 +123,7 @@ def review(
     raw: pl.DataFrame,
     request: dict[str, Any],
     challenger: ModelRun | None = None,
+    source: Path | None = None,
 ) -> dict[str, Any]:
     frame = prepare(project, raw)
     rebuild_rate_model(project, run, frame)
@@ -166,12 +167,30 @@ def review(
         )
     ]
     if action == "variable":
+        if source is not None:
+            from easy_glm.desktop.ae_cache import (
+                build_packet,
+                eligible_variables,
+                read_packet,
+                variable_view,
+            )
+
+            if variable in eligible_variables(run):
+                cache_request = {**request, "model": run.name}
+                try:
+                    packet = read_packet(project, source, cache_request)
+                    if packet is None:
+                        packet = build_packet(
+                            project, run, frame, source, cache_request, challenger
+                        )
+                    return variable_view(packet, cache_request)
+                except Exception:
+                    # Cache construction is optional; canonical on-demand A/E remains available.
+                    pass
         if variable not in frame.columns and variable not in run.rate_model.variables:
             raise ValueError("Choose an available variable.")
         both = request.get("options", {}).get("both_subsets", False)
         selected_subset = request.get("subset", "train")
-        if both and selected_subset == "all":
-            part, selected_subset = train, "train"
         sets = []
         if both:
             for label, data in (("train", train), ("holdout", holdout)):
@@ -537,6 +556,7 @@ def main() -> None:
             pl.read_parquet(source / "raw.parquet"),
             request,
             challenger,
+            source,
         )
     except Exception as exc:
         result = {"error": str(exc)}
