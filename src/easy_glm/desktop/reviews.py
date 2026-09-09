@@ -20,6 +20,9 @@ from easy_glm.workflow.project import Project
 
 class ReviewEdit(Revision):
     action: Literal[
+        "reset_variable",
+        "delete_snapshot",
+        "compare_snapshots",
         "champion",
         "lift",
         "double_lift",

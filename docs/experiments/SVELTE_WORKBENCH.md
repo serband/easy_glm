@@ -433,3 +433,44 @@ separate-port rehearsal. The applied project, Frequency fit identity and origina
 2.402-second elapsed time, rate-table rows and train/holdout metrics were preserved.
 Live variable A/E, lift, double lift, path and coefficient queries passed. Original
 main, project/data/cache hashes and the Streamlit session were left intact.
+
+### Rate adjustment workflow restoration
+
+The adjustment methods now sit directly below the primary relativity chart,
+before the collapsed manual grid: Moving average, Isotonic smoothing, Cap / floor
+and Round. Each exposes only its relevant parameters and a Preview adjustment
+button. Manual editing has a direct button and supports several row edits in one
+preview; linear rows represent band-start nodes, and interaction tables offer a
+matrix of kept cells on the current page (large matrices use the row editor).
+
+A preview shows current and proposed relativities, current/proposed A/E, the true
+training expected-total change and any base-rate change, followed by Apply and
+Discard. Changing tool parameters invalidates the old preview. Applying refreshes
+the rates and A/E while retaining the tool settings and snapshot controls.
+Smoothing shows the preserved weighted log mean separately from the monetary
+impact, excludes null/Other rows and requires explicit meaningful-order
+confirmation for categoricals. Linear slopes use the canonical node derivation.
+
+Undo/redo, rebalance, reset this variable and reset all are beside the tools.
+Current versus fitted expected totals make the off-balance visible. Snapshots
+support save, restore, comparison (including original fitted/current versions),
+CSV differences and confirmed deletion. Tools and edits continue through the same
+canonical row/cell adjustment rules; they never refit the model.
+
+Validation covered 26 new Python cases, including eight tool configurations for
+step, linear and categorical factors, lifecycle actions and restoration of a
+two-step undo/redo history. The final focused run passed 37 tests; an earlier
+broader run passed 115. All 15 browser cases passed, including manual multi-row
+edits, every tool configuration, snapshots, categorical ordering and interaction
+cell editing with current/proposed A/E. At 884 × 773 the controls and previews
+were visually checked. The wide editor retained 28 rendered rows with a 23.9 ms
+median edit response. Svelte check/build, Black/Ruff and core/workflow mypy passed.
+
+The private upgrade path now also restores validated session undo/redo history.
+A separate-port rehearsal restored and exercised both undo steps and both redo
+steps without changing the fit. The live upgrade preserved the applied smoothing
+adjustments and captured the prior fit and history in a private backup. A new fit
+was initiated in the live session after the restart; that newer fit was retained,
+with its normal empty undo/redo history. Final read-only checks confirmed the
+project, table values and train/holdout/all diagnostic totals, and unapplied live
+previews passed.

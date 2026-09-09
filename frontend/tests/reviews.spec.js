@@ -27,7 +27,9 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await page.getByRole('tab', { name: 'Residual factors', exact: true }).click();
     await button('Find missing factors').click();
     await expect(page.getByRole('heading', { name: 'Missing factors', exact: true })).toBeVisible();
-    await expect(page.locator('.review-scroll').filter({hasText: 'AnnualMileage'}).first()).toContainText('AnnualMileage');
+    await expect(
+        page.locator('.review-scroll').filter({ hasText: 'AnnualMileage' }).first(),
+    ).toContainText('AnnualMileage');
     await button('Find missing interactions').click();
     await expect(
         page.getByRole('heading', { name: 'Missing interactions', exact: true }),
@@ -85,11 +87,10 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await button('Preview undo').click();
     await button('Apply adjustment').click();
     await expect(page.getByLabel('Relativity row 2', { exact: true })).not.toHaveValue('2.1');
-    await page.getByText('Smooth, cap / floor and round', { exact: true }).click();
-    await page.getByLabel('Adjustment tool').selectOption('cap');
+    await button('Cap / floor').click();
     await page.getByLabel('Relativity cap').fill('1.1');
-    await expect(button('Preview tool')).toBeEnabled();
-    await button('Preview tool').click();
+    await expect(button('Preview adjustment')).toBeEnabled();
+    await button('Preview adjustment').click();
     await expect(button('Apply adjustment')).toBeVisible();
     await page.locator('.preview-impact summary').click();
     await expect(page.locator('.preview-impact table')).toContainText('Before');

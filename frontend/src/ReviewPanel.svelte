@@ -1,5 +1,6 @@
 <script>
     import { onDestroy } from 'svelte';
+    import RateChart from './RateChart.svelte';
     import DiagnosticPlot from './DiagnosticPlot.svelte';
     import DiagnosticTable from './DiagnosticTable.svelte';
     export let api,
@@ -13,7 +14,10 @@
         edits = {},
         onApplied,
         onClear,
-        onNavigate;
+        onNavigate,
+        onManual = () => {},
+        tableKind = '',
+        rateLabel = 'relativity';
     let activeDiagnosticTab = 'variable',
         inspectedResidual = false;
     let bins = 10,
@@ -66,7 +70,38 @@
         decimals = 2,
         step = 0.05,
         snapshotName = '',
-        chosenSnapshot = '';
+        chosenSnapshot = '',
+        snapshotLeft = '__fitted__',
+        snapshotRight = '__current__',
+        confirmDelete = false,
+        feedback = '',
+        bookImpact = null,
+        previousToolSignature = '',
+        orderedVariable = '';
+    $: if (variable !== orderedVariable) {
+        orderedVariable = variable;
+        ordered = false;
+    }
+    $: toolSignature = JSON.stringify([
+        tool,
+        windowSize,
+        direction,
+        ordered,
+        floor,
+        cap,
+        rounding,
+        decimals,
+        step,
+    ]);
+    $: if (toolSignature !== previousToolSignature) {
+        previousToolSignature = toolSignature;
+        if (preview) {
+            preview = null;
+            rows = [];
+            note = 'Parameters changed. Preview again before applying.';
+        }
+    }
+    $: smoothing = tool === 'moving' || tool === 'isotonic';
     $: selectedVariable = view === 'tables' ? variable : diagnosticVariable;
     $: key = `${name}:${state.session_id}:${state.revision}:${view}:${subset}:${variable}:${challenger}`;
     $: if (name && key !== loadedKey && !busy) load();
@@ -74,10 +109,10 @@
         { key: 'actual_rate', label: 'Actual', color: '#287762' },
         { key: 'fitted_rate', label: 'Original fitted', color: '#737e9b' },
         { key: 'challenger_rate', label: challenger || 'Challenger', color: '#439da5' },
-        { key: 'before_rate', label: 'Before preview', color: '#a27c48' },
+        { key: 'before_rate', label: 'Current', color: '#a27c48' },
         {
             key: 'expected_rate',
-            label: preview ? 'Preview adjusted' : 'Current adjusted',
+            label: preview ? 'Proposed' : 'Current adjusted',
             color: '#c35b48',
         },
     ].filter((s) => rows.some((r) => Number.isFinite(r[s.key])));
@@ -135,14 +170,20 @@
             else await runTab();
         } else if (variable) await run('variable', { variable });
     }
-    export function previewRowEdits() {
-        return run('edit', { edits });
+    export async function previewRowEdits() {
+        await run('edit', { edits });
+        requestAnimationFrame(() =>
+            document
+                .querySelector('.preview-impact')
+                ?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+        );
     }
     async function run(action, extra = {}) {
         if (busy || destroyed) return;
         busy = true;
         error = '';
         note = '';
+        if (action !== 'variable') feedback = '';
         preview = null;
         const started = key;
         try {
@@ -158,8 +199,12 @@
                 ...extra,
             });
             if (response.snapshot) {
-                onApplied(response.snapshot);
-                note = 'Snapshot saved in the project.';
+                await onApplied(response.snapshot);
+                feedback =
+                    action === 'delete_snapshot'
+                        ? 'Snapshot deleted.'
+                        : 'Snapshot saved in the project.';
+                confirmDelete = false;
                 return;
             }
             taskId = response.id;
@@ -172,9 +217,17 @@
                 if (response.status === 'complete') {
                     if (started !== key) return;
                     const data = response.data;
+                    if (data.book_impact) bookImpact = data.book_impact;
                     note = data.note || '';
                     if (
-                        ['lift', 'double_lift', 'path', 'coefficients', 'compare'].includes(action)
+                        [
+                            'lift',
+                            'double_lift',
+                            'path',
+                            'coefficients',
+                            'compare',
+                            'compare_snapshots',
+                        ].includes(action)
                     ) {
                         analysis = data;
                         rows = [];
@@ -187,6 +240,7 @@
                                 : [];
                     } else {
                         rows = data.rows || [];
+                        if (!rows.some((r) => r[pairMetric] !== undefined)) pairMetric = 'ae';
                         aeSets = data.ae_sets || [];
                         aeKind = data.kind || 'numeric';
                         analysis = null;
@@ -198,7 +252,14 @@
                         shownSubset = { train: 'Training', holdout: 'Holdout', all: 'All rows' }[
                             data.subset || extra.subset || subset
                         ];
-                        if (response.can_apply) preview = { ...data, id: taskId };
+                        if (response.can_apply || data.preview_table) {
+                            preview = { ...data, id: taskId, canApply: response.can_apply };
+                            requestAnimationFrame(() =>
+                                document
+                                    .querySelector('.preview-impact')
+                                    ?.scrollIntoView({ block: 'start', behavior: 'instant' }),
+                            );
+                        }
                     }
                     break;
                 }
@@ -229,8 +290,12 @@
             const snapshot = await api('reviews/' + preview.id + '/apply', rev());
             onClear();
             preview = null;
-            onApplied(snapshot);
-            note = 'Adjustments applied without refitting.';
+            await onApplied(snapshot);
+            feedback =
+                'Adjustments applied. Rates and actual versus expected are updated; the fitted model is unchanged.';
+            requestAnimationFrame(() =>
+                document.querySelector('.review-feedback')?.scrollIntoView({ block: 'nearest' }),
+            );
         } catch (e) {
             error = e.message;
         } finally {
@@ -241,7 +306,7 @@
         let options = {};
         if (tool === 'moving') options = { window: windowSize, ordered };
         if (tool === 'isotonic') options = { direction, ordered };
-        if (tool === 'cap') options = { floor: floor || null, cap: cap || null };
+        if (tool === 'cap') options = { floor: floor ?? null, cap: cap ?? null };
         if (tool === 'round') options = rounding === 'decimals' ? { decimals } : { step };
         run(tool, { options });
     }
@@ -261,7 +326,7 @@
                 a: row.a || null,
                 b: row.b || null,
             });
-            onApplied(response.snapshot);
+            await onApplied(response.snapshot);
             onNavigate('model');
         } catch (e) {
             error = e.message;
@@ -281,7 +346,7 @@
 >
     <h2>
         {view === 'tables'
-            ? 'Adjustments & actual versus expected'
+            ? 'Adjust this table'
             : diagnosticTab === 'residual'
               ? 'Residual factors and interactions'
               : {
@@ -292,6 +357,7 @@
                     compare: 'Relativities that differ',
                 }[diagnosticTab] || 'Actual versus expected'}
     </h2>
+    {#if feedback}<div class="message success review-feedback" role="status">{feedback}</div>{/if}
     {#if error}<div class="message error" role="alert">{error}</div>{/if}
     {#if view === 'diagnostics'}
         {#if ['lift', 'double_lift'].includes(diagnosticTab) || (['variable', 'pair'].includes(diagnosticTab) && temporaryBins)}<div
@@ -447,99 +513,138 @@
         </div>
     {:else}
         <p class="help-text">
-            Edit individual relativities in the table above, then preview. The original fitted model
-            stays fixed. Charts compare actual experience, the original fit and current or proposed
-            adjusted predictions.
+            Choose an adjustment, set its parameters, then preview its effect before applying.
         </p>
-        <div class="results-toolbar">
-            <button disabled={busy || !info.undo} onclick={() => run('undo')}>Preview undo</button
-            ><button disabled={busy || !info.redo} onclick={() => run('redo')}>Preview redo</button>
-            <button disabled={busy} onclick={() => run('rebalance')}
-                >Preview rebalance base rate</button
-            >
-            <button disabled={busy} onclick={() => run('reset')}>Preview reset to fitted</button>
-        </div>
-        <details>
-            <summary>Smooth, cap / floor and round</summary>
-            <div class="results-toolbar">
-                <label
-                    >Tool<select aria-label="Adjustment tool" bind:value={tool}
-                        ><option value="moving">Moving average</option><option value="isotonic"
-                            >Monotone smoothing</option
-                        ><option value="cap">Cap / floor</option><option value="round">Round</option
-                        ></select
-                    ></label
+        <div class="adjustment-modes" role="group" aria-label="Adjustment method">
+            {#each [['moving', 'Moving average'], ['isotonic', 'Isotonic smoothing'], ['cap', 'Cap / floor'], ['round', 'Round']] as [value, label]}
+                <button
+                    aria-pressed={tool === value}
+                    disabled={busy || tableKind === 'interaction'}
+                    onclick={() => (tool = value)}>{label}</button
                 >
+            {/each}
+            <button disabled={busy} onclick={onManual}>Edit individual or multiple rows</button>
+        </div>
+        {#if tableKind === 'interaction'}<p>
+                Interaction cells are edited individually in the rate table. Smoothing applies to
+                main factors.
+            </p>
+        {:else}
+            <div class="adjustment-parameters">
                 {#if tool === 'moving'}<label
-                        >Window<input
+                        >Window (bands)<input
                             aria-label="Smoothing window"
                             type="number"
                             min="3"
+                            max="25"
                             step="2"
                             bind:value={windowSize}
                         /></label
-                    >{/if}
+                    >
+                    <p>
+                        Average each band with its neighbours in log space. Use an odd window, from
+                        3 to 25.
+                    </p>{/if}
                 {#if tool === 'isotonic'}<label
                         >Direction<select aria-label="Smoothing direction" bind:value={direction}
                             ><option value="increasing">Increasing</option><option
                                 value="decreasing">Decreasing</option
                             ></select
                         ></label
-                    >{/if}
-                {#if tool === 'moving' || tool === 'isotonic'}<label
-                        ><input type="checkbox" bind:checked={ordered} /> Categorical levels have a meaningful
-                        order</label
-                    >{/if}
+                    >
+                    <p>
+                        Pool neighbouring bands until the curve follows the chosen direction.
+                    </p>{/if}
                 {#if tool === 'cap'}<label
-                        >Floor<input
+                        >Floor (empty = none)<input
                             aria-label="Relativity floor"
                             type="number"
-                            min="0"
-                            step=".01"
+                            min=".0001"
+                            step=".05"
                             bind:value={floor}
                         /></label
                     ><label
-                        >Cap<input
+                        >Cap (empty = none)<input
                             aria-label="Relativity cap"
                             type="number"
-                            min="0"
-                            step=".01"
+                            min=".0001"
+                            step=".05"
                             bind:value={cap}
                         /></label
                     >{/if}
                 {#if tool === 'round'}<label
-                        >Round by<select bind:value={rounding}
+                        >Round to<select aria-label="Rounding mode" bind:value={rounding}
                             ><option value="decimals">Decimal places</option><option value="step"
-                                >Increment</option
+                                >A step</option
                             ></select
                         ></label
                     >{#if rounding === 'decimals'}<label
-                            >Decimals<input
-                                aria-label="Rounding decimals"
+                            >Decimal places<input
+                                aria-label="Decimal places"
                                 type="number"
                                 min="0"
-                                max="10"
+                                max="6"
                                 bind:value={decimals}
                             /></label
                         >{:else}<label
-                            >Increment<input
-                                aria-label="Rounding increment"
+                            >Step<input
+                                aria-label="Rounding step"
                                 type="number"
-                                min=".00001"
+                                min=".0001"
                                 step=".01"
                                 bind:value={step}
                             /></label
-                        >{/if}{/if}
-                <button disabled={busy} onclick={previewTool}>Preview tool</button>
+                        >
+                        <p>A step of 0.05 rounds 1.083 to 1.10.</p>{/if}{/if}
             </div>
+            {#if smoothing && tableKind === 'categorical'}<label class="ordered-confirmation"
+                    ><input type="checkbox" bind:checked={ordered} /> The levels of this factor are in
+                    a meaningful order</label
+                >
+                <p class="help-text">
+                    Levels are normally ordered by exposure. Confirm only if neighbouring levels
+                    represent a real ordered scale.
+                </p>{/if}
             <p class="help-text">
-                Smoothing uses exposure weights and preserves the mean log relativity, which does
-                not preserve the portfolio total. Null / Other rows are untouched by tools.
-                Smoothing unordered categories and tooling interaction cells are refused.
+                {smoothing
+                    ? 'Smoothing preserves the exposure-weighted mean log relativity, not total expected claims. '
+                    : ''}Null / Other rows are excluded from these tools.{#if ['linear', 'continuous'].includes(tableKind)}
+                    Linear curves are adjusted at their nodes; slopes are recalculated to keep the
+                    curve continuous.{/if}
             </p>
-        </details>
-        <details>
-            <summary>Named snapshots</summary>
+            <button
+                class="primary"
+                disabled={busy ||
+                    (smoothing && tableKind === 'categorical' && !ordered) ||
+                    Object.keys(edits).length > 0}
+                onclick={previewTool}>Preview adjustment</button
+            >
+            {#if Object.keys(edits).length}<p>
+                    Preview or discard your {Object.keys(edits).length} manual row edits before using
+                    a tool.
+                </p>{/if}
+        {/if}
+        {#if bookImpact}<p class="book-impact">
+                <strong>Current training expected: {num(bookImpact.current)}</strong> · fitted: {num(
+                    bookImpact.fitted,
+                )} ({num(100 * (bookImpact.current / bookImpact.fitted - 1))}% from fitted)
+            </p>{/if}
+        <div class="adjustment-history results-toolbar">
+            <button disabled={busy || !info.undo} onclick={() => run('undo')}>Preview undo</button
+            ><button disabled={busy || !info.redo} onclick={() => run('redo')}>Preview redo</button>
+            <button disabled={busy || info.link === 'logit'} onclick={() => run('rebalance')}
+                >Preview rebalance base rate</button
+            >
+            <button disabled={busy} onclick={() => run('reset_variable')}
+                >Reset this variable</button
+            ><button disabled={busy} onclick={() => run('reset')}>Reset all adjustments</button>
+        </div>
+        <p class="help-text">
+            Rebalance restores the original fitted training total by changing only the base rate.
+            Every applied edit, tool, reset or rebalance is one undo step.
+        </p>
+        <details class="table-snapshots">
+            <summary>Snapshots · save, restore and compare</summary>
             <div class="results-toolbar">
                 <label
                     >New snapshot<input
@@ -550,17 +655,79 @@
                     disabled={busy || !snapshotName.trim()}
                     onclick={() => run('snapshot', { snapshot: snapshotName })}
                     >Save snapshot</button
-                ><label
-                    >Saved snapshot<select aria-label="Saved snapshot" bind:value={chosenSnapshot}
+                >
+            </div>
+            {#if info.snapshots.length}<div class="results-toolbar">
+                    <label
+                        >Saved snapshot<select
+                            aria-label="Saved snapshot"
+                            bind:value={chosenSnapshot}
+                            onchange={() => (confirmDelete = false)}
+                            >{#each info.snapshots as s}<option>{s}</option>{/each}</select
+                        ></label
+                    ><button
+                        disabled={busy || !chosenSnapshot}
+                        onclick={() => run('restore_snapshot', { snapshot: chosenSnapshot })}
+                        >Preview snapshot restore</button
+                    ><button
+                        disabled={busy || !chosenSnapshot}
+                        onclick={() => (confirmDelete = true)}>Delete snapshot</button
+                    >
+                </div>{/if}
+            {#if confirmDelete}<div class="message">
+                    Delete “{chosenSnapshot}” permanently? Undo cannot restore this snapshot.
+                    <button
+                        disabled={busy}
+                        onclick={() =>
+                            run('delete_snapshot', {
+                                snapshot: chosenSnapshot,
+                                options: { confirmed: true },
+                            })}>Confirm delete snapshot</button
+                    ><button onclick={() => (confirmDelete = false)}>Keep snapshot</button>
+                </div>{/if}
+            <div class="results-toolbar">
+                <label
+                    >Compare<select aria-label="First table version" bind:value={snapshotLeft}
+                        ><option value="__fitted__">Original fitted</option><option
+                            value="__current__">Current tables</option
                         >{#each info.snapshots as s}<option>{s}</option>{/each}</select
                     ></label
+                ><label
+                    >With<select aria-label="Second table version" bind:value={snapshotRight}
+                        ><option value="__fitted__">Original fitted</option><option
+                            value="__current__">Current tables</option
+                        >{#each info.snapshots as s}<option>{s}</option>{/each}</select
+                    ></label
+                ><label
+                    >Log difference tolerance<input
+                        aria-label="Snapshot comparison tolerance"
+                        type="number"
+                        min="0"
+                        max="1"
+                        step=".005"
+                        bind:value={tolerance}
+                    /></label
                 ><button
-                    disabled={busy || !chosenSnapshot}
-                    onclick={() => run('restore_snapshot', { snapshot: chosenSnapshot })}
-                    >Preview snapshot restore</button
+                    disabled={busy || snapshotLeft === snapshotRight}
+                    onclick={() =>
+                        run('compare_snapshots', {
+                            options: { left: snapshotLeft, right: snapshotRight },
+                        })}>Compare table versions</button
                 >
             </div>
         </details>
+        {#if info.adjustments?.length}<details>
+                <summary>Applied adjustments ({info.adjustments.length})</summary><DiagnosticTable
+                    rows={info.adjustments}
+                    title="Applied adjustments"
+                />
+            </details>{/if}
+        <label class="table-ae-subset"
+            >A/E subset<select aria-label="Table diagnostic subset" bind:value={subset}
+                ><option value="train">Training</option><option value="holdout">Holdout</option
+                ><option value="all">All rows</option></select
+            ></label
+        >
     {/if}
     {#if busy}<div class="message" role="status">
             Computing in background… <button onclick={cancel} disabled={!taskId}
@@ -600,7 +767,24 @@
                         {#if preview.changes.length > 200}<p>First 200 changed rows shown.</p>{/if}
                     </div>
                 </details>{/if}
-            <button class="primary" disabled={busy} onclick={applyPreview}>Apply adjustment</button
+            {#if preview.before_base_rate !== preview.after_base_rate}<p>
+                    Base rate: {num(preview.before_base_rate)} → {num(preview.after_base_rate)}
+                </p>{/if}
+            {#if preview.tool_details}<p class="help-text">
+                    Weighted mean log relativity: {num(preview.tool_details.log_mean_before)} → {num(
+                        preview.tool_details.log_mean_after,
+                    )}. The expected total above measures the actual effect on the book.
+                </p>{/if}
+            {#if preview.preview_table}<RateChart
+                    table={preview.preview_table}
+                    variable={selectedVariable}
+                    label={rateLabel + ' · preview'}
+                    fittedLabel="Current"
+                    currentLabel="Proposed"
+                    preview={true}
+                />{/if}
+            <button class="primary" disabled={busy || !preview.canApply} onclick={applyPreview}
+                >Apply adjustment</button
             ><button disabled={busy} onclick={() => run('variable')}>Discard preview</button>
         </div>{/if}
     {#if analysis}
@@ -648,11 +832,14 @@
     {#if rows.length && (view === 'tables' || (diagnosticTab === 'variable' && !pairRows) || (diagnosticTab === 'pair' && pairRows) || (diagnosticTab === 'residual' && inspectedResidual))}
         {#if pairRows}<h3>{shownTitle} · {shownSubset}</h3>
             <h3>Actual / expected by cell</h3>
-            {#if rows.some((r) => r.challenger_ae !== undefined)}<label
+            {#if rows.some((r) => r.challenger_ae !== undefined || r.before_ae !== undefined)}<label
                     >Heatmap model<select bind:value={pairMetric}
-                        ><option value="ae">{name}</option><option value="challenger_ae"
-                            >{challenger}</option
-                        ></select
+                        ><option value="ae">{preview ? 'Proposed' : name}</option
+                        >{#if rows.some((r) => r.before_ae !== undefined)}<option value="before_ae"
+                                >Current</option
+                            >{/if}{#if rows.some((r) => r.challenger_ae !== undefined)}<option
+                                value="challenger_ae">{challenger}</option
+                            >{/if}</select
                     ></label
                 >{/if}
             <div class="heatmap-scroll">
@@ -667,8 +854,8 @@
                                         (r) => r.label_a === label && r.label_b === other,
                                     )}<td
                                         style:background={heat(cell?.[pairMetric])}
-                                        title={`Actual ${num(cell?.actual)}; expected ${num(pairMetric === 'challenger_ae' ? cell?.challenger_expected : cell?.expected)}; exposure ${num(cell?.exposure)}`}
-                                        >{num(cell?.ae)}</td
+                                        title={`Actual ${num(cell?.actual)}; expected ${num(pairMetric === 'challenger_ae' ? cell?.challenger_expected : pairMetric === 'before_ae' ? cell?.before_expected : cell?.expected)}; exposure ${num(cell?.exposure)}`}
+                                        >{num(cell?.[pairMetric])}</td
                                     >{/each}</tr
                             >{/each}</tbody
                     >

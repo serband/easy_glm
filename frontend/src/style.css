@@ -1260,3 +1260,81 @@ main {
     font-size: 11px;
     margin-bottom: 12px;
 }
+
+.adjustment-modes {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin: 12px 0;
+}
+.adjustment-modes button[aria-pressed='true'] {
+    background: #315b4b;
+    color: white;
+    border-color: #315b4b;
+}
+.adjustment-parameters {
+    display: flex;
+    align-items: end;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin: 14px 0;
+}
+.adjustment-parameters label {
+    width: 180px;
+}
+.adjustment-parameters p {
+    flex: 1;
+    min-width: 180px;
+    color: var(--muted);
+    font-size: 13px;
+}
+.adjustment-history {
+    border-top: 1px solid #dde5df;
+    margin-top: 16px;
+    padding-top: 12px;
+    gap: 6px;
+}
+.adjustment-history button {
+    font-size: 12px;
+}
+.table-ae-subset {
+    display: block;
+    max-width: 180px;
+    margin-top: 16px;
+}
+.ordered-confirmation {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.review-panel .rate-chart-card {
+    padding: 14px 0;
+    border: none;
+    box-shadow: none;
+}
+.message.success {
+    background: #e9f4ee;
+    color: #244e3d;
+}
+.cell-edit-scroll {
+    max-height: 360px;
+    overflow: auto;
+}
+.cell-edit-matrix {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 12px;
+}
+.cell-edit-matrix th {
+    background: #e9f0ec;
+    padding: 8px;
+    position: sticky;
+    top: 0;
+}
+.cell-edit-matrix td {
+    padding: 4px;
+    border: 1px solid #e0e7e2;
+}
+.cell-edit-matrix input {
+    width: 95px;
+}

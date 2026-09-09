@@ -66,6 +66,24 @@ def create_app(
     reviews = ReviewJobs()
     undo_steps = {}
     redo_steps = {}
+    if restore_folder is not None and (restore_folder / "history.json").exists():
+        history = json.loads((restore_folder / "history.json").read_text())
+        for name, stacks in history.items():
+            if name not in project.models:
+                raise ValueError("Restored edit history refers to an unknown model.")
+            for key, destination in (("undo", undo_steps), ("redo", redo_steps)):
+                entries = stacks.get(key, [])
+                if len(entries) > 50:
+                    raise ValueError("Restored edit history exceeds its session limit.")
+                destination[name] = []
+                for entry in entries:
+                    saved = project.to_dict()
+                    saved["models"][name]["adjustments"] = entry["adjustments"]
+                    saved["models"][name]["base_rate_override"] = entry[
+                        "base_rate_override"
+                    ]
+                    cfg = Project.from_dict(saved).models[name]
+                    destination[name].append((cfg.adjustments, cfg.base_rate_override))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -408,9 +426,27 @@ def create_app(
                     revision += 1
                     jobs.invalidate(current)
                     return {"snapshot": snapshot()}
+                if edit.action == "delete_snapshot":
+                    if not edit.options.get("confirmed"):
+                        raise ValueError(
+                            "Confirm deleting this named snapshot. Undo cannot restore it."
+                        )
+                    if not any(s.name == edit.snapshot for s in cfg.snapshots):
+                        raise ValueError("Choose an existing snapshot.")
+                    cfg.snapshots = [
+                        s for s in cfg.snapshots if s.name != edit.snapshot
+                    ]
+                    current.models[name].snapshots = cfg.snapshots
+                    revision += 1
+                    jobs.edited(current, name, jobs.jobs[name]["result"])
+                    return {"snapshot": snapshot()}
                 if edit.action == "snapshot":
                     label = edit.snapshot.strip()
-                    if not label or any(s.name == label for s in cfg.snapshots):
+                    if (
+                        not label
+                        or label in ("__fitted__", "__current__")
+                        or any(s.name == label for s in cfg.snapshots)
+                    ):
                         raise ValueError("Give this snapshot a new, non-empty name.")
                     cfg.snapshots.append(
                         TableSnapshot(
@@ -423,7 +459,13 @@ def create_app(
                     revision += 1
                     jobs.edited(current, name, jobs.jobs[name]["result"])
                     return {"snapshot": snapshot()}
-                if edit.action in ("undo", "redo", "restore_snapshot", "reset"):
+                if edit.action in (
+                    "undo",
+                    "redo",
+                    "restore_snapshot",
+                    "reset",
+                    "reset_variable",
+                ):
                     if edit.action in ("undo", "redo"):
                         stack = (
                             undo_steps if edit.action == "undo" else redo_steps
@@ -441,6 +483,12 @@ def create_app(
                             raise ValueError("Choose an existing snapshot.")
                         cfg.adjustments = deepcopy(matched.adjustments)
                         cfg.base_rate_override = matched.base_rate_override
+                    elif edit.action == "reset_variable":
+                        if edit.variable not in jobs.result(current, name)["tables"]:
+                            raise ValueError("Choose a fitted table to reset.")
+                        cfg.adjustments = [
+                            a for a in cfg.adjustments if a.variable != edit.variable
+                        ]
                     else:
                         cfg.adjustments = []
                         cfg.base_rate_override = None
@@ -555,6 +603,9 @@ def create_app(
                 .get("diagnostic_info", {})
                 .get("variables", []),
                 "snapshots": [s.name for s in current.models[name].snapshots],
+                "adjustments": [a.__dict__ for a in current.models[name].adjustments],
+                "base_rate_override": current.models[name].base_rate_override,
+                "link": jobs.result(current, name)["link"],
                 "undo": bool(undo_steps.get(name)),
                 "redo": bool(redo_steps.get(name)),
             }

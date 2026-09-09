@@ -101,5 +101,27 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     await button('Diagnostics').click();
     await tab('Regularisation path').click();
     await expect(page.getByRole('img', { name: /Stage 2.*regularisation path$/ })).toBeVisible();
+    await button('Rate tables').click();
+    const interactionName = await page
+        .getByLabel('Rate table variable', { exact: true })
+        .locator('option')
+        .evaluateAll((options) => options.map((o) => o.value).find((v) => v.includes('×')));
+    expect(interactionName).toBeTruthy();
+    await page.getByLabel('Rate table variable', { exact: true }).selectOption(interactionName);
+    await expect(page.locator('.rate-primary > .rate-chart-card .relativity-heatmap')).toBeVisible();
+    await button('Edit individual or multiple rows').click();
+    await expect(page.locator('.cell-edit-matrix')).toBeVisible();
+    const cell = page.getByRole('spinbutton', { name: /^Relativity cell / }).first();
+    await cell.fill('1.7');
+    await cell.press('Tab');
+    await button('Preview row edits (1)').click();
+    await expect(page.locator('.preview-impact .relativity-heatmap')).toBeVisible();
+    const proposedAE = await page.locator('.ae-heatmap').innerText();
+    await page.getByLabel('Heatmap model').selectOption('before_ae');
+    expect(await page.locator('.ae-heatmap').innerText()).not.toBe(proposedAE);
+    await button('Apply adjustment').click();
+    await expect(
+        page.getByText(/Adjustments applied. Rates and actual versus expected are updated/),
+    ).toBeVisible();
     expect(errors).toEqual([]);
 });

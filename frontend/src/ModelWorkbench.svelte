@@ -66,6 +66,7 @@
         .filter(Boolean)
         .flatMap((r) => r.diagnostic_info?.saved_versions || []);
     let diagnosticTab = 'variable';
+    let tableEditorOpen = false;
     let tableDetails = false,
         tableReview,
         reviewBusy = false;
@@ -85,6 +86,16 @@
           )
         : [];
     let rowEdits = {};
+    $: cellRowNames =
+        table?.kind === 'interaction' ? [...new Set(table.rows.map((r) => r.label_a))] : [];
+    $: cellColNames =
+        table?.kind === 'interaction' ? [...new Set(table.rows.map((r) => r.label_b))] : [];
+    $: editableCells = new Map(
+        (table?.rows || []).map((row, index) => [
+            JSON.stringify([row.label_a, row.label_b]),
+            { row, index },
+        ]),
+    );
     function editRow(index, value) {
         rowEdits = { ...rowEdits, [index]: Number(value) };
     }
@@ -92,10 +103,18 @@
         rowEdits = {};
     }
     async function reviewed(snapshot) {
+        // Post-fit edits keep the adjustment controls and their local choices mounted.
+        known = snapshot.session_id + ':' + snapshot.revision;
         onState(snapshot);
-        resultId = '';
         clearEdits();
-        await refresh(false);
+        wb = await api('workbench');
+        jobs = wb.jobs;
+        known = wb.session_id + ':' + wb.revision;
+        if (!jobs[selected]?.applicable || view === 'model') pickModel();
+        else {
+            cfg = structuredClone(wb.models[selected]);
+            await loadResults();
+        }
     }
     export let api;
     export let state;
@@ -914,72 +933,158 @@
                 </div>
                 {#if table}<div class="rate-primary">
                         <RateChart {table} variable={tableName} label={result.relativity_label} />
-                        <details class="rate-table-card" aria-label="Editable rate table">
+                        <ReviewPanel
+                            challenger={effectiveChallenger}
+                            bind:this={tableReview}
+                            bind:busy={reviewBusy}
+                            {api}
+                            {state}
+                            name={selected}
+                            {view}
+                            bind:subset
+                            tableKind={table?.kind}
+                            rateLabel={result.relativity_label}
+                            onManual={() => {
+                                tableEditorOpen = true;
+                                requestAnimationFrame(() =>
+                                    document
+                                        .querySelector('.rate-table-card')
+                                        ?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+                                );
+                            }}
+                            variable={tableName}
+                            edits={rowEdits}
+                            onApplied={reviewed}
+                            onClear={clearEdits}
+                            {onNavigate}
+                        />
+                        <details
+                            bind:open={tableEditorOpen}
+                            class="rate-table-card"
+                            aria-label="Editable rate table"
+                        >
                             <summary>Rate table</summary>
                             <div class="table-heading">
                                 <label
                                     ><input type="checkbox" bind:checked={tableDetails} /> All columns</label
                                 >
                             </div>
-                            <div
-                                class="rate-grid"
-                                onscroll={(e) => (tableScroll = e.currentTarget.scrollTop)}
-                            >
-                                <table>
-                                    <thead
-                                        ><tr
-                                            >{#each visibleColumns as column}<th
-                                                    >{column === 'relativity'
-                                                        ? 'Current relativity'
-                                                        : column === 'label'
-                                                          ? 'Band / level'
-                                                          : column.replaceAll('_', ' ')}</th
-                                                >{/each}</tr
-                                        ></thead
-                                    ><tbody
-                                        >{#if tableStart > 0}<tr
-                                                aria-hidden="true"
-                                                style:height={tableStart * 32 + 'px'}
-                                                ><td colspan={visibleColumns.length}></td></tr
-                                            >{/if}{#each table.rows.slice(tableStart, tableStart + 24) as row, rowIndex}<tr
-                                                >{#each visibleColumns as column}<td
-                                                        title={String(row[column] ?? '')}
-                                                        >{#if column === 'relativity'}<input
-                                                                class="relativity-input"
-                                                                aria-label={'Relativity row ' +
-                                                                    (table.offset +
-                                                                        tableStart +
-                                                                        rowIndex +
-                                                                        1)}
-                                                                type="number"
-                                                                min="0.000000001"
-                                                                step="any"
-                                                                value={rowEdits[
-                                                                    table.offset +
-                                                                        tableStart +
-                                                                        rowIndex
-                                                                ] ?? row[column]}
-                                                                onchange={(e) =>
-                                                                    editRow(
+                            <p class="help-text">
+                                {['linear', 'continuous'].includes(table.kind)
+                                    ? 'Edit the relativity at each band start. The neighbouring slopes are recalculated so the curve stays continuous.'
+                                    : 'Edit one or several relativities, then preview all your row changes together before applying.'}
+                            </p>
+                            {#if table.kind === 'interaction' && cellRowNames.length * cellColNames.length <= 1600}
+                                <p class="help-text">
+                                    Kept interaction cells on this page. Blank cells are not fitted
+                                    or are on another page.
+                                </p>
+                                <div class="cell-edit-scroll">
+                                    <table class="cell-edit-matrix">
+                                        <thead
+                                            ><tr
+                                                ><th>Rows / columns</th
+                                                >{#each cellColNames as label}<th>{label}</th
+                                                    >{/each}</tr
+                                            ></thead
+                                        ><tbody
+                                            >{#each cellRowNames as a}<tr
+                                                    ><th>{a}</th
+                                                    >{#each cellColNames as b}{@const cell =
+                                                            editableCells.get(
+                                                                JSON.stringify([a, b]),
+                                                            )}<td
+                                                            >{#if cell}<input
+                                                                    aria-label={'Relativity cell ' +
+                                                                        a +
+                                                                        ' × ' +
+                                                                        b}
+                                                                    title={'Fitted ' +
+                                                                        cell.row.fitted +
+                                                                        '; exposure ' +
+                                                                        cell.row.exposure}
+                                                                    type="number"
+                                                                    min=".000000001"
+                                                                    step="any"
+                                                                    value={rowEdits[
+                                                                        table.offset + cell.index
+                                                                    ] ?? cell.row.relativity}
+                                                                    onchange={(e) =>
+                                                                        editRow(
+                                                                            table.offset +
+                                                                                cell.index,
+                                                                            e.currentTarget.value,
+                                                                        )}
+                                                                />{:else}—{/if}</td
+                                                        >{/each}</tr
+                                                >{/each}</tbody
+                                        >
+                                    </table>
+                                </div>
+                            {:else}
+                                <div
+                                    class="rate-grid"
+                                    onscroll={(e) => (tableScroll = e.currentTarget.scrollTop)}
+                                >
+                                    <table>
+                                        <thead
+                                            ><tr
+                                                >{#each visibleColumns as column}<th
+                                                        >{column === 'relativity'
+                                                            ? 'Current relativity'
+                                                            : column === 'label'
+                                                              ? 'Band / level'
+                                                              : column.replaceAll('_', ' ')}</th
+                                                    >{/each}</tr
+                                            ></thead
+                                        ><tbody
+                                            >{#if tableStart > 0}<tr
+                                                    aria-hidden="true"
+                                                    style:height={tableStart * 32 + 'px'}
+                                                    ><td colspan={visibleColumns.length}></td></tr
+                                                >{/if}{#each table.rows.slice(tableStart, tableStart + 24) as row, rowIndex}<tr
+                                                    >{#each visibleColumns as column}<td
+                                                            title={String(row[column] ?? '')}
+                                                            >{#if column === 'relativity'}<input
+                                                                    class="relativity-input"
+                                                                    aria-label={'Relativity row ' +
+                                                                        (table.offset +
+                                                                            tableStart +
+                                                                            rowIndex +
+                                                                            1)}
+                                                                    type="number"
+                                                                    min="0.000000001"
+                                                                    step="any"
+                                                                    value={rowEdits[
                                                                         table.offset +
                                                                             tableStart +
-                                                                            rowIndex,
-                                                                        e.currentTarget.value,
-                                                                    )}
-                                                            />{:else}{num(row[column], 8)}{/if}</td
-                                                    >{/each}</tr
-                                            >{/each}{#if tableStart + 24 < table.rows.length}<tr
-                                                aria-hidden="true"
-                                                style:height={(table.rows.length -
-                                                    tableStart -
-                                                    24) *
-                                                    32 +
-                                                    'px'}
-                                                ><td colspan={visibleColumns.length}></td></tr
-                                            >{/if}</tbody
-                                    >
-                                </table>
-                            </div>
+                                                                            rowIndex
+                                                                    ] ?? row[column]}
+                                                                    onchange={(e) =>
+                                                                        editRow(
+                                                                            table.offset +
+                                                                                tableStart +
+                                                                                rowIndex,
+                                                                            e.currentTarget.value,
+                                                                        )}
+                                                                />{:else}{num(
+                                                                    row[column],
+                                                                    8,
+                                                                )}{/if}</td
+                                                        >{/each}</tr
+                                                >{/each}{#if tableStart + 24 < table.rows.length}<tr
+                                                    aria-hidden="true"
+                                                    style:height={(table.rows.length -
+                                                        tableStart -
+                                                        24) *
+                                                        32 +
+                                                        'px'}
+                                                    ><td colspan={visibleColumns.length}></td></tr
+                                                >{/if}</tbody
+                                        >
+                                    </table>
+                                </div>
+                            {/if}
                             <div class="results-toolbar table-paging">
                                 <span
                                     >Rows {table.offset + 1}–{Math.min(
@@ -1023,30 +1128,6 @@
                     {result.relativity_note} The chart shows applied table values; row edits remain drafts
                     until applied.
                 </p>
-                <div class="results-toolbar">
-                    <label
-                        >A/E subset<select aria-label="Table diagnostic subset" bind:value={subset}
-                            ><option value="train">Training</option><option value="holdout"
-                                >Holdout</option
-                            ></select
-                        ></label
-                    >
-                </div>
-                <ReviewPanel
-                    challenger={effectiveChallenger}
-                    bind:this={tableReview}
-                    bind:busy={reviewBusy}
-                    {api}
-                    {state}
-                    name={selected}
-                    {view}
-                    {subset}
-                    variable={tableName}
-                    edits={rowEdits}
-                    onApplied={reviewed}
-                    onClear={clearEdits}
-                    {onNavigate}
-                />
             {/if}
         {/if}
     {/if}

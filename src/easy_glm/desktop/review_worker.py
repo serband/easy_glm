@@ -13,7 +13,7 @@ from typing import Any
 import polars as pl
 
 from easy_glm.app.grids import apply_cell_edits, apply_row_edits, cell_grid
-from easy_glm.desktop.fit_worker import result_for, write_json
+from easy_glm.desktop.fit_worker import result_for, table_payload, write_json
 from easy_glm.engine import tooling
 from easy_glm.engine.rate_model import RateModel
 from easy_glm.workflow.diagnostics import (
@@ -104,8 +104,11 @@ def ae_detail(
         before = totals(frame, run.config, baseline.predict(frame, exposure_col=None))[
             1
         ]
+        before_table = aggregate(before)
         table = table.with_columns(
-            pl.Series("before_rate", aggregate(before)["expected_rate"])
+            pl.Series("before_rate", before_table["expected_rate"]),
+            pl.Series("before_ae", before_table["ae"]),
+            pl.Series("before_expected", before_table["expected"]),
         )
     return table.to_dicts()
 
@@ -197,6 +200,14 @@ def review(
                 challenger=challenger,
                 n_bins=request.get("n_bins", 20),
             ),
+            "book_impact": {
+                "current": expected_claims(run.rate_model, train, run.config),
+                "fitted": expected_claims(
+                    rate_model_for(project, run, [], base_rate_override=None),
+                    train,
+                    run.config,
+                ),
+            },
             "ae_sets": sets,
             "kind": kind,
             "subset": selected_subset,
@@ -276,11 +287,54 @@ def review(
                 else " Signal is a noise-adjusted Pearson excess z-score; 2 or higher is a review starting point."
             ),
         }
+    if action == "compare_snapshots":
+        from easy_glm.workflow.diagnostics import describe_diff, rate_model_diff
+
+        options = request.get("options", {})
+
+        def version(choice):
+            cfg = project.models[run.name]
+            if choice == "__fitted__":
+                return rate_model_for(project, run, [], base_rate_override=None)
+            if choice == "__current__":
+                return run.rate_model
+            saved = next((s for s in cfg.snapshots if s.name == choice), None)
+            if saved is None:
+                raise ValueError("Choose a saved table snapshot.")
+            return rate_model_for(
+                project,
+                run,
+                saved.adjustments,
+                base_rate_override=saved.base_rate_override,
+            )
+
+        left, right = options.get("left", "__fitted__"), options.get(
+            "right", "__current__"
+        )
+        first, second = version(left), version(right)
+        diff = rate_model_diff(first, second, request.get("tolerance", 0.01))
+        titles = {"__fitted__": "Original fitted", "__current__": "Current tables"}
+        return {
+            "tables": [
+                {
+                    "title": "Snapshot differences",
+                    "rows": describe_diff(
+                        diff, titles.get(left, left), titles.get(right, right)
+                    ).to_dicts(),
+                }
+            ],
+            "note": (
+                "The versions charge the same premium within the selected tolerance."
+                if diff.is_empty()
+                else "Table versions compared without refitting. Band changes include the base-rate change."
+            ),
+        }
     before = run.rate_model.clone()
     config = project.models[run.name]
     before_adjustments = copy.deepcopy(config.adjustments)
     before_base = config.base_rate_override
     note = "Manual table adjustment."
+    tool_details = None
     if action in ("edit", "moving", "isotonic", "cap", "round"):
         if variable not in run.rate_model.variables:
             raise ValueError("Choose a fitted table.")
@@ -308,6 +362,14 @@ def review(
             }
             result = functions[action](table, variable, **options)
             values, note = list(result.values), result.note
+            tool_details = {
+                "name": result.tool,
+                "log_mean_before": result.log_mean_before,
+                "log_mean_after": result.log_mean_after,
+                "uniform_weights": result.uniform_weights,
+            }
+            if result.uniform_weights:
+                note += " No training exposure is stored on this table; each band has equal smoothing weight."
         if table.type == "interaction":
             grid = cell_grid(run.rate_model, variable)
             edited = copy.deepcopy(grid["current"])
@@ -365,8 +427,12 @@ def review(
 
     changes = []
     if variable:
-        old_rows = rate_model_tables(before)[variable].to_dicts()
-        new_rows = rate_model_tables(run.rate_model)[variable].to_dicts()
+        old_rows = table_payload(before, variable, rate_model_tables(before)[variable])[
+            "rows"
+        ]
+        new_rows = table_payload(
+            run.rate_model, variable, rate_model_tables(run.rate_model)[variable]
+        )["rows"]
         for i, (old, new) in enumerate(zip(old_rows, new_rows, strict=True)):
             if old["relativity"] != new["relativity"] or old.get("slope") != new.get(
                 "slope"
@@ -388,11 +454,33 @@ def review(
                 )
     return {
         "changes": changes,
+        "tool_details": tool_details,
+        "kind": run.rate_model.variables[variable].type if variable else None,
+        "preview_table": (
+            {
+                "columns": list(new_rows[0]) if new_rows else [],
+                "rows": [
+                    dict(new, fitted=old["relativity"])
+                    for old, new in zip(old_rows, new_rows, strict=True)
+                ],
+                "kind": (
+                    "step"
+                    if run.rate_model.variables[variable].type == "numeric"
+                    else run.rate_model.variables[variable].type
+                ),
+                "offset": 0,
+                "total": len(new_rows),
+            }
+            if variable
+            else None
+        ),
         "changed": changed,
         "project": project.to_dict(),
         "result": result_for(project, frame, run),
         "rows": ae_detail(project, run, part, variable, before) if variable else [],
         "note": note,
+        "before_base_rate": before.base_rate,
+        "after_base_rate": run.rate_model.base_rate,
         "before_expected": previous,
         "after_expected": after,
         "fitted_expected": fitted,

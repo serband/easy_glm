@@ -54,6 +54,29 @@ def fit_result(
     return result_for(project, frame, run, [str(w.message) for w in caught])
 
 
+def table_payload(rate_model: Any, variable: str, frame: Any) -> dict[str, Any]:
+    """Keep canonical row order and expose interaction parent labels explicitly."""
+    from easy_glm.engine.models import level_label
+
+    rows = frame.to_dicts()
+    cfg = rate_model.variables[variable]
+    if cfg.type == "interaction":
+        a, b = cfg.parents
+        labels = [
+            {
+                (r.from_, r.to_): level_label(
+                    r, rate_model.variables[parent].other_label
+                )
+                for r in rate_model.variables[parent].table
+            }
+            for parent in (a, b)
+        ]
+        for row, cell in zip(rows, cfg.table, strict=True):
+            row["label_a"] = labels[0][(cell.from_a, cell.to_a)]
+            row["label_b"] = labels[1][(cell.from_b, cell.to_b)]
+    return {"columns": list(rows[0]) if rows else frame.columns, "rows": rows}
+
+
 def result_for(
     project: Any, frame: Any, run: Any, notices: list[str] | None = None
 ) -> dict[str, Any]:
@@ -88,7 +111,7 @@ def result_for(
             run.metrics[subset]["gini"] = safe_gini(actual, expected, weight)
             charts[subset] = lift_table(actual, expected, weight).to_dicts()
     tables = {
-        key: {"columns": table.columns, "rows": table.to_dicts()}
+        key: table_payload(run.rate_model, key, table)
         for key, table in rate_model_tables(run.rate_model).items()
     }
     return json_safe(

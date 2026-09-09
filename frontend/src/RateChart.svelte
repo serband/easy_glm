@@ -2,7 +2,10 @@
     import { rateChartData } from './rateChartData.js';
     export let table,
         variable,
-        label = 'relativity';
+        label = 'relativity',
+        fittedLabel = 'Fitted',
+        currentLabel = 'Current',
+        preview = false;
     let cellView = 'relativity';
     $: plot = rateChartData(table);
     $: rowNames = [...new Set((table?.rows || []).map((r) => r.label_a))];
@@ -31,8 +34,8 @@
     {#if plot.interaction}
         <label
             >Cell values<select aria-label="Interaction chart values" bind:value={cellView}
-                ><option value="relativity">Current relativity</option><option value="fitted"
-                    >Fitted relativity</option
+                ><option value="relativity">{currentLabel} relativity</option><option value="fitted"
+                    >{fittedLabel} relativity</option
                 ><option value="exposure">Exposure</option></select
             ></label
         >
@@ -48,7 +51,7 @@
                                     (r) => r.label_a === name && r.label_b === other,
                                 )}<td
                                     style:background={color(cell)}
-                                    title={`Fitted ${num(cell?.fitted)}; current ${num(cell?.relativity)}; exposure ${num(cell?.exposure)}`}
+                                    title={`${fittedLabel} ${num(cell?.fitted)}; ${currentLabel} ${num(cell?.relativity)}; exposure ${num(cell?.exposure)}`}
                                     >{cell?.exposure ? num(cell[cellView]) : '—'}</td
                                 >{/each}</tr
                         >{/each}</tbody
@@ -64,15 +67,17 @@
                 style:min-width={plot.numeric ? '0' : Math.max(500, plot.points.length * 44) + 'px'}
             >
                 <div class="chart-legend">
-                    <span style:color={'#737e9b'}>● Fitted</span><span style:color={'#287762'}
-                        >● Current</span
+                    <span style:color={'#737e9b'}>● {fittedLabel}</span><span
+                        style:color={'#287762'}>● {currentLabel}</span
                     >
                 </div>
                 <svg
                     class="relativity-chart"
                     viewBox={plot.numeric ? '0 0 740 240' : '0 0 740 310'}
                     role="img"
-                    aria-label={'Fitted and current relativities for ' + variable}
+                    aria-label={(preview
+                        ? 'Current and proposed relativities for '
+                        : 'Fitted and current relativities for ') + variable}
                 >
                     <title>Canonical fitted and current {label} by band or level</title>
                     {#each [0, 0.5, 1] as tick}<line
