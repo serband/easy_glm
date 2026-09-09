@@ -36,6 +36,18 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await expect(
         page.getByRole('img', { name: 'Actual fitted and adjusted by variable', exact: true }),
     ).toBeVisible();
+    await page.setViewportSize({ width: 884, height: 773 });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const grid = await page.locator('.rate-grid').boundingBox();
+    expect(grid.y).toBeLessThan(500);
+    expect(grid.y + Math.min(grid.height, 100)).toBeLessThan(773);
+    await expect(
+        page.getByRole('img', { name: /^Fitted and current relativities for/ }),
+    ).toBeVisible();
+    await expect(page.getByRole('img', { name: /^Exposure for/ })).toBeVisible();
+    await expect(button('View rate tables')).toHaveCount(0);
+    await expect(button('Show variable A/E')).toHaveCount(0);
+    await page.screenshot({ path: '/tmp/easyglm-rate-layout-884.png', fullPage: true });
     await page.getByLabel('Relativity row 2', { exact: true }).fill('2.1');
     await page.getByLabel('Relativity row 2', { exact: true }).press('Tab');
     await button('Preview row edits (1)').click();

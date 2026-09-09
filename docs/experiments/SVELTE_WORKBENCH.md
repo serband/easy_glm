@@ -331,3 +331,14 @@ when a random identity began with a dash; passing it as one option/value argumen
 fixed it, and both launcher regression checks passed. A fresh browser tab now
 recognises existing fits immediately. Adding a previously unassigned factor also
 updates the clean Variables view, while an existing draft remains intact.
+
+Rate-table layout review: the editable grid now appears directly after variable
+selection, before adjustment controls and A/E. At 884 × 773 the first bands and
+row-preview action are visible without scrolling. A separate fitted/current
+relativity chart uses canonical row values, log slopes for linear bands, and
+flat clamp bands; interaction tables use labelled cells. Training exposure is
+shown under the relativity chart and selected-subset exposure under A/E. Charts
+cover the displayed table page. Default columns omit redundant boundary fields;
+All columns reveals them. Existing row preview/apply/undo semantics are unchanged.
+Navigation actions omit the current page, and selecting a diagnostic variable
+refreshes A/E without an additional redundant button.

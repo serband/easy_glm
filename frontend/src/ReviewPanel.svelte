@@ -21,8 +21,8 @@
         searchKind = '',
         error = '',
         note = '';
-    let busy = false,
-        taskId = '',
+    export let busy = false;
+    let taskId = '',
         preview = null,
         loadedKey = '',
         destroyed = false;
@@ -101,6 +101,9 @@
         if (destroyed || key !== startedKey) return;
         const v = view === 'tables' ? variable : diagnosticVariable;
         if (v) await run('variable', { variable: v });
+    }
+    export function previewRowEdits() {
+        return run('edit', { edits });
     }
     async function run(action, extra = {}) {
         if (busy || destroyed) return;
@@ -220,9 +223,7 @@
     aria-label={view === 'tables' ? 'Table adjustments' : 'Detailed diagnostics'}
 >
     <h2>
-        {view === 'tables'
-            ? 'Adjustments & actual versus expected'
-            : 'Diagnostics by variable & residual searches'}
+        {view === 'tables' ? 'Adjustments & actual versus expected' : 'Actual versus expected'}
     </h2>
     {#if error}<div class="message error" role="alert">{error}</div>{/if}
     {#if view === 'diagnostics'}
@@ -236,7 +237,6 @@
                     >{#each info.variables as v}<option value={v}>{v}</option>{/each}</select
                 ></label
             >
-            <button disabled={busy} onclick={() => run('variable')}>Show variable A/E</button>
         </div>
         <details>
             <summary>Two-variable A/E and missing terms</summary>
@@ -311,19 +311,11 @@
         </details>
     {:else}
         <p class="help-text">
-            Edit individual relativities in the table below, then preview. The original fitted model
+            Edit individual relativities in the table above, then preview. The original fitted model
             stays fixed. Charts compare actual experience, the original fit and current or proposed
             adjusted predictions.
         </p>
         <div class="results-toolbar">
-            <button
-                disabled={busy || !Object.keys(edits).length}
-                onclick={() => run('edit', { edits })}
-                >Preview row edits ({Object.keys(edits).length})</button
-            >
-            <button disabled={busy || !Object.keys(edits).length} onclick={onClear}
-                >Discard row edits</button
-            >
             <button disabled={busy || !info.undo} onclick={() => run('undo')}>Preview undo</button
             ><button disabled={busy || !info.redo} onclick={() => run('redo')}>Preview redo</button>
             <button disabled={busy} onclick={() => run('rebalance')}
@@ -532,6 +524,35 @@
                             y="220"
                             text-anchor="middle">{String(row.label).slice(0, 16)}</text
                         >{/if}{/each}</svg
+            >{/if}
+        {#if !pairRows}<div class="exposure-caption">
+                Exposure by band / level · largest {num(
+                    Math.max(0, ...chartRows.map((r) => r.exposure)),
+                )}
+            </div>
+            <svg
+                class="exposure-chart"
+                viewBox="0 0 1000 95"
+                role="img"
+                aria-label="Exposure by variable band"
+                ><title>Exposure aligned with actual and expected rates</title><line
+                    x1="50"
+                    x2="950"
+                    y1="80"
+                    y2="80"
+                    stroke="#d8e2dc"
+                />{#each chartRows as row, i}<rect
+                        x={50 +
+                            (i * 900) / Math.max(1, chartRows.length - 1) -
+                            Math.min(12, 350 / Math.max(1, chartRows.length)) / 2}
+                        y={80 -
+                            (row.exposure / Math.max(1, ...chartRows.map((r) => r.exposure))) * 65}
+                        width={Math.min(12, 350 / Math.max(1, chartRows.length))}
+                        height={(row.exposure / Math.max(1, ...chartRows.map((r) => r.exposure))) *
+                            65}
+                        fill="#91afa1"
+                        ><title>{row.label}: exposure {num(row.exposure)}</title></rect
+                    >{/each}</svg
             >{/if}
         <details>
             <summary>A/E values and exposure</summary>
