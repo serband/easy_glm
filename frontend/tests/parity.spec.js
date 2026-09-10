@@ -32,15 +32,27 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
         page.getByRole('heading', { name: 'Region · Holdout', exact: true }),
     ).toBeVisible();
     await expect(page.getByLabel('Diagnostic bins')).toHaveCount(0);
-    const exposureX = await page
-        .locator('.diagnostic-plot')
-        .first()
-        .locator('svg')
-        .nth(1)
-        .locator('rect')
-        .evaluateAll((rects) => rects.map((rect) => Number(rect.getAttribute('x'))));
+    const variablePlot = page.locator('.diagnostic-plot').first();
+    await expect(variablePlot.locator('svg')).toHaveCount(1);
+    const exposureX = await variablePlot
+        .locator('.exposure-bar')
+        .evaluateAll((rects) =>
+            rects.map(
+                (rect) => Number(rect.getAttribute('x')) + Number(rect.getAttribute('width')) / 2,
+            ),
+        );
     expect(exposureX.length).toBe(4);
-    expect(exposureX.at(-1) - exposureX[0]).toBeCloseTo(650);
+    const rateX = await variablePlot
+        .locator('.diagnostic-series-bar')
+        .evaluateAll((rects) =>
+            rects.map(
+                (rect) => Number(rect.getAttribute('x')) + Number(rect.getAttribute('width')) / 2,
+            ),
+        );
+    for (let i = 0; i < exposureX.length; i++) {
+        const group = rateX.filter((_, j) => j % exposureX.length === i);
+        expect(group.reduce((sum, x) => sum + x, 0) / group.length).toBeCloseTo(exposureX[i]);
+    }
     await tab('A/E by pair').click();
     await expect(button('Show pair A/E')).toHaveCount(0);
     await page.getByLabel('Pair first variable').selectOption('DriverAge');

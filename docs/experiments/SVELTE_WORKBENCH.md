@@ -805,3 +805,18 @@ The guarded live restart preserved the fit artifact and raw data byte for byte,
 all eight rate tables and both Undo steps. A fresh browser verified the original
 fit state, empty adjustment selector, exact fitted values and no browser errors.
 The explicit-Apply and delayed-response browser regressions also passed.
+
+
+### Exposure on the A/E chart (10 September 2026)
+
+A/E charts now draw exposure as pale background bars on a labelled right axis,
+sharing the groups used by the actual and expected series. This replaces the
+separate exposure plot for training, holdout and all-row views in Diagnostics
+and Rate tables. Numeric series remain lines and categorical series remain bars.
+Charts without exposure retain their existing presentation. This is a display
+change; fitting, scoring, adjustments and cached diagnostic values are unchanged.
+
+Validation: Svelte check/build and the existing two-model browser workflow passed.
+Live 919-pixel screenshots checked training, holdout and categorical A/E plots;
+right-axis labels fit within the chart and exposure bars align with rate groups.
+The live project, fit and Undo state were identical before and after the change.
