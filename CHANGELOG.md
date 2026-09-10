@@ -2,15 +2,20 @@
 
 This is the user-facing record of useful new features and fixes.
 
-## Unreleased
+## 0.461 — 10 September 2026
 
 - **Check predictors before fitting.** The Variables page can flag possible
   target leakage, highly related predictors and mostly missing columns. Defaults
   are 70% missing, 0.95 pair association and 0.9 target association; all are
-  adjustable. Checks use a bounded training sample and can be cancelled.
+  adjustable. Checks use up to 10,000 training rows by default, without fitting
+  a model for each predictor, and can be cancelled. Strong association is a
+  prompt for review, not proof of leakage.
 - **Review removals together.** Select flagged predictors, review the changes,
   then Apply. The table and Role JSON stay in sync; dependent model terms and
   saved adjustments are cleaned up. Source data columns are kept.
+- **Results follow your settings.** Editing roles, names, types or thresholds
+  clears the old screening results, so removals always relate to the current
+  setup. Scanning and selecting flags never apply changes automatically.
 
 ## 0.460 — 10 September 2026
 

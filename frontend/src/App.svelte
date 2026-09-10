@@ -603,7 +603,7 @@
         </div>
         <div class="rail-bottom">
             <span class="status-dot"></span> Local session
-            <div class="version">EasyGLM 0.460</div>
+            <div class="version">EasyGLM 0.461</div>
         </div>
     </aside>
     <div class="workspace">

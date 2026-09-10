@@ -42,6 +42,9 @@ easy_glm.launch_workbench(data=df)
 
 The workbench opens with `df` loaded. Choose the target, weight and predictors
 on the **Variables** page, then define and fit the model on the **Model** page.
+Before fitting, **Check predictors** flags possible target leakage, highly related
+predictors and mostly missing columns using a training sample. Choose removals,
+review them, then **Apply** to update the table, Role JSON and model selections.
 `launch_workbench()` prints the exact URL to open (for example,
 `http://127.0.0.1:8501`).
 
