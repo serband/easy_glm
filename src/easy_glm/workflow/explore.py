@@ -27,11 +27,19 @@ def _rate(
     """Expression for the target rate of a group (see ``ModelConfig``)."""
     if target is None:
         return pl.lit(None, dtype=pl.Float64)
+    observed = pl.col(target).cast(pl.Float64)
+    valid = observed.is_finite().fill_null(False)
     if weight is None:
-        return pl.col(target).mean()
-    if divide:
-        return pl.col(target).sum() / pl.col(weight).sum()
-    return (pl.col(target) * pl.col(weight)).sum() / pl.col(weight).sum()
+        return observed.filter(valid).mean()
+    exposure = pl.col(weight).cast(pl.Float64)
+    valid = valid & exposure.is_finite().fill_null(False)
+    denominator = exposure.filter(valid).sum()
+    numerator = (observed if divide else observed * exposure).filter(valid).sum()
+    return (
+        pl.when((valid.sum() > 0) & (denominator > 0))
+        .then(numerator / denominator)
+        .otherwise(pl.lit(None, dtype=pl.Float64))
+    )
 
 
 def band_labels(knots: list[float]) -> list[str]:
@@ -70,12 +78,16 @@ def univariate(
 ) -> dict[str, Any]:
     """Exposure and target rate by band/level for one variable.
 
+    Missing/non-finite outcomes are excluded from rates, not exposure totals.
     Returns ``{"variable", "kind", "n", "null_share", "n_unique", "table"}``
     where ``table`` has ``label``, ``exposure``, ``share``, ``rate``, ``order``.
     """
     s = df[variable]
     numeric = s.dtype in NUMERIC_DTYPES
-    w = pl.col(weight).sum() if weight else pl.len().cast(pl.Float64)
+    if numeric and s.dtype.is_float():
+        df = df.with_columns(pl.col(variable).fill_nan(None))
+        s = df[variable]
+    w = pl.col(weight).cast(pl.Float64).sum() if weight else pl.len().cast(pl.Float64)
     if numeric:
         ks = knots or quantile_knots(s, n_bins)
         if ks:
@@ -111,7 +123,7 @@ def univariate(
                 _rate(df, target, weight, divide_target_by_weight).alias("rate"),
             )
             .rename({"__lvl__": "label"})
-            .sort("exposure", descending=True)
+            .sort(["exposure", "label"], descending=[True, False], nulls_last=True)
         )
         if table.height > max_levels:
             top = table.head(max_levels)
@@ -119,9 +131,12 @@ def univariate(
             other_rate = None
             if target is not None:
                 rest_levels = rest["label"].to_list()
-                rest_rows = lv.filter(
-                    pl.col("__lvl__").is_in(rest_levels) | pl.col("__lvl__").is_null()
+                in_rest = pl.col("__lvl__").is_in(
+                    [level for level in rest_levels if level is not None]
                 )
+                if None in rest_levels:
+                    in_rest = in_rest | pl.col("__lvl__").is_null()
+                rest_rows = lv.filter(in_rest)
                 other_rate = rest_rows.select(
                     _rate(df, target, weight, divide_target_by_weight)
                 ).item()

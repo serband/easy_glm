@@ -9,21 +9,32 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import shutil
 import threading
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import polars as pl
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from easy_glm.desktop.exploration import ExplorationCache
 from easy_glm.desktop.exports import ExportRequest, export_attachment
 from easy_glm.desktop.jobs import FitJobs, model_key
-from easy_glm.desktop.loading import OpenProject, load_project_input
+from easy_glm.desktop.loading import (
+    MAX_UPLOAD_BYTES,
+    OpenProject,
+    SourceType,
+    load_example_input,
+    load_project_input,
+    new_input_folder,
+    upload_basename,
+)
 from easy_glm.desktop.modeling import (
     ModelEdit,
     Revision,
@@ -66,6 +77,7 @@ def create_app(
     if restore_folder is not None:
         jobs.restore(project, raw, restore_folder)
     reviews = ReviewJobs()
+    exploration = ExplorationCache()
     undo_steps = {}
     redo_steps = {}
     if restore_folder is not None and (restore_folder / "history.json").exists():
@@ -172,18 +184,20 @@ def create_app(
                     headers={"Cache-Control": "no-store"},
                 )
         if request.method == "POST":
-            if (
-                request.headers.get("content-type", "").split(";")[0]
-                != "application/json"
-            ):
-                return JSONResponse({"detail": "JSON is required."}, 415)
-            # Bound the actual stream, not just the optional Content-Length header.
-            body = bytearray()
-            async for chunk in request.stream():
-                body.extend(chunk)
-                if len(body) > 8_000_000:
-                    return JSONResponse({"detail": "Variable draft exceeds 8 MB."}, 413)
-            request._body = bytes(body)
+            upload = request.url.path == "/api/project/upload"
+            required_type = "application/octet-stream" if upload else "application/json"
+            if request.headers.get("content-type", "").split(";")[0] != required_type:
+                return JSONResponse({"detail": f"{required_type} is required."}, 415)
+            if not upload:
+                # Uploads are bounded and streamed to disk by their own endpoint.
+                body = bytearray()
+                async for chunk in request.stream():
+                    body.extend(chunk)
+                    if len(body) > 8_000_000:
+                        return JSONResponse(
+                            {"detail": "Variable draft exceeds 8 MB."}, 413
+                        )
+                request._body = bytes(body)
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -271,19 +285,15 @@ def create_app(
                 "Applied settings changed. Reconnect and review the current settings before saving or fitting.",
             )
 
-    @app.post("/api/project/open")
-    def open_project(edit: OpenProject) -> dict[str, Any]:
-        nonlocal current, raw, revision, session_id, project_id, token, jobs, reviews
-        with lock:
-            check_revision(edit)
-        try:
-            loaded, loaded_raw = load_project_input(edit.kind, edit.path)
-        except Exception as exc:  # Invalid inputs leave the current session intact.
-            raise HTTPException(422, f"Could not open this file: {exc}") from exc
+    def replace_project(
+        edit: Revision, loaded: Project, loaded_raw: pl.DataFrame
+    ) -> tuple[dict[str, Any], FitJobs, ReviewJobs]:
+        nonlocal current, raw, revision, session_id, project_id, token, jobs, reviews, exploration
         with lock:
             check_revision(edit)
             previous_jobs, previous_reviews = jobs, reviews
             jobs, reviews = FitJobs(), ReviewJobs()
+            exploration = ExplorationCache()
             jobs.on_complete = complete_fit
             current, raw = loaded, loaded_raw
             revision = 0
@@ -293,9 +303,85 @@ def create_app(
             undo_steps.clear()
             redo_steps.clear()
             result = snapshot()
+        return result, previous_jobs, previous_reviews
+
+    @app.post("/api/project/open")
+    def open_project(edit: OpenProject) -> dict[str, Any]:
+        with lock:
+            check_revision(edit)
+        folder = None
+        committed = False
+        try:
+            if edit.kind == "example":
+                folder = new_input_folder()
+                loaded, loaded_raw = load_example_input(str(edit.example), folder)
+            else:
+                loaded, loaded_raw = load_project_input(
+                    edit.kind, str(edit.path), edit.source_type
+                )
+            result, previous_jobs, previous_reviews = replace_project(
+                edit, loaded, loaded_raw
+            )
+            committed = True
+        except HTTPException:
+            raise
+        except Exception as exc:  # Invalid inputs leave the current session intact.
+            label = "example" if edit.kind == "example" else "file"
+            raise HTTPException(422, f"Could not open this {label}: {exc}") from exc
+        finally:
+            if folder is not None and not committed:
+                shutil.rmtree(folder, ignore_errors=True)
         # A finishing worker may acquire the project lock; never join it inside.
         previous_reviews.close()
         previous_jobs.close()
+        return result
+
+    @app.post("/api/project/upload")
+    async def upload_project(
+        request: Request,
+        kind: Literal["data", "project"],
+        filename: str = Query(min_length=1, max_length=255),
+        session_id: str = Query(min_length=1),
+        revision: int = Query(ge=0),
+        source_type: SourceType = "auto",
+    ) -> dict[str, Any]:
+        edit = Revision(session_id=session_id, revision=revision)
+        with lock:
+            check_revision(edit)
+        length = request.headers.get("content-length", "")
+        if length.isdigit() and int(length) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "The upload exceeds 512 MiB.")
+        folder = None
+        committed = False
+        try:
+            name = upload_basename(filename)
+            folder = new_input_folder()
+            source = folder / name
+            received = 0
+            with source.open("xb") as destination:
+                async for chunk in request.stream():
+                    received += len(chunk)
+                    if received > MAX_UPLOAD_BYTES:
+                        raise HTTPException(413, "The upload exceeds 512 MiB.")
+                    await run_in_threadpool(destination.write, chunk)
+            if received == 0:
+                raise ValueError("Choose a non-empty file.")
+            loaded, loaded_raw = await run_in_threadpool(
+                load_project_input, kind, source, source_type, uploaded=True
+            )
+            result, previous_jobs, previous_reviews = await run_in_threadpool(
+                replace_project, edit, loaded, loaded_raw
+            )
+            committed = True
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(422, f"Could not open this upload: {exc}") from exc
+        finally:
+            if folder is not None and not committed:
+                await run_in_threadpool(shutil.rmtree, folder, ignore_errors=True)
+        await run_in_threadpool(previous_reviews.close)
+        await run_in_threadpool(previous_jobs.close)
         return result
 
     @app.get("/api/workbench")
@@ -720,6 +806,29 @@ def create_app(
     def export_project() -> dict[str, Any]:
         with lock:
             return current.to_dict()
+
+    @app.get("/api/explore")
+    def explore(
+        column: str | None = None,
+        model: str | None = None,
+        n_bins: int = Query(default=20, ge=5, le=50),
+    ) -> dict[str, Any]:
+        with lock:
+            saved, saved_raw = deepcopy(current), raw.clone()
+            generation = session_id, project_id, revision
+            cache = exploration
+        try:
+            result = cache.view(
+                saved, saved_raw, generation, column=column, model=model, n_bins=n_bins
+            )
+        except (ValueError, TypeError, KeyError, pl.exceptions.PolarsError) as exc:
+            raise HTTPException(422, f"Cannot explore these data: {exc}") from exc
+        with lock:
+            if generation != (session_id, project_id, revision):
+                raise HTTPException(
+                    409, "Applied settings changed. Refresh this chart."
+                )
+        return result
 
     @app.get("/api/plot")
     def plot(column: str) -> dict[str, Any]:

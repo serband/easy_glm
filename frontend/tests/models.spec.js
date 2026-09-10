@@ -15,9 +15,16 @@ test('Variables → split/model → background fit → diagnostics → rate tabl
     await expect(page.getByRole('button', { name: 'Fit model', exact: true })).toBeDisabled();
     if (!(await page.locator('.split-settings').evaluate((el) => el.open)))
         await page.locator('.split-settings > summary').click();
+    await page.getByLabel('Split method', { exact: true }).selectOption('column');
+    await expect(page.locator('.split-settings')).toHaveAttribute('open', '');
     await page.getByLabel('Split method', { exact: true }).selectOption('random');
+    await page.getByLabel('Training fraction', { exact: true }).fill('0.75');
+    await page.getByLabel('Split seed', { exact: true }).fill('43');
+    await expect(page.locator('.split-settings')).toHaveAttribute('open', '');
+    await expect(page.getByRole('button', { name: 'Apply split', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Apply split', exact: true }).click();
     await expect(page.getByText('Split applied.', { exact: true })).toBeVisible();
+    await expect(page.locator('.split-settings')).toHaveAttribute('open', '');
     await page.getByLabel('Design kind for DriverAge', { exact: true }).selectOption('continuous');
     await page
         .getByLabel('Design kind for VehicleAge', { exact: true })

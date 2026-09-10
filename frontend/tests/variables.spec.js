@@ -10,7 +10,7 @@ test('bidirectional roles, name/type preservation, invalid reset and explicit ap
     await page.goto('/');
     await expect(page.getByLabel('Role for DriverAge', { exact: true })).toHaveValue('predictor');
     await page.getByRole('button', { name: 'Explore', exact: true }).click();
-    await expect(page.getByRole('img', { name: /Distribution of/ }).first()).toBeVisible();
+    await expect(page.getByRole('img', { name: /One-way effects of/ }).first()).toBeVisible();
     await page.getByRole('button', { name: /^Variables/ }).click();
     const base = requests.length;
     await page.getByLabel('Name for DriverAge', { exact: true }).fill('Age');
@@ -52,10 +52,14 @@ test('bidirectional roles, name/type preservation, invalid reset and explicit ap
     await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await page.getByLabel('Plot variable', { exact: true }).selectOption('Region');
     await expect(
-        page.getByRole('img', { name: 'Distribution of Region', exact: true }),
+        page.getByRole('img', { name: 'One-way effects of Region', exact: true }),
     ).toBeVisible();
-    await page.getByLabel('Chart zoom', { exact: true }).fill('200');
-    await expect(page.locator('.chart')).toHaveAttribute('style', /200%/);
+    await page.getByLabel('Plot variable', { exact: true }).selectOption('VehicleAge');
+    await page.getByLabel('Bands', { exact: true }).fill('10');
+    await expect(page.getByLabel('Bands', { exact: true })).toHaveValue('10');
+    await expect(
+        page.getByRole('img', { name: 'One-way effects of VehicleAge', exact: true }),
+    ).toBeVisible();
     await page.screenshot({ path: 'test-results/variables.png', fullPage: true });
     expect(errors).toEqual([]);
     expect(requests.every((url) => url.startsWith('http://127.0.0.1:8770/'))).toBeTruthy();
@@ -105,7 +109,12 @@ test('workflow pages keep a Variables draft and expose honest project/export sco
     await page.getByLabel('Name for Claims', { exact: true }).press('Tab');
     for (const name of ['Project & data', 'Explore', 'Export']) {
         await page.getByRole('button', { name, exact: true }).click();
-        await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
+        await expect(
+            page.getByRole('heading', {
+                name: name === 'Explore' ? 'One-way effects' : name,
+                exact: true,
+            }),
+        ).toBeVisible();
     }
     await expect(
         page.getByRole('button', { name: 'Download project JSON', exact: true }),

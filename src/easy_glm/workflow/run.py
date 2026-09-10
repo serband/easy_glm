@@ -536,7 +536,9 @@ def null_model_predict(
         l1_ratio=1.0,
         scale_predictors=False,
         fit_intercept=False,
-        gradient_tol=1e-10,
+        # Tighter tolerances can stall at floating-point line-search precision
+        # on cost targets; weighted logit/Tweedie oracle tests cover this tolerance.
+        gradient_tol=1e-8,
     ).fit(
         np.ones((train.height, 1), dtype=np.float64),
         np.asarray(y, dtype=np.float64),

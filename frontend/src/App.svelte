@@ -3,6 +3,7 @@
     import ModelWorkbench from './ModelWorkbench.svelte';
     import ExportPanel from './ExportPanel.svelte';
     import ProjectOpen from './ProjectOpen.svelte';
+    import ExplorePanel from './ExplorePanel.svelte';
     let comparison = '',
         modelContext = { fitted: [], selected: '', champion: null };
     let view = 'variables',
@@ -50,12 +51,7 @@
         busy = false,
         preview = null,
         scrollTop = 0;
-    let selected = '',
-        plot = null,
-        plotError = '',
-        hover = null,
-        zoom = 100;
-    let plotSequence = 0;
+    let exploreRequest = { name: '', id: 0 };
     let previewScroll = 0;
     $: previewStart = Math.max(0, Math.floor(previewScroll / 34) - 3);
     const single = ['target', 'weight', 'exposure', 'offset', 'current_premium', 'split'];
@@ -86,7 +82,6 @@
         : [];
     $: start = Math.max(0, Math.floor(scrollTop / 38) - 5);
     $: visible = filtered.slice(start, start + 28);
-    $: maxCount = plot ? Math.max(1, ...plot.table.map((r) => r.exposure)) : 1;
     $: counts =
         state && draft
             ? roles.map((role) => ({
@@ -198,7 +193,11 @@
             response = await send(path, body);
             data = !asFile || !response.ok ? await response.json() : null;
         }
-        if (!response.ok) throw responseError(data, 'The request failed. Your draft is kept.');
+        if (!response.ok) {
+            const failure = responseError(data, 'The request failed. Your draft is kept.');
+            failure.status = response.status;
+            throw failure;
+        }
         if (asFile) {
             const disposition = response.headers.get('content-disposition') || '';
             const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
@@ -210,6 +209,57 @@
         }
         return data;
     }
+    async function uploadProject(file, body) {
+        if (differentProject)
+            throw new Error(
+                'This address serves a different project. Download your kept draft before discarding and reloading.',
+            );
+        if (!token) await bootstrap();
+        const requestToken = token;
+        const query = new URLSearchParams({ ...body, filename: file.name });
+        const sendUpload = () =>
+            fetch('/api/project/upload?' + query, {
+                method: 'POST',
+                cache: 'no-store',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/octet-stream', 'X-EasyGLM-Token': token },
+                body: file,
+            });
+        let response;
+        try {
+            response = await sendUpload();
+        } catch {
+            throw new Error(
+                'Cannot reach the local server. Reconnect before opening the file again.',
+            );
+        }
+        let data = await response.json();
+        if (response.status === 401 && data.code === 'session_expired') {
+            if (requestToken === token) await bootstrap();
+            await reconcile();
+            if (body.session_id !== serverSession)
+                throw new Error('The server reconnected. Click Open again to confirm this file.');
+            response = await sendUpload();
+            data = await response.json();
+        }
+        if (!response.ok) {
+            const failure = responseError(data, 'Cannot open this file.');
+            failure.status = response.status;
+            throw failure;
+        }
+        return data;
+    }
+    function projectName(name) {
+        return name === 'French motor · Svelte review'
+            ? 'Motor insurance example'
+            : name || 'Untitled project';
+    }
+    function sourceFilename(info) {
+        return info?.data?.source?.path?.split(/[\\/]/).pop() || 'Data in this session';
+    }
+    function countLabel(value, singular) {
+        return `${value.toLocaleString()} ${singular}${value === 1 ? '' : 's'}`;
+    }
     async function reconnect() {
         busy = true;
         try {
@@ -218,7 +268,6 @@
             if (!state) await reload();
             else {
                 error = '';
-                void loadPlot();
             }
         } catch (e) {
             error = e.message;
@@ -355,9 +404,6 @@
             differentProject = false;
             reset();
             notice = '';
-            if (!state.columns.some((c) => c.name === selected))
-                selected = state.setup.roles.predictor[0] || state.columns[0]?.name;
-            void loadPlot();
             if (!state.columns.length) await navigate('project');
         } catch (e) {
             error = e.message;
@@ -365,12 +411,51 @@
             busy = false;
         }
     }
-    async function projectOpened() {
+    async function reconnectForOpen() {
+        await bootstrap();
+        await reconcile(true);
+    }
+    async function projectOpened(opened, kind = 'data') {
+        // The POST already replaced the server project. Adopt its confirmed snapshot
+        // before any fallible refresh, so old drafts can never masquerade as new data.
+        state = opened;
+        differentProject = false;
+        reset();
+        notice = '';
+        tab = 'table';
+        query = '';
+        roleFilter = 'all';
+        scrollTop = 0;
+        previewScroll = 0;
         comparison = '';
         modelContext = { fitted: [], selected: '', champion: null };
         resultsReady = false;
-        await reload();
-        await navigate('variables');
+        projectInfo = null;
+        projectError = '';
+        exploreRequest = { name: '', id: 0 };
+        token = '';
+        serverSession = opened.session_id;
+        view = 'variables';
+        busy = true;
+        try {
+            await bootstrap();
+            const response = await send('variables');
+            const fresh = await response.json();
+            if (!response.ok) throw responseError(fresh, 'Cannot refresh the connection.');
+            if (fresh.project_id !== opened.project_id) {
+                differentProject = true;
+                throw new Error('Another project has since been opened at this address.');
+            }
+            state = fresh;
+            reset();
+            notice = '';
+            await navigate(kind === 'example' && state.models.length ? 'model' : 'variables');
+        } catch (e) {
+            error = 'Data loaded. Reconnect to continue. ' + e.message;
+            throw new Error(error);
+        } finally {
+            busy = false;
+        }
     }
     async function review() {
         if (tab === 'json' && !parseRoles()) return;
@@ -402,26 +487,10 @@
             jsonText = roleJson();
             preview = null;
             notice = 'Settings applied to this session.';
-            void loadPlot();
         } catch (e) {
             error = e.message;
         } finally {
             busy = false;
-        }
-    }
-    async function loadPlot() {
-        if (!selected) return;
-        const sequence = ++plotSequence;
-        plotError = '';
-        hover = null;
-        try {
-            const result = await api('plot?column=' + encodeURIComponent(selected));
-            if (sequence === plotSequence) plot = result;
-        } catch (e) {
-            if (sequence === plotSequence) {
-                plotError = e.message;
-                plot = null;
-            }
         }
     }
     function saveDownload(blob, filename) {
@@ -452,6 +521,8 @@
     onMount(async () => {
         try {
             await reload();
+            const initialView = new URLSearchParams(window.location.search).get('view');
+            if (Object.hasOwn(pageTitles, initialView)) await navigate(initialView);
         } catch (e) {
             error = e.message;
         }
@@ -465,7 +536,7 @@
             <span class="brand-icon">e</span><span>easy<span class="light">glm</span></span>
         </div>
         <div class="workspace-label">LOCAL WORKSPACE</div>
-        <div class="portfolio">{state?.name || 'Opening portfolio…'}</div>
+        <div class="portfolio">{state ? projectName(state.name) : 'Opening portfolio…'}</div>
         <nav aria-label="Workbench">
             <div class="nav-label">WORKFLOW</div>
             {#each Object.entries(pageTitles) as [key, title]}
@@ -522,7 +593,10 @@
                     <div>
                         <div class="eyebrow">PORTFOLIO SETUP</div>
                         <h1>Variables</h1>
-                        <p>Roles, names and types</p>
+                        <p>
+                            Choose the target and predictors. Numeric values measure an amount;
+                            categorical values identify a group.
+                        </p>
                     </div>
                     <div class="dataset-meta">
                         <strong>{state?.row_count.toLocaleString() || '—'}</strong> rows<span
@@ -600,7 +674,7 @@
                                 <div class="table-head grid-row">
                                     <span>SOURCE COLUMN</span><span>DISPLAY NAME</span><span
                                         >ROLE</span
-                                    ><span>MODELLING TYPE</span><span>SOURCE TYPE</span>
+                                    ><span>VARIABLE TYPE</span><span>SOURCE TYPE</span>
                                 </div>
                                 <div
                                     class="virtual-table"
@@ -622,11 +696,16 @@
                                                 >
                                                     <button
                                                         class="column-name"
-                                                        title="Show distribution"
+                                                        title="Explore this variable"
                                                         onclick={() => {
-                                                            selected = column.name;
-                                                            loadPlot();
-                                                            view = 'explore';
+                                                            exploreRequest = {
+                                                                name:
+                                                                    state.setup.renames[
+                                                                        column.name
+                                                                    ] || column.name,
+                                                                id: exploreRequest.id + 1,
+                                                            };
+                                                            void navigate('explore');
                                                         }}>{column.name}</button
                                                     ><input
                                                         aria-label={'Name for ' + column.name}
@@ -656,7 +735,12 @@
                                                                 column.name,
                                                                 e.currentTarget.value,
                                                             )}
-                                                        >{#each types as type}<option>{type}</option
+                                                        >{#each types as type}<option value={type}
+                                                                >{type === 'auto'
+                                                                    ? 'Infer from data'
+                                                                    : type === 'numeric'
+                                                                      ? 'Numeric'
+                                                                      : 'Categorical'}</option
                                                             >{/each}</select
                                                     ><span class="dtype">{column.dtype}</span>
                                                 </div>{/each}
@@ -732,146 +816,37 @@
                 <div class="heading">
                     <div>
                         <h1>Project & data</h1>
-                        <p>Open your data or continue a saved project.</p>
+                        <p>Open your own data, continue a saved project or try an example.</p>
                     </div>
                 </div>
                 {#if projectError}<p role="alert">{projectError}</p>{/if}
-                {#if state}<ProjectOpen {api} {state} onOpened={projectOpened} />{/if}
-                {#if state?.columns.length}<div class="model-card">
-                        <h2>{state?.name || 'Current project'}</h2>
-                        <div class="result-totals">
-                            <span><b>{state?.row_count.toLocaleString()}</b> rows</span><span
-                                ><b>{state?.columns.length}</b> source variables</span
-                            ><span><b>{state?.models.length}</b> models</span>
-                        </div>
-                        <p>
-                            Applied settings are held in this local session. Export the project to
-                            keep them.
-                        </p>
-                        <div class="model-actions">
-                            <button class="primary" onclick={() => navigate('variables')}
-                                >Set up variables</button
-                            ><button onclick={() => navigate('model')}>Review model</button>
-                        </div>
-                    </div>
-                    {#if projectInfo}<div class="model-card">
-                            <h2>Applied data setup</h2>
-                            <dl class="project-facts">
-                                <dt>Source</dt>
-                                <dd>
-                                    {projectInfo.data?.source?.path ||
-                                        'Data loaded into the local session'}
-                                </dd>
-                                <dt>Target</dt>
-                                <dd>{state?.setup.assignments.target || 'Not assigned'}</dd>
-                                <dt>Weight</dt>
-                                <dd>{state?.setup.assignments.weight || 'None'}</dd>
-                                <dt>Split</dt>
-                                <dd>
-                                    {projectInfo.data?.split?.mode || 'Not configured'} · {projectInfo
-                                        .data?.split?.column || 'No column'}
-                                </dd>
-                            </dl>
-                            <details>
-                                <summary>Applied project settings</summary>
-                                <pre>{JSON.stringify(projectInfo, null, 2)}</pre>
-                            </details>
-                        </div>{/if}
-                {/if}
-            </section>
-            <section hidden={view !== 'explore'} class="workflow-page">
-                <div class="heading">
-                    <div>
-                        <h1>Explore</h1>
-                        <p>Inspect variable distributions before designing the model.</p>
-                    </div>
-                </div>
-                <p class="help-text">
-                    Distributions use applied settings. Apply any Variables draft before reviewing
-                    its effect.
-                </p>
-                {#if state && draft}
-                    <section class="plot-card">
-                        <div class="plot-heading">
-                            <div>
-                                <div class="eyebrow">DATA PREVIEW</div>
-                                <h2>Variable distribution</h2>
-                            </div>
-                            <select
-                                aria-label="Plot variable"
-                                bind:value={selected}
-                                onchange={loadPlot}
-                                >{#each state.columns as column}<option value={column.name}
-                                        >{draft.renames[column.name] || column.name}</option
-                                    >{/each}</select
-                            >
-                            <div class="spacer"></div>
-                            <label class="zoom"
-                                >Zoom <input
-                                    aria-label="Chart zoom"
-                                    type="range"
-                                    min="100"
-                                    max="300"
-                                    step="25"
-                                    bind:value={zoom}
-                                /></label
-                            >
-                        </div>
-                        {#if plotError}<div class="message error">
-                                <span>{plotError}</span><button onclick={reconnect} disabled={busy}
-                                    >Reconnect</button
-                                >
-                            </div>{:else if plot}<div class="chart-scroll">
-                                <div class="chart" style:width={zoom + '%'}>
-                                    <svg
-                                        viewBox="0 0 1000 180"
-                                        role="img"
-                                        aria-label={'Distribution of ' + plot.column}
-                                        preserveAspectRatio="none"
-                                        ><title>Distribution of {plot.column}</title
-                                        >{#each [0, 1, 2, 3] as line}<line
-                                                x1="0"
-                                                x2="1000"
-                                                y1={15 + line * 45}
-                                                y2={15 + line * 45}
-                                                stroke="#e8eced"
-                                            />{/each}{#each plot.table as row, i}<rect
-                                                role="img"
-                                                aria-label={row.label +
-                                                    ': ' +
-                                                    row.exposure +
-                                                    ' rows'}
-                                                x={(i * 1000) / plot.table.length + 4}
-                                                y={160 - (row.exposure / maxCount) * 140}
-                                                width={Math.max(1, 1000 / plot.table.length - 8)}
-                                                height={(row.exposure / maxCount) * 140}
-                                                rx="3"
-                                                fill={hover === i ? '#194e4b' : '#55a69d'}
-                                                onmouseenter={() => (hover = i)}
-                                                onmouseleave={() => (hover = null)}
-                                                ><title
-                                                    >{row.label}: {row.exposure.toLocaleString()} rows</title
-                                                ></rect
-                                            >{/each}</svg
-                                    >
-                                </div>
-                            </div>
-                            <div class="chart-caption">
-                                <strong
-                                    >{hover !== null
-                                        ? plot.table[hover].label +
-                                          ' · ' +
-                                          plot.table[hover].exposure.toLocaleString() +
-                                          ' rows'
-                                        : plot.column}</strong
-                                ><span
-                                    >{plot.rows.toLocaleString()} rows {plot.sampled
-                                        ? '· first 50,000 source rows before filters'
-                                        : 'after filters'} · applied settings · hover for values</span
-                                >
-                            </div>{:else}<p>Loading distribution…</p>{/if}
+                {#if state?.columns.length}
+                    <section class="loaded-dataset" aria-label="Current dataset">
+                        <strong>Loaded:</strong>
+                        <span class="source-filename" title={projectInfo?.data?.source?.path || ''}>
+                            {sourceFilename(projectInfo)}
+                        </span>
+                        <span>· {countLabel(state.row_count, 'row')}</span>
+                        <span>· {countLabel(state.columns.length, 'column')}</span>
                     </section>
                 {/if}
+                {#if state}<ProjectOpen
+                        {api}
+                        upload={uploadProject}
+                        {state}
+                        onOpened={projectOpened}
+                        onReconnect={reconnectForOpen}
+                    />{/if}
+            </section>
+            <section hidden={view !== 'explore'} class="workflow-page">
+                {#if state && draft}{#key state.project_id}<ExplorePanel
+                            {api}
+                            {state}
+                            active={view === 'explore'}
+                            requestColumn={exploreRequest}
+                            onNavigate={navigate}
+                            onReconnect={reconnectForOpen}
+                        />{/key}{/if}
             </section>
             {#if view === 'export'}<ExportPanel
                     {api}
@@ -894,3 +869,22 @@
         </main>
     </div>
 </div>
+
+<style>
+    .loaded-dataset {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 4px 8px;
+        margin: -8px 0 22px;
+        color: var(--muted);
+        font-size: 14px;
+    }
+    .loaded-dataset strong {
+        color: var(--text);
+    }
+    .source-filename {
+        overflow-wrap: anywhere;
+        min-width: 0;
+    }
+</style>

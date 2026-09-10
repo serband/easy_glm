@@ -42,7 +42,7 @@
         if (!row || !row.exposure) return '#eef2ef';
         const value = row[cellView];
         if (cellView === 'exposure')
-            return `rgba(70,117,100,${0.1 + (0.8 * value) / plot.maxExposure})`;
+            return `color-mix(in srgb, var(--chart-exposure, #c9a16a) ${100 * (0.1 + (0.8 * value) / plot.maxExposure)}%, transparent)`;
         return value >= 1
             ? `rgba(195,91,72,${Math.min(0.8, 0.15 + Math.abs(Math.log(value)))})`
             : `rgba(40,119,98,${Math.min(0.8, 0.15 + Math.abs(Math.log(value)))})`;
@@ -116,7 +116,7 @@
                             x2="705"
                             y1={190 - tick * 150}
                             y2={190 - tick * 150}
-                            stroke="#e1e9e4"
+                            stroke="var(--chart-grid, #e3e5e8)"
                         /><text x="0" y={194 - tick * 150}>{rel(plot.max * tick)}</text>{/each}
                     <line
                         x1="55"
@@ -190,13 +190,16 @@
                         x2="705"
                         y1="72"
                         y2="72"
-                        stroke="#d8e2dc"
+                        stroke="var(--chart-grid, #e3e5e8)"
                     />{#each plot.points as item}<rect
                             x={item.x - 5}
                             y={72 - ((item.row.exposure || 0) / plot.maxExposure) * 60}
                             width="10"
                             height={((item.row.exposure || 0) / plot.maxExposure) * 60}
-                            fill="#91afa1"
+                            fill="var(--chart-exposure, #c9a16a)"
+                            fill-opacity="0.6"
+                            stroke="var(--chart-exposure-edge, #9b733b)"
+                            stroke-width="0.6"
                             ><title>{item.label}: exposure {num(item.row.exposure)}</title></rect
                         >{/each}</svg
                 >
@@ -215,3 +218,9 @@
                 table.rows.length} of {table.total}.
         </p>{/if}
 </section>
+
+<style>
+    .exposure-caption {
+        color: var(--chart-exposure-text, #805a29);
+    }
+</style>

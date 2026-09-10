@@ -11,6 +11,8 @@ Warning! This has been built with AI purely for *myself* as I had built up a sto
 pip install easy_glm
 ```
 
+To upgrade an existing installation, run `pip install --upgrade easy_glm`.
+
 ## Open the workbench
 
 Start the graphical workbench:
@@ -43,11 +45,18 @@ on the **Variables** page, then define and fit the model on the **Model** page.
 `launch_workbench()` prints the exact URL to open (for example,
 `http://127.0.0.1:8501`).
 
-Without a supplied dataframe, **Project & data** opens first. Enter the path to
-a CSV, Parquet or Excel file, or open a saved project JSON.
+Without a supplied dataframe, **Project & data** opens first. Browse for your
+data file, reopen a saved project JSON, or choose an example dataset. CSV,
+Parquet, Excel, Arrow/Feather and SAS (`.sas7bdat`) files are supported, with a
+file-path option for large files. The French motor example models claim frequency with Poisson;
+the Swedish motorcycle example models annual claim cost with Tweedie. Both include
+editable settings; click **Fit model** when ready.
 
-The Svelte workbench is the default from version **0.460**. The previous
-Streamlit interface remains available with `easy-glm-workbench --legacy-streamlit`.
+From **0.460**, Svelte is the default workbench. The launch commands above are
+unchanged; `easy-glm workbench` also opens it. The previous interface remains
+available with `easy-glm-workbench --legacy-streamlit`, or
+`legacy_streamlit=True` from Python. Its advanced preparation, leakage and detailed
+factor-design controls are not yet all available in the new interface.
 
 To reopen a saved project later, pass its project file after the command:
 
@@ -55,14 +64,22 @@ To reopen a saved project later, pass its project file after the command:
 easy-glm-workbench path/to/project.easyglm-project.json
 ```
 
-After upgrading EasyGLM, stop and restart the workbench to use the new version.
-Reopen your saved project to continue working.
+Before closing or upgrading, download your project JSON to keep its settings,
+applied adjustments and named snapshots. Export a `.easyglm` scorer to keep the
+fitted rates. Reopening project JSON requires its source data and starts without
+fitted runs or session Undo history. Stop and restart the workbench after upgrading.
 
 The workbench follows the same modelling pipeline as the Python API. It helps
 you assign column roles, prepare a reproducible train/holdout split, design and
 fit one or more models, inspect diagnostics, adjust rate tables, and export the
 result as Python, a scorer, Excel tables or a self-contained report. It does not
 fit anything until you select **Fit model**.
+
+**Explore** shows observed rates and exposure together before fitting.
+**Diagnostics** includes training and holdout checks and permutation importance.
+In **Rate tables**, choose an adjustment from the dropdown to preview it, then
+click **Apply adjustment** to keep it. The original fit stays visible. Exports use
+applied results; Python reproduction scripts need a saved source-data file.
 
 | Design and fit | Validate on training and holdout data |
 | --- | --- |

@@ -61,11 +61,11 @@ test('bare URL, refresh and new tabs use independent bootstrap without rotating 
     await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await page.getByLabel('Plot variable', { exact: true }).selectOption('Region');
     await expect(
-        page.getByRole('img', { name: 'Distribution of Region', exact: true }),
+        page.getByRole('img', { name: 'One-way effects of Region', exact: true }),
     ).toBeVisible();
     await page.reload();
     await page.getByRole('button', { name: 'Explore', exact: true }).click();
-    await expect(page.getByRole('img', { name: /Distribution of/ }).first()).toBeVisible();
+    await expect(page.getByRole('img', { name: /One-way effects of/ }).first()).toBeVisible();
     await expect(page.getByRole('alert')).toHaveCount(0);
     await second.close();
 });
@@ -87,7 +87,7 @@ test('actual server restart reconnects plot while retaining names, types, roles 
     await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await page.getByLabel('Plot variable', { exact: true }).selectOption('Region');
     await expect(
-        page.getByRole('img', { name: 'Distribution of Region', exact: true }),
+        page.getByRole('img', { name: 'One-way effects of Region', exact: true }),
     ).toBeVisible();
     await page.getByRole('button', { name: /^Variables/ }).click();
     await expect(editor).toHaveValue(raw + '\n');
@@ -129,9 +129,9 @@ test('host and origin rejection does not trigger a bootstrap retry', async ({ pa
     });
     await page.goto('/');
     await page.getByRole('button', { name: 'Explore', exact: true }).click();
-    await expect(page.getByRole('img', { name: /Distribution of/ }).first()).toBeVisible();
+    await expect(page.getByRole('img', { name: /One-way effects of/ }).first()).toBeVisible();
     const before = bootstraps;
-    await page.route('**/api/plot?column=Region', (route) =>
+    await page.route(/\/api\/explore\?.*column=Region(?:&|$)/, (route) =>
         route.fulfill({
             status: 403,
             contentType: 'application/json',
@@ -156,7 +156,7 @@ test('incomplete JSON survives reconnection and a changed project cannot receive
     await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await page.getByLabel('Plot variable', { exact: true }).selectOption('Region');
     await expect(
-        page.getByRole('img', { name: 'Distribution of Region', exact: true }),
+        page.getByRole('img', { name: 'One-way effects of Region', exact: true }),
     ).toBeVisible();
     await page.getByRole('button', { name: /^Variables/ }).click();
     await expect(editor).toHaveValue('{unfinished');

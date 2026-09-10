@@ -4,25 +4,45 @@ This is the user-facing record of useful new features and fixes.
 
 ## 0.460 — 10 September 2026
 
-- **The new workbench is now the default.** The standard command and Python
-  launcher open the Svelte interface. Open CSV, Parquet, Excel or a saved project,
-  or pass a pandas/Polars dataframe from Python. The previous interface remains
-  available with `--legacy-streamlit`.
-- **A clearer modelling workflow.** Set up variables in the table or JSON, define
-  main effects and interactions, fit in the background, and compare fitted models.
-- **Faster diagnostics.** Cached actual-versus-expected views, permutation
-  importance, residual-factor searches, lift and double lift sit alongside
-  regularisation paths with retained coefficients on a secondary axis.
-- **Adjustments keep the original fit visible.** Choose a tool from the dropdown,
-  review its effect and Apply to save. Moving averages use the last N points;
-  isotonic smoothing, caps/floors and row edits share Undo and named snapshots.
-  A fresh fit starts without inherited adjustments.
-- **Complete exports.** Download Excel rate tables, a JSON `.easyglm` scorer,
-  project JSON, Python reproduction scripts and HTML reports. Exports include
-  applied adjustments and exclude unsaved previews.
-- **More reliable scoring checks.** Reproduction scripts use the final frozen
-  main effects when fitting interactions and calculate weighted A/E correctly.
-  Weighted-binomial null-model fitting no longer uses redundant intercept terms.
+- **A new default workbench.** The Svelte interface opens through the familiar
+  `easy-glm-workbench`, `easy-glm workbench` and `easy_glm.launch_workbench()`
+  commands. Passing a pandas or Polars dataframe with `data=df` still works.
+  The previous interface remains available with `--legacy-streamlit` or
+  `legacy_streamlit=True` from Python.
+- **Open data and examples.** Browse for your own data, reopen a saved project,
+  or load French motor claim frequency and Swedish motorcycle Tweedie claim cost
+  examples. Examples include editable settings and fit only when requested.
+  Failed loads leave existing work intact.
+- **One-way effects before fitting.** Explore combines observed rates with exposure
+  bars on a secondary axis, using training data. Variable and band selections
+  update automatically; the underlying values can be downloaded.
+- **Clearer model review.** Cached actual-versus-expected charts combine rates and
+  exposure. Regularisation paths show retained coefficients on a secondary axis;
+  Compare focuses on differences between fitted models. Permutation importance
+  ranks predictors by the increase in mean training deviance when each source column
+  is shuffled, without refitting.
+- **Visible interaction design.** Add and remove pairs, set minimum cell exposure
+  and adjust their penalty. Interactions fit in a second stage with main effects
+  fixed. Cross-validated interaction fits now use the final main effects for their
+  final coefficients; saved fits need an explicit refit to benefit.
+- **Preview, then apply adjustments.** Choose a tool from a dropdown and change
+  its options to see the effect. Apply commits the change; the original fit stays
+  visible. Moving averages use the current point and the previous N−1 points.
+  Isotonic smoothing, caps/floors and manual edits share Undo and named snapshots.
+  A new fit starts without inherited adjustments.
+- **Exports from applied results.** Download Excel rate tables, a JSON `.easyglm`
+  scorer, project JSON and HTML reports, including an optional comparison model.
+  Python reproduction scripts require a saved source-data file. Unsaved previews
+  are excluded, and scripts now reproduce interaction fits and weighted A/E
+  correctly.
+- **More readable charts and controls.** Neutral backgrounds and text replace
+  much of the green; exposure bars have a contrasting ochre colour. Diagnostics
+  use at most three decimal places and relativities at most four.
+
+Some advanced preparation, leakage and factor-design controls remain in the
+legacy interface. Project JSON preserves settings, applied adjustments and named
+snapshots; use the scorer export to preserve fitted rates. Reopening a project
+starts without fitted runs or session Undo history.
 
 ## 0.452 — 8 September 2026
 

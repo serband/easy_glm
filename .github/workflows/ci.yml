@@ -88,6 +88,8 @@ jobs:
           EASYGLM_TEST_SOURCE: ${{ github.workspace }}/src
         run: |
           npx playwright test --config playwright.onboarding.config.js
+          npx playwright test --config playwright.config.js
+          npx playwright test --config playwright.explore.config.js
           npx playwright test --config playwright.models.config.js
           npx playwright test --config playwright.interactions.config.js
           npx playwright test --config playwright.exports.config.js

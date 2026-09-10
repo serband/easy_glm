@@ -6,6 +6,14 @@
     import DiagnosticTable from './DiagnosticTable.svelte';
     import { comparisonIssue, comparisonMetrics, comparisonSettings } from './comparison.js';
     import { rateChartKind } from './rateChartData.js';
+    const familyLabels = {
+        poisson: ['Poisson', 'Counts or claim frequency.'],
+        gamma: ['Gamma', 'Positive amounts, such as claim severity.'],
+        tweedie: ['Tweedie', 'Amounts including zeros, such as total claims cost.'],
+        gaussian: ['Gaussian', 'Continuous values.'],
+        binomial: ['Binomial', 'Binary outcomes or proportions.'],
+        inverse_gaussian: ['Inverse Gaussian', 'Positive amounts.'],
+    };
     export let comparison = '',
         onContext = () => {};
     let comparisonResult = null,
@@ -154,6 +162,8 @@
         jobs = {},
         result = null,
         resultId = '';
+    let splitOpen = false,
+        splitContext = '';
     let syncedCompletedFits = '';
     let mode = 'fixed',
         fixedAlpha = 0.001,
@@ -307,6 +317,11 @@
         const keepDraft = keep && dirty;
         try {
             wb = await api('workbench');
+            const nextSplitContext = `${wb.session_id}:${state.project_id}`;
+            if (splitContext !== nextSplitContext) {
+                splitContext = nextSplitContext;
+                splitOpen = !wb.counts.holdout;
+            }
             jobs = wb.jobs;
             known = wb.session_id + ':' + wb.revision;
             loaded = true;
@@ -549,7 +564,7 @@
             </h1>
             <p>
                 {view === 'model'
-                    ? 'Configure the model, prepare the split and fit in the background.'
+                    ? 'Choose the model type, target and predictors, then fit.'
                     : view === 'compare'
                       ? 'Compare two fitted models on the same rows, including applied table adjustments.'
                       : view === 'diagnostics' && diagnosticTab === 'importance'
@@ -611,22 +626,23 @@
             <nav class="section-nav" aria-label="Model sections">
                 <a href="#model-definition">Model definition</a><a href="#factor-design"
                     >Factor design</a
-                ><a href="#model-interactions">Interactions ({cfg.interactions.length})</a><a
-                    href="#fit-settings">Fit and results</a
-                >
+                >{#if wb.predictors.length}<a href="#model-interactions"
+                        >Interactions ({cfg.interactions.length})</a
+                    >{/if}<a href="#fit-settings">Fit and results</a>
             </nav>
             <fieldset disabled={saving} class="edit-fieldset">
                 <section class="model-card">
                     <h2 id="model-definition">Model definition</h2>
                     <div class="form-grid">
                         <label
-                            >Family<select
+                            >Model type (family)<select
                                 aria-label="Model family"
                                 bind:value={
                                     () => cfg.family, (value) => setModelField('family', value)
                                 }
                                 >{#each wb.families as family}<option value={family}
-                                        >{family.replaceAll('_', ' ')}</option
+                                        >{familyLabels[family]?.[0] ||
+                                            family.replaceAll('_', ' ')}</option
                                     >{/each}</select
                             ></label
                         >
@@ -678,6 +694,7 @@
                             />Divide target by weight</label
                         >
                     </div>
+                    <p class="help-text">{familyLabels[cfg.family]?.[1] || ''}</p>
                 </section>
                 <section class="model-card">
                     <div class="section-heading">
@@ -686,94 +703,108 @@
                             >{cfg.predictors.length} main effects · {cfg.interactions.length} interactions</span
                         >
                     </div>
-                    <p class="help-text">
-                        Roles make columns eligible; this selection defines this model. Design kinds
-                        and defaults are shared across models.
-                    </p>
-                    <details>
-                        <summary>Defaults for every predictor</summary>
-                        <div class="form-grid compact">
-                            <label
-                                >Default bins<input
-                                    aria-label="Default bins"
-                                    type="number"
-                                    min="2"
-                                    max="200"
-                                    bind:value={nBins}
-                                /></label
-                            ><label
-                                >Minimum category share<input
-                                    aria-label="Minimum category share"
-                                    type="number"
-                                    min="0"
-                                    max=".99"
-                                    step=".001"
-                                    bind:value={levelShare}
-                                /></label
-                            >
-                        </div>
-                    </details>
-                    <input
-                        class="factor-search"
-                        aria-label="Search predictor terms"
-                        placeholder="Find a predictor…"
-                        bind:value={termSearch}
-                        oninput={() => (termScroll = 0)}
-                    />
-                    <div
-                        class="terms-list"
-                        onscroll={(e) => (termScroll = e.currentTarget.scrollTop)}
-                    >
-                        <div style:height={filteredTerms.length * 34 + 'px'} class="virtual-space">
-                            <div
-                                class="virtual-rows"
-                                style:transform={'translateY(' + termStart * 34 + 'px)'}
-                            >
-                                {#each filteredTerms.slice(termStart, termStart + 18) as name}<div
-                                        class="term-row"
-                                    >
-                                        <label
-                                            ><input
-                                                aria-label={'Include ' + name}
-                                                type="checkbox"
-                                                checked={cfg.predictors.includes(name)}
-                                                onchange={(e) =>
-                                                    toggle(name, e.currentTarget.checked)}
-                                            />{name}</label
-                                        ><select
-                                            aria-label={'Design kind for ' + name}
-                                            value={kinds[name] || ''}
-                                            onchange={(e) => kind(name, e.currentTarget.value)}
-                                            ><option value="">Infer from type</option><option
-                                                value="step">Step bands</option
-                                            ><option value="linear">Piecewise linear</option><option
-                                                value="continuous">Continuous slope</option
-                                            ><option value="categorical">Categorical</option
-                                            ></select
-                                        >
-                                    </div>{/each}
+                    {#if !wb.predictors.length}
+                        <p>No predictors assigned yet.</p>
+                        <button onclick={() => onNavigate('variables')}
+                            >Assign predictors in Variables</button
+                        >
+                    {:else}
+                        <p class="help-text">
+                            Roles make columns eligible; this selection defines this model. Design
+                            kinds and defaults are shared across models.
+                        </p>
+                        <details>
+                            <summary>Defaults for every predictor</summary>
+                            <div class="form-grid compact">
+                                <label
+                                    >Default bins<input
+                                        aria-label="Default bins"
+                                        type="number"
+                                        min="2"
+                                        max="200"
+                                        bind:value={nBins}
+                                    /></label
+                                ><label
+                                    >Minimum category share<input
+                                        aria-label="Minimum category share"
+                                        type="number"
+                                        min="0"
+                                        max=".99"
+                                        step=".001"
+                                        bind:value={levelShare}
+                                    /></label
+                                >
                             </div>
-                        </div>
-                    </div>
-                    <InteractionEditor
-                        interactions={cfg.interactions}
-                        onchange={(pairs) => (cfg = { ...cfg, interactions: pairs })}
-                        predictors={cfg.predictors}
-                        bind:valid={interactionsValid}
-                    />
+                        </details>
+                        <input
+                            class="factor-search"
+                            aria-label="Search predictor terms"
+                            placeholder="Find a predictor…"
+                            bind:value={termSearch}
+                            oninput={() => (termScroll = 0)}
+                        />
+                        {#if filteredTerms.length}<div
+                                class="terms-list"
+                                onscroll={(e) => (termScroll = e.currentTarget.scrollTop)}
+                            >
+                                <div
+                                    style:height={filteredTerms.length * 34 + 'px'}
+                                    class="virtual-space"
+                                >
+                                    <div
+                                        class="virtual-rows"
+                                        style:transform={'translateY(' + termStart * 34 + 'px)'}
+                                    >
+                                        {#each filteredTerms.slice(termStart, termStart + 18) as name}<div
+                                                class="term-row"
+                                            >
+                                                <label
+                                                    ><input
+                                                        aria-label={'Include ' + name}
+                                                        type="checkbox"
+                                                        checked={cfg.predictors.includes(name)}
+                                                        onchange={(e) =>
+                                                            toggle(name, e.currentTarget.checked)}
+                                                    />{name}</label
+                                                ><select
+                                                    aria-label={'Design kind for ' + name}
+                                                    value={kinds[name] || ''}
+                                                    onchange={(e) =>
+                                                        kind(name, e.currentTarget.value)}
+                                                    ><option value="">Infer from type</option
+                                                    ><option value="step">Step bands</option><option
+                                                        value="linear">Piecewise linear</option
+                                                    ><option value="continuous"
+                                                        >Continuous slope</option
+                                                    ><option value="categorical">Categorical</option
+                                                    ></select
+                                                >
+                                            </div>{/each}
+                                    </div>
+                                </div>
+                            </div>{:else}<p class="help-text">
+                                No predictors match this search.
+                            </p>{/if}
+                        <InteractionEditor
+                            interactions={cfg.interactions}
+                            onchange={(pairs) => (cfg = { ...cfg, interactions: pairs })}
+                            predictors={cfg.predictors}
+                            bind:valid={interactionsValid}
+                        />
+                    {/if}
                     {#if Object.keys(cfg.monotone || {}).length}<div class="preserved">
                             Retained monotone constraints: {Object.entries(cfg.monotone)
                                 .map(([n, v]) => n + ' ' + v)
                                 .join(', ')}.
                         </div>{/if}
-                    <div class="help-text">
-                        Existing knots, clamps, per-term penalties, adjustments and notes are
-                        retained. Unsupported combinations are reported when saving or fitting.
-                    </div>
+                    {#if Object.keys(wb.design.variables || {}).length}<div class="help-text">
+                            Existing knots, clamps, per-term penalties, adjustments and notes are
+                            retained. Unsupported combinations are reported when saving or fitting.
+                        </div>{/if}
                 </section>
                 <section class="model-card">
                     <h2 id="fit-settings">Fit and results</h2>
-                    <details class="split-settings" open={!wb.counts.holdout}>
+                    <details class="split-settings" bind:open={splitOpen}>
                         <summary>Train / holdout split</summary>
                         <div class="section-heading">
                             <span>Applied split</span>

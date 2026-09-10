@@ -58,7 +58,9 @@
         {#each visible as s, i}<span style:color={s.color || colors[i % colors.length]}
                 >● {s.label}</span
             >{/each}
-        {#if hasExposure}<span style:color={'#769789'}>■ Exposure (right axis)</span>{/if}
+        {#if hasExposure}<span style:color={'var(--chart-exposure-text, #805a29)'}
+                >■ Exposure (right axis)</span
+            >{/if}
     </div>
     <svg viewBox="0 0 750 250" role="img" aria-label={ariaLabel || title}>
         <title>{title}</title>
@@ -70,7 +72,7 @@
                 x2={plotRight}
                 y1={190 - tick * 150}
                 y2={190 - tick * 150}
-                stroke="#dde5df"
+                stroke="var(--chart-grid, #e3e5e8)"
             /><text x="0" y={194 - tick * 150}>{num(lo + tick * (hi - lo))}</text>{/each}
         {#if hasExposure}
             {#each shown as row, i}{#if Number.isFinite(row.exposure)}
@@ -80,19 +82,27 @@
                         y={190 - (row.exposure / maxExposure) * 150}
                         width={exposureWidth(i)}
                         height={(row.exposure / maxExposure) * 150}
-                        fill="#91afa1"
-                        fill-opacity="0.3"
+                        fill="var(--chart-exposure, #c9a16a)"
+                        fill-opacity="0.6"
+                        stroke="var(--chart-exposure-edge, #9b733b)"
+                        stroke-width="0.6"
                         ><title>{labels[i]}: Exposure {num(row.exposure)}</title></rect
                     >
                 {/if}{/each}
-            <line x1={plotRight} x2={plotRight} y1="40" y2="190" stroke="#a7bcb0" />
+            <line
+                x1={plotRight}
+                x2={plotRight}
+                y1="40"
+                y2="190"
+                stroke="var(--chart-exposure-edge, #9b733b)"
+            />
             {#each [0, 0.5, 1] as tick, i}
                 <line
                     x1={plotRight}
                     x2={plotRight + 4}
                     y1={190 - tick * 150}
                     y2={190 - tick * 150}
-                    stroke="#a7bcb0"
+                    stroke="var(--chart-exposure-edge, #9b733b)"
                 /><text class="exposure-tick" x={plotRight + 8} y={194 - tick * 150}
                     >{exposureLabels[i]}</text
                 >
@@ -153,3 +163,10 @@
             <summary>Table · {title}</summary><DiagnosticTable {rows} {title} />
         </details>{/if}
 </section>
+
+<style>
+    .diagnostic-plot svg .exposure-tick,
+    .diagnostic-plot svg .exposure-axis-label {
+        fill: var(--chart-exposure-text, #805a29);
+    }
+</style>

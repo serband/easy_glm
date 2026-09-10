@@ -51,6 +51,7 @@ def main() -> None:
             }
         )
         project = Project(name="Motor portfolio · synthetic sample")
+        project.data.split.mode = "random"
         project.data.roles = {
             "PolicyID": "id",
             "Claims": "target",

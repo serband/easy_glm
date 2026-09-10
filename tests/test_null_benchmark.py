@@ -1,14 +1,55 @@
-"""The intercept-only benchmark must be identifiable for weighted logit fits."""
+"""Intercept-only benchmarks retain accurate predictions without solver stalls."""
 
 from __future__ import annotations
+
+import warnings
 
 import numpy as np
 import polars as pl
 import pytest
 from scipy.optimize import brentq
 from scipy.special import expit
+from threadpoolctl import threadpool_limits
 
+from easy_glm.core.fit import resolve_family
 from easy_glm.workflow import Project, VariableDesign, null_model_predict, run_model
+from easy_glm.workflow.diagnostics import deviance_stats
+
+
+@pytest.mark.parametrize("threads", [1, 10])
+@pytest.mark.parametrize("divide", [False, True])
+def test_tweedie_cost_null_matches_weighted_mean_and_deviance(threads, divide):
+    rng = np.random.default_rng(42)
+    n = 43_602
+    weight = rng.uniform(0.005, 3.0, n)
+    count = rng.poisson(0.045 * weight)
+    amount = count * rng.lognormal(8.0, 1.4, n)
+    rate = amount / weight
+    frame = pl.DataFrame({"target": amount if divide else rate, "exposure": weight})
+    project = Project(name="Claims cost benchmark")
+    project.data.roles = {"target": "target", "exposure": "weight"}
+    cfg = project.new_model(
+        "cost", family="tweedie", tweedie_power=1.5, divide_target_by_weight=divide
+    )
+    # No offset: the intercept-only Tweedie MLE is the exposure-weighted mean.
+    oracle = np.full(n, amount.sum() / weight.sum())
+    with (
+        threadpool_limits(limits=threads),
+        warnings.catch_warnings(record=True) as caught,
+    ):
+        warnings.simplefilter("always")
+        prediction = null_model_predict(project, cfg, frame, frame)
+    assert not caught, [str(w.message) for w in caught]
+    np.testing.assert_allclose(prediction, oracle, rtol=1e-8, atol=0)
+    # Independent p=1.5 deviance formula, including the zero-claim observations.
+    expected_deviance = float(
+        np.sum(
+            4 * weight * (rate / np.sqrt(oracle) - 2 * np.sqrt(rate) + np.sqrt(oracle))
+        )
+    )
+    family, _, _ = resolve_family("tweedie", 1.5)
+    actual = deviance_stats(family, rate, prediction, weight, mu0_unit=prediction)
+    assert actual["null_deviance"] == pytest.approx(expected_deviance, rel=1e-10)
 
 
 @pytest.mark.parametrize("divide", [False, True])
