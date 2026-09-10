@@ -154,6 +154,7 @@
         jobs = {},
         result = null,
         resultId = '';
+    let syncedCompletedFits = '';
     let mode = 'fixed',
         fixedAlpha = 0.001,
         cv = 5,
@@ -331,6 +332,30 @@
         polling = true;
         try {
             jobs = await api('jobs');
+            const completed = JSON.stringify(
+                Object.entries(jobs)
+                    .filter(([, job]) => job.applicable)
+                    .map(([name, job]) => [name, job.id])
+                    .sort(([a], [b]) => a.localeCompare(b)),
+            );
+            if (completed !== syncedCompletedFits) {
+                // A successful refit can clear its old overlays and advance revision.
+                // Keep local model/variable drafts while adopting the applied state.
+                const latest = await api('workbench');
+                const snapshot = await api('variables');
+                if (
+                    latest.session_id !== snapshot.session_id ||
+                    latest.revision !== snapshot.revision
+                )
+                    return;
+                known = snapshot.session_id + ':' + snapshot.revision;
+                wb = latest;
+                jobs = latest.jobs;
+                if (!dirty && cfg && latest.models[selected])
+                    cfg = structuredClone(latest.models[selected]);
+                onState(snapshot);
+                syncedCompletedFits = completed;
+            }
             if (jobs[selected]?.applicable && resultId !== jobs[selected].id) await loadResults();
         } catch (e) {
             error = e.message;
@@ -893,6 +918,9 @@
                                 wb.problems.length > 0}>Fit model</button
                         >
                     </div>
+                    {#if wb.models[selected]?.adjustments?.length || wb.models[selected]?.base_rate_override != null}
+                        <p class="help-text">A new fit starts with unadjusted rates.</p>
+                    {/if}
                     {#if dirty}<p class="help-text">Save the model changes before fitting.</p>{/if}
                 </section>
             </fieldset>

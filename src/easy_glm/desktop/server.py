@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from easy_glm.desktop.jobs import FitJobs
+from easy_glm.desktop.jobs import FitJobs, model_key
 from easy_glm.desktop.modeling import (
     ModelEdit,
     Revision,
@@ -95,6 +95,34 @@ def create_app(
     current = deepcopy(project)
     revision = 0
     lock = threading.RLock()
+
+    def complete_fit(job: dict[str, Any], result: dict[str, Any]) -> None:
+        nonlocal revision
+        with lock, jobs.lock:
+            name = job["name"]
+            if jobs.jobs.get(name) is not job or job["cancel"]:
+                return
+            if job["key"] != model_key(current, name):
+                job.update(
+                    status="stale", message="Settings changed. Fit this model again."
+                )
+                return
+            cfg = current.models[name]
+            cleared = bool(cfg.adjustments) or cfg.base_rate_override is not None
+            cfg.adjustments = []
+            cfg.base_rate_override = None
+            undo_steps.pop(name, None)
+            redo_steps.pop(name, None)
+            if cleared:
+                revision += 1
+            job.update(
+                key=model_key(current, name),
+                status="complete",
+                message="Diagnostics and rate tables are ready.",
+                result=result,
+            )
+
+    jobs.on_complete = complete_fit
     token = secrets.token_urlsafe(32)
     session_id = secrets.token_urlsafe(16)
     project_id = hashlib.sha256(
@@ -300,10 +328,7 @@ def create_app(
             if problems:
                 raise HTTPException(422, "; ".join(problems))
             try:
-                started = jobs.start(deepcopy(current), raw.clone(), name)
-                undo_steps.pop(name, None)
-                redo_steps.pop(name, None)
-                return started
+                return jobs.start(deepcopy(current), raw.clone(), name)
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
 

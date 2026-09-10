@@ -14,6 +14,21 @@
         preview = false;
     let cellView = 'relativity';
     $: plot = rateChartData(table);
+    $: showAdjusted = plot.points.some(
+        (item) =>
+            item.current.length !== item.fitted.length ||
+            item.current.some((point, i) => {
+                const fitted = item.fitted[i]?.value;
+                return (
+                    !Number.isFinite(point.value) ||
+                    !Number.isFinite(fitted) ||
+                    Math.abs(point.value - fitted) >
+                        1e-12 * Math.max(1, Math.abs(point.value), Math.abs(fitted))
+                );
+            }),
+    );
+    $: seriesFields = showAdjusted ? ['fitted', 'current'] : ['fitted'];
+    $: if (!showAdjusted && cellView === 'fitted') cellView = 'relativity';
     $: displayLabels = formatLabels((table?.rows || []).map((r) => r.label));
     $: rowNames = [...new Set((table?.rows || []).map((r) => r.label_a))];
     $: colNames = [...new Set((table?.rows || []).map((r) => r.label_b))];
@@ -39,9 +54,10 @@
     {#if plot.interaction}
         <label
             >Cell values<select aria-label="Interaction chart values" bind:value={cellView}
-                ><option value="relativity">{currentLabel} relativity</option><option value="fitted"
-                    >{fittedLabel} relativity</option
-                ><option value="exposure">Exposure</option></select
+                ><option value="relativity"
+                    >{showAdjusted ? currentLabel : fittedLabel} relativity</option
+                >{#if showAdjusted}<option value="fitted">{fittedLabel} relativity</option
+                    >{/if}<option value="exposure">Exposure</option></select
             ></label
         >
         <div class="heatmap-scroll">
@@ -58,7 +74,7 @@
                                     (r) => r.label_a === name && r.label_b === other,
                                 )}<td
                                     style:background={color(cell)}
-                                    title={`${fittedLabel} ${rel(cell?.fitted)}; ${currentLabel} ${rel(cell?.relativity)}; exposure ${num(cell?.exposure)}`}
+                                    title={`${fittedLabel} ${rel(cell?.fitted)}; ${showAdjusted ? `${currentLabel} ${rel(cell?.relativity)}; ` : ''}exposure ${num(cell?.exposure)}`}
                                     >{cell?.exposure
                                         ? cellView === 'exposure'
                                             ? num(cell[cellView])
@@ -78,19 +94,23 @@
                 style:min-width={plot.numeric ? '0' : Math.max(500, plot.points.length * 44) + 'px'}
             >
                 <div class="chart-legend">
-                    <span style:color={'#737e9b'}>● {fittedLabel}</span><span
-                        style:color={'#287762'}>● {currentLabel}</span
-                    >
+                    <span style:color={'#737e9b'}>● {fittedLabel}</span>
+                    {#if showAdjusted}<span style:color={'#287762'}>● {currentLabel}</span>{/if}
                 </div>
                 <svg
                     class="relativity-chart"
                     viewBox={plot.numeric ? '0 0 740 240' : '0 0 740 310'}
                     role="img"
-                    aria-label={(preview
-                        ? 'Original fit and adjusted preview for '
-                        : 'Original fit and adjusted relativities for ') + variable}
+                    aria-label={(showAdjusted
+                        ? preview
+                            ? 'Original fit and adjusted preview for '
+                            : 'Original fit and adjusted relativities for '
+                        : 'Original fitted relativities for ') + variable}
                 >
-                    <title>Original fit and adjusted {label} by band or level</title>
+                    <title
+                        >{showAdjusted ? 'Original fit and adjusted' : fittedLabel}
+                        {label} by band or level</title
+                    >
                     {#each [0, 0.5, 1] as tick}<line
                             x1="55"
                             x2="705"
@@ -107,7 +127,7 @@
                         stroke-dasharray="3 3"
                     />
                     {#if plot.numeric}
-                        {#each ['fitted', 'current'] as field}
+                        {#each seriesFields as field}
                             {#each plot.lines[field] as line}<polyline
                                     class="numeric-curve"
                                     points={path(line)}
@@ -128,14 +148,14 @@
                         {/each}
                     {:else}
                         {#each plot.points as item}
-                            {#each ['fitted', 'current'] as field, index}
+                            {#each seriesFields as field, index}
                                 {#each item[field] as point}{@const width = Math.min(
                                         20,
                                         250 / plot.points.length,
                                     )}
                                     <rect
                                         class="category-bar"
-                                        x={item.x + (index - 1) * width}
+                                        x={item.x + (index - seriesFields.length / 2) * width}
                                         y={190 - (point.value / plot.max) * 150}
                                         {width}
                                         height={(point.value / plot.max) * 150}

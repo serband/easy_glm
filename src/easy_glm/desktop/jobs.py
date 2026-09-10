@@ -9,6 +9,8 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +43,7 @@ class FitJobs:
         self.active: dict[str, Any] | None = None
         self.folder = tempfile.TemporaryDirectory(prefix="easyglm_fits_")
         self.thread: threading.Thread | None = None
+        self.on_complete: Callable[[dict[str, Any], dict[str, Any]], None] | None = None
 
     def restore(self, project: Project, raw: pl.DataFrame, folder: Path) -> None:
         """Restore application-owned upgrade artifacts without fitting any model.
@@ -137,7 +140,13 @@ class FitJobs:
         folder = Path(self.folder.name) / job["id"]
         folder.mkdir()
         try:
-            project.to_json(folder / "project.json")
+            # Keep the supplied applied state for private recovery. An explicit
+            # new fit starts from its coefficients, never inherited table edits.
+            project.to_json(folder / "project-before-refit.json")
+            clean_project = deepcopy(project)
+            clean_project.models[job["name"]].adjustments = []
+            clean_project.models[job["name"]].base_rate_override = None
+            clean_project.to_json(folder / "project.json")
             raw.write_parquet(folder / "raw.parquet")
             with self.lock:
                 if job["cancel"]:
@@ -177,12 +186,19 @@ class FitJobs:
                 result = json.loads((folder / "result.json").read_text())
                 if "error" in result:
                     job.update(status="failed", message=result["error"])
-                else:
-                    job.update(
-                        status="complete",
-                        message="Diagnostics and rate tables are ready.",
-                        result=result,
-                    )
+                    return
+            # The server takes its project lock before the jobs lock. Do not
+            # call it while holding this lock: requests acquire them in that order.
+            if self.on_complete is not None:
+                self.on_complete(job, result)
+            else:
+                with self.lock:
+                    if not job["cancel"]:
+                        job.update(
+                            status="complete",
+                            message="Diagnostics and rate tables are ready.",
+                            result=result,
+                        )
         except (
             Exception
         ) as exc:  # worker/process boundary: return a UI error, never a traceback

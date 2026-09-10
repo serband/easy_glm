@@ -777,3 +777,31 @@ cover add/save/fit, duplicate prevention, invalid drafts, reset, removal persist
 and 884-pixel containment. The fitted French motor session was rehearsed through
 the private restore path with its original fit, all nine rate tables and five undo
 steps preserved. No refit was used for the update.
+
+
+### New fits start unadjusted (10 September 2026)
+
+An explicit new fit now uses a clean copy of the selected model, without its old
+rate-table adjustments or base-rate override. Previously, the fit worker inherited
+those overlays while the Fit action cleared Undo. This could show adjusted curves
+immediately after fitting, even with an empty adjustment selector.
+
+Only a successful, still-applicable fit clears the live model's old overlays and
+history. Failed, cancelled or superseded fits leave them intact. Named snapshots
+are retained; the prior project is also kept privately with the fit artifacts.
+Restoring an existing fitted session continues to preserve its saved adjustments.
+The browser adopts the completed fit's new revision without discarding local
+settings drafts, so subsequent explicit Apply actions work immediately. Charts
+show only the original fit when the displayed adjusted values are identical.
+
+Validation: four new lifecycle tests and 93 existing desktop regressions passed.
+An isolated Chrome workflow covered Apply, rebalance, named snapshot, refit,
+unadjusted tables and a subsequent Apply. Svelte check/build and focused Python
+format/lint checks passed. The live Frequency model was separately reset to its
+original fitted rates at the user's request, preserving its 21 edits as an Undo
+step and in a private backup; this reset did not refit the model.
+
+The guarded live restart preserved the fit artifact and raw data byte for byte,
+all eight rate tables and both Undo steps. A fresh browser verified the original
+fit state, empty adjustment selector, exact fitted values and no browser errors.
+The explicit-Apply and delayed-response browser regressions also passed.
