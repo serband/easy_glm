@@ -407,5 +407,8 @@ def _drop_from_models(p: Project, column: str) -> list[str]:
                 f"Interaction(s) {', '.join(it.name for it in dropped)} removed from "
                 f"model {name}"
             )
+        cfg.drop_adjustments_for(column)
+        for interaction in dropped:
+            cfg.drop_adjustments_for(interaction.name)
         cfg.monotone.pop(column, None)
     return notes

@@ -43,6 +43,7 @@ from easy_glm.desktop.modeling import (
     setup_info,
 )
 from easy_glm.desktop.reviews import ReviewEdit, ReviewJobs
+from easy_glm.desktop.screening import ScreeningJobs, ScreeningRequest
 from easy_glm.workflow.explore import univariate
 from easy_glm.workflow.prep import apply_variables
 from easy_glm.workflow.project import SINGLE_ROLES, Project
@@ -78,6 +79,7 @@ def create_app(
         jobs.restore(project, raw, restore_folder)
     reviews = ReviewJobs()
     exploration = ExplorationCache()
+    screenings = ScreeningJobs()
     undo_steps = {}
     redo_steps = {}
     if restore_folder is not None and (restore_folder / "history.json").exists():
@@ -102,6 +104,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         yield
+        screenings.close()
         reviews.close()
         jobs.close()
 
@@ -129,6 +132,7 @@ def create_app(
             redo_steps.pop(name, None)
             if cleared:
                 revision += 1
+                screenings.invalidate((session_id, project_id, revision))
             job.update(
                 key=model_key(current, name),
                 status="complete",
@@ -240,7 +244,7 @@ def create_app(
             return snapshot()
 
     def candidate(
-        edit: Edit,
+        edit: Edit | ScreeningRequest,
     ) -> tuple[Project, list[dict[str, str]], list[tuple[str, str]]]:
         if edit.session_id != session_id:
             raise HTTPException(
@@ -261,6 +265,40 @@ def create_app(
         _, notices = apply_roles_grid(result, raw.columns, rows)
         return result, variable_setup_changes(current, raw.columns, rows), notices
 
+    @app.post("/api/variables/screen", status_code=202)
+    def screen_start(edit: ScreeningRequest) -> dict[str, Any]:
+        with lock:
+            saved, _, _ = candidate(edit)
+            generation = session_id, project_id, revision
+            try:
+                return screenings.start(
+                    saved,
+                    raw.clone(),
+                    generation,
+                    edit.setup,
+                    edit.options.model_dump(),
+                )
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/screenings/{key}")
+    def screen_status(key: str) -> dict[str, Any]:
+        with lock:
+            try:
+                return screenings.status(key, (session_id, project_id, revision))
+            except KeyError as exc:
+                raise HTTPException(404, str(exc.args[0])) from exc
+
+    @app.post("/api/screenings/{key}/cancel")
+    def screen_cancel(key: str, edit: Revision) -> dict[str, Any]:
+        with lock:
+            check_revision(edit)
+            try:
+                screenings.cancel(key)
+                return screenings.status(key, (session_id, project_id, revision))
+            except KeyError as exc:
+                raise HTTPException(404, str(exc.args[0])) from exc
+
     @app.post("/api/variables/preview")
     def preview(edit: Edit) -> dict[str, Any]:
         with lock:
@@ -275,6 +313,7 @@ def create_app(
             if changes:
                 current = result
                 revision += 1
+                screenings.invalidate((session_id, project_id, revision))
                 jobs.invalidate(current)
             return {**snapshot(), "notices": notices}
 
@@ -300,6 +339,7 @@ def create_app(
             session_id = secrets.token_urlsafe(16)
             project_id = secrets.token_hex(32)
             token = secrets.token_urlsafe(32)
+            screenings.invalidate((session_id, project_id, revision))
             undo_steps.clear()
             redo_steps.clear()
             result = snapshot()
@@ -410,6 +450,7 @@ def create_app(
             if candidate_project.to_dict() != current.to_dict():
                 current = candidate_project
                 revision += 1
+                screenings.invalidate((session_id, project_id, revision))
                 jobs.invalidate(current)
             return snapshot()
 
@@ -432,6 +473,7 @@ def create_app(
             if candidate_project.to_dict() != current.to_dict():
                 current = candidate_project
                 revision += 1
+                screenings.invalidate((session_id, project_id, revision))
                 jobs.invalidate(current)
             return snapshot()
 
@@ -514,6 +556,7 @@ def create_app(
                 if edit.action == "champion":
                     current.champion = name
                     revision += 1
+                    screenings.invalidate((session_id, project_id, revision))
                     return {"snapshot": snapshot()}
                 from easy_glm.desktop.importance_cache import is_importance
 
@@ -570,6 +613,7 @@ def create_app(
                     current.data = saved.data
                     current.models = saved.models
                     revision += 1
+                    screenings.invalidate((session_id, project_id, revision))
                     jobs.invalidate(current)
                     return {"snapshot": snapshot()}
                 if edit.action == "delete_snapshot":
@@ -584,6 +628,7 @@ def create_app(
                     ]
                     current.models[name].snapshots = cfg.snapshots
                     revision += 1
+                    screenings.invalidate((session_id, project_id, revision))
                     jobs.edited(current, name, jobs.jobs[name]["result"])
                     return {"snapshot": snapshot()}
                 if edit.action == "snapshot":
@@ -603,6 +648,7 @@ def create_app(
                     )
                     current.models[name].snapshots = cfg.snapshots
                     revision += 1
+                    screenings.invalidate((session_id, project_id, revision))
                     jobs.edited(current, name, jobs.jobs[name]["result"])
                     return {"snapshot": snapshot()}
                 if edit.action in (
@@ -739,6 +785,7 @@ def create_app(
                 cfg.adjustments = candidate_config.adjustments
                 cfg.base_rate_override = candidate_config.base_rate_override
                 revision += 1
+                screenings.invalidate((session_id, project_id, revision))
                 jobs.edited(current, name, candidate_result)
                 return snapshot()
             except (ValueError, KeyError) as exc:

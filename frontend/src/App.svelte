@@ -4,6 +4,7 @@
     import ExportPanel from './ExportPanel.svelte';
     import ProjectOpen from './ProjectOpen.svelte';
     import ExplorePanel from './ExplorePanel.svelte';
+    import VariableScreening from './VariableScreening.svelte';
     let comparison = '',
         modelContext = { fitted: [], selected: '', champion: null };
     let view = 'variables',
@@ -73,6 +74,13 @@
         (JSON.stringify(draft) !== JSON.stringify(state.setup) ||
             (tab === 'json' &&
                 jsonText !== JSON.stringify({ ...draft.assignments, ...draft.roles }, null, 2)));
+    $: screeningContext = JSON.stringify([
+        state?.session_id,
+        state?.project_id,
+        state?.revision,
+        draft,
+        jsonText,
+    ]);
     $: filtered = state
         ? state.columns.filter(
               (c) =>
@@ -474,6 +482,27 @@
             busy = false;
         }
     }
+    function prepareScreening() {
+        return !busy && !differentProject && (tab !== 'json' || parseRoles());
+    }
+    async function removeScreenedPredictors(names, expectedContext) {
+        const current = JSON.stringify([
+            state?.session_id,
+            state?.project_id,
+            state?.revision,
+            draft,
+            jsonText,
+        ]);
+        if (busy || differentProject || current !== expectedContext)
+            throw new Error('Settings changed. Check predictors again before removing them.');
+        const removed = new Set(names);
+        if (!removed.size || [...removed].some((name) => !draft.roles.predictor.includes(name)))
+            throw new Error('Only predictors in the checked draft can be removed.');
+        draft.roles.predictor = draft.roles.predictor.filter((name) => !removed.has(name));
+        draft.roles.ignore = [...new Set([...draft.roles.ignore, ...removed])];
+        touch();
+        await review();
+    }
     async function apply() {
         busy = true;
         error = '';
@@ -769,6 +798,15 @@
                                 ><span>Revision {state.revision}</span>
                             </div>
                         </section>
+                        {#if view === 'variables'}<VariableScreening
+                                {api}
+                                {state}
+                                setup={draft}
+                                context={screeningContext}
+                                disabled={busy || differentProject}
+                                prepare={prepareScreening}
+                                onRemove={removeScreenedPredictors}
+                            />{/if}
                         {#if preview}<section class="preview-card">
                                 <div class="preview-title">
                                     <strong>{preview.changes.length} variable changes</strong

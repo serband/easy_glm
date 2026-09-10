@@ -2,6 +2,16 @@
 
 This is the user-facing record of useful new features and fixes.
 
+## Unreleased
+
+- **Check predictors before fitting.** The Variables page can flag possible
+  target leakage, highly related predictors and mostly missing columns. Defaults
+  are 70% missing, 0.95 pair association and 0.9 target association; all are
+  adjustable. Checks use a bounded training sample and can be cancelled.
+- **Review removals together.** Select flagged predictors, review the changes,
+  then Apply. The table and Role JSON stay in sync; dependent model terms and
+  saved adjustments are cleaned up. Source data columns are kept.
+
 ## 0.460 — 10 September 2026
 
 - **A new default workbench.** The Svelte interface opens through the familiar
