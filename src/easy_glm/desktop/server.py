@@ -17,10 +17,11 @@ from typing import Any
 
 import polars as pl
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from easy_glm.desktop.exports import ExportRequest, export_attachment
 from easy_glm.desktop.jobs import FitJobs, model_key
 from easy_glm.desktop.modeling import (
     ModelEdit,
@@ -648,6 +649,42 @@ def create_app(
                 "undo": bool(undo_steps.get(name)),
                 "redo": bool(redo_steps.get(name)),
             }
+
+    @app.post("/api/exports/{name}")
+    def export_model(name: str, edit: ExportRequest) -> Response:
+        with lock:
+            check_revision(edit)
+            if name not in current.models:
+                raise HTTPException(404, "Choose an existing model.")
+            if edit.challenger is not None:
+                if edit.format != "html":
+                    raise HTTPException(
+                        422, "A comparison is available in the HTML report only."
+                    )
+                if edit.challenger == name:
+                    raise HTTPException(422, "Choose a different comparison model.")
+                if edit.challenger not in current.models:
+                    raise HTTPException(404, "Choose an existing comparison model.")
+            names = [name] + ([edit.challenger] if edit.challenger else [])
+            try:
+                sources = {model: jobs.artifact(current, model) for model in names}
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            saved, saved_raw = deepcopy(current), raw.clone()
+        try:
+            attachment = export_attachment(
+                saved, saved_raw, sources, name, edit.format, edit.challenger
+            )
+        except Exception as exc:  # Export errors are returned to the UI.
+            raise HTTPException(422, f"Could not export this model: {exc}") from exc
+        return Response(
+            attachment.content,
+            media_type=attachment.media_type,
+            headers={
+                "Content-Disposition": attachment.disposition,
+                "Cache-Control": "no-store",
+            },
+        )
 
     @app.get("/api/project")
     def export_project() -> dict[str, Any]:

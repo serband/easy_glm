@@ -1,6 +1,7 @@
 <script>
     import { onMount } from 'svelte';
     import ModelWorkbench from './ModelWorkbench.svelte';
+    import ExportPanel from './ExportPanel.svelte';
     let comparison = '',
         modelContext = { fitted: [], selected: '', champion: null };
     let view = 'variables',
@@ -166,7 +167,7 @@
         }
         return reconcilePending;
     }
-    async function api(path, body) {
+    async function api(path, body, asFile = false) {
         if (differentProject)
             throw new Error(
                 'This address serves a different project. Download your kept draft before discarding and reloading.',
@@ -181,20 +182,31 @@
                 'Cannot reach the local server. Your draft is kept. Start the server, then reconnect.',
             );
         }
-        let data = await response.json();
+        let data = !asFile || !response.ok ? await response.json() : null;
         if (response.status === 401 && data.code === 'session_expired') {
             // Concurrent failed reads share one bootstrap. Never retry origin/host denials.
             if (requestToken === token) await bootstrap();
             await reconcile();
             if (body && body.session_id !== serverSession) {
                 throw new Error(
-                    'The server reconnected. Your draft is kept. Preview changes again before applying.',
+                    asFile
+                        ? 'The server reconnected. Please download again.'
+                        : 'The server reconnected. Your draft is kept. Preview changes again before applying.',
                 );
             }
             response = await send(path, body);
-            data = await response.json();
+            data = !asFile || !response.ok ? await response.json() : null;
         }
         if (!response.ok) throw responseError(data, 'The request failed. Your draft is kept.');
+        if (asFile) {
+            const disposition = response.headers.get('content-disposition') || '';
+            const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+            const plain = disposition.match(/filename="([^"]+)"/i)?.[1];
+            return {
+                blob: await response.blob(),
+                filename: encoded ? decodeURIComponent(encoded) : plain || 'easyglm-export',
+            };
+        }
         return data;
     }
     async function reconnect() {
@@ -403,16 +415,27 @@
             }
         }
     }
+    function saveDownload(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+    async function downloadProject() {
+        const data = await api('project');
+        const filename = (data.name || 'project').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_');
+        saveDownload(
+            new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
+            filename + '.easyglm-project.json',
+        );
+    }
     async function download() {
         try {
-            const data = await api('project');
-            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'experiment.easyglm-project.json';
-            a.click();
-            URL.revokeObjectURL(url);
+            await downloadProject();
         } catch (e) {
             error = e.message;
         }
@@ -852,32 +875,14 @@
                     </section>
                 {/if}
             </section>
-            <section hidden={view !== 'export'} class="workflow-page">
-                <div class="heading">
-                    <div>
-                        <h1>Export</h1>
-                        <p>Keep the applied project and its modelling decisions.</p>
-                    </div>
-                </div>
-                <div class="model-card">
-                    <h2>Project JSON</h2>
-                    <p>
-                        Includes applied variable setup, model definitions, adjustments and named
-                        snapshots. Browser drafts, fitted runs and session undo history are not
-                        included.
-                    </p>
-                    <div class="model-actions">
-                        <button class="primary" onclick={download} disabled={!state}
-                            >Download project JSON</button
-                        >
-                    </div>
-                    {#if state?.models.length}<p>Models: {state.models.join(', ')}</p>{/if}
-                </div>
-                <p class="help-text">
-                    Excel rate tables, reports, scripts and scorer exports remain available in
-                    Streamlit.
-                </p>
-            </section>
+            {#if view === 'export'}<ExportPanel
+                    {api}
+                    {state}
+                    context={modelContext}
+                    {comparison}
+                    {downloadProject}
+                    {saveDownload}
+                />{/if}
             {#if state && draft}<ModelWorkbench
                     {api}
                     {state}

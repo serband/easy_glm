@@ -190,37 +190,15 @@ def _two_stage_code(
         "# coefficient of 0 (relativity 1.00) means 'no adjustment'.",
     ]
     if stage2_chose_by_cv:
-        fold_fit = _fit_code(
-            cfg,
-            alpha,
-            monotone,
-            False,
-            spec_expr="spec.main_effects_spec()",
-            var="stage1_fold",
-            cv_seed=cv_seed,
-            data_expr="train[fit_index]",
-        )
-        eta_fold = "stage1_fold.linear_predictor(train[score_index])"
-        if cfg.offset:
-            eta_fold += (
-                f" + train[score_index][{cfg.offset!r}]" ".cast(pl.Float64).to_numpy()"
-            )
         lines += [
-            "# The cells' alpha was selected against out-of-fold main-effect",
-            "# predictions. Rebuild those offsets with the same shuffled folds.",
-            "eta1 = np.empty(train.height, dtype=float)",
-            f"folds = KFold(n_splits={cfg.penalty.cv}, shuffle=True, random_state={cv_seed})",
-            "for fit_index, score_index in folds.split(np.arange(train.height)):",
-            "    " + fold_fit.replace("\n", "\n    "),
-            f"    eta1[score_index] = {eta_fold}",
+            "# CV selected the cells' alpha using out-of-fold main predictions.",
+            "# Fit the final cells against the final frozen main effects.",
         ]
-    else:
-        eta1 = "eta1 = stage1.linear_predictor(train)"
-        if cfg.offset:
-            # the same cast fit_glm applies, so an Int64 or Float32 offset column
-            # takes the same path here as it does in the workbench
-            eta1 += f" + train[{cfg.offset!r}].cast(pl.Float64).to_numpy()"
-        lines.append(eta1)
+    eta1 = "eta1 = stage1.linear_predictor(train)"
+    if cfg.offset:
+        # Match fit_glm's cast, and include the external offset exactly once.
+        eta1 += f" + train[{cfg.offset!r}].cast(pl.Float64).to_numpy()"
+    lines.append(eta1)
     lines += [
         _fit_code(
             cfg,
@@ -263,6 +241,10 @@ def to_script(
         raise ValueError("No model to export")
     cfg = project.models[model]
     d = project.data
+    if not d.source.path.strip():
+        raise ValueError(
+            "Save the source data to a file and select it before exporting a Python script."
+        )
     prefix = output_prefix or model
     uses_sas = d.source.type.lower() == "sas7bdat"
     # Whether there really were two stages is a property of the *fit*, not of the
@@ -286,8 +268,6 @@ def to_script(
     ]
     if uses_sas:
         lines.append("import pandas as pd")
-    if two_stage and cfg.penalty.alpha is None and stage2_alpha(cfg) is None:
-        lines.append("from sklearn.model_selection import KFold")
     lines += [
         "",
         "from easy_glm import (",
@@ -536,8 +516,22 @@ def to_script(
         f"rm.to_json({prefix + '.easyglm'!r})",
         f"rm.to_excel({prefix + '_rate_tables.xlsx'!r})  # adjusted tables, as scored",
         "",
-        "holdout_pred = rm.predict(holdout)",
-        f"print('holdout A/E:', holdout[{cfg.target!r}].sum() / holdout_pred.sum())",
+        "# Compare actual and expected totals on the model's weighting basis.",
+        "holdout_pred = rm.predict(holdout, exposure_col=None)",
+        f"holdout_actual = holdout[{cfg.target!r}].cast(pl.Float64).to_numpy()",
+    ]
+    if cfg.weight:
+        lines.append(
+            f"holdout_weight = holdout[{cfg.weight!r}].cast(pl.Float64).to_numpy()"
+        )
+        if not cfg.divide_target_by_weight:
+            lines.append("holdout_actual = holdout_actual * holdout_weight")
+        lines.append("holdout_pred = holdout_pred * holdout_weight")
+    lines += [
+        "holdout_expected = float(holdout_pred.sum())",
+        "holdout_ae = (float(holdout_actual.sum()) / holdout_expected",
+        "              if holdout_expected > 0 else float('nan'))",
+        "print('holdout A/E:', holdout_ae)",
         "",
     ]
     return "\n".join(lines)

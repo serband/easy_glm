@@ -755,9 +755,9 @@ class TestExport:
 
         run = run_model(project, prepare(project), "freq")
         fitted_src = to_script(project, "freq", run=run)
-        assert "from sklearn.model_selection import KFold" in fitted_src
-        assert "stage1_fold = fit_glm(" in fitted_src
-        assert "eta1[score_index]" in fitted_src
+        assert "KFold" not in fitted_src and "stage1_fold" not in fitted_src
+        assert "eta1 = stage1.linear_predictor(train)" in fitted_src
+        assert "final frozen main effects" in fitted_src
         compile(fitted_src, "exported_cv_model.py", "exec")
         assert (
             "replace_strict" in src

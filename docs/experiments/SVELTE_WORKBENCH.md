@@ -820,3 +820,45 @@ Validation: Svelte check/build and the existing two-model browser workflow passe
 Live 919-pixel screenshots checked training, holdout and categorical A/E plots;
 right-axis labels fit within the chart and exposure bars align with rate groups.
 The live project, fit and Undo state were identical before and after the change.
+
+
+### Restored fitted-model exports (10 September 2026)
+
+Export now offers Excel rate tables, the JSON `.easyglm` scorer, the reproduction
+Python script, an HTML report with optional model comparison, and project JSON.
+Model exports use the selected applicable fit and applied rate-table adjustments,
+including interaction cells and the base-rate override. Unapplied previews are
+excluded. Workbook and scorer use the same writers as the Streamlit workbench.
+
+Attachments are generated from a captured project and private fitted artifact
+outside the project lock. They do not refit, apply changes or alter Undo history.
+Downloads carry safe project/model filenames and the appropriate file types;
+stale fits, stale requests and incompatible report comparisons give local errors.
+Project JSON remains available before fitting. Python export requires a source
+file; a report from in-memory data identifies its unavailable script appendix.
+
+The export review also fixed two reproduction defects: final CV interaction
+coefficients now use the final frozen main-effect predictor, and printed holdout
+A/E uses the model's weight/target units. Direct scorer and Excel exports retain
+the current values exactly. A reproduction script refits; solver tolerance can
+produce small differences (0.00355% in the adjusted CV regression fixture).
+
+Validation: 14 attachment tests and 10 model/refit regressions passed; 65 script
+and comparison/report tests passed with one skipped. The actual downloaded script
+was executed and compared to an adjusted two-stage scorer. Browser checks passed
+for all five downloads, exclusion of an unsaved preview, download errors, layout
+at 919 pixels and five existing session/reconnection cases. Svelte check/build,
+focused Black/Ruff and core/workflow mypy passed.
+
+A separate existing issue remains outside export: the weighted-logit null-model
+benchmark can have a singular Hessian in `workflow.run.null_model_predict`.
+The `_project(..., family="binomial", divide=False)` fixture in
+`tests/test_export_regressions.py` reproduces it with `run_model`; the export test
+uses public fit/table helpers to isolate export correctness.
+
+The guarded live rollout preserved the Frequency fit and raw data byte for byte,
+all eight rate tables and both Undo steps. All five files downloaded through the
+live browser without project, job or history changes or browser errors. On all
+50,000 French motor rows, the exported scorer matched predictions exactly and
+an independent Excel reconstruction differed by at most 2.22e-16. The live
+Export layout was checked at 919 pixels.
