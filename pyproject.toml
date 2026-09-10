@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easy_glm"
-version = "0.452"
+version = "0.460"
 description = "LASSO-regularised GLMs for insurance pricing: exact rate tables, a browser workbench and a portable scoring model. Built on glum."
 readme = "README.md"
 authors = [
@@ -36,7 +36,10 @@ dependencies = [
     "rdata>=0.9.0",        # load_external_dataframe (French motor .rda), imported lazily
     "joblib>=1.0.0",       # EasyGLM.save / load
     "xlsxwriter>=3.0.0",   # Excel rate-table export
-    "streamlit>=1.45.0",   # graphical workbench
+    "fastapi>=0.115,<1",   # local Svelte workbench API
+    "uvicorn>=0.30,<1",    # local workbench server
+    "fastexcel>=0.12.0",   # Excel data imports
+    "streamlit>=1.45.0",   # legacy Streamlit workbench
     "plotly>=5.15.0",      # workbench charts
     "matplotlib>=3.7.0",   # rate-table plots
     "seaborn>=0.12.0",     # rate-table plots
@@ -65,11 +68,12 @@ Repository = "https://github.com/serband/easy_glm"
 Issues = "https://github.com/serband/easy_glm/issues"
 
 [project.optional-dependencies]
-desktop = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
+desktop = []  # compatibility extra: the workbench is now included by default
 
 dev = [
     "fastexcel>=0.12.0",   # read Excel back in tests (polars engine)
     "pytest>=7.0.0",
+    "httpx>=0.27,<1",     # FastAPI test client
     "pytest-cov>=4.0.0",
     "black>=23.0.0",
     "ruff>=0.1.0",

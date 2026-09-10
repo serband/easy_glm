@@ -527,17 +527,18 @@ def null_model_predict(
             raise ValueError("divide_target_by_weight=True needs a weight column")
         y = y / weight
     train_offset = train[cfg.offset].cast(pl.Float64).to_numpy() if cfg.offset else None
-    # glum rejects a zero-column matrix.  A permanently zero column is exactly
-    # equivalent to no predictor, while letting its intercept fitter handle all
-    # supported families and links.  Its coefficient has no possible effect.
+    # One constant coefficient is the intercept-only model. A zero dummy
+    # column alongside a fitted intercept creates a singular IRLS Hessian.
     model = GeneralizedLinearRegressor(
         family=family,
         link=link,
         alpha=0.0,
         l1_ratio=1.0,
         scale_predictors=False,
+        fit_intercept=False,
+        gradient_tol=1e-10,
     ).fit(
-        np.zeros((train.height, 1), dtype=np.float64),
+        np.ones((train.height, 1), dtype=np.float64),
         np.asarray(y, dtype=np.float64),
         sample_weight=None if weight is None else np.asarray(weight, dtype=np.float64),
         offset=(
@@ -547,7 +548,7 @@ def null_model_predict(
     score_offset = data[cfg.offset].cast(pl.Float64).to_numpy() if cfg.offset else None
     return np.asarray(
         model.predict(
-            np.zeros((data.height, 1), dtype=np.float64),
+            np.ones((data.height, 1), dtype=np.float64),
             offset=(
                 None
                 if score_offset is None

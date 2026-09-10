@@ -21,6 +21,11 @@ def main() -> None:
     parser.add_argument(
         "--headless", action="store_true", help="do not open a browser tab"
     )
+    parser.add_argument(
+        "--legacy-streamlit",
+        action="store_true",
+        help="open the legacy Streamlit workbench",
+    )
     args = parser.parse_args()
     launch(
         args.project,
@@ -28,6 +33,7 @@ def main() -> None:
         host=args.host,
         block=True,
         headless=args.headless,
+        legacy_streamlit=args.legacy_streamlit,
     )
 
 

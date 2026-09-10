@@ -110,7 +110,7 @@ def _launcher_args(
     headless: bool,
     host: str | None,
 ) -> list[str]:
-    args = [sys.executable, "-m", "easy_glm.app"]
+    args = [sys.executable, "-m", "easy_glm.app", "--legacy-streamlit"]
     if project_path is not None:
         args.append(str(project_path))
     args += ["--port", str(port)]
@@ -140,7 +140,7 @@ def _launcher_env() -> dict[str, str]:
     return env
 
 
-def launch(
+def launch_streamlit(
     project_path: str | Path | None = None,
     *,
     data: Any | None = None,
@@ -207,4 +207,55 @@ def launch(
     return proc
 
 
-__all__ = ["launch"]
+def launch(
+    project_path: str | Path | None = None,
+    *,
+    data: Any | None = None,
+    port: int = 8501,
+    block: bool = False,
+    headless: bool = False,
+    host: str | None = "localhost",
+    legacy_streamlit: bool = False,
+) -> subprocess.Popen:
+    """Open the Svelte workbench and return its server process.
+
+    Accept a project JSON or a pandas/Polars frame. With neither, open an empty
+    workspace. ``headless`` suppresses the browser; ``block`` waits until exit.
+    The workbench binds to loopback only. Applied edits stay in this session;
+    download the project JSON to keep them. The legacy Streamlit interface is
+    available with ``legacy_streamlit=True``.
+    """
+    if legacy_streamlit:
+        return launch_streamlit(
+            project_path,
+            data=data,
+            port=port,
+            block=block,
+            headless=headless,
+            host=host,
+        )
+    from easy_glm.desktop import launch as launch_desktop
+
+    process = launch_desktop(
+        project_path, data=data, port=port, open_browser=not headless, host=host
+    )
+    if block:
+        try:
+            # A bounded wait keeps Python responsive to Ctrl+C across runtimes.
+            while True:
+                try:
+                    process.wait(timeout=0.5)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+        except KeyboardInterrupt:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+    return process
+
+
+__all__ = ["launch", "launch_streamlit"]

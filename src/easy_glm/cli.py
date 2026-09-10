@@ -302,11 +302,19 @@ def cmd_workbench(args: argparse.Namespace) -> int:
         from easy_glm.app import launch
     except ImportError as exc:  # pragma: no cover - depends on the install
         raise CliError(
-            f"the workbench needs Streamlit: pip install 'easy_glm[ui]' ({exc})"
+            f"the workbench dependencies are missing: reinstall easy_glm ({exc})"
         ) from exc
-    proc = launch(
-        args.project, port=args.port, block=True, headless=bool(args.headless)
-    )
+    try:
+        proc = launch(
+            args.project,
+            port=args.port,
+            block=True,
+            headless=bool(args.headless),
+            host=args.host,
+            legacy_streamlit=args.legacy_streamlit,
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise CliError(str(exc)) from exc
     return int(proc.returncode or 0)
 
 
@@ -355,6 +363,14 @@ def build_parser() -> argparse.ArgumentParser:
     wb.add_argument("project", nargs="?", default=None, help="project JSON to open")
     wb.add_argument("--port", type=int, default=8501)
     wb.add_argument("--headless", action="store_true", help="do not open a browser tab")
+    wb.add_argument(
+        "--host", default="localhost", help="loopback host (localhost or 127.0.0.1)"
+    )
+    wb.add_argument(
+        "--legacy-streamlit",
+        action="store_true",
+        help="open the legacy Streamlit workbench",
+    )
     wb.set_defaults(func=cmd_workbench)
     return parser
 

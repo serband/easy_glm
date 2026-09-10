@@ -11,7 +11,7 @@ export default defineConfig({
     },
     webServer: {
         env: process.env.EASYGLM_TEST_SOURCE ? { PYTHONPATH: process.env.EASYGLM_TEST_SOURCE } : {},
-        command: '../.venv/bin/python -m easy_glm.desktop --port 8770',
+        command: '../.venv/bin/python -m easy_glm.desktop --demo --port 8770',
         url: 'http://127.0.0.1:8770/health',
         reuseExistingServer: false,
         timeout: 60000,

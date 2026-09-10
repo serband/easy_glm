@@ -48,3 +48,46 @@ jobs:
         with:
           name: coverage-xml
           path: coverage.xml
+
+  workbench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install workbench and browser dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install .[dev]
+          cd frontend
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Check and build frontend
+        working-directory: frontend
+        run: |
+          npm run check
+          npm run build
+          node --test tests/*.test.js
+          git diff --exit-code -- ../src/easy_glm/desktop/static
+      - name: Test modelling, sessions and exports in the browser
+        working-directory: frontend
+        env:
+          EASYGLM_TEST_SOURCE: ${{ github.workspace }}/src
+        run: |
+          npx playwright test --config playwright.onboarding.config.js
+          npx playwright test --config playwright.models.config.js
+          npx playwright test --config playwright.interactions.config.js
+          npx playwright test --config playwright.exports.config.js
+          npx playwright test --config playwright.session.config.js
+      - name: Upload browser failure details
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workbench-test-results
+          path: frontend/test-results/

@@ -1,147 +1,84 @@
 # Workbench walkthrough
 
-This walkthrough uses the public Swedish motorcycle portfolio to fit annual
-incurred claim cost with a Tweedie GLM. The same screens are used for a Poisson,
-Gamma, Gaussian or binomial model.
+## 1. Open your data
 
-The workbench is a browser interface over the same EasyGLM workflow available
-from Python. It records the choices you make and can export them as a Python
-script; it does not fit or change a model until you ask it to.
+Run `easy-glm-workbench`. On **Project & data**, enter a CSV, Parquet or Excel
+file path, or choose **Saved project** to reopen exported project JSON. Paths
+refer to files on the computer running EasyGLM.
 
-## 1. Start with the data
-
-The shortest reproducible route is to load the data in Python, clean anything
-that must be dealt with before modelling, then pass the frame to the workbench:
+You can also supply a pandas or Polars dataframe directly:
 
 ```python
-import polars as pl
-
 import easy_glm
 
 df = easy_glm.load_swedish_motorcycle_data()
-df = df.filter(pl.col("Exposure") > 0)
-
+df = df.filter(df["Exposure"] > 0)
 easy_glm.launch_workbench(data=df)
-# Optional explicit settings:
-# easy_glm.launch_workbench(data=df, port=8501, headless=True)
 ```
 
-A pandas dataframe is also accepted. EasyGLM converts the supplied frame to
-Polars and writes a temporary Parquet snapshot because the browser workbench
-runs in a separate process; it is not a live reference to the Python variable.
+The launcher takes a Parquet snapshot of the dataframe. Changes in the browser
+do not change your Python variable or source file. Keep the terminal open.
 
-Alternatively, start `easy-glm-workbench` and choose a local data file on
-**Project & data**. A path points to a file on the machine running the
-workbench. Uploading from the browser first stores a local copy of that file.
-After trying a built-in sample, use **Start over and choose another sample** on
-the same page. The workbench warns before discarding an unsaved setup, then
-returns to the two sample choices.
+## 2. Assign roles and split the data
 
-## 2. Assign the column roles
+On **Variables**, use the table or JSON editor to assign the target, weight and
+predictors. For the Swedish example, use `ClaimAmount` as target, `Exposure`
+as weight, and `OwnerAge`, `Gender`, `Area`, `RiskClass`, `VehAge` and `BonusClass`
+as predictors. Ignore `ClaimNb`: known claim counts would leak information.
 
-On **Variables**, use:
+Preview and apply your variable settings. On **Model**, configure a reproducible
+training/holdout split, such as 70% training with seed 42. If you already have a
+split column, specify which value means training.
 
-- `ClaimAmount` as the target;
-- `Exposure` as the weight;
-- `OwnerAge`, `Gender`, `Area`, `RiskClass`, `VehAge` and `BonusClass` as
-  predictors; and
-- `ClaimNb` as ignored for this model, because a known claim count would leak
-  information into the incurred-cost prediction.
+## 3. Define and fit a model
 
-Use the roles table or **Bulk edit with JSON**. JSON edits are validated and
-saved only when you select **Apply JSON changes**; the table and JSON then show
-the same setup. The toggle's question mark explains the JSON format. Roles make
-columns available to models; choose each model's factors and interactions on
-**Model**. Interactions do not need a separate column role.
+Create a model, select its family, target and weight, and choose its predictors.
+For annual incurred cost, use Tweedie with power 1.5 and **Divide target by weight**.
+For claim frequency, use Poisson with claim count and exposure instead.
 
-Review the detected data types and any renames or recodes. Then, in the
-**Train / holdout split** section on the same Variables page, choose a random
-70/30 training and holdout split with seed 42.
-The training rows are used to fit and select the model. Holdout rows are kept
-out of exploration and modelling decisions and are used to check how the
-finished model behaves on unseen data. The later workflow pages remain locked
-until a target and at least one predictor are assigned and both subsets exist.
-Other columns may remain unassigned. Ignored columns are also excluded from the
-residual-factor search.
+**Factor design** controls the main effects and optional interactions. Interactions
+fit in a second stage, leaving the fitted main effects fixed. Review the settings,
+apply them, then select **Fit model**. Fitting runs in the background.
 
-If the data already contains a split column, select that column and explicitly
-identify the value which means “training”.
+![Model design](../docs/images/workbench-model-design.png)
 
-## 3. Define the model
+## 4. Check diagnostics
 
-On **Model**, create a model named `BurnCost` and choose:
+Inspect training and holdout actual-versus-expected curves. Exposure bars share
+the chart on a secondary axis. Review lift, Gini and the regularisation path.
+Permutation importance ranks the performance loss from shuffling each training
+predictor. Residual-factor searches help identify omitted variables or interactions.
+Check suggested changes on holdout data before keeping them.
 
-- family: `tweedie`;
-- target: `ClaimAmount`;
-- weight: `Exposure`;
-- **Divide target by weight**: selected; and
-- Tweedie power: `1.5`.
+![Diagnostics](../docs/images/workbench-diagnostics.png)
 
-This fits annual incurred claim cost. The power is fixed for this example;
-automatic Tweedie-power selection is future work.
+## 5. Compare alternatives
 
-![Tweedie model definition in the workbench](../docs/images/workbench-model-design.png)
+Fit a second model and open **Compare**. Choose the two models to compare their
+metrics, double lift and rate-table differences. Designate a champion explicitly.
 
-The factor-design section shows how every numeric predictor is banded. Leaving
-the number of bins at zero uses the default quantile design. Entering another
-number recalculates the suggested knots. Applying a comma-separated knot list
-switches that factor to an explicit custom design.
+## 6. Adjust rate tables
 
-Interactions are optional. The preview shows the exposure in each candidate
-cell, but an interaction is not part of the model until **Add interaction** has
-been selected. Sparse cells below the chosen exposure threshold receive no
-separate adjustment.
+On **Rate tables**, the original fit stays visible. Choose an adjustment from
+the dropdown, change its options and inspect the preview. **Apply adjustment**
+saves it. Moving average uses the last N points; isotonic smoothing enforces an
+increasing or decreasing shape. Caps/floors and manual row edits are also available.
 
-## 4. Fit it
+Check actual versus expected underneath. Undo restores the prior applied state;
+named snapshots keep adjustment versions. Rebalancing changes the base rate to
+restore the original fitted training total.
 
-Keep cross-validation selected, use five folds, and select **Fit model**.
-EasyGLM shuffles those folds reproducibly using the project’s split seed. If the
-model contains interactions, their second-stage validation uses out-of-fold
-main-model predictions rather than fitted values from the same rows.
+## 7. Export your work
 
-The model page then shows the selected penalty, retained coefficients,
-training and holdout metrics, and the regularisation path.
+**Export** offers Excel rate tables, a `.easyglm` JSON scorer, project JSON,
+a Python reproduction script and an HTML report. Exports use applied settings;
+unsaved previews are excluded.
 
-## 5. Check the diagnostics
+Export the project before stopping the server. It preserves data locations,
+roles, split, model definitions, adjustments and snapshots. Reopen it and refit
+to continue; fitted runs and session Undo are not included. Use the scorer to
+keep the fitted rates. A Python reproduction script refits from the source data.
 
-On **Diagnostics**:
-
-1. Compare training and holdout A/E by each fitted factor. A pattern which is
-   present only in training is a warning sign; a pattern in both may indicate a
-   design that is too coarse.
-2. Review lift and Gini as ranking diagnostics, not calibration measures.
-3. Use residual-factor search to find omitted structure. The search uses
-   training rows only and excludes fields marked ignored; validate anything it
-   suggests on holdout data.
-4. Fit a second model before using the challenger overlay or double-lift chart.
-   With no incumbent model, double lift uses the null model as its benchmark.
-
-![Training and holdout diagnostics in the workbench](../docs/images/workbench-diagnostics.png)
-
-## 6. Compare and adjust
-
-Create a second model when you want to test a different design, penalty or
-interaction. **Compare** shows the performance and rate-table differences
-between the selected model and its challenger.
-
-On **Rate tables**, inspect the fitted relativities and exposure behind every
-band. Smoothing, caps and manual edits create an adjusted prediction without
-refitting the original model, so the actual, fitted and adjusted lines remain
-separate. Check both training and holdout views after an adjustment.
-
-## 7. Export or resume later
-
-Use **Export** to download:
-
-- the complete workflow as Python;
-- a portable EasyGLM scorer;
-- Excel rate tables; or
-- a self-contained HTML model report.
-
-Saving the project preserves data locations, roles, preparation, split, model
-definitions and rate-table adjustments. Fitted runs are stored beside it and
-restored only while the data and setup still match.
-
-For the equivalent Python fit, see [basic_usage.py](basic_usage.py). To create
-a ready-to-open workbench project in code, see
-[easy_glm_demo.py](easy_glm_demo.py).
+The previous Streamlit interface remains available with
+`easy-glm-workbench --legacy-streamlit`, including its additional preparation
+editors and fitted-session persistence.

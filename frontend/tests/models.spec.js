@@ -55,7 +55,10 @@ test('Variables → split/model → background fit → diagnostics → rate tabl
     await page.getByRole('button', { name: 'Rate tables', exact: true }).click();
     await expect(page.getByLabel('Rate table variable', { exact: true })).toBeVisible();
     await page.getByLabel('Rate table variable', { exact: true }).selectOption('DriverAge');
-    await expect(page.locator('.numeric-curve')).toHaveCount(2);
+    await expect(
+        page.getByRole('img', { name: 'Original fitted relativities for DriverAge', exact: true }),
+    ).toBeVisible();
+    await expect(page.locator('.numeric-curve')).toHaveCount(1);
     await page.locator('.rate-table-card > summary').click();
     await expect(page.locator('.rate-grid')).toContainText('relativity');
     await expect(page.locator('.rate-grid')).toContainText('slope');

@@ -1,4 +1,4 @@
-"""Run the local experiment: python -m easy_glm.desktop [--project PATH]."""
+"""Run the local workbench: python -m easy_glm.desktop [--project PATH]."""
 
 from __future__ import annotations
 
@@ -11,26 +11,32 @@ def main() -> None:
     import polars as pl
     import uvicorn
 
-    from easy_glm.workflow.prep import load_source
+    from easy_glm.desktop.loading import load_project_input
     from easy_glm.workflow.project import Project
 
     from .server import create_app
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path)
+    parser.add_argument(
+        "--demo", action="store_true", help="open the synthetic demonstration dataset"
+    )
     parser.add_argument("--restore-session", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--launch-id", default="", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.project and args.demo:
+        parser.error("choose --project or --demo, not both")
+    if not 1 <= args.port <= 65535:
+        parser.error("port must be between 1 and 65535")
+    if args.restore_session and not args.project:
+        parser.error("--restore-session requires --project")
     if args.project:
-        project = Project.from_json(args.project)
-        path = Path(project.data.source.path)
-        if not path.is_absolute():
-            project.data.source.path = str(
-                (args.project.resolve().parent / path).resolve()
-            )
-        raw = load_source(project.data.source)
-    else:
+        try:
+            project, raw = load_project_input("project", args.project)
+        except Exception as exc:
+            parser.error(str(exc))
+    elif args.demo:
         rng = np.random.default_rng(42)
         raw = pl.DataFrame(
             {
@@ -55,7 +61,9 @@ def main() -> None:
             "AnnualMileage": "predictor",
             "InternalCode": "ignore",
         }
-    print(f"EasyGLM experiment: http://127.0.0.1:{args.port}", flush=True)
+    else:
+        project, raw = Project(name="Untitled project"), pl.DataFrame()
+    print(f"EasyGLM workbench: http://127.0.0.1:{args.port}", flush=True)
     uvicorn.run(
         create_app(
             project,

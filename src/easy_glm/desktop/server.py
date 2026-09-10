@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from easy_glm.desktop.exports import ExportRequest, export_attachment
 from easy_glm.desktop.jobs import FitJobs, model_key
+from easy_glm.desktop.loading import OpenProject, load_project_input
 from easy_glm.desktop.modeling import (
     ModelEdit,
     Revision,
@@ -270,15 +271,44 @@ def create_app(
                 "Applied settings changed. Reconnect and review the current settings before saving or fitting.",
             )
 
+    @app.post("/api/project/open")
+    def open_project(edit: OpenProject) -> dict[str, Any]:
+        nonlocal current, raw, revision, session_id, project_id, token, jobs, reviews
+        with lock:
+            check_revision(edit)
+        try:
+            loaded, loaded_raw = load_project_input(edit.kind, edit.path)
+        except Exception as exc:  # Invalid inputs leave the current session intact.
+            raise HTTPException(422, f"Could not open this file: {exc}") from exc
+        with lock:
+            check_revision(edit)
+            previous_jobs, previous_reviews = jobs, reviews
+            jobs, reviews = FitJobs(), ReviewJobs()
+            jobs.on_complete = complete_fit
+            current, raw = loaded, loaded_raw
+            revision = 0
+            session_id = secrets.token_urlsafe(16)
+            project_id = secrets.token_hex(32)
+            token = secrets.token_urlsafe(32)
+            undo_steps.clear()
+            redo_steps.clear()
+            result = snapshot()
+        # A finishing worker may acquire the project lock; never join it inside.
+        previous_reviews.close()
+        previous_jobs.close()
+        return result
+
     @app.get("/api/workbench")
     def workbench() -> dict[str, Any]:
         with lock:
-            saved, saved_revision = deepcopy(current), revision
+            saved, saved_raw = deepcopy(current), raw.clone()
+            saved_revision, saved_session = revision, session_id
+            saved_jobs = jobs.status(saved)
         return {
-            **setup_info(saved, raw),
+            **setup_info(saved, saved_raw),
             "revision": saved_revision,
-            "session_id": session_id,
-            "jobs": jobs.status(saved),
+            "session_id": saved_session,
+            "jobs": saved_jobs,
             "champion": saved.champion,
         }
 
@@ -697,10 +727,11 @@ def create_app(
         # Copy briefly under lock; aggregation does not block edits or health.
         with lock:
             saved, plot_revision = deepcopy(current), revision
-        if column not in raw.columns:
+            plot_raw = raw.clone()
+        if column not in plot_raw.columns:
             raise HTTPException(404, "Unknown source column.")
         try:
-            frame = raw.head(50_000)
+            frame = plot_raw.head(50_000)
             prepared = apply_variables(frame, saved.data)
             final = saved.data.renames.get(column, column)
             result = univariate(prepared, final, n_bins=16, max_levels=25)
@@ -709,7 +740,7 @@ def create_app(
                 "column": final,
                 "revision": plot_revision,
                 "rows": prepared.height,
-                "sampled": raw.height > 50_000,
+                "sampled": plot_raw.height > 50_000,
                 "table": table,
             }
         except (ValueError, TypeError, KeyError, pl.exceptions.PolarsError) as exc:

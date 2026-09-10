@@ -862,3 +862,21 @@ live browser without project, job or history changes or browser errors. On all
 50,000 French motor rows, the exported scorer matched predictions exactly and
 an independent Excel reconstruction differed by at most 2.22e-16. The live
 Export layout was checked at 919 pixels.
+
+### Promotion to the default workbench (0.460)
+
+The standard console and Python launchers now open this workbench. Local CSV,
+Parquet and Excel files and saved project JSON can be opened on Project & data;
+pandas/Polars dataframes remain supported by `launch_workbench(data=...)`.
+Replacing a project validates the new input before discarding the old session,
+then cancels its jobs and rotates the session identity. The previous Streamlit
+interface remains available with `--legacy-streamlit`.
+
+Release checks cover the public launch paths and shutdown, a clean wheel install,
+all 25 existing browser workflows, 14 JavaScript unit tests, and a new empty-start
+browser flow through local data loading, export and project reopening. The latter
+caught and fixed a details panel closing when its selected file type changed.
+The weighted-logit null benchmark noted above is fixed with an identifiable
+one-parameter model, checked against an independent likelihood solution.
+Main-branch CI now checks the frontend build and critical browser workflows as
+well as the Python suite, formatting, lint and types.

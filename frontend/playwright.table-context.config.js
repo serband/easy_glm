@@ -7,7 +7,7 @@ export default defineConfig({
     use: { ...base.use, baseURL: 'http://127.0.0.1:8784' },
     webServer: {
         ...base.webServer,
-        command: '../.venv/bin/python -m easy_glm.desktop --port 8784',
+        command: '../.venv/bin/python -m easy_glm.desktop --demo --port 8784',
         url: 'http://127.0.0.1:8784/health',
     },
 });

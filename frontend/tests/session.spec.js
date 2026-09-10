@@ -10,7 +10,7 @@ async function start() {
     const id = randomUUID();
     server = spawn(
         path.join(root, '.venv/bin/python'),
-        ['-m', 'easy_glm.desktop', '--port', '8773', '--launch-id', id],
+        ['-m', 'easy_glm.desktop', '--demo', '--port', '8773', '--launch-id', id],
         {
             cwd: root,
             env: {

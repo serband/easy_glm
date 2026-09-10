@@ -20,7 +20,7 @@ easy-glm-workbench
 ```
 
 It opens EasyGLM in your browser, normally at
-`http://localhost:8501`. Keep this terminal open while you use the workbench.
+`http://127.0.0.1:8501`. Keep this terminal open while you use the workbench.
 
 You can also open it from a Python session:
 
@@ -41,12 +41,13 @@ easy_glm.launch_workbench(data=df)
 The workbench opens with `df` loaded. Choose the target, weight and predictors
 on the **Variables** page, then define and fit the model on the **Model** page.
 `launch_workbench()` prints the exact URL to open (for example,
-`http://localhost:8501`).
+`http://127.0.0.1:8501`).
 
-For a first run without supplying a file, open **Project & data** and choose the
-French motor sample for Poisson claim frequency or the Swedish motorcycle
-sample for Tweedie burn cost. EasyGLM downloads a chosen sample once and keeps
-a local copy for later runs.
+Without a supplied dataframe, **Project & data** opens first. Enter the path to
+a CSV, Parquet or Excel file, or open a saved project JSON.
+
+The Svelte workbench is the default from version **0.460**. The previous
+Streamlit interface remains available with `easy-glm-workbench --legacy-streamlit`.
 
 To reopen a saved project later, pass its project file after the command:
 
@@ -65,7 +66,7 @@ fit anything until you select **Fit model**.
 
 | Design and fit | Validate on training and holdout data |
 | --- | --- |
-| ![Tweedie model definition in the EasyGLM workbench](docs/images/workbench-model-design.png) | ![Training and holdout diagnostics in the EasyGLM workbench](docs/images/workbench-diagnostics.png) |
+| ![Model definition in the EasyGLM workbench](docs/images/workbench-model-design.png) | ![Training and holdout diagnostics in the EasyGLM workbench](docs/images/workbench-diagnostics.png) |
 
 For the practical screen-by-screen route, see the
 [workbench walkthrough](examples/workbench_walkthrough.md). The

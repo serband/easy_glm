@@ -2,6 +2,28 @@
 
 This is the user-facing record of useful new features and fixes.
 
+## 0.460 — 10 September 2026
+
+- **The new workbench is now the default.** The standard command and Python
+  launcher open the Svelte interface. Open CSV, Parquet, Excel or a saved project,
+  or pass a pandas/Polars dataframe from Python. The previous interface remains
+  available with `--legacy-streamlit`.
+- **A clearer modelling workflow.** Set up variables in the table or JSON, define
+  main effects and interactions, fit in the background, and compare fitted models.
+- **Faster diagnostics.** Cached actual-versus-expected views, permutation
+  importance, residual-factor searches, lift and double lift sit alongside
+  regularisation paths with retained coefficients on a secondary axis.
+- **Adjustments keep the original fit visible.** Choose a tool from the dropdown,
+  review its effect and Apply to save. Moving averages use the last N points;
+  isotonic smoothing, caps/floors and row edits share Undo and named snapshots.
+  A fresh fit starts without inherited adjustments.
+- **Complete exports.** Download Excel rate tables, a JSON `.easyglm` scorer,
+  project JSON, Python reproduction scripts and HTML reports. Exports include
+  applied adjustments and exclude unsaved previews.
+- **More reliable scoring checks.** Reproduction scripts use the final frozen
+  main effects when fitting interactions and calculate weighted A/E correctly.
+  Weighted-binomial null-model fitting no longer uses redundant intercept terms.
+
 ## 0.452 — 8 September 2026
 
 ### Fixes and improvements

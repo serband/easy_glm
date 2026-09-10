@@ -1042,8 +1042,15 @@ class TestCliWorkbench:
         class FakeProc:
             returncode = 0
 
-        def fake_launch(path, *, port, block, headless):
-            seen.update(path=path, port=port, block=block, headless=headless)
+        def fake_launch(path, *, port, block, headless, host, legacy_streamlit):
+            seen.update(
+                path=path,
+                port=port,
+                block=block,
+                headless=headless,
+                host=host,
+                legacy_streamlit=legacy_streamlit,
+            )
             return FakeProc()
 
         monkeypatch.setattr(app, "launch", fake_launch)
@@ -1056,9 +1063,11 @@ class TestCliWorkbench:
             "port": 8599,
             "block": True,
             "headless": True,
+            "host": "localhost",
+            "legacy_streamlit": False,
         }
 
-    def test_launcher_uses_the_public_easy_glm_app_entrypoint(self, monkeypatch):
+    def test_legacy_launcher_uses_the_public_easy_glm_app_entrypoint(self, monkeypatch):
         import easy_glm.app as app
 
         seen: list[str] = []
@@ -1074,7 +1083,7 @@ class TestCliWorkbench:
             return FakeProc()
 
         monkeypatch.setattr(app.subprocess, "Popen", fake_popen)
-        app.launch(port=8599, headless=True)
+        app.launch_streamlit(port=8599, headless=True)
 
         assert seen[:3] == [sys.executable, "-m", "easy_glm.app"]
         assert "--port" in seen and "8599" in seen
@@ -1095,7 +1104,7 @@ class TestCliWorkbench:
             return FakeProc()
 
         monkeypatch.setattr(app.subprocess, "Popen", fake_popen)
-        app.launch(block=True, headless=True)
+        app.launch_streamlit(block=True, headless=True)
         option = seen.index("--server.fileWatcherType")
         assert seen[option + 1] == "none"
         assert option < seen.index("--")
@@ -1134,7 +1143,7 @@ class TestCliWorkbench:
         monkeypatch.setenv("PYTHONHOME", "injected_home")
         monkeypatch.setattr(app.subprocess, "Popen", fake_popen)
 
-        app.launch(port=8599, headless=True)
+        app.launch_streamlit(port=8599, headless=True)
 
         assert "PYTHONPATH" not in seen_env
         assert "PYTHONHOME" not in seen_env
@@ -1146,8 +1155,7 @@ class TestCliWorkbench:
 
         assert easy_glm.launch_workbench is app.launch
 
-    def test_public_launcher_opens_an_in_memory_frame(self, tmp_path, monkeypatch):
-        import easy_glm
+    def test_legacy_launcher_opens_an_in_memory_frame(self, tmp_path, monkeypatch):
         import easy_glm.app as app
         from easy_glm.workflow import Project
 
@@ -1166,7 +1174,7 @@ class TestCliWorkbench:
             lambda args, **_kwargs: seen.extend(args) or FakeProc(),
         )
 
-        result = easy_glm.launch_workbench(data=pl.DataFrame({"claims": [0, 1]}))
+        result = app.launch_streamlit(data=pl.DataFrame({"claims": [0, 1]}))
 
         assert isinstance(result, FakeProc)
         project_path = Path(
@@ -1206,7 +1214,7 @@ class TestCliWorkbench:
         monkeypatch.setattr(app.subprocess, "Popen", fake_popen)
 
         with pytest.raises(RuntimeError, match="failed to start") as exc:
-            app.launch(port=8507, headless=True)
+            app.launch_streamlit(port=8507, headless=True)
 
         msg = str(exc.value)
         assert "boom from child" in msg
@@ -1256,7 +1264,7 @@ class TestCliWorkbench:
         proc = FakeProc()
         monkeypatch.setattr(app.subprocess, "Popen", lambda _args, **_kwargs: proc)
 
-        assert app.launch(block=True) is proc
+        assert app.launch_streamlit(block=True) is proc
         assert proc.terminated is True
         assert proc.waits == 2
 

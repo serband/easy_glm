@@ -2,6 +2,7 @@
     import { onMount } from 'svelte';
     import ModelWorkbench from './ModelWorkbench.svelte';
     import ExportPanel from './ExportPanel.svelte';
+    import ProjectOpen from './ProjectOpen.svelte';
     let comparison = '',
         modelContext = { fitted: [], selected: '', champion: null };
     let view = 'variables',
@@ -357,11 +358,19 @@
             if (!state.columns.some((c) => c.name === selected))
                 selected = state.setup.roles.predictor[0] || state.columns[0]?.name;
             void loadPlot();
+            if (!state.columns.length) await navigate('project');
         } catch (e) {
             error = e.message;
         } finally {
             busy = false;
         }
+    }
+    async function projectOpened() {
+        comparison = '';
+        modelContext = { fitted: [], selected: '', champion: null };
+        resultsReady = false;
+        await reload();
+        await navigate('variables');
     }
     async function review() {
         if (tab === 'json' && !parseRoles()) return;
@@ -483,7 +492,7 @@
             >{/if}
         <div class="setup-progress" aria-label="Setup progress">
             <strong>Setup progress</strong>
-            <span>{state ? '✓' : '○'} Data loaded</span>
+            <span>{state?.columns.length ? '✓' : '○'} Data loaded</span>
             <span
                 >{state?.setup.assignments.target && state?.setup.roles.predictor.length
                     ? '✓'
@@ -494,7 +503,7 @@
         </div>
         <div class="rail-bottom">
             <span class="status-dot"></span> Local session
-            <div class="version">Svelte experiment · model workbench</div>
+            <div class="version">EasyGLM 0.460</div>
         </div>
     </aside>
     <div class="workspace">
@@ -504,11 +513,7 @@
                 <strong>{pageTitles[view]}</strong>
             </div>
             <div class="header-actions">
-                <span class="pill">EXPERIMENT</span><button
-                    class="quiet"
-                    onclick={download}
-                    disabled={!state}>Export project</button
-                >
+                <button class="quiet" onclick={download} disabled={!state}>Export project</button>
             </div>
         </header>
         <main>
@@ -727,59 +732,52 @@
                 <div class="heading">
                     <div>
                         <h1>Project & data</h1>
-                        <p>Review the loaded portfolio, then work through the setup.</p>
+                        <p>Open your data or continue a saved project.</p>
                     </div>
                 </div>
                 {#if projectError}<p role="alert">{projectError}</p>{/if}
-                <div class="model-card">
-                    <h2>{state?.name || 'Current project'}</h2>
-                    <div class="result-totals">
-                        <span><b>{state?.row_count.toLocaleString()}</b> rows</span><span
-                            ><b>{state?.columns.length}</b> source variables</span
-                        ><span><b>{state?.models.length}</b> models</span>
+                {#if state}<ProjectOpen {api} {state} onOpened={projectOpened} />{/if}
+                {#if state?.columns.length}<div class="model-card">
+                        <h2>{state?.name || 'Current project'}</h2>
+                        <div class="result-totals">
+                            <span><b>{state?.row_count.toLocaleString()}</b> rows</span><span
+                                ><b>{state?.columns.length}</b> source variables</span
+                            ><span><b>{state?.models.length}</b> models</span>
+                        </div>
+                        <p>
+                            Applied settings are held in this local session. Export the project to
+                            keep them.
+                        </p>
+                        <div class="model-actions">
+                            <button class="primary" onclick={() => navigate('variables')}
+                                >Set up variables</button
+                            ><button onclick={() => navigate('model')}>Review model</button>
+                        </div>
                     </div>
-                    <p>
-                        Applied settings are held in this local session. Export the project to keep
-                        them.
-                    </p>
-                    <div class="model-actions">
-                        <button class="primary" onclick={() => navigate('variables')}
-                            >Set up variables</button
-                        ><button onclick={() => navigate('model')}>Review model</button>
-                    </div>
-                </div>
-                {#if projectInfo}<div class="model-card">
-                        <h2>Applied data setup</h2>
-                        <dl class="project-facts">
-                            <dt>Source</dt>
-                            <dd>
-                                {projectInfo.data?.source?.path ||
-                                    'Data loaded into the local session'}
-                            </dd>
-                            <dt>Target</dt>
-                            <dd>{state?.setup.assignments.target || 'Not assigned'}</dd>
-                            <dt>Weight</dt>
-                            <dd>{state?.setup.assignments.weight || 'None'}</dd>
-                            <dt>Split</dt>
-                            <dd>
-                                {projectInfo.data?.split?.mode || 'Not configured'} · {projectInfo
-                                    .data?.split?.column || 'No column'}
-                            </dd>
-                        </dl>
-                        <details>
-                            <summary>Applied project settings</summary>
-                            <pre>{JSON.stringify(projectInfo, null, 2)}</pre>
-                        </details>
-                    </div>{/if}
-                <details class="model-card">
-                    <summary>Features still available in Streamlit</summary>
-                    <p>
-                        Source selection and upload; recodes, derived columns and filters; leakage
-                        analysis; detailed knots, clamps, monotone constraints and interaction
-                        editing; Excel, report and script export. Existing project settings are
-                        retained here.
-                    </p>
-                </details>
+                    {#if projectInfo}<div class="model-card">
+                            <h2>Applied data setup</h2>
+                            <dl class="project-facts">
+                                <dt>Source</dt>
+                                <dd>
+                                    {projectInfo.data?.source?.path ||
+                                        'Data loaded into the local session'}
+                                </dd>
+                                <dt>Target</dt>
+                                <dd>{state?.setup.assignments.target || 'Not assigned'}</dd>
+                                <dt>Weight</dt>
+                                <dd>{state?.setup.assignments.weight || 'None'}</dd>
+                                <dt>Split</dt>
+                                <dd>
+                                    {projectInfo.data?.split?.mode || 'Not configured'} · {projectInfo
+                                        .data?.split?.column || 'No column'}
+                                </dd>
+                            </dl>
+                            <details>
+                                <summary>Applied project settings</summary>
+                                <pre>{JSON.stringify(projectInfo, null, 2)}</pre>
+                            </details>
+                        </div>{/if}
+                {/if}
             </section>
             <section hidden={view !== 'explore'} class="workflow-page">
                 <div class="heading">
@@ -883,16 +881,16 @@
                     {downloadProject}
                     {saveDownload}
                 />{/if}
-            {#if state && draft}<ModelWorkbench
-                    {api}
-                    {state}
-                    {view}
-                    bind:comparison
-                    onContext={(context) => (modelContext = context)}
-                    onState={modelState}
-                    onReady={(ready) => (resultsReady = ready)}
-                    onNavigate={navigate}
-                />{/if}
+            {#if state && draft}{#key state.project_id}<ModelWorkbench
+                        {api}
+                        {state}
+                        {view}
+                        bind:comparison
+                        onContext={(context) => (modelContext = context)}
+                        onState={modelState}
+                        onReady={(ready) => (resultsReady = ready)}
+                        onNavigate={navigate}
+                    />{/key}{/if}
         </main>
     </div>
 </div>
