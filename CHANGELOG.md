@@ -2,6 +2,15 @@
 
 This is the user-facing record of useful new features and fixes.
 
+## Unreleased
+
+- **Data summaries in model reports.** A new section before the rating factors
+  shows missing values, unique counts, minimum, maximum, range and small
+  distribution charts for the selected predictors and modelling fields. It also
+  includes mean, median, spread, skewness, excess kurtosis and numeric predictor
+  correlations. Summaries use training data; correlations use a reproducible
+  sample of up to 10,000 rows. Wide models show the strongest pairs.
+
 ## 0.461 — 10 September 2026
 
 - **Check predictors before fitting.** The Variables page can flag possible

@@ -32,6 +32,7 @@ import polars as pl
 from easy_glm.core.excel import interaction_matrices, rate_model_tables
 
 from . import _svg
+from ._report_data import PROFILE_CSS, data_summary_section
 from .diagnostics import (
     ae_by_pair,
     ae_by_variable,
@@ -386,7 +387,7 @@ def _variable_sections(
     challenger_pred: dict[str, np.ndarray] | None,
     challenger_name: str,
 ) -> str:
-    out = ['<section id="variables"><h2>2. Rating factors</h2>']
+    out = ['<section id="variables"><h2>3. Rating factors</h2>']
     out.append(
         '<p class="muted">One block per factor: the fitted relativities, then '
         "actual against expected on the training rows and on the holdout, and the "
@@ -464,7 +465,7 @@ def _interaction_sections(
     if not names:
         return ""
     out = [
-        '<section id="interactions"><h2>3. Interactions</h2>',
+        '<section id="interactions"><h2>4. Interactions</h2>',
         '<p class="muted">Cells multiply the two main effects; white is 1.00 '
         "(no adjustment) and grey is a cell with nothing in it. The heatmaps "
         "that follow are actual over expected in the same cells with the "
@@ -765,7 +766,8 @@ def to_report_html(
 
     ``df`` is the prepared frame (with the split column); it is split into
     training and holdout rows exactly as the fit did. Sections: summary (project,
-    data, split, metrics), one block per rating factor (relativities, actual vs
+    data, split, metrics), training data profiles and predictor correlations,
+    one block per rating factor (relativities, actual vs
     expected on train and holdout, the rate table), interaction heatmaps, lift
     and Gini, an appendix with the coefficients and the exported Python script —
     and, when ``challenger`` names a second fitted model, a comparison section
@@ -800,9 +802,10 @@ def to_report_html(
 
     tables = rate_model_tables(run.rate_model)
     inter = _interaction_sections(run, tables, subsets)
-    number = 4 if inter else 3
+    number = 5 if inter else 4
     body = [
         _summary_section(project, run, df, train, holdout, runs, names),
+        data_summary_section(run, train, holdout.height),
         _variable_sections(
             run, tables, subsets, challenger_pred or None, challenger or ""
         ),
@@ -826,6 +829,7 @@ def to_report_html(
 
     toc = [
         ("#summary", "Summary"),
+        ("#data-summary", "Data summary"),
         ("#variables", "Rating factors"),
         *([("#interactions", "Interactions")] if inter else []),
         ("#lift", "Lift and Gini"),
@@ -843,7 +847,7 @@ def to_report_html(
         f'<html lang="en"><head><meta charset="utf-8">'
         f'<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>{_esc(project.name)} — model report</title>"
-        f'<style>{_CSS}</style></head><body><div class="page">'
+        f'<style>{_CSS}{PROFILE_CSS}</style></head><body><div class="page">'
         f"<h1>{_esc(project.name)} — model report</h1>"
         f'<p class="sub">{subtitle} · generated {_esc(generated)}</p>'
         f'<nav class="toc">{nav}</nav>'

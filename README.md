@@ -84,6 +84,10 @@ In **Rate tables**, choose an adjustment from the dropdown to preview it, then
 click **Apply adjustment** to keep it. The original fit stays visible. Exports use
 applied results; Python reproduction scripts need a saved source-data file.
 
+The **HTML report** includes a training-data summary before the rating factors:
+missing values, ranges, unique counts, small distribution charts, shape statistics
+and correlations between numeric predictors.
+
 | Design and fit | Validate on training and holdout data |
 | --- | --- |
 | ![Model definition in the EasyGLM workbench](docs/images/workbench-model-design.png) | ![Training and holdout diagnostics in the EasyGLM workbench](docs/images/workbench-diagnostics.png) |

@@ -214,6 +214,9 @@ def test_scorer_excel_script_and_report_include_applied_state_only(
     assert report.headers["content-type"].startswith("text/html")
     assert "Challenger" in report.text and "Frequency" in report.text
     assert "Double lift" in report.text
+    assert "<h2>2. Data summary</h2>" in report.text
+    assert "Age: training distribution" in report.text
+    assert "Excess kurtosis" in report.text
     assert "2.3456" in report.text
     assert client.get("/api/project").json() == project_before
     assert revision(client) == rev_before

@@ -375,6 +375,100 @@ def report(workspace) -> str:
 
 
 class TestReport:
+    def test_data_summary_sits_between_summary_and_factors(self, report):
+        assert report.index('id="summary"') < report.index('id="data-summary"')
+        assert report.index('id="data-summary"') < report.index('id="variables"')
+        assert '<a href="#data-summary">Data summary</a>' in report
+        assert "<h2>2. Data summary</h2>" in report
+        assert "<h2>3. Rating factors</h2>" in report
+        headings = re.findall(r"<h2>(\d+)\.", report)
+        assert headings == [str(i) for i in range(1, len(headings) + 1)]
+
+    def test_data_profiles_use_selected_predictors_and_modelling_fields(self, report):
+        section = report.split('<section id="data-summary">')[1].split(
+            '<section id="variables">'
+        )[0]
+        for name in [*PREDICTORS_A, "ClaimNb", "Exposure"]:
+            assert f"{name}: training distribution" in section
+        assert "Density: training distribution" not in section
+        assert "IDpol: training distribution" not in section
+        assert "Excess kurtosis" in section
+        assert "Not included in numeric correlations: Region." in section
+
+    def test_holdout_values_do_not_enter_data_profiles(self, workspace, report):
+        frame = workspace["frame"].with_columns(
+            pl.when(pl.col("traintest") == 0)
+            .then(pl.lit(999_999.0))
+            .otherwise(pl.col("DrivAge"))
+            .alias("DrivAge")
+        )
+        changed = to_report_html(
+            workspace["project"],
+            workspace["runs"],
+            frame,
+            champion=MODEL_A,
+            challenger=MODEL_B,
+        )
+
+        def profile(text):
+            return text.split('<section id="data-summary">')[1].split(
+                '<section id="variables">'
+            )[0]
+
+        assert profile(changed) == profile(report)
+
+    def test_dropped_predictors_remain_visible_in_data_summary(self, workspace):
+        from dataclasses import replace
+
+        from easy_glm.workflow._report_data import data_summary_section
+        from easy_glm.workflow.prep import train_holdout
+
+        original = workspace["runs"][MODEL_A]
+        selected = [*original.config.predictors, "Constant", "Missing"]
+        run = replace(
+            original,
+            config=replace(original.config, predictors=selected),
+            dropped_predictors=["Constant", "Missing"],
+        )
+        train, holdout = train_holdout(
+            workspace["frame"], workspace["project"].data.split
+        )
+        train = train.with_columns(
+            pl.lit(1.0).alias("Constant"),
+            pl.lit(None, dtype=pl.Float64).alias("Missing"),
+        )
+        section = data_summary_section(run, train, holdout.height)
+        assert "Constant: training distribution" in section
+        assert '<span class="profile-name">Missing</span>' in section
+        assert "100%" in section
+        assert section.count("Omitted from fit: no training variation") == 2
+        assert original.config.predictors == PREDICTORS_A
+        unavailable = data_summary_section(run, train.drop("Missing"), holdout.height)
+        assert "Columns unavailable in the supplied data: Missing." in unavailable
+
+    def test_numeric_categorical_uses_levels_in_report(self, workspace):
+        from dataclasses import replace
+
+        from easy_glm.core.design import CategoricalEncoder, DesignSpec
+        from easy_glm.workflow._report_data import data_summary_section
+
+        original = workspace["runs"][MODEL_A]
+        run = replace(
+            original,
+            spec=DesignSpec(
+                {"Category": CategoricalEncoder("Category", ["1.0", "2.0"])}
+            ),
+            config=replace(
+                original.config, predictors=["Category"], target=None, weight=None
+            ),
+        )
+        frame = pl.DataFrame({"Category": [1.0, 2.0, float("inf"), None]})
+        section = data_summary_section(run, frame, 0)
+        assert "Predictor · Categorical" in section
+        assert "infinite values excluded" not in section
+        assert "At least two numeric predictors are needed" in section
+        assert "Location, spread and shape" not in section
+
     def test_it_is_self_contained(self, report):
         external = re.findall(
             r'(?:src|href)\s*=\s*["\']https?://[^"\']*', _no_scripts(report)
@@ -424,6 +518,9 @@ class TestReport:
         )
         assert 'id="var-drivage-region"' in html  # the interaction heatmap
         assert 'id="interactions"' in html
+        assert "<h2>4. Interactions</h2>" in html
+        headings = re.findall(r"<h2>(\d+)\.", html)
+        assert headings == [str(i) for i in range(1, len(headings) + 1)]
 
     def test_it_is_small_enough_to_email(self, report):
         assert len(report.encode()) < 5 * 1000 * 1000

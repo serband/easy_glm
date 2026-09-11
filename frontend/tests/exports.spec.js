@@ -61,6 +61,9 @@ test('downloads applied artifacts and excludes unsaved adjustment previews', asy
     const report = (await download('Download report (.html)', '.html')).toString();
     expect(report).toContain('Frequency');
     expect(report).toContain('<html');
+    expect(report).toContain('<h2>2. Data summary</h2>');
+    expect(report).toContain('training distribution');
+    expect(report).toContain('Excess kurtosis');
     const script = (await download('Download script (.py)', '.py')).toString();
     expect(script).toContain('fit_glm');
     expect(
