@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-test('interaction-only refits visibly reuse mains; main settings changes refit', async ({ page }) => {
+test('interaction-only refits visibly reuse mains; main settings changes refit', async ({ page }, testInfo) => {
     const button = (name) => page.getByRole('button', { name, exact: true });
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
@@ -17,7 +17,7 @@ test('interaction-only refits visibly reuse mains; main settings changes refit',
     await button('Save model settings').click();
     await button('Fit model').click();
     await expect(page.getByText('Unchanged main effects reused. Diagnostics and rate tables are ready.', { exact: true })).toBeVisible({ timeout: 45000 });
-    await page.screenshot({ path: '/private/tmp/easyglm-main-effects-reuse.png', fullPage: true });
+    await page.screenshot({ path: testInfo.outputPath('easyglm-main-effects-reuse.png'), fullPage: true });
     await page.getByLabel('Fixed alpha').fill('0.02');
     await button('Save model settings').click();
     await button('Fit model').click();

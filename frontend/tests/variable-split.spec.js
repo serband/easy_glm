@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-test('explicit split maps table and JSON and reaches exploration and fit', async ({ page }) => {
+test('explicit split maps table and JSON and reaches exploration and fit', async ({ page }, testInfo) => {
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     await page.goto('/');
@@ -46,7 +46,7 @@ test('explicit split maps table and JSON and reaches exploration and fit', async
     await page.getByRole('button', { name: /^Variables/ }).click();
     await page.locator('.split-row-values').scrollIntoViewIfNeeded();
     await page.screenshot({
-        path: '/private/tmp/easyglm-split-review/variables-split.png',
+        path: testInfo.outputPath('variables-split.png'),
         fullPage: true,
     });
     await page.getByLabel('Role for DriverAge', { exact: true }).selectOption('split');

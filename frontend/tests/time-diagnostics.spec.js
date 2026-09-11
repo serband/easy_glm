@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 
 test('time role survives JSON and shows all-row chronological diagnostics and factor drill-down', async ({
     page,
-}) => {
+}, testInfo) => {
     const button = (name) => page.getByRole('button', { name, exact: true });
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
@@ -30,7 +30,7 @@ test('time role survives JSON and shows all-row chronological diagnostics and fa
         page.getByRole('img', { name: 'DriverAge · A/E by period', exact: true }),
     ).toBeVisible({ timeout: 30000 });
     await page.getByLabel('Relative to the whole book in each period').check();
-    await page.screenshot({ path: '/private/tmp/easyglm-time-stability.png', fullPage: true });
+    await page.screenshot({ path: testInfo.outputPath('easyglm-time-stability.png'), fullPage: true });
     await page.getByLabel('Time bands', { exact: true }).fill('3');
     await expect(page.getByText('Year · 12,000 rows · 3 time bands', { exact: true })).toBeVisible({
         timeout: 30000,

@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 
 test('top N and manual pruning create a separate fitted challenger for holdout comparison', async ({
     page,
-}) => {
+}, testInfo) => {
     const button = (name) => page.getByRole('button', { name, exact: true });
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
@@ -37,7 +37,7 @@ test('top N and manual pruning create a separate fitted challenger for holdout c
         page.getByText('1 interaction tables removed: DriverAge × Region.', { exact: true }),
     ).toBeVisible();
     await page.getByLabel('Reduced challenger name').fill('Lean frequency');
-    await page.screenshot({ path: '/private/tmp/easyglm-reduced-selection.png', fullPage: true });
+    await page.screenshot({ path: testInfo.outputPath('easyglm-reduced-selection.png'), fullPage: true });
     await button('Create and fit challenger').click();
     await expect(page.getByLabel('Model selection')).toHaveValue('Lean frequency');
     await expect(button('Compare with original')).toBeVisible({ timeout: 45000 });
@@ -54,7 +54,7 @@ test('top N and manual pruning create a separate fitted challenger for holdout c
     ).toBeVisible({ timeout: 30000 });
     await expect(page.getByLabel('Comparison subset')).toHaveValue('holdout');
     await expect(page.getByText('Total rate tables', { exact: true })).toBeVisible();
-    await page.screenshot({ path: '/private/tmp/easyglm-reduced-comparison.png', fullPage: true });
+    await page.screenshot({ path: testInfo.outputPath('easyglm-reduced-comparison.png'), fullPage: true });
     await expect(page.getByRole('tab', { name: 'Double lift', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Make selected model champion' })).toHaveCount(0);
     await page.getByLabel('Model selection').selectOption('Lean frequency');
