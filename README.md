@@ -1,263 +1,66 @@
-# easy_glm
+# EasyGLM
 
-EasyGLM fits GLMs. It is designed for insurance pricing and turns fitted rating factors into insurance rate tables. If you are an actuary, data scientist or analyst who wants to fit GLMs and produce insurance rate tables, you may find it useful too, but it is not a general-purpose GLM package. It is designed to be easy to use, and to produce insurance rate tables that are easy to read and understand.
+Fit insurance pricing GLMs, check model performance and export rating tables
+from a local browser workbench.
 
-Warning! This has been built with AI purely for *myself* as I had built up a store of random python scripts to help me do pricing work and I needed a more sensible way to reuse them in new projects. Bugs are likely!
+## Install and open
 
-
-## Install
-
-```bash
-pip install easy_glm
-```
-
-To upgrade an existing installation, run `pip install --upgrade easy_glm`.
-
-## Open the workbench
-
-Start the graphical workbench:
+Requires Python 3.10–3.14. Run in a terminal:
 
 ```bash
+pip install --upgrade easy_glm
 easy-glm-workbench
 ```
 
-It opens EasyGLM in your browser, normally at
-`http://127.0.0.1:8501`. Keep this terminal open while you use the workbench.
+Your browser opens automatically. Keep the terminal open while you work.
+Restart the workbench after upgrading.
 
-You can also open it from a Python session:
+## Build a model
 
-```python skip-test
-import easy_glm
+1. **Load data.** Open your file or try the French motor claim-frequency or
+   Swedish motorcycle claim-cost example. Supports CSV, Parquet, Excel,
+   Arrow/Feather and SAS files.
+2. **Choose variables.** Set the target, exposure/weight and predictors. Check
+   for missing data, possible leakage and redundant predictors before fitting.
+3. **Explore.** See observed rates and exposure by variable.
+4. **Fit.** Choose a model family, training/holdout split, factor shapes and
+   interactions, then click **Fit model**.
+5. **Review.** Check actual versus expected, lift, Gini and variable importance.
+   Compare alternative models.
+6. **Adjust.** Smooth, cap/floor or edit relativities, then apply your changes.
+   The original fit stays available for comparison.
 
-easy_glm.launch_workbench()
-# Explicit port/headless settings (useful on Windows and remote shells):
-easy_glm.launch_workbench(port=8501, headless=True)
-```
+Supports Poisson, Gamma, Tweedie, Gaussian, binomial and inverse Gaussian GLMs,
+with regularisation and two-stage interactions.
 
-To open a Polars or pandas dataframe that is already in memory:
+![Model design in EasyGLM](docs/images/workbench-model-design.png)
 
-```python skip-test
-easy_glm.launch_workbench(data=df)
-```
+## Export and keep your work
 
-The workbench opens with `df` loaded. Choose the target, weight and predictors
-on the **Variables** page, then define and fit the model on the **Model** page.
-Before fitting, **Check predictors** flags possible target leakage, highly related
-predictors and mostly missing columns using a training sample. Choose removals,
-review them, then **Apply** to update the table, Role JSON and model selections.
-`launch_workbench()` prints the exact URL to open (for example,
-`http://127.0.0.1:8501`).
-
-Without a supplied dataframe, **Project & data** opens first. Browse for your
-data file, reopen a saved project JSON, or choose an example dataset. CSV,
-Parquet, Excel, Arrow/Feather and SAS (`.sas7bdat`) files are supported, with a
-file-path option for large files. The French motor example models claim frequency with Poisson;
-the Swedish motorcycle example models annual claim cost with Tweedie. Both include
-editable settings; click **Fit model** when ready.
-
-From **0.460**, Svelte is the default workbench. The launch commands above are
-unchanged; `easy-glm workbench` also opens it. The previous interface remains
-available with `easy-glm-workbench --legacy-streamlit`, or
-`legacy_streamlit=True` from Python. Its advanced preparation, leakage and detailed
-factor-design controls are not yet all available in the new interface.
-
-To reopen a saved project later, pass its project file after the command:
-
-```bash
-easy-glm-workbench path/to/project.easyglm-project.json
-```
-
-Before closing or upgrading, download your project JSON to keep its settings,
-applied adjustments and named snapshots. Export a `.easyglm` scorer to keep the
-fitted rates. Reopening project JSON requires its source data and starts without
-fitted runs or session Undo history. Stop and restart the workbench after upgrading.
-
-The workbench follows the same modelling pipeline as the Python API. It helps
-you assign column roles, prepare a reproducible train/holdout split, design and
-fit one or more models, inspect diagnostics, adjust rate tables, and export the
-result as Python, a scorer, Excel tables or a self-contained report. It does not
-fit anything until you select **Fit model**.
-
-**Explore** shows observed rates and exposure together before fitting.
-**Diagnostics** includes training and holdout checks and permutation importance.
-In **Rate tables**, choose an adjustment from the dropdown to preview it, then
-click **Apply adjustment** to keep it. The original fit stays visible. Exports use
-applied results; Python reproduction scripts need a saved source-data file.
-
-The **HTML report** includes a training-data summary before the rating factors:
-missing values, ranges, unique counts, small distribution charts, shape statistics
-and correlations between numeric predictors. Rating factors start with permutation
-importance and coefficient paths against lambda, where recorded during fitting.
-
-| Design and fit | Validate on training and holdout data |
+| Export | What you get |
 | --- | --- |
-| ![Model definition in the EasyGLM workbench](docs/images/workbench-model-design.png) | ![Training and holdout diagnostics in the EasyGLM workbench](docs/images/workbench-diagnostics.png) |
+| Excel | Applied rating tables |
+| Scorer (`.easyglm`) | Applied rates for scoring new data |
+| Project JSON | Model setup, applied adjustments and named snapshots |
+| HTML report | Data summaries, importance, coefficient paths, rating factors and diagnostics |
+| Python script | Reproduce the model from its source data |
 
-For the practical screen-by-screen route, see the
-[workbench walkthrough](examples/workbench_walkthrough.md). The
-[examples index](examples/README.md) points to the shorter runnable scripts.
+Before closing, save the **project JSON** and **scorer**. Reopening a project
+requires its source data and a refit; fitted runs and session Undo are not saved
+in project JSON.
 
-## Fit a Poisson claim-count model
+## Already working in Python?
 
-We will fit a Poisson claim count model using the good ol' French Motort Third Party claims frequency dataset. The dataset contains `ClaimNb` for claim count, `Exposure` for - uh - yeah no guesses there and insurance-y variables like `DrivAge`, `Region`, `BonusMalus` and `Density`.
-
-As ever, we love a good train/test set. The code creates a `traintest` column: 70% of rows teach the model; the other 30% are kept for the check at the end.
-
-```python
-import easy_glm
-
-# Downloads the public data once and reuses the local copy later.
-df = easy_glm.load_external_dataframe().sample(n=50_000, seed=42)
-df = easy_glm.add_train_test_split(df, train_fraction=0.7, seed=42)
-
-predictors = ["DrivAge", "Region", "BonusMalus", "Density"]
-model = easy_glm.EasyGLM.fit(
-    data=df,
-    target="ClaimNb",
-    model_type="Poisson",
-    predictors=predictors,
-    weight_col="Exposure",
-    train_test_col="traintest",
-    divide_target_by_weight=True,
-    cv=5,
-)
-```
-
-## See the fitted relativity tables
-
-The base claim frequency is the starting level. A relativity of `1.20` means
-20% more expected claims than a relativity of `1.00`, after taking account of
-the other fitted factors. `exposure` shows how much insured time informed each
-row of the table.
-
-```python
-print(f"Base claim frequency: {model.base_rate:.5f} claims per policy-year")
-for name, table in model.relativities.items():
-    print(f"\n{name}")
-    print(table.select("label", "relativity", "exposure"))
-```
-
-The output includes numeric bands and text levels. These are representative
-rows from the fitted French motor model:
-
-```text
-Base claim frequency: 0.04167 claims per policy-year
-
-BonusMalus
-band            relativity   exposure
-< 53.0            1.000        12108.31
-[53.0, 57.0)      1.355          790.70
-[57.0, 60.0)      1.830          694.10
-
-Region
-level                         relativity   exposure
-Centre                          1.000       5218.59
-Rhone-Alpes                     1.356       2312.63
-Provence-Alpes-Cotes-D'Azur     1.177       1835.53
-```
-
-## Plot the fitted shapes
-
-Run the following to open the fitted shapes, then the training and test
-actual-versus-expected rate charts. The validation charts use the exact fitted
-bands or category order, draw Actual in red and Expected in blue, and show
-Exposure behind the rate lines.
-
-```python
-easy_glm.plot_all_ratetables(model.relativities)
-model.plot_actual_vs_expected(df)
-```
-
-These representative images were generated by that example. Expected rates use
-the complete fitted model, not just the factor named on the figure.
-
-![Fitted BonusMalus relativity shape](docs/images/french_motor_relativity_bonusmalus.png)
-
-![BonusMalus test actual versus expected rate](docs/images/french_motor_ae_test_bonusmalus.svg)
-
-## Fit the same model in the workbench
-
-You can send the French motor data straight from Python to the graphical
-workbench:
+Open a pandas or Polars dataframe in the workbench:
 
 ```python skip-test
 import easy_glm
 
-df = easy_glm.load_external_dataframe().sample(n=50_000, seed=42)
 easy_glm.launch_workbench(data=df)
 ```
 
-The workbench opens with the data loaded but makes no modelling decisions for
-you. The [workbench walkthrough](examples/workbench_walkthrough.md) shows how
-to assign the roles, create the split, fit this Poisson model, compare a
-challenger, review training and holdout diagnostics, and export the reproducible
-workflow.
+[Workbench walkthrough](examples/workbench_walkthrough.md) ·
+[Python examples](examples/README.md) · [Changelog](CHANGELOG.md)
 
-## Fit a Tweedie incurred-claims model
-
-The Poisson model predicts how many claims will occur. A Tweedie model can
-instead predict the total cost of claims, including policies with no claims.
-
-This example uses the public Swedish motorcycle portfolio. It contains
-`ClaimAmount`, the total claim payments; `Exposure`, the number of policy
-years; and six rating factors. EasyGLM downloads it once and keeps a local copy
-for later runs.
-
-```python
-import polars as pl
-
-# Download the Swedish motorcycle data and remove rows with no exposure.
-df = easy_glm.load_swedish_motorcycle_data()
-df = df.filter(pl.col("Exposure") > 0)
-df = easy_glm.add_train_test_split(df, train_fraction=0.7, seed=42)
-
-model = easy_glm.EasyGLM.fit(
-    data=df,
-    target="ClaimAmount",
-    model_type="Tweedie",
-    predictors=[
-        "OwnerAge",
-        "Gender",
-        "Area",
-        "RiskClass",
-        "VehAge",
-        "BonusClass",
-    ],
-    weight_col="Exposure",
-    train_test_col="traintest",
-    divide_target_by_weight=True,
-    tweedie_power=1.5,
-    cv=5,
-)
-```
-
-The target divided by exposure is annual incurred claim cost. The Tweedie
-power is fixed at `1.5` for this first example; automatic power selection is on
-the future-release list.
-
-The fitted rate tables and the training and holdout checks work in exactly the
-same way as in the Poisson example:
-
-```python
-print(f"Base annual claim cost: {model.base_rate:.2f}")
-for name, table in model.relativities.items():
-    print(f"\n{name}")
-    print(table.select("label", "relativity", "exposure"))
-
-easy_glm.plot_all_ratetables(model.relativities)
-model.plot_actual_vs_expected(df)
-```
-
-These representative graphs were generated by the Tweedie example above. The
-expected annual claim costs use the complete fitted model, not just the factor
-shown on each graph.
-
-![Fitted owner-age relativity shape](docs/images/swedish_motorcycle_relativity_ownerage.png)
-
-![Owner-age holdout actual versus expected annual claim cost](docs/images/swedish_motorcycle_ae_test_ownerage.svg)
-
-Both walkthroughs are also available together in the standalone
-[basic usage example](examples/basic_usage.py). See the [changelog](CHANGELOG.md)
-for a plain-English summary of each release.
-
-MIT licensed. See [LICENSE](LICENSE).
+Experimental software: validate results before using them for pricing.
+[MIT licence](LICENSE).
