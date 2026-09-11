@@ -162,3 +162,87 @@ def test_loading_rechecks_revision_and_does_not_hold_project_lock(
         assert response.status_code == 409, response.text
     assert client.get("/api/project").json() == before
     assert revision(client)["session_id"] == old["session_id"]
+
+
+@pytest.mark.parametrize("example", ["french_motor", "swedish_motorcycle"])
+def test_examples_are_data_only_with_reproducible_synthetic_time(
+    tmp_path, monkeypatch, example
+):
+    import easy_glm
+    from easy_glm.desktop.loading import load_example_input
+
+    raw = pl.DataFrame(
+        {
+            "ClaimNb": [0, 1, 2, 0, 1, 0],
+            "Exposure": [1.0] * 6,
+            "ClaimAmount": [0.0, 10.0, 25.0, 0.0, 8.0, 0.0],
+            "IDpol": list(range(6)),
+            **{
+                c: [1, 2, 3, 4, 5, 6]
+                for c in [
+                    "DrivAge",
+                    "Region",
+                    "BonusMalus",
+                    "Density",
+                    "OwnerAge",
+                    "Gender",
+                    "Area",
+                    "RiskClass",
+                    "VehAge",
+                    "BonusClass",
+                ]
+            },
+        }
+    )
+    monkeypatch.setattr(easy_glm, "load_external_dataframe", lambda: raw)
+    monkeypatch.setattr(easy_glm, "load_swedish_motorcycle_data", lambda: raw)
+    project, frame = load_example_input(example, tmp_path)
+    again, repeated = load_example_input(example, tmp_path)
+    assert frame.equals(repeated)
+    assert not project.models and project.champion is None
+    assert project.column_with_role("time") == "SyntheticYear"
+    assert frame["SyntheticYear"].unique().sort().to_list() == [
+        2020,
+        2021,
+        2022,
+        2023,
+        2024,
+    ]
+    assert project.exploration["example"]["synthetic_time_column"] == "SyntheticYear"
+    assert frame.drop("SyntheticYear").sort("IDpol").equals(raw.sort("IDpol"))
+    assert pl.read_parquet(project.data.source.path).equals(frame)
+
+
+def test_replacing_fitted_project_with_example_clears_models_and_history(
+    model_session, tmp_path, monkeypatch
+):
+    import easy_glm
+
+    client, _, _ = model_session
+    fitted(client)
+    apply(client, review(client, "edit", variable="Age", edits={"1": 2.1}))
+    _, undo, redo = internals(client)
+    raw = pl.DataFrame(
+        {
+            "ClaimNb": [0, 1],
+            "Exposure": [1.0, 1.0],
+            "IDpol": [1, 2],
+            "DrivAge": [20, 50],
+            "Region": ["A", "B"],
+            "BonusMalus": [1, 2],
+            "Density": [30, 40],
+        }
+    )
+    monkeypatch.setattr(easy_glm, "load_external_dataframe", lambda: raw)
+    monkeypatch.setattr(server, "new_input_folder", lambda: tmp_path)
+    response = client.post(
+        "/api/project/open",
+        json={**revision(client), "kind": "example", "example": "french_motor"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["models"] == []
+    token(client)
+    assert client.get("/api/jobs").json() == {}
+    assert client.get("/api/project").json()["models"] == {}
+    assert not undo and not redo
+    assert client.get("/api/results/Frequency").status_code != 200

@@ -95,6 +95,10 @@ jobs:
           npx playwright test --config playwright.interactions.config.js
           npx playwright test --config playwright.exports.config.js
           npx playwright test --config playwright.session.config.js
+          npx playwright test --config playwright.split.config.js
+          npx playwright test --config playwright.reuse.config.js
+          npx playwright test --config playwright.time.config.js
+          npx playwright test --config playwright.reduction.config.js
       - name: Upload browser failure details
         if: failure()
         uses: actions/upload-artifact@v4

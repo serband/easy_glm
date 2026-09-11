@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 import polars as pl
 from pydantic import Field, model_validator
 
@@ -74,6 +75,17 @@ def load_example_input(example: str, folder: Path) -> tuple[Project, pl.DataFram
         raise ValueError("Choose the French motor or Swedish motorcycle example.")
     path = folder / filename
     project = starter_project(example, str(path))
+    # Examples supply data and roles, never an automatically created model.
+    project.models.clear()
+    project.champion = None
+    time_column = "SyntheticYear"
+    while time_column in frame.columns:
+        time_column += "_demo"
+    years = np.resize(np.arange(2020, 2025, dtype=np.int64), frame.height)
+    np.random.default_rng(42).shuffle(years)
+    frame = frame.with_columns(pl.Series(time_column, years))
+    project.data.roles[time_column] = "time"
+    project.exploration["example"] = {"synthetic_time_column": time_column}
     prepare(project, frame)
     frame.write_parquet(path)
     return project, frame

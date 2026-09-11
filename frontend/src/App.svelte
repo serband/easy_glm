@@ -5,6 +5,7 @@
     import ProjectOpen from './ProjectOpen.svelte';
     import ExplorePanel from './ExplorePanel.svelte';
     import VariableScreening from './VariableScreening.svelte';
+    import SplitSettings from './SplitSettings.svelte';
     let comparison = '',
         modelContext = { fitted: [], selected: '', champion: null };
     let view = 'variables',
@@ -55,7 +56,7 @@
     let exploreRequest = { name: '', id: 0 };
     let previewScroll = 0;
     $: previewStart = Math.max(0, Math.floor(previewScroll / 34) - 3);
-    const single = ['target', 'weight', 'exposure', 'offset', 'current_premium', 'split'];
+    const single = ['target', 'weight', 'exposure', 'offset', 'current_premium', 'split', 'time'];
     const groups = ['predictor', 'id', 'unassigned', 'ignore'];
     const roles = [...single, ...groups];
     const types = ['auto', 'numeric', 'categorical'];
@@ -72,8 +73,7 @@
         state &&
         draft &&
         (JSON.stringify(draft) !== JSON.stringify(state.setup) ||
-            (tab === 'json' &&
-                jsonText !== JSON.stringify({ ...draft.assignments, ...draft.roles }, null, 2)));
+            (tab === 'json' && jsonText !== roleJson()));
     $: screeningContext = JSON.stringify([
         state?.session_id,
         state?.project_id,
@@ -88,7 +88,14 @@
                   (roleFilter === 'all' || getRole(c.name, roleMap) === roleFilter),
           )
         : [];
-    $: start = Math.max(0, Math.floor(scrollTop / 38) - 5);
+    $: rowOffsets = filtered.reduce(
+        (offsets, column) => {
+            offsets.push(offsets.at(-1) + (getRole(column.name, roleMap) === 'split' ? 170 : 38));
+            return offsets;
+        },
+        [0],
+    );
+    $: start = Math.max(0, rowOffsets.findIndex((offset) => offset > scrollTop) - 6);
     $: visible = filtered.slice(start, start + 28);
     $: counts =
         state && draft
@@ -307,7 +314,20 @@
         URL.revokeObjectURL(url);
     }
     function roleJson() {
-        return JSON.stringify({ ...draft.assignments, ...draft.roles }, null, 2);
+        return JSON.stringify(
+            {
+                ...draft.assignments,
+                ...draft.roles,
+                split: draft.assignments.split
+                    ? {
+                          column: draft.assignments.split,
+                          train_value: draft.split.train_value,
+                      }
+                    : null,
+            },
+            null,
+            2,
+        );
     }
     function getRole(name, lookup = roleMap) {
         return lookup.get(name) || 'ignore';
@@ -322,7 +342,17 @@
         error = '';
         jsonText = roleJson();
     }
+    function randomSplitDraft() {
+        const names = new Set(
+            state.columns.map((column) => draft.renames[column.name] || column.name),
+        );
+        let column = 'traintest',
+            suffix = 2;
+        while (names.has(column)) column = `traintest_${suffix++}`;
+        return { ...draft.split, mode: 'random', column, train_value: 1, holdout_value: null };
+    }
     function setRole(name, role) {
+        const previousSplit = draft.assignments.split;
         for (const key of single)
             if (draft.assignments[key] === name) draft.assignments[key] = null;
         for (const key of groups)
@@ -332,6 +362,18 @@
             if (old && old !== name) draft.roles.unassigned.push(old);
             draft.assignments[role] = name;
         } else draft.roles[role].push(name);
+        if (role === 'split' && (previousSplit !== name || draft.split.mode !== 'column')) {
+            draft.split = {
+                ...draft.split,
+                mode: 'column',
+                column: name,
+                train_value: null,
+                holdout_value: null,
+            };
+        }
+        if (previousSplit === name && role !== 'split') {
+            draft.split = randomSplitDraft();
+        }
         touch();
     }
     function setType(name, type) {
@@ -354,7 +396,18 @@
             if (!obj || Array.isArray(obj) || typeof obj !== 'object')
                 throw new Error('Use a JSON object with the ten roles.');
             if (Object.keys(obj).some((r) => !roles.includes(r)))
-                throw new Error('Unknown role. Use the ten roles shown in the template.');
+                throw new Error('Use the ten roles shown in the template.');
+            const splitEntry = obj.split;
+            if (splitEntry && typeof splitEntry === 'object') {
+                if (
+                    Array.isArray(splitEntry) ||
+                    Object.keys(splitEntry).some(
+                        (key) => !['column', 'train_value', 'holdout_value'].includes(key),
+                    )
+                )
+                    throw new Error('split needs column and train_value.');
+                obj.split = splitEntry.column;
+            }
             const known = new Set(state.columns.map((c) => c.name)),
                 used = new Set();
             const assignments = {},
@@ -378,7 +431,25 @@
             }
             // Match the established bulk format: omitted columns are ignored.
             grouped.ignore.push(...state.columns.map((c) => c.name).filter((n) => !used.has(n)));
-            draft = { ...draft, assignments, roles: grouped };
+            let split = structuredClone(draft.split);
+            if (assignments.split) {
+                if (split.column !== assignments.split) {
+                    split = {
+                        ...split,
+                        column: assignments.split,
+                        train_value: null,
+                        holdout_value: null,
+                    };
+                }
+                split.mode = 'column';
+                if (splitEntry && typeof splitEntry === 'object') {
+                    split.train_value = splitEntry.train_value ?? null;
+                    split.holdout_value = splitEntry.holdout_value ?? null;
+                }
+            } else if (draft.assignments.split && split.mode === 'column') {
+                split = randomSplitDraft();
+            }
+            draft = { ...draft, assignments, roles: grouped, split };
             preview = null;
             error = '';
             return true;
@@ -443,7 +514,7 @@
         exploreRequest = { name: '', id: 0 };
         token = '';
         serverSession = opened.session_id;
-        view = 'variables';
+        view = kind === 'example' ? 'project' : 'variables';
         busy = true;
         try {
             await bootstrap();
@@ -457,7 +528,7 @@
             state = fresh;
             reset();
             notice = '';
-            await navigate(kind === 'example' && state.models.length ? 'model' : 'variables');
+            await navigate(kind === 'example' ? 'project' : 'variables');
         } catch (e) {
             error = 'Data loaded. Reconnect to continue. ' + e.message;
             throw new Error(error);
@@ -580,16 +651,6 @@
                 >
             {/each}
         </nav>
-        {#if modelContext.fitted.length > 1}<label class="sidebar-comparison"
-                >Default comparison model<select
-                    aria-label="Default comparison model"
-                    bind:value={comparison}
-                    ><option value="">None</option
-                    >{#each modelContext.fitted.filter((n) => n !== modelContext.selected) as name}<option
-                            value={name}>{name}</option
-                        >{/each}</select
-                ></label
-            >{/if}
         <div class="setup-progress" aria-label="Setup progress">
             <strong>Setup progress</strong>
             <span>{state?.columns.length ? '✓' : '○'} Data loaded</span>
@@ -603,7 +664,7 @@
         </div>
         <div class="rail-bottom">
             <span class="status-dot"></span> Local session
-            <div class="version">EasyGLM 0.462</div>
+            <div class="version">EasyGLM 0.463</div>
         </div>
     </aside>
     <div class="workspace">
@@ -712,66 +773,87 @@
                                     onscroll={(e) => (scrollTop = e.currentTarget.scrollTop)}
                                 >
                                     <div
-                                        style:height={filtered.length * 38 + 'px'}
+                                        style:height={rowOffsets.at(-1) + 'px'}
                                         class="virtual-space"
                                     >
                                         <div
                                             class="virtual-rows"
-                                            style:transform={'translateY(' + start * 38 + 'px)'}
+                                            style:transform={'translateY(' +
+                                                rowOffsets[start] +
+                                                'px)'}
                                         >
-                                            {#each visible as column (column.name)}<div
-                                                    class="grid-row data-row"
-                                                    data-column={column.name}
-                                                >
-                                                    <button
-                                                        class="column-name"
-                                                        title="Explore this variable"
-                                                        onclick={() => {
-                                                            exploreRequest = {
-                                                                name:
-                                                                    state.setup.renames[
-                                                                        column.name
-                                                                    ] || column.name,
-                                                                id: exploreRequest.id + 1,
-                                                            };
-                                                            void navigate('explore');
-                                                        }}>{column.name}</button
-                                                    ><input
-                                                        aria-label={'Name for ' + column.name}
-                                                        value={draft.renames[column.name] ||
-                                                            column.name}
-                                                        onchange={(e) =>
-                                                            setName(
-                                                                column.name,
-                                                                e.currentTarget.value,
-                                                            )}
-                                                    /><select
-                                                        aria-label={'Role for ' + column.name}
-                                                        value={getRole(column.name, roleMap)}
-                                                        onchange={(e) =>
-                                                            setRole(
-                                                                column.name,
-                                                                e.currentTarget.value,
-                                                            )}
-                                                        >{#each roles as role}<option value={role}
-                                                                >{role.replaceAll('_', ' ')}</option
-                                                            >{/each}</select
-                                                    ><select
-                                                        aria-label={'Type for ' + column.name}
-                                                        value={getType(column.name, typeMap)}
-                                                        onchange={(e) =>
-                                                            setType(
-                                                                column.name,
-                                                                e.currentTarget.value,
-                                                            )}
-                                                        >{#each types as type}<option value={type}
-                                                                >{type === 'auto'
-                                                                    ? 'Infer from data'
-                                                                    : type === 'numeric'
-                                                                      ? 'Numeric'
-                                                                      : 'Categorical'}</option
-                                                            >{/each}</select
-                                                    ><span class="dtype">{column.dtype}</span>
+                                            {#each visible as column (column.name)}<div>
+                                                    <div
+                                                        class="grid-row data-row"
+                                                        data-column={column.name}
+                                                    >
+                                                        <button
+                                                            class="column-name"
+                                                            title="Explore this variable"
+                                                            onclick={() => {
+                                                                exploreRequest = {
+                                                                    name:
+                                                                        state.setup.renames[
+                                                                            column.name
+                                                                        ] || column.name,
+                                                                    id: exploreRequest.id + 1,
+                                                                };
+                                                                void navigate('explore');
+                                                            }}>{column.name}</button
+                                                        ><input
+                                                            aria-label={'Name for ' + column.name}
+                                                            value={draft.renames[column.name] ||
+                                                                column.name}
+                                                            onchange={(e) =>
+                                                                setName(
+                                                                    column.name,
+                                                                    e.currentTarget.value,
+                                                                )}
+                                                        /><select
+                                                            aria-label={'Role for ' + column.name}
+                                                            value={getRole(column.name, roleMap)}
+                                                            onchange={(e) =>
+                                                                setRole(
+                                                                    column.name,
+                                                                    e.currentTarget.value,
+                                                                )}
+                                                            >{#each roles as role}<option
+                                                                    value={role}
+                                                                    >{role.replaceAll(
+                                                                        '_',
+                                                                        ' ',
+                                                                    )}</option
+                                                                >{/each}</select
+                                                        ><select
+                                                            aria-label={'Type for ' + column.name}
+                                                            value={getType(column.name, typeMap)}
+                                                            onchange={(e) =>
+                                                                setType(
+                                                                    column.name,
+                                                                    e.currentTarget.value,
+                                                                )}
+                                                            >{#each types as type}<option
+                                                                    value={type}
+                                                                    >{type === 'auto'
+                                                                        ? 'Infer from data'
+                                                                        : type === 'numeric'
+                                                                          ? 'Numeric'
+                                                                          : 'Categorical'}</option
+                                                                >{/each}</select
+                                                        ><span class="dtype">{column.dtype}</span>
+                                                    </div>
+                                                    {#if getRole(column.name, roleMap) === 'split'}
+                                                        <SplitSettings
+                                                            {api}
+                                                            {state}
+                                                            setup={draft}
+                                                            disabled={busy || differentProject}
+                                                            onchange={(next) => {
+                                                                draft = next;
+                                                                touch();
+                                                            }}
+                                                        />
+                                                    {/if}
                                                 </div>{/each}
                                         </div>
                                     </div>
@@ -779,7 +861,9 @@
                             {:else}
                                 <div class="json-hint">
                                     Roles use source column names. Missing columns become ignored.
-                                    Names and types stay as set in the table.
+                                    The split entry includes its column and training value; the
+                                    other value is holdout. Names and types stay as set in the
+                                    table.
                                 </div>
                                 <textarea
                                     class="json-editor"
@@ -798,6 +882,61 @@
                                 ><span>Revision {state.revision}</span>
                             </div>
                         </section>
+                        {#if !draft.assignments.split}
+                            <section
+                                class="model-card variable-random-split"
+                                aria-label="Train and holdout split"
+                            >
+                                <h2>Train / holdout split</h2>
+                                <p class="help-text">
+                                    Random split. To use an existing column, assign it the split
+                                    role above.
+                                </p>
+                                <div class="random-split-fields">
+                                    <label
+                                        >Training fraction<input
+                                            aria-label="Training fraction"
+                                            type="number"
+                                            min="0.01"
+                                            max="0.99"
+                                            step="0.05"
+                                            bind:value={draft.split.fraction}
+                                            oninput={() => {
+                                                draft.split.mode = 'random';
+                                                touch();
+                                            }}
+                                        /></label
+                                    >
+                                    <label
+                                        >Seed<input
+                                            aria-label="Split seed"
+                                            type="number"
+                                            min="0"
+                                            step="1"
+                                            bind:value={draft.split.seed}
+                                            oninput={() => {
+                                                draft.split.mode = 'random';
+                                                touch();
+                                            }}
+                                        /></label
+                                    >
+                                    <label
+                                        >Generated column<input
+                                            aria-label="Split column name"
+                                            bind:value={draft.split.column}
+                                            oninput={() => {
+                                                draft.split.mode = 'random';
+                                                touch();
+                                            }}
+                                        /></label
+                                    >
+                                </div>
+                                <p class="help-text">
+                                    Used by Explore and every model. Apply with your variable
+                                    changes.
+                                </p>
+                            </section>
+                        {/if}
                         {#if view === 'variables'}<VariableScreening
                                 {api}
                                 {state}
@@ -924,5 +1063,30 @@
     .source-filename {
         overflow-wrap: anywhere;
         min-width: 0;
+    }
+
+    .variable-random-split {
+        margin: 20px 0;
+        padding: 20px;
+    }
+    .random-split-fields {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+    }
+    .random-split-fields label {
+        display: grid;
+        gap: 6px;
+        font-size: 13px;
+    }
+    .random-split-fields input {
+        width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+    }
+    @media (max-width: 900px) {
+        .random-split-fields {
+            grid-template-columns: 1fr;
+        }
     }
 </style>

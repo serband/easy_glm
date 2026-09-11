@@ -37,6 +37,7 @@ from easy_glm.desktop.loading import (
 )
 from easy_glm.desktop.modeling import (
     ModelEdit,
+    ReducedModelEdit,
     Revision,
     SplitEdit,
     edit_model,
@@ -44,6 +45,12 @@ from easy_glm.desktop.modeling import (
 )
 from easy_glm.desktop.reviews import ReviewEdit, ReviewJobs
 from easy_glm.desktop.screening import ScreeningJobs, ScreeningRequest
+from easy_glm.desktop.splits import (
+    apply_split_setup,
+    split_counts,
+    split_setup,
+    split_values,
+)
 from easy_glm.workflow.explore import univariate
 from easy_glm.workflow.prep import apply_variables
 from easy_glm.workflow.project import SINGLE_ROLES, Project
@@ -136,7 +143,11 @@ def create_app(
             job.update(
                 key=model_key(current, name),
                 status="complete",
-                message="Diagnostics and rate tables are ready.",
+                message=(
+                    "Unchanged main effects reused. Diagnostics and rate tables are ready."
+                    if result.get("reuse", {}).get("main_effects")
+                    else "Diagnostics and rate tables are ready."
+                ),
                 result=result,
             )
 
@@ -224,7 +235,10 @@ def create_app(
                 {"name": name, "dtype": str(dtype)}
                 for name, dtype in raw.schema.items()
             ],
-            "setup": json.loads(variable_setup_json(current, raw.columns)),
+            "setup": {
+                **json.loads(variable_setup_json(current, raw.columns)),
+                "split": split_setup(current),
+            },
             "single_roles": list(SINGLE_ROLES),
             "group_roles": list(BULK_ROLE_GROUPS),
             "models": list(current.models),
@@ -245,6 +259,8 @@ def create_app(
 
     def candidate(
         edit: Edit | ScreeningRequest,
+        *,
+        validate_split: bool = True,
     ) -> tuple[Project, list[dict[str, str]], list[tuple[str, str]]]:
         if edit.session_id != session_id:
             raise HTTPException(
@@ -256,14 +272,67 @@ def create_app(
                 409,
                 "Another tab applied changes. Reload saved variables before applying.",
             )
+        setup = dict(edit.setup)
+        requested_split = setup.pop("split", None)
         rows, errors = parse_variable_setup_json(
-            current, raw.columns, json.dumps(edit.setup)
+            current, raw.columns, json.dumps(setup)
         )
         if errors:
             raise HTTPException(422, errors)
         result = deepcopy(current)
         _, notices = apply_roles_grid(result, raw.columns, rows)
-        return result, variable_setup_changes(current, raw.columns, rows), notices
+        try:
+            if requested_split is not None:
+                if not isinstance(requested_split, dict):
+                    raise ValueError("Split settings must be a JSON object.")
+                apply_split_setup(result, requested_split)
+            time_column = result.column_with_role("time")
+            if time_column:
+                from easy_glm.workflow.time_diagnostics import time_values
+
+                time_values(apply_variables(raw, result.data)[time_column])
+            changed_split = result.data.split != current.data.split
+            if validate_split and (changed_split or result.column_with_role("split")):
+                counts = split_counts(result, raw)
+                notices.append(
+                    (
+                        "info",
+                        f'{counts["train"]:,} training · {counts["holdout"]:,} holdout rows',
+                    )
+                )
+        except (ValueError, TypeError, KeyError, pl.exceptions.PolarsError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        changes = variable_setup_changes(current, raw.columns, rows)
+        changed_split = result.data.split != current.data.split
+        if changed_split:
+            split = result.data.split
+            changes.append(
+                {
+                    "raw column": (
+                        requested_split.get("column", split.column)
+                        if requested_split
+                        else split.column
+                    ),
+                    "name": split.column,
+                    "role": "split",
+                    "type": (
+                        f"Training: {split.train_value!r}; holdout: {split.holdout_value!r}"
+                        if split.mode == "column"
+                        else f"Random: {split.fraction:.0%} training; seed {split.seed}"
+                    ),
+                }
+            )
+        return result, changes, notices
+
+    @app.post("/api/variables/split-values")
+    def variable_split_values(edit: Edit) -> dict[str, Any]:
+        with lock:
+            saved, _, _ = candidate(edit, validate_split=False)
+            frame = raw.clone()
+        try:
+            return split_values(saved, frame)
+        except (ValueError, TypeError, KeyError, pl.exceptions.PolarsError) as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @app.post("/api/variables/screen", status_code=202)
     def screen_start(edit: ScreeningRequest) -> dict[str, Any]:
@@ -454,6 +523,36 @@ def create_app(
                 jobs.invalidate(current)
             return snapshot()
 
+    @app.post("/api/models/{name}/reduce", status_code=202)
+    def reduce_model(name: str, edit: ReducedModelEdit) -> dict[str, Any]:
+        nonlocal current, revision
+        from easy_glm.workflow.reduction import reduced_challenger
+
+        with lock:
+            check_revision(edit)
+            try:
+                source = jobs.artifact(current, name)
+                if source.name != edit.fit_id:
+                    raise ValueError(
+                        "The original fit changed. Refresh variable importance first."
+                    )
+                candidate_project = reduced_challenger(
+                    current, name, edit.name, edit.predictors
+                )
+                # Queue before publishing the new definition: a busy fit leaves no orphan model.
+                job = jobs.start(deepcopy(candidate_project), raw.clone(), edit.name)
+                current = candidate_project
+                revision += 1
+                screenings.invalidate((session_id, project_id, revision))
+                return {
+                    "snapshot": snapshot(),
+                    "name": edit.name,
+                    "source": name,
+                    "job": job,
+                }
+            except (ValueError, KeyError) as exc:
+                raise HTTPException(409, str(exc)) from exc
+
     @app.post("/api/split")
     def save_split(edit: SplitEdit) -> dict[str, Any]:
         nonlocal current, revision
@@ -464,7 +563,16 @@ def create_app(
                 exclude={"session_id", "revision"}
             ).items():
                 setattr(candidate_project.data.split, key, value)
+            for column, role in list(candidate_project.data.roles.items()):
+                if role == "split" and (edit.mode == "random" or column != edit.column):
+                    candidate_project.data.roles.pop(column)
+            if edit.mode == "column":
+                candidate_project.apply_role_change(edit.column, "split")
         # Preparation is outside the project lock. The revision is rechecked on commit.
+        try:
+            split_counts(candidate_project, raw)
+        except (ValueError, TypeError, pl.exceptions.PolarsError) as exc:
+            raise HTTPException(422, str(exc)) from exc
         info = setup_info(candidate_project, raw)
         if info["problems"]:
             raise HTTPException(422, "; ".join(info["problems"]))
@@ -802,6 +910,9 @@ def create_app(
                 raise HTTPException(409, str(exc)) from exc
             return {
                 "variables": columns,
+                "predictors": current.models[name].predictors,
+                "interactions": [i.__dict__ for i in current.models[name].interactions],
+                "model_names": list(current.models),
                 "variable_info": jobs.result(current, name)
                 .get("diagnostic_info", {})
                 .get("variables", []),

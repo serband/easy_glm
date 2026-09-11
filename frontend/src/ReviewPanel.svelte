@@ -2,6 +2,7 @@
     import { cachedImportance, importanceCacheKey, rememberImportance } from './importanceCache.js';
     import { unsupportedImportanceAction } from './importanceApi.js';
     import ImportanceChart from './ImportanceChart.svelte';
+    import ReducedChallenger from './ReducedChallenger.svelte';
     import { cachedAe, rememberAe } from './aeCache.js';
     import { formatNumber as num, formatLabels, formatRelativity } from './format.js';
     import { onDestroy } from 'svelte';
@@ -23,6 +24,7 @@
         variable = '',
         edits = {},
         onApplied,
+        onReduced = () => {},
         onClear,
         onNavigate,
         onManual = () => {},
@@ -873,8 +875,6 @@
                 currentLabel="Adjusted"
                 preview={!!(previewMatches && preview.preview_table)}
             />
-
-            <h3 class="adjustments-heading">Adjustments</h3>
         {/if}
         {#if feedback}<div class="message success review-feedback" role="status">
                 {feedback}
@@ -882,7 +882,7 @@
         {#if error && view !== 'tables'}<div class="message error" role="alert">{error}</div>{/if}
         {#if view === 'diagnostics'}
             {#if ['lift', 'double_lift'].includes(diagnosticTab) || (diagnosticTab === 'variable' && temporaryBins)}<div
-                    class="results-toolbar"
+                    class="results-toolbar diagnostic-controls"
                 >
                     <label
                         >{['variable', 'pair'].includes(diagnosticTab)
@@ -900,7 +900,7 @@
                     ><input type="checkbox" bind:checked={kept} onchange={runTab} /> Coefficients kept
                     only</label
                 >{/if}
-            {#if diagnosticTab === 'compare'}<div class="results-toolbar">
+            {#if diagnosticTab === 'compare'}<div class="results-toolbar diagnostic-controls">
                     <label
                         >Log-difference tolerance<input
                             aria-label="Difference tolerance"
@@ -1050,21 +1050,24 @@
                 </div>
             </div>
         {:else}
-            <label
-                >Adjustment<select
-                    aria-label="Adjustment method"
-                    bind:value={tool}
-                    disabled={committing}
-                    onchange={chooseTool}
+            <div class="adjustments-toolbar">
+                <h3>Adjustments</h3>
+                <label class="adjustment-selector"
+                    >Method<select
+                        aria-label="Adjustment method"
+                        bind:value={tool}
+                        disabled={committing}
+                        onchange={chooseTool}
+                    >
+                        <option value="">Choose adjustment…</option>
+                        {#each [['moving', 'Moving average'], ['isotonic', 'Isotonic smoothing'], ['cap', 'Cap / floor'], ['manual', 'Manual rows']] as [value, label]}<option
+                                {value}
+                                disabled={tableKind === 'interaction' && value !== 'manual'}
+                                >{label}</option
+                            >{/each}
+                    </select></label
                 >
-                    <option value="">Choose adjustment…</option>
-                    {#each [['moving', 'Moving average'], ['isotonic', 'Isotonic smoothing'], ['cap', 'Cap / floor'], ['manual', 'Manual rows']] as [value, label]}<option
-                            {value}
-                            disabled={tableKind === 'interaction' && value !== 'manual'}
-                            >{label}</option
-                        >{/each}
-                </select></label
-            >
+            </div>
             {#if tableKind === 'interaction'}<p>
                     Interaction cells are edited individually in the rate table. Smoothing applies
                     to main factors.
@@ -1255,20 +1258,53 @@
                     >Cancel review</button
                 >
             </div>{/if}
-        {#if note && view !== 'tables'}<p class="help-text">{note}</p>{/if}
+        {#if diagnosticTab === 'double_lift'}
+            <p class="help-text">
+                Each line shows actual ÷ predicted for that model. At 1, actual matches predicted;
+                above 1 means underprediction, below 1 means overprediction.
+            </p>
+            <p class="help-text">
+                Bands are ranked by champion ÷ challenger prediction, lowest first. Band numbers
+                are ranks, not ratios.
+            </p>
+        {:else if note && view !== 'tables'}<p class="help-text">{note}</p>{/if}
         {#if view !== 'tables'}{@render previewControls()}{/if}
         {#if analysis?.chart_kind === 'importance'}<ImportanceChart result={analysis} />
+            <ReducedChallenger
+                {api}
+                {state}
+                {name}
+                {fitIdentity}
+                {info}
+                rows={analysis.rows || []}
+                onCreated={onReduced}
+            />
         {:else if analysis}
             {#if analysis.base_rate_change !== undefined}<p>
                     Base rate change: {num(100 * analysis.base_rate_change)}%
                 </p>{/if}
             {#each analysis.charts || [] as chart, i}<DiagnosticPlot
-                    rows={chart.rows}
+                    rows={diagnosticTab === 'double_lift'
+                        ? chart.rows.map((row) => ({ ...row, label: 'Band ' + row.bin }))
+                        : chart.rows}
                     title={chart.title}
-                    series={chart.series || [
-                        { key: 'actual_rate', label: 'Actual' },
-                        { key: 'expected_rate', label: 'Expected' },
-                    ]}
+                    referenceValue={diagnosticTab === 'double_lift' ? 1 : null}
+                    yAxisLabel={diagnosticTab === 'double_lift' ? 'Actual / predicted' : ''}
+                    xAxisLabel={diagnosticTab === 'double_lift'
+                        ? 'Equal-exposure bands · lowest to highest prediction ratio'
+                        : ''}
+                    series={diagnosticTab === 'double_lift'
+                        ? [
+                              { key: 'ae_a', label: 'Actual / predicted · Champion: ' + name },
+                              {
+                                  key: 'ae_b',
+                                  label: 'Actual / predicted · Challenger: ' + challenger,
+                              },
+                          ]
+                        : chart.series || [
+                              { key: 'actual_rate', label: 'Actual' },
+                              { key: 'expected_rate', label: 'Expected' },
+                          ]}
                     ariaLabel={diagnosticTab === 'lift' && i === 0
                         ? 'Actual and expected lift on ' + subset
                         : ''}
@@ -1297,14 +1333,16 @@
             class={view === 'tables' ? 'model-card rate-ae review-panel' : 'review-ae'}
             aria-label={view === 'tables' ? 'Actual versus expected' : undefined}
         >
-            {#if view === 'tables'}<h2>Actual versus expected</h2>
-                <label class="table-ae-subset"
-                    >A/E subset<select aria-label="Table diagnostic subset" bind:value={subset}
-                        ><option value="train">Training</option><option value="holdout"
-                            >Holdout</option
-                        ><option value="all">All rows</option></select
-                    ></label
-                >
+            {#if view === 'tables'}<div class="table-ae-heading">
+                    <h2>Actual versus expected</h2>
+                    <label class="table-ae-subset"
+                        >A/E subset<select aria-label="Table diagnostic subset" bind:value={subset}
+                            ><option value="train">Training</option><option value="holdout"
+                                >Holdout</option
+                            ><option value="all">All rows</option></select
+                        ></label
+                    >
+                </div>
             {/if}
             {@render aeContent()}
         </section>{/if}

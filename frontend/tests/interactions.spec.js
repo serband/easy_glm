@@ -20,10 +20,6 @@ test('interaction definitions are visible, editable drafts and fitted only on re
     });
     await page.goto('/');
     await button('Model').click();
-    if (!(await page.locator('.split-settings').evaluate((el) => el.open)))
-        await page.locator('.split-settings > summary').click();
-    await page.getByLabel('Split method').selectOption('random');
-    await button('Apply split').click();
     await expect(interactions).toContainText('No interactions defined.');
     await page.getByLabel('Interaction first factor', { exact: true }).selectOption('DriverAge');
     await page.getByLabel('Interaction second factor', { exact: true }).selectOption('Region');

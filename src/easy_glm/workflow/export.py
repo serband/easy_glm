@@ -330,6 +330,13 @@ def to_script(
             f"is_train = np.random.default_rng({split.seed}).random(df.height) < {split.fraction}",
             f"df = df.with_columns(pl.Series({split.column!r}, is_train.astype(np.int64)))",
         ]
+    elif split.holdout_value is not None:
+        lines += [
+            "from easy_glm.workflow import Split, add_split_column",
+            f"split = Split(mode='column', column={split.column!r}, "
+            f"train_value={split.train_value!r}, holdout_value={split.holdout_value!r})",
+            "df = add_split_column(df, split)",
+        ]
     else:
         lines.append(
             f"df = df.with_columns((pl.col({split.column!r}) == {split.train_value!r}).cast(pl.Int64).alias({split.column!r}))"

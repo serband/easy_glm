@@ -13,18 +13,13 @@ test('Variables → split/model → background fit → diagnostics → rate tabl
         page.getByRole('heading', { name: 'Model design and fit', exact: true }),
     ).toBeVisible();
     await expect(page.getByRole('button', { name: 'Fit model', exact: true })).toBeDisabled();
-    if (!(await page.locator('.split-settings').evaluate((el) => el.open)))
-        await page.locator('.split-settings > summary').click();
-    await page.getByLabel('Split method', { exact: true }).selectOption('column');
-    await expect(page.locator('.split-settings')).toHaveAttribute('open', '');
-    await page.getByLabel('Split method', { exact: true }).selectOption('random');
+    await page.getByRole('button', { name: /^Variables/ }).click();
     await page.getByLabel('Training fraction', { exact: true }).fill('0.75');
     await page.getByLabel('Split seed', { exact: true }).fill('43');
-    await expect(page.locator('.split-settings')).toHaveAttribute('open', '');
-    await expect(page.getByRole('button', { name: 'Apply split', exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'Apply split', exact: true }).click();
-    await expect(page.getByText('Split applied.', { exact: true })).toBeVisible();
-    await expect(page.locator('.split-settings')).toHaveAttribute('open', '');
+    await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
+    await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
+    await page.getByRole('button', { name: 'Model', exact: true }).click();
+    await expect(page.locator('.split-settings')).toHaveCount(0);
     await page.getByLabel('Design kind for DriverAge', { exact: true }).selectOption('continuous');
     await page
         .getByLabel('Design kind for VehicleAge', { exact: true })

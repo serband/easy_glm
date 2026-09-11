@@ -29,6 +29,7 @@ class ReviewEdit(Revision):
         "path",
         "coefficients",
         "importance",
+        "time",
         "compare",
         "include_factors",
         "include_factor",
@@ -148,7 +149,10 @@ class ReviewJobs:
                             str(folder),
                             str(source),
                         ],
-                        env=_launcher_env(),
+                        env={
+                            **_launcher_env(),
+                            "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+                        },
                         stdout=log,
                         stderr=subprocess.STDOUT,
                     )

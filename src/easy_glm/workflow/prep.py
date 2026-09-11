@@ -210,6 +210,8 @@ def add_split_column(df: pl.DataFrame, split: Split) -> pl.DataFrame:
         if dtype in NUMERIC_DTYPES_FOR_SPLIT:
             try:
                 value = float(split.train_value)
+                if not np.isfinite(value):
+                    raise ValueError("Training value must be finite")
             except (TypeError, ValueError):
                 raise ValueError(
                     f"Split column {split.column!r} is numeric but the value meaning "
@@ -220,9 +222,40 @@ def add_split_column(df: pl.DataFrame, split: Split) -> pl.DataFrame:
             )
         else:
             # text / categorical / boolean indicators: compare as text
-            flag = (
-                pl.col(split.column).cast(pl.Utf8) == pl.lit(str(split.train_value))
-            ).cast(pl.Int64)
+            train_text = str(split.train_value)
+            if dtype == pl.Boolean:
+                train_text = train_text.lower()
+            flag = (pl.col(split.column).cast(pl.Utf8) == pl.lit(train_text)).cast(
+                pl.Int64
+            )
+        if split.holdout_value is not None:
+            if split.train_value is None:
+                raise ValueError("Choose a training value on the Variables page.")
+            if dtype in NUMERIC_DTYPES_FOR_SPLIT:
+                try:
+                    holdout_value = float(split.holdout_value)
+                    if not np.isfinite(holdout_value):
+                        raise ValueError("Holdout value must be finite")
+                except (TypeError, ValueError):
+                    raise ValueError("The holdout value must be numeric.") from None
+                holdout = pl.col(split.column).cast(pl.Float64) == holdout_value
+            else:
+                holdout_text = str(split.holdout_value)
+                if dtype == pl.Boolean:
+                    holdout_text = holdout_text.lower()
+                holdout = pl.col(split.column).cast(pl.Utf8) == holdout_text
+            training = flag == 1
+            if df.select((training & holdout).fill_null(False).any()).item():
+                raise ValueError("Training and holdout must use different values.")
+            unmatched = df.filter(~(training | holdout).fill_null(False))
+            if unmatched.height:
+                raise ValueError(
+                    f"Split column {split.column!r} has {unmatched.height:,} missing or "
+                    "unmapped rows. Choose its training and holdout values on Variables "
+                    "or correct/filter these rows."
+                )
+            if not df.select(holdout.fill_null(False).any()).item():
+                raise ValueError("The selected holdout value matches no rows.")
         out = df.with_columns(flag.alias(split.column))
         if out[split.column].sum() == 0:
             raise ValueError(

@@ -49,7 +49,8 @@ def session():
 def test_role_snapshot_and_roundtrip(session):
     client, project = session
     state = client.get("/api/variables").json()
-    assert len(state["setup"]["assignments"]) == 6
+    assert len(state["setup"]["assignments"]) == 7
+    assert state["setup"]["assignments"]["time"] is None
     assert state["setup"]["assignments"]["weight"] is None
     assert state["setup"]["roles"]["ignore"] == ["id"]
     assert state["setup"]["roles"]["unassigned"] == ["spare"]

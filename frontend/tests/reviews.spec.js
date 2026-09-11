@@ -9,11 +9,6 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await button('Preview changes').click();
     await button('Apply changes').click();
     await button('Model').click();
-    if (!(await page.locator('.split-settings').evaluate((el) => el.open)))
-        await page.locator('.split-settings > summary').click();
-    await page.getByLabel('Split method').selectOption('random');
-    await button('Apply split').click();
-    await expect(page.getByText('Split applied.', { exact: true })).toBeVisible();
     await button('Create model').click();
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible();

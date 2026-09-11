@@ -7,10 +7,6 @@ test('model definition controls preserve selected values without browser errors'
     const button = (name) => page.getByRole('button', { name, exact: true });
     await page.goto('/');
     await button('Model').click();
-    if (!(await page.locator('.split-settings').evaluate((node) => node.open)))
-        await page.locator('.split-settings > summary').click();
-    await page.getByLabel('Split method').selectOption('random');
-    await button('Apply split').click();
     await page.getByLabel('Model family', { exact: true }).selectOption('tweedie');
     await page.getByLabel('Tweedie power', { exact: true }).fill('1.7');
     await expect(page.getByLabel('Tweedie power', { exact: true })).toHaveValue('1.7');

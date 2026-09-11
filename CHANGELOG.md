@@ -2,6 +2,15 @@
 
 This is the user-facing record of useful new features and fixes.
 
+## 0.463 — 11 September 2026
+
+- **Smaller challenger models.** Keep the top N predictors or choose them individually from Variable importance, then fit and compare a separate model.
+- **Time stability.** Compare actual versus expected over ordered time periods, with an optional factor breakdown. Example datasets include a synthetic time variable.
+- **Faster interaction fitting.** Reuse unchanged main effects and compatible cross-validation fits when only interactions change.
+- **Clearer train/holdout setup.** Define the split on Variables, including in Role JSON. For an existing two-value column, select the training value; the other becomes holdout.
+- **Clean example loading.** Loading an example clears previous models and fits and stays on Project & data.
+- **UI tidy-up.** Comparisons live on Compare, with champion and challenger side by side. Clearer double-lift labels, better-aligned controls and a more compact layout on wide screens.
+
 ## 0.462 — 11 September 2026
 
 - **Importance and coefficient paths in reports.** Rating factors now start with

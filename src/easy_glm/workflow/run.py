@@ -27,7 +27,7 @@ from easy_glm.core.design import (
 from easy_glm.core.fit import (
     GLMFit,
     TwoStageFit,
-    fit_glm,
+    _fit_main_effects,
     fit_two_stage,
     resolve_family,
 )
@@ -381,6 +381,7 @@ def run_model(
     model_name: str,
     *,
     progress: Callable[[str], None] | None = None,
+    main_effects_cache: dict[str, Any] | None = None,
 ) -> ModelRun:
     """Fit ``project.models[model_name]`` on the training rows of the prepared
     frame ``df`` (must contain the split column) and return a :class:`ModelRun`.
@@ -391,6 +392,10 @@ def run_model(
     row count — a book past
     :data:`~easy_glm.core.design.SPARSE_ROW_THRESHOLD` rows is fitted on the
     compact one, which is the same fit in a fraction of the memory.
+
+    ``main_effects_cache`` optionally retains an unchanged main fit and its
+    interaction-validation offsets across calls. Compatibility is checked
+    against the actual training data, design and fit settings.
 
     A model **with interactions is fitted in two stages** (Q5): stage 1 is the
     main-effect model — bit for bit the fit the same model without the
@@ -450,10 +455,13 @@ def run_model(
             spec,
             cfg.target,
             stage2_alpha=stage2_alpha(cfg),
+            main_effects_cache=main_effects_cache,
             **fit_kwargs,
         )
     else:
-        fit = fit_glm(train, spec, cfg.target, **fit_kwargs)  # target checked above
+        fit = _fit_main_effects(
+            train, spec, cfg.target, cache=main_effects_cache, **fit_kwargs
+        )
     exposure = exposure_for(project, cfg)
     rm = to_rate_model(
         fit,

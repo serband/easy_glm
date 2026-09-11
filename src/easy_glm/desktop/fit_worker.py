@@ -31,7 +31,12 @@ def write_json(path: Path, value: Any) -> None:
 
 
 def fit_result(
-    project: Any, raw: Any, name: str, progress: Any, artifact: Path | None = None
+    project: Any,
+    raw: Any,
+    name: str,
+    progress: Any,
+    artifact: Path | None = None,
+    main_cache_path: Path | None = None,
 ) -> dict[str, Any]:
     """A JSON result, including current adjusted tables, from the canonical engine."""
     from easy_glm.workflow.prep import prepare
@@ -43,12 +48,50 @@ def fit_result(
     if problems:
         raise ValueError("; ".join(problems))
     progress("Building design and fitting model…")
+    import pickle
+
+    reuse = {"main_effects": False, "fold_predictions": False}
+
+    def fit_progress(message: str) -> None:
+        if "Reusing unchanged main-effects fit" in message:
+            reuse["main_effects"] = True
+        if "reusing main-effects fold predictions" in message:
+            reuse["fold_predictions"] = True
+        progress(message)
+
+    main_cache: dict[str, Any] | None = None
+    if main_cache_path is not None:
+        main_cache = {}
+        try:
+            with main_cache_path.open("rb") as handle:
+                saved_cache = pickle.load(handle)  # Private, local worker cache only.
+            if saved_cache.get("format") == 1 and isinstance(
+                saved_cache.get("cache"), dict
+            ):
+                main_cache = saved_cache["cache"]
+        except (
+            OSError,
+            EOFError,
+            pickle.UnpicklingError,
+            AttributeError,
+            KeyError,
+            TypeError,
+            ValueError,
+            ImportError,
+        ):
+            pass
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        run = run_model(project, frame, name, progress=progress)
+        run = run_model(
+            project, frame, name, progress=fit_progress, main_effects_cache=main_cache
+        )
+    if main_cache_path is not None:
+        main_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = main_cache_path.with_suffix(".tmp")
+        with temporary.open("wb") as handle:
+            pickle.dump({"format": 1, "cache": main_cache}, handle, protocol=5)
+        os.replace(temporary, main_cache_path)
     if artifact is not None:
-        import pickle
-
         with (artifact / "fit.pkl").open("wb") as handle:
             pickle.dump(run, handle)
         from easy_glm.desktop.ae_cache import build_packet
@@ -66,7 +109,10 @@ def fit_result(
             build_importance(project, run, frame, artifact)
         except Exception:
             progress("Variable importance will be prepared on demand.")
-    return result_for(project, frame, run, [str(w.message) for w in caught])
+    return {
+        **result_for(project, frame, run, [str(w.message) for w in caught]),
+        "reuse": reuse,
+    }
 
 
 def table_payload(rate_model: Any, variable: str, frame: Any) -> dict[str, Any]:
@@ -143,6 +189,7 @@ def result_for(
                     "current_premium",
                     "id",
                     "split",
+                    "time",
                     "ignore",
                 )
                 and c
@@ -185,6 +232,7 @@ def main() -> None:
             name,
             progress,
             folder,
+            Path(sys.argv[3]) if len(sys.argv) > 3 else None,
         )
     except (
         Exception

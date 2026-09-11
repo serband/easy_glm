@@ -19,10 +19,6 @@ test('pair A/E follows latest selections and context without stale heatmaps', as
     await button('Preview changes').click();
     await button('Apply changes').click();
     await button('Model').click();
-    if (!(await page.locator('.split-settings').evaluate((n) => n.open)))
-        await page.locator('.split-settings > summary').click();
-    await page.getByLabel('Split method').selectOption('random');
-    await button('Apply split').click();
     await button('Create model').click();
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 30000 });
@@ -116,8 +112,8 @@ test('pair A/E follows latest selections and context without stale heatmaps', as
         page.getByRole('heading', { name: 'Region × DriverAge · Training', exact: true }),
     ).toBeVisible();
     expect(starts.at(-1).subset).toBe('train');
-    await page.getByLabel('Compare with challenger').selectOption('Challenger');
-    await expect.poll(() => starts.at(-1).challenger).toBe('Challenger');
+    await expect(page.getByLabel('Compare with challenger')).toHaveCount(0);
+    expect(starts.at(-1).challenger).toBeNull();
     await expect(page.locator('.ae-heatmap')).toBeVisible();
     await page.getByLabel('Model selection').selectOption('Challenger');
     await expect.poll(() => starts.at(-1).model).toBe('Challenger');

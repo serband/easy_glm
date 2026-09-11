@@ -322,6 +322,7 @@ def test_bulk_variable_json_round_trip_and_partial_edit(workspace):
         "offset": None,
         "current_premium": None,
         "split": "traintest",
+        "time": None,
     }
     assert payload["roles"] == {
         "id": ["IDpol"],

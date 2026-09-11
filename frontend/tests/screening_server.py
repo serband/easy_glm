@@ -1,5 +1,6 @@
 """File-backed screening fixture, isolated from every user session."""
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -9,6 +10,8 @@ import uvicorn
 
 from easy_glm.desktop.server import create_app
 from easy_glm.workflow.project import Project
+
+port = int(os.environ.get("EASYGLM_SCREENING_PORT", "8787"))
 
 with tempfile.TemporaryDirectory(prefix="easyglm_screening_browser_") as folder:
     rng = np.random.default_rng(42)
@@ -41,8 +44,8 @@ with tempfile.TemporaryDirectory(prefix="easyglm_screening_browser_") as folder:
     }
     project.data.split.mode = "random"
     uvicorn.run(
-        create_app(project, raw, port=8787),
+        create_app(project, raw, port=port),
         host="127.0.0.1",
-        port=8787,
+        port=port,
         log_level="warning",
     )

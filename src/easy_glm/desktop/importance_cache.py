@@ -65,7 +65,16 @@ def build_packet(
         name
         for name, role in project.data.roles.items()
         if role
-        in ("target", "weight", "exposure", "offset", "current_premium", "id", "split")
+        in (
+            "target",
+            "weight",
+            "exposure",
+            "offset",
+            "current_premium",
+            "id",
+            "split",
+            "time",
+        )
     ) + (project.data.split.column,)
     rows = permutation_importance(
         run.fit, train, repeats=REPEATS, seed=SEED, protected_columns=protected

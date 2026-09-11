@@ -184,7 +184,7 @@
                     <p>{error}</p>
                     <div>
                         {#if /split|train(?:ing)? (?:flag|column)|holdout/i.test(error)}
-                            <button onclick={() => onNavigate('model')}
+                            <button onclick={() => onNavigate('variables')}
                                 >Set up train / holdout</button
                             >
                         {:else}

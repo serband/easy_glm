@@ -9,10 +9,6 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     await button('Preview changes').click();
     await button('Apply changes').click();
     await button('Model').click();
-    if (!(await page.locator('.split-settings').evaluate((el) => el.open)))
-        await page.locator('.split-settings > summary').click();
-    await page.getByLabel('Split method').selectOption('random');
-    await button('Apply split').click();
     await page.getByLabel('Penalty mode').selectOption('cv');
     await page.getByLabel('CV folds').fill('2');
     await page.getByLabel('Alpha path length').fill('5');
@@ -80,8 +76,7 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     await expect(page.getByRole('img', { name: /retained coefficients$/ })).toHaveCount(0);
     await tab('Coefficients').click();
     await expect(page.locator('.diagnostic-table').last()).toContainText('exp coef');
-    await tab('Double lift').click();
-    await expect(page.getByText(/No challenger selected: the null benchmark/)).toBeVisible();
+    await expect(tab('Double lift')).toHaveCount(0);
     await button('Model').click();
     await page.getByLabel('Model selection').selectOption('__new__');
     await page.getByLabel('New model name').fill('Challenger');
@@ -97,12 +92,13 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     await button('Model').click();
     await page.getByLabel('Model selection').selectOption('Frequency');
     await button('Diagnostics').click();
-    await page.getByLabel('Compare with challenger').selectOption('Challenger');
-    await expect(page.getByLabel('Default comparison model')).toHaveValue('Challenger');
+    await expect(page.getByLabel('Compare with challenger')).toHaveCount(0);
     await tab('Lift').click();
-    await expect(
-        page.getByRole('img', { name: 'Challenger · holdout', exact: true }),
-    ).toBeVisible();
+    await expect(page.getByRole('img', { name: 'Challenger · holdout', exact: true })).toHaveCount(
+        0,
+    );
+    await button('Compare').click();
+    await page.getByLabel('Compare with challenger').selectOption('Challenger');
     await tab('Double lift').click();
     await expect(
         page.getByRole('img', { name: 'Double lift · holdout', exact: true }),
@@ -124,14 +120,12 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
         await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
     ).toBeTruthy();
     await expect(page.getByLabel('Compare with challenger')).toHaveValue('Challenger');
-    await button('Make selected model champion').click();
-    await expect(
-        page.getByText('Frequency is the project champion.', { exact: true }),
-    ).toBeVisible();
+    await expect(button('Make selected model champion')).toHaveCount(0);
+    await tab('Relativities that differ').click();
 
     await expect(page.getByText(/Numeric factors use the union/)).toBeVisible();
     await button('Rate tables').click();
-    await expect(page.getByLabel('Compare with challenger')).toHaveValue('Challenger');
+    await expect(page.getByLabel('Compare with challenger')).toHaveCount(0);
     await expect(
         page.getByRole('img', { name: 'Actual fitted and adjusted by variable', exact: true }),
     ).toBeVisible();

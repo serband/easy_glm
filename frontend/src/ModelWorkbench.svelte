@@ -2,6 +2,7 @@
     import { formatNumber as num, formatRelativity as rel } from './format.js';
     import { onDestroy } from 'svelte';
     import ReviewPanel from './ReviewPanel.svelte';
+    import TimeDiagnostics from './TimeDiagnostics.svelte';
     import InteractionEditor from './InteractionEditor.svelte';
     import DiagnosticTable from './DiagnosticTable.svelte';
     import { comparisonIssue, comparisonMetrics, comparisonSettings } from './comparison.js';
@@ -21,7 +22,9 @@
         sentContext = '',
         readingComparison = false;
     $: effectiveChallenger =
-        comparison !== selected && jobs[comparison]?.applicable ? comparison : '';
+        view === 'compare' && comparison !== selected && jobs[comparison]?.applicable
+            ? comparison
+            : '';
     $: context = JSON.stringify({
         fitted: Object.keys(jobs).filter((n) => jobs[n].applicable),
         selected,
@@ -57,7 +60,7 @@
             });
             onState(response.snapshot);
             await refresh(true);
-            notice = name + ' is the project champion.';
+            notice = '';
         } catch (e) {
             error = e.message;
         }
@@ -79,6 +82,7 @@
           )
         : [];
     let diagnosticTab = 'variable';
+    let comparisonTab = 'compare';
     let tableEditorOpen = false;
     let tableDetails = false,
         tableReview,
@@ -128,6 +132,23 @@
     function clearEdits() {
         rowEdits = {};
     }
+    let reductionSource = '',
+        reductionName = '';
+    async function reduced(result) {
+        reductionSource = result.source;
+        reductionName = result.name;
+        selected = result.name;
+        await reviewed(result.snapshot);
+        await onNavigate('model');
+    }
+    async function compareReduction() {
+        comparison = reductionName;
+        selected = reductionSource;
+        subset = 'holdout';
+        pickModel();
+        if (wb.champion !== selected) await makeChampion(selected);
+        await onNavigate('compare');
+    }
     async function reviewed(snapshot) {
         // Post-fit edits keep the adjustment controls and their local choices mounted.
         known = snapshot.session_id + ':' + snapshot.revision;
@@ -158,12 +179,9 @@
         notice = '',
         known = '',
         baseline = '',
-        splitDraft = null,
         jobs = {},
         result = null,
         resultId = '';
-    let splitOpen = false,
-        splitContext = '';
     let syncedCompletedFits = '';
     let mode = 'fixed',
         fixedAlpha = 0.001,
@@ -252,6 +270,12 @@
     function rev() {
         return { session_id: state.session_id, revision: state.revision };
     }
+    async function chooseModel() {
+        pickModel();
+        if (view === 'compare' && jobs[selected]?.applicable && wb.champion !== selected) {
+            await makeChampion(selected);
+        }
+    }
     function pickModel() {
         cfg = structuredClone(
             wb.models[selected] || {
@@ -317,15 +341,9 @@
         const keepDraft = keep && dirty;
         try {
             wb = await api('workbench');
-            const nextSplitContext = `${wb.session_id}:${state.project_id}`;
-            if (splitContext !== nextSplitContext) {
-                splitContext = nextSplitContext;
-                splitOpen = !wb.counts.holdout;
-            }
             jobs = wb.jobs;
             known = wb.session_id + ':' + wb.revision;
             loaded = true;
-            splitDraft = structuredClone(wb.split);
             if (selected !== '__new__' && !wb.models[selected])
                 selected = Object.keys(wb.models)[0] || '__new__';
             if (!cfg && Object.keys(wb.models).length)
@@ -418,20 +436,6 @@
             onState(snapshot);
             await refresh(false);
             notice = 'Model settings saved. Fit when ready.';
-        } catch (e) {
-            error = e.message;
-        } finally {
-            saving = false;
-        }
-    }
-    async function saveSplit() {
-        saving = true;
-        error = '';
-        try {
-            const snapshot = await api('split', { ...rev(), ...splitDraft });
-            onState(snapshot);
-            await refresh(true);
-            notice = 'Split applied.';
         } catch (e) {
             error = e.message;
         } finally {
@@ -580,12 +584,12 @@
         </div>{/if}
     {#if notice}<div class="message" role="status">{notice}</div>{/if}
     {#if !wb || !cfg}<div class="loading">Checking applied data and model settings…</div>{:else}
-        <div class="model-selector">
+        <div class="model-selector" class:compare-models={view === 'compare'}>
             <label
-                >{view === 'compare' ? 'Baseline model' : 'Model'}<select
+                >{view === 'compare' ? 'Champion' : 'Model'}<select
                     aria-label="Model selection"
                     bind:value={selected}
-                    onchange={pickModel}
+                    onchange={chooseModel}
                     >{#if view !== 'compare'}<option value="__new__">Create a new model</option
                         >{/if}{#each Object.keys(wb.models).filter((n) => view !== 'compare' || jobs[n]?.applicable) as name}<option
                             value={name}>{name}</option
@@ -594,6 +598,23 @@
             >{#if selected === '__new__'}<label
                     >Name<input aria-label="New model name" bind:value={newName} /></label
                 >{/if}
+            {#if view === 'compare'}
+                <label
+                    >Challenger<select aria-label="Compare with challenger" bind:value={comparison}
+                        ><option value="">None</option
+                        >{#each Object.keys(jobs).filter((n) => n !== selected && jobs[n].applicable) as name}<option
+                                value={name}>{name}</option
+                            >{/each}</select
+                    ></label
+                >
+            {/if}
+            {#if view === 'tables' && applicable && result}
+                <div class="model-base-rate" aria-label="Model base rate">
+                    <span>Model base rate</span>
+                    <strong>{num(result.base_rate)}</strong>
+                    <small>{result.link} link · {result.relativity_label}</small>
+                </div>
+            {/if}
             <div class="spacer"></div>
             <span class="edit-status" hidden={view === 'compare'}
                 >{dirty
@@ -603,25 +624,6 @@
                       : 'Applied model settings'}</span
             >
         </div>
-        {#if view !== 'model' && selected !== '__new__' && (view === 'compare' || Object.values(jobs).filter((j) => j.applicable).length > 1)}<div
-                class="results-toolbar comparison-context"
-            >
-                <label
-                    >Compare with (challenger)<select
-                        aria-label="Compare with challenger"
-                        bind:value={comparison}
-                        ><option value="">None</option
-                        >{#each Object.keys(jobs).filter((n) => n !== selected && jobs[n].applicable) as name}<option
-                                value={name}>{name}</option
-                            >{/each}</select
-                    ></label
-                >
-                <span>Project champion: <b>{wb.champion || 'Not designated'}</b></span>
-                <button
-                    disabled={!applicable || wb.champion === selected}
-                    onclick={() => makeChampion(selected)}>Make selected model champion</button
-                >
-            </div>{/if}
         {#if view === 'model'}
             <nav class="section-nav" aria-label="Model sections">
                 <a href="#model-definition">Model definition</a><a href="#factor-design"
@@ -804,78 +806,17 @@
                 </section>
                 <section class="model-card">
                     <h2 id="fit-settings">Fit and results</h2>
-                    <details class="split-settings" bind:open={splitOpen}>
-                        <summary>Train / holdout split</summary>
-                        <div class="section-heading">
-                            <span>Applied split</span>
-                            <span
-                                >{wb.counts.train.toLocaleString()} train · {wb.counts.holdout.toLocaleString()}
-                                holdout</span
+                    <p class="help-text model-split-summary">
+                        {wb.counts.train.toLocaleString()} training rows · {wb.counts.holdout.toLocaleString()}
+                        holdout rows
+                    </p>
+                    {#if wb.problems.length}<div class="prerequisites">
+                            <strong>Before fitting</strong>{#each wb.problems as problem}<p>
+                                    {problem}
+                                </p>{/each}
+                            <button onclick={() => onNavigate('variables')}>Review Variables</button
                             >
-                        </div>
-                        <p class="help-text">
-                            A generated random split is valid without a source column assigned the
-                            split role.
-                        </p>
-                        <div class="form-grid split-form">
-                            <label
-                                >Method<select
-                                    aria-label="Split method"
-                                    bind:value={splitDraft.mode}
-                                    ><option value="random">Seeded random</option><option
-                                        value="column">Existing column</option
-                                    ></select
-                                ></label
-                            >
-                            {#if splitDraft.mode === 'random'}<label
-                                    >Generated column<input
-                                        aria-label="Split column name"
-                                        bind:value={splitDraft.column}
-                                    /></label
-                                ><label
-                                    >Training fraction<input
-                                        aria-label="Training fraction"
-                                        type="number"
-                                        min=".01"
-                                        max=".99"
-                                        step=".05"
-                                        bind:value={splitDraft.fraction}
-                                    /></label
-                                ><label
-                                    >Seed<input
-                                        aria-label="Split seed"
-                                        type="number"
-                                        min="0"
-                                        step="1"
-                                        bind:value={splitDraft.seed}
-                                    /></label
-                                >{:else}<label
-                                    >Column<select
-                                        aria-label="Existing split column"
-                                        bind:value={splitDraft.column}
-                                        >{#if !wb.columns.some((c) => c.name === splitDraft.column)}<option
-                                                value={splitDraft.column}
-                                                >{splitDraft.column} (missing)</option
-                                            >{/if}{#each wb.columns as column}<option
-                                                value={column.name}>{column.name}</option
-                                            >{/each}</select
-                                    ></label
-                                ><label
-                                    >Training value<input
-                                        aria-label="Training value"
-                                        bind:value={splitDraft.train_value}
-                                    /></label
-                                >{/if}
-                            <button onclick={saveSplit} disabled={saving || loading}
-                                >Apply split</button
-                            >
-                        </div>
-                        {#if wb.problems.length}<div class="prerequisites">
-                                <strong>Before fitting</strong>{#each wb.problems as problem}<p>
-                                        {problem}
-                                    </p>{/each}
-                            </div>{/if}
-                    </details>
+                        </div>{/if}
                     <h3>Fit settings</h3>
                     <div class="form-grid">
                         <label
@@ -956,7 +897,7 @@
                 </section>
             </fieldset>
         {/if}
-        {#if job && view !== 'compare' && !(view === 'diagnostics' && job.status === 'complete')}<section
+        {#if job && view !== 'compare' && !(['diagnostics', 'tables'].includes(view) && job.status === 'complete')}<section
                 class="job-card"
                 class:compact-result-status={view !== 'model' && job.status === 'complete'}
                 role="status"
@@ -976,7 +917,9 @@
                     <p>{job.message}</p>
                 </div>
                 <span>{num(job.elapsed)} s</span
-                >{#if ['queued', 'running'].includes(job.status)}<button onclick={cancel}
+                >{#if applicable && selected === reductionName && jobs[reductionSource]?.applicable}<button
+                        onclick={compareReduction}>Compare with original</button
+                    >{/if}{#if ['queued', 'running'].includes(job.status)}<button onclick={cancel}
                         >Cancel fit</button
                     >{/if}{#if applicable && view !== 'diagnostics'}<button
                         onclick={() => onNavigate('diagnostics')}>View diagnostics</button
@@ -995,13 +938,7 @@
                         <button onclick={() => onNavigate('model')}>Open Model</button>
                     </section>
                 {:else if !effectiveChallenger}
-                    <section class="model-card">
-                        <h2>Select a challenger</h2>
-                        <p>
-                            Choose a second fitted model above to see metric, design and rate
-                            differences.
-                        </p>
-                    </section>
+                    <!-- The selector above is the only prompt needed. -->
                 {:else if !result || !comparisonResult}<p>Loading comparison…</p>
                 {:else}
                     <div class="results-toolbar">
@@ -1022,7 +959,7 @@
                         <section class="model-card">
                             <h2>Metrics side by side</h2>
                             <p>
-                                Baseline: <b>{selected}</b> · Challenger:
+                                Champion: <b>{selected}</b> · Challenger:
                                 <b>{effectiveChallenger}</b>
                             </p>
                             <p class="help-text">
@@ -1046,8 +983,17 @@
                                 comparisonResult.base_rate,
                             )} challenger. Rates include applied adjustments.
                         </p>
+                        <div class="workflow-tabs" role="tablist" aria-label="Comparison views">
+                            {#each [['compare', 'Relativities that differ'], ['double_lift', 'Double lift']] as [key, label]}
+                                <button
+                                    role="tab"
+                                    aria-selected={comparisonTab === key}
+                                    onclick={() => (comparisonTab = key)}>{label}</button
+                                >
+                            {/each}
+                        </div>
                         <ReviewPanel
-                            diagnosticTab="compare"
+                            diagnosticTab={comparisonTab}
                             challenger={effectiveChallenger}
                             fitIdentity={job?.id || ''}
                             comparisonFitIdentity={jobs[effectiveChallenger]?.id || ''}
@@ -1057,6 +1003,7 @@
                             view="diagnostics"
                             {subset}
                             onApplied={reviewed}
+                            onReduced={reduced}
                             onClear={clearEdits}
                             {onNavigate}
                         />
@@ -1068,7 +1015,7 @@
                 </div>{:else if !result}<p>
                     Loading fitted results…
                 </p>{:else if view === 'diagnostics'}
-                {#if diagnosticTab !== 'importance'}
+                {#if !['importance', 'time'].includes(diagnosticTab)}
                     <div class="results-toolbar">
                         <label
                             >Data subset<select aria-label="Diagnostic subset" bind:value={subset}
@@ -1103,7 +1050,7 @@
                     <p class="help-text">{result.diagnostic_info?.gini_note || ''}</p>
                 {/if}
                 <div class="workflow-tabs" role="tablist" aria-label="Diagnostics views">
-                    {#each [['variable', 'A/E by variable'], ['pair', 'A/E by pair'], ['lift', 'Lift'], ['double_lift', 'Double lift'], ['residual', 'Residual factors'], ['importance', 'Variable importance'], ['path', 'Regularisation path'], ['coefficients', 'Coefficients'], ['compare', 'Relativities that differ']] as [key, label]}<button
+                    {#each [['variable', 'A/E by variable'], ['time', 'Time stability'], ['pair', 'A/E by pair'], ['lift', 'Lift'], ['residual', 'Residual factors'], ['importance', 'Variable importance'], ['path', 'Regularisation path'], ['coefficients', 'Coefficients']] as [key, label]}<button
                             role="tab"
                             aria-selected={diagnosticTab === key}
                             onclick={() => (diagnosticTab = key)}>{label}</button
@@ -1115,20 +1062,31 @@
                         )}.
                     </div>{/if}
                 <div>
-                    <ReviewPanel
-                        {diagnosticTab}
-                        challenger={effectiveChallenger}
-                        fitIdentity={job?.id || ''}
-                        comparisonFitIdentity={jobs[effectiveChallenger]?.id || ''}
-                        {api}
-                        {state}
-                        name={selected}
-                        view={view === 'compare' ? 'diagnostics' : view}
-                        {subset}
-                        onApplied={reviewed}
-                        onClear={clearEdits}
-                        {onNavigate}
-                    />
+                    {#if diagnosticTab === 'time'}
+                        <TimeDiagnostics
+                            {api}
+                            {state}
+                            name={selected}
+                            fitIdentity={job?.id || ''}
+                            {onNavigate}
+                        />
+                    {:else}
+                        <ReviewPanel
+                            {diagnosticTab}
+                            challenger={effectiveChallenger}
+                            fitIdentity={job?.id || ''}
+                            comparisonFitIdentity={jobs[effectiveChallenger]?.id || ''}
+                            {api}
+                            {state}
+                            name={selected}
+                            view={view === 'compare' ? 'diagnostics' : view}
+                            {subset}
+                            onApplied={reviewed}
+                            onReduced={reduced}
+                            onClear={clearEdits}
+                            {onNavigate}
+                        />
+                    {/if}
                 </div>
                 {#each result.warnings as warning}<div class="message">{warning}</div>{/each}
             {:else}
@@ -1146,8 +1104,6 @@
                                     >{item.name} · {item.rows} rows</option
                                 >{/each}</select
                         ></label
-                    ><strong>Base rate {num(result.base_rate)}</strong><span
-                        >{result.link} link · {result.relativity_label}</span
                     >
                 </div>
                 {#if table}<div class="rate-primary">
@@ -1177,6 +1133,7 @@
                             variable={tableName}
                             edits={rowEdits}
                             onApplied={reviewed}
+                            onReduced={reduced}
                             onClear={clearEdits}
                             {onNavigate}
                         >

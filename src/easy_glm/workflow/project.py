@@ -123,11 +123,20 @@ ROLES = (
     "offset",
     "current_premium",
     "split",
+    "time",
     "id",
     "predictor",
     "ignore",
 )
-SINGLE_ROLES = ("target", "weight", "exposure", "offset", "current_premium", "split")
+SINGLE_ROLES = (
+    "target",
+    "weight",
+    "exposure",
+    "offset",
+    "current_premium",
+    "split",
+    "time",
+)
 
 #: Prefix of the column :mod:`easy_glm.workflow.prep` derives from the column
 #: with role ``current_premium``: ``log(premium)``, the offset of a rate-change
@@ -201,6 +210,7 @@ class Split:
     train_value: Any = 1
     fraction: float = 0.7
     seed: int = 42
+    holdout_value: Any = None  # None retains the legacy "all other values" rule.
 
 
 @dataclass

@@ -20,7 +20,8 @@ test('bidirectional roles, name/type preservation, invalid reset and explicit ap
     await page.getByRole('button', { name: 'Role JSON', exact: true }).click();
     const text = page.getByLabel('Role JSON', { exact: true });
     const setup = JSON.parse(await text.inputValue());
-    expect(Object.keys(setup)).toHaveLength(10);
+    expect(Object.keys(setup)).toHaveLength(11);
+    expect(setup.time).toBeNull();
     expect(setup.offset).toBeNull();
     expect(setup.ignore).toContain('InternalCode');
     expect(setup.unassigned).toContain('VehicleAge');

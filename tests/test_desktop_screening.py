@@ -276,6 +276,7 @@ def test_worker_failure_is_a_message_and_cache_holds_only_two_completed(scanner)
 
 def test_actual_scan_is_training_only_maps_draft_names_and_does_not_fit():
     project = Project(name="Actual screening")
+    project.data.split.holdout_value = 0
     project.data.roles = {
         "Claims": "target",
         "Exposure": "weight",

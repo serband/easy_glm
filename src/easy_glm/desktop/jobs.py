@@ -159,8 +159,21 @@ class FitJobs:
                             "easy_glm.desktop.fit_worker",
                             str(folder),
                             job["name"],
+                            str(
+                                Path(self.folder.name)
+                                / "main-effects"
+                                / (
+                                    hashlib.sha256(job["name"].encode()).hexdigest()
+                                    + ".pkl"
+                                )
+                            ),
                         ],
-                        env=_launcher_env(),
+                        # Use this server's package, not another editable install.
+                        # The path is derived from code; never inherit kernel paths.
+                        env={
+                            **_launcher_env(),
+                            "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+                        },
                         stdout=log,
                         stderr=subprocess.STDOUT,
                     )

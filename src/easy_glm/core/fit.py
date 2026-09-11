@@ -16,10 +16,14 @@ Three things here are about **size** rather than statistics (piece G):
 
 from __future__ import annotations
 
+import hashlib
+import json
+import pickle
 import threading
 import time
 import warnings
 from collections.abc import Callable, Mapping
+from copy import copy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -1090,12 +1094,63 @@ class TwoStageFit(GLMFit):
         )
 
 
+def _fit_main_effects(
+    data: pl.DataFrame,
+    spec: DesignSpec,
+    target: str,
+    *,
+    cache: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> GLMFit:
+    """Reuse only an identical training problem; never reuse interaction fits.
+
+    The caller owns this disposable cache. Hashing is chunked, includes row order
+    and dtypes, and excludes only progress callbacks. No training matrix is built
+    to check compatibility. A copy binds the fitted coefficients to this design's
+    encoder instances, preserving the interaction-parent identity invariant.
+    """
+    if cache is None:
+        return fit_glm(data, spec, target, **kwargs)
+    columns = list(
+        dict.fromkeys(
+            [
+                *spec.variables,
+                target,
+                *[kwargs[k] for k in ("weight_col", "offset_col") if kwargs.get(k)],
+            ]
+        )
+    )
+    frame = data.select(columns)
+    digest = hashlib.sha256()
+    digest.update(json.dumps(spec.to_dict(), sort_keys=True).encode())
+    digest.update(str(frame.schema).encode())
+    digest.update(str(frame.height).encode())
+    settings = {k: v for k, v in sorted(kwargs.items()) if k != "progress"}
+    digest.update(pickle.dumps((target, settings), protocol=5))
+    for chunk in frame.iter_slices(SCORING_CHUNK_ROWS):
+        for seed in (0, 2147483647):
+            digest.update(chunk.hash_rows(seed=seed).to_numpy().tobytes())
+    key = digest.hexdigest()
+    if cache.get("key") == key and isinstance(cache.get("fit"), GLMFit):
+        progress = kwargs.get("progress")
+        if progress:
+            progress("Reusing unchanged main-effects fit")
+        fit = copy(cache["fit"])
+        fit.spec = spec
+        return fit
+    cache.clear()
+    fit = fit_glm(data, spec, target, **kwargs)
+    cache.update(key=key, fit=fit)
+    return fit
+
+
 def fit_two_stage(
     data: pl.DataFrame,
     spec: DesignSpec,
     target: str,
     *,
     stage2_alpha: float | None = None,
+    main_effects_cache: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> GLMFit:
     """Fit ``spec`` in two stages and return the composed :class:`TwoStageFit`.
@@ -1132,6 +1187,11 @@ def fit_two_stage(
     ``InteractionEncoder.penalty_weight``, which multiplies that interaction's
     cells' ``P1``; stage 2 is one fit and therefore has one alpha.
 
+    ``main_effects_cache`` is an optional caller-owned, disposable cache. It
+    reuses the main fit and cross-fitted offsets only when the main design,
+    ordered training values and fitting settings match. Interaction settings
+    do not invalidate it. No estimator or encoder in a previous fit is mutated.
+
     When no cell of any interaction has enough exposure to be rated on its own
     there is nothing for a second stage to fit: a plain :class:`GLMFit` on
     ``spec`` comes back (the same numbers a mains-only fit gives, since the cell
@@ -1159,7 +1219,9 @@ def fit_two_stage(
         return lambda message: outer_progress(f"{name} — {message}")
 
     kwargs = {**kwargs, "progress": _stage_progress("Stage 1, main effects")}
-    fit1 = fit_glm(data, spec.main_effects_spec(), target, **kwargs)
+    fit1 = _fit_main_effects(
+        data, spec.main_effects_spec(), target, cache=main_effects_cache, **kwargs
+    )
 
     # eta1 must be the *whole* of stage 1's linear predictor, the user's offset
     # included, or stage 2 would see a residual that still contains the offset
@@ -1182,7 +1244,20 @@ def fit_two_stage(
         and kwargs.get("alpha") is None
     )
     eta_stage2 = eta1
-    if stage2_uses_cv:
+    cached_oof = (
+        main_effects_cache.get("oof") if main_effects_cache is not None else None
+    )
+    if (
+        stage2_uses_cv
+        and isinstance(cached_oof, np.ndarray)
+        and cached_oof.shape == (data.height,)
+    ):
+        eta_stage2 = cached_oof
+        if outer_progress:
+            outer_progress(
+                "Stage 2 preparation — reusing main-effects fold predictions"
+            )
+    elif stage2_uses_cv:
         folds = int(kwargs["cv"])
         seed = int(kwargs.get("cv_seed", 42))
         eta_stage2 = np.empty(data.height, dtype=float)
@@ -1217,6 +1292,8 @@ def fit_two_stage(
             eta_stage2[score_index] = _whole_eta(
                 fold_fit, data[score_index], score_index
             )
+        if main_effects_cache is not None:
+            main_effects_cache["oof"] = eta_stage2
 
     dropped = {
         "monotone",

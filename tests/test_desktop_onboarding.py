@@ -149,7 +149,7 @@ def test_upload_project_resolves_absolute_source_without_applying_adjustments(
 
 
 @pytest.mark.parametrize("example", ["french_motor", "swedish_motorcycle"])
-def test_examples_match_starter_roles_models_and_never_fit(
+def test_examples_preserve_roles_clear_models_and_never_fit(
     model_session, input_folders, monkeypatch, example
 ):
     client, _, _ = model_session
@@ -179,18 +179,17 @@ def test_examples_match_starter_roles_models_and_never_fit(
     raw = pl.read_parquet(project.data.source.path)
     assert raw.height == 240
     assert client.get("/api/jobs").json() == {}
-    name = "frequency" if example == "french_motor" else "BurnCost"
-    assert list(project.models) == [name]
-    cfg = project.models[name]
-    assert cfg.weight == "Exposure" and cfg.divide_target_by_weight
-    assert not cfg.adjustments and cfg.base_rate_override is None
+    assert project.models == {}
+    assert project.champion is None
+    assert project.data.roles["SyntheticYear"] == "time"
+    assert raw["SyntheticYear"].n_unique() == 5
+    assert project.data.roles["Exposure"] == "weight"
     if example == "french_motor":
-        assert cfg.family == "poisson" and cfg.target == "ClaimNb"
+        assert project.data.roles["ClaimNb"] == "target"
         assert project.data.roles["IDpol"] == "id"
-        assert cfg.predictors == ["DrivAge", "Region", "BonusMalus", "Density"]
     else:
-        assert cfg.family == "tweedie" and cfg.tweedie_power == 1.5
-        assert cfg.target == "ClaimAmount" and project.data.roles["ClaimNb"] == "ignore"
+        assert project.data.roles["ClaimAmount"] == "target"
+        assert project.data.roles["ClaimNb"] == "ignore"
         prepared = prepare(project, raw)
         assert prepared.height == 238 and (prepared["Exposure"] > 0).all()
         assert (prepared["ClaimAmount"] == 0).any()
@@ -208,8 +207,10 @@ def test_french_example_caps_the_saved_sample_at_50000(
     )
     assert response.status_code == 200, response.text
     assert response.json()["row_count"] == 50_000
-    assert pl.read_parquet(input_folders[0] / "french_motor_sample.parquet").equals(
-        raw.sample(n=50_000, seed=42)
+    assert (
+        pl.read_parquet(input_folders[0] / "french_motor_sample.parquet")
+        .drop("SyntheticYear")
+        .equals(raw.sample(n=50_000, seed=42))
     )
 
 

@@ -190,7 +190,7 @@ header {
     height: 66px;
     background: #fff;
     border-bottom: 1px solid var(--border);
-    padding: 0 32px;
+    padding: 0 max(32px, calc((100% - 1280px) / 2 + 32px));
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -224,7 +224,10 @@ header {
     font-size: 11px;
 }
 main {
-    max-width: 1600px;
+    width: 100%;
+    max-width: 1280px;
+    min-width: 0;
+    box-sizing: border-box;
     margin: auto;
     padding: 30px 32px 36px;
 }
@@ -1362,9 +1365,28 @@ main {
 .rate-relativities > .rate-chart-card h2 {
     font-size: 18px;
 }
-.rate-relativities > .adjustments-heading {
+.adjustments-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px 24px;
+    margin-bottom: 18px;
     border-top: 1px solid var(--border, #dde5df);
     padding-top: 18px;
+}
+.adjustments-toolbar h3 {
+    margin: 0;
+}
+.adjustment-selector {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    max-width: 100%;
+}
+.adjustment-selector select {
+    min-width: 0;
+    max-width: 100%;
 }
 .rate-relativities > .rate-table-card {
     border: 0;
@@ -1372,8 +1394,25 @@ main {
     padding: 12px 0 0;
     margin-top: 16px;
 }
+.table-ae-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px 24px;
+    margin-bottom: 20px;
+}
+.table-ae-heading h2 {
+    margin: 0;
+}
 .rate-ae .table-ae-subset {
-    margin: 0 0 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 0;
+}
+.table-ae-subset select {
+    min-width: 120px;
 }
 .review-ae:empty {
     display: none;
@@ -1413,7 +1452,6 @@ main {
     padding-top: 8px;
 }
 /* Keep intrinsic table widths inside their scroll containers, including Compare. */
-main,
 .model-workbench,
 .model-card,
 .review-layout,
@@ -1482,4 +1520,52 @@ main,
     .pair-controls {
         grid-template-columns: minmax(0, 1fr);
     }
+}
+
+.model-base-rate {
+    display: grid;
+    gap: 4px;
+    padding-left: 20px;
+    border-left: 1px solid var(--border);
+}
+.model-base-rate > span,
+.model-base-rate small {
+    color: var(--muted);
+    font-size: 12px;
+}
+.model-base-rate strong {
+    font-size: 20px;
+}
+
+.model-selector.compare-models {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 20px;
+    align-items: start;
+}
+.compare-models > label {
+    min-width: 0;
+    width: 100%;
+}
+.compare-models select {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+}
+.compare-models > .spacer,
+.compare-models > .edit-status {
+    display: none;
+}
+
+.review-panel .diagnostic-controls {
+    align-items: flex-end;
+}
+.diagnostic-controls label {
+    margin: 0;
+}
+.diagnostic-controls input,
+.diagnostic-controls button {
+    box-sizing: border-box;
+    height: 36px;
+    margin-bottom: 0;
 }

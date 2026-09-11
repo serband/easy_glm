@@ -140,7 +140,8 @@
                 {example === 'french_motor'
                     ? 'Poisson · Claim count (ClaimNb), weighted by exposure.'
                     : 'Tweedie · Total claim cost (ClaimAmount), including zero claims.'}
-                Roles and a model are ready to use.
+                Roles are preset; create your model when ready. SyntheticYear contains made-up years for
+                trying time diagnostics, not actual claims history.
             </p>
         {:else}
             <div class="file-options">

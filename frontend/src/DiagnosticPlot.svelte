@@ -11,14 +11,17 @@
         xKey = 'bin',
         logX = false,
         ariaLabel = '',
-        showTable = true;
+        showTable = true,
+        yAxisLabel = '',
+        xAxisLabel = '',
+        referenceValue = null;
     const colors = ['#287762', '#c35b48', '#737e9b', '#bd8a45', '#439da5'];
     $: shown = rows.filter((r) => r.exposure === undefined || r.exposure > 0);
     $: labels = formatLabels(shown.map((r, i) => r.label ?? r[xKey] ?? i + 1));
     $: visible = series.filter((s) => shown.some((r) => Number.isFinite(r[s.key])));
     $: values = shown.flatMap((r) => visible.map((s) => r[s.key])).filter(Number.isFinite);
     $: lo = Math.min(0, ...values);
-    $: hi = Math.max(0.000001, ...values);
+    $: hi = Math.max(0.000001, referenceValue ?? 0, ...values);
     $: xs = shown.map((r, i) => (logX ? Math.log10(Math.max(r[xKey], 1e-12)) : i));
     $: xmin = xs.length ? Math.min(...xs) : 0;
     $: xmax = xs.length ? Math.max(...xs) : 1;
@@ -64,6 +67,7 @@
     </div>
     <svg viewBox="0 0 750 250" role="img" aria-label={ariaLabel || title}>
         <title>{title}</title>
+        {#if yAxisLabel}<text x="50" y="20">{yAxisLabel}</text>{/if}
         {#if hasExposure}<desc
                 >Exposure bars use the right axis; diagnostic series use the left axis.</desc
             >{/if}
@@ -115,6 +119,16 @@
                 transform="rotate(90 740 115)">Exposure</text
             >
         {/if}
+        {#if Number.isFinite(referenceValue)}
+            <line
+                x1="50"
+                x2={plotRight}
+                y1={y(referenceValue)}
+                y2={y(referenceValue)}
+                stroke="var(--muted, #667085)"
+                stroke-dasharray="5 4"><title>Reference {referenceValue}</title></line
+            >
+        {/if}
         {#each visible as s, j}
             {#if kind !== 'categorical'}<polyline
                     points={shown
@@ -158,6 +172,9 @@
                         labels[i],
                     )}</text
                 >{/if}{/each}
+        {#if xAxisLabel}<text x={(50 + plotRight) / 2} y="243" text-anchor="middle"
+                >{xAxisLabel}</text
+            >{/if}
     </svg>
     {#if showTable}<details>
             <summary>Table · {title}</summary><DiagnosticTable {rows} {title} />

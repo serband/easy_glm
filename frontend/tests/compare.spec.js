@@ -5,10 +5,6 @@ test('Compare requires two compatible fits and shows exact metric deltas', async
     const button = (n) => page.getByRole('button', { name: n, exact: true });
     await page.goto('/');
     await button('Model').click();
-    if (!(await page.locator('.split-settings').evaluate((n) => n.open)))
-        await page.locator('.split-settings > summary').click();
-    await page.getByLabel('Split method').selectOption('random');
-    await button('Apply split').click();
     await button('Create model').click();
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 30000 });
@@ -26,7 +22,7 @@ test('Compare requires two compatible fits and shows exact metric deltas', async
     await page.getByLabel('Model selection').selectOption('Frequency');
     await button('Compare').click();
     await page.getByLabel('Compare with challenger').selectOption('');
-    await expect(page.getByRole('heading', { name: 'Select a challenger' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Select a challenger' })).toHaveCount(0);
     await expect(page.locator('.metrics-grid,.job-card,[role="tablist"]')).toHaveCount(0);
     const { token } = await (await page.request.get('/api/session')).json();
     const get = async (p) =>
@@ -53,7 +49,7 @@ test('Compare requires two compatible fits and shows exact metric deltas', async
     ).toBeTruthy();
     await page.screenshot({ path: '/tmp/easyglm-focused-compare.png', fullPage: true });
     await page.getByLabel('Compare with challenger').selectOption('');
-    await expect(page.getByRole('heading', { name: 'Select a challenger' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Select a challenger' })).toHaveCount(0);
     await expect(page.getByRole('heading', { name: 'Relativities that differ' })).toHaveCount(0);
     await page.route('**/api/workbench', async (route) => {
         const response = await route.fetch();

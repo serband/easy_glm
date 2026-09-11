@@ -21,6 +21,24 @@ async function loadExample(page, secondModel = false) {
     expect(response.ok()).toBe(true);
     if (secondModel) {
         ({ headers, snapshot } = await client(page));
+        const frequency = await page.request.post('/api/models/save', {
+            headers,
+            data: {
+                session_id: snapshot.session_id,
+                revision: snapshot.revision,
+                name: 'Frequency',
+                create: true,
+                fields: {
+                    target: 'ClaimNb',
+                    weight: 'Exposure',
+                    family: 'poisson',
+                    predictors: ['DrivAge', 'Region'],
+                    divide_target_by_weight: true,
+                },
+            },
+        });
+        expect(frequency.ok(), await frequency.text()).toBe(true);
+        ({ headers, snapshot } = await client(page));
         const saved = await page.request.post('/api/models/save', {
             headers,
             data: {
@@ -341,7 +359,7 @@ test('long categorical labels stay separated through the final category', async 
     });
 });
 
-test('missing training split links directly to model setup', async ({ page }) => {
+test('missing training split links directly to Variables', async ({ page }) => {
     await loadExample(page);
     await page.route('**/api/explore?**', (route) =>
         route.fulfill({ status: 422, json: { detail: "Split column 'train_test' is missing." } }),
@@ -349,8 +367,6 @@ test('missing training split links directly to model setup', async ({ page }) =>
     await explore(page);
     await expect(page.getByRole('alert')).toContainText('Split column');
     await page.getByRole('button', { name: 'Set up train / holdout', exact: true }).click();
-    await expect(
-        page.getByRole('heading', { name: 'Model design and fit', exact: true }),
-    ).toBeVisible();
-    await expect(page.locator('.split-settings')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Variable settings' })).toBeVisible();
 });

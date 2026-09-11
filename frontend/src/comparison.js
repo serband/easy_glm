@@ -53,6 +53,9 @@ export function comparisonSettings(a, b, first, second) {
                 add(`${setting} · ${key.replaceAll('_', ' ')}`, x?.[key], y?.[key]);
         } else rows.push({ setting, baseline: x, challenger: y });
     };
+    add('Main factors', a.predictors.length, b.predictors.length);
+    add('Defined interactions', (a.interactions || []).length, (b.interactions || []).length);
+    add('Total rate tables', (first.table_index || []).length, (second.table_index || []).length);
     for (const key of ['alpha', 'features', 'nonzero', 'adjustments'])
         add(
             {

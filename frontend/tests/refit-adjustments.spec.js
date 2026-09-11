@@ -8,10 +8,6 @@ test('a fresh fit starts unadjusted and subsequent Apply uses the new revision',
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto('/');
     await button('Model').click();
-    if (!(await page.locator('.split-settings').evaluate((node) => node.open)))
-        await page.locator('.split-settings > summary').click();
-    await page.getByLabel('Split method').selectOption('random');
-    await button('Apply split').click();
     await button('Create model').click();
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 45000 });

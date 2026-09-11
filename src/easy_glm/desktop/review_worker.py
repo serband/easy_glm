@@ -145,6 +145,18 @@ def review(
         from easy_glm.desktop.diagnostic_views import compatible
 
         compatible(run, challenger)
+    if request["action"] == "time":
+        from easy_glm.workflow.time_diagnostics import time_diagnostics
+
+        variable = request.get("variable")
+        return time_diagnostics(
+            project,
+            run,
+            frame,
+            n_bins=request.get("n_bins", 5),
+            variable=variable,
+            grouping=grouping(run, variable) if variable else None,
+        )
     train, holdout = train_holdout(frame, project.data.split)
     part = {"train": train, "holdout": holdout, "all": frame}[
         request.get("subset", "train")
@@ -169,6 +181,7 @@ def review(
             "current_premium",
             "id",
             "split",
+            "time",
             "ignore",
         )
         and c

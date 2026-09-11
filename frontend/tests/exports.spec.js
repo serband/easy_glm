@@ -28,10 +28,6 @@ test('downloads applied artifacts and excludes unsaved adjustment previews', asy
             .models,
     ).toEqual({});
     await button('Model').click();
-    if (!(await page.locator('.split-settings').evaluate((node) => node.open)))
-        await page.locator('.split-settings > summary').click();
-    await page.getByLabel('Split method').selectOption('random');
-    await button('Apply split').click();
     await button('Create model').click();
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 45000 });

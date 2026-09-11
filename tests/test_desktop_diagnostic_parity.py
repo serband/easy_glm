@@ -132,7 +132,7 @@ def test_signed_gini_and_upgrade_without_solver(model_session, tmp_path, monkeyp
 
     monkeypatch.setattr(
         workflow_run,
-        "fit_glm",
+        "_fit_main_effects",
         lambda *a, **k: pytest.fail("Restoration must not refit"),
     )
     jobs = FitJobs()

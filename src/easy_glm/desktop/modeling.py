@@ -37,10 +37,17 @@ class ModelEdit(Revision):
     min_level_share: float | None = Field(default=None, ge=0, lt=1)
 
 
+class ReducedModelEdit(Revision):
+    name: str
+    fit_id: str
+    predictors: list[str]
+
+
 class SplitEdit(Revision):
     mode: Literal["random", "column"]
     column: str = Field(min_length=1)
-    train_value: str | int | float | bool = 1
+    train_value: str | int | float | bool | None = 1
+    holdout_value: str | int | float | bool | None = None
     fraction: float = Field(default=0.7, gt=0, lt=1)
     seed: int = Field(default=42, ge=0, le=2**32 - 1)
 

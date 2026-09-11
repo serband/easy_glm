@@ -147,9 +147,9 @@ test('opening data is visible, explicit, and supports files, projects and both e
         await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeVisible();
         expect((await snapshot(page)).project_id).not.toBe(beforePath.project_id);
 
-        for (const [id, family, target] of [
-            ['french_motor', 'poisson', 'ClaimNb'],
-            ['swedish_motorcycle', 'tweedie', 'ClaimAmount'],
+        for (const [id, target] of [
+            ['french_motor', 'ClaimNb'],
+            ['swedish_motorcycle', 'ClaimAmount'],
         ]) {
             await nav('Project & data').click();
             await page.getByRole('radio', { name: 'Example dataset', exact: true }).check();
@@ -164,12 +164,12 @@ test('opening data is visible, explicit, and supports files, projects and both e
             await replace();
             await button('Load example').click();
             await expect(
-                page.getByRole('heading', { name: 'Model design and fit', exact: true }),
+                page.getByRole('heading', { name: 'Project & data', exact: true }),
             ).toBeVisible();
-            await expect(page.getByLabel('Model family', { exact: true })).toHaveValue(family);
             const loaded = await snapshot(page);
             expect(loaded.setup.assignments.target).toBe(target);
-            expect(loaded.models).toHaveLength(1);
+            expect(loaded.models).toHaveLength(0);
+            expect(loaded.setup.assignments.time).toBe('SyntheticYear');
             expect((await snapshot(page, 'workbench')).jobs).toEqual({});
             await nav('Project & data').click();
             await expect(page.getByRole('region', { name: 'Current dataset' })).toContainText(
