@@ -62,5 +62,11 @@ easy_glm.launch_workbench(data=df)
 [Workbench walkthrough](examples/workbench_walkthrough.md) ·
 [Python examples](examples/README.md) · [Changelog](CHANGELOG.md)
 
-Experimental software: validate results before using them for pricing.
+## Why I built this
+
+This started with my wish to port R's [aglm](https://CRAN.R-project.org/package=aglm)
+to Python and give it a GUI. It's built primarily for my own pricing work and will
+probably have plenty of bugs, because… vibecode yo. Check the results before
+using them.
+
 [MIT licence](LICENSE).

@@ -2,7 +2,7 @@
 
 This is the user-facing record of useful new features and fixes.
 
-## Unreleased
+## 0.462 — 11 September 2026
 
 - **Importance and coefficient paths in reports.** Rating factors now start with
   ranked training permutation importance, followed by coefficients versus lambda.
@@ -15,6 +15,8 @@ This is the user-facing record of useful new features and fixes.
   includes mean, median, spread, skewness, excess kurtosis and numeric predictor
   correlations. Summaries use training data; correlations use a reproducible
   sample of up to 10,000 rows. Wide models show the strongest pairs.
+- **A shorter README for actuaries.** Installation, the modelling workflow and
+  exports are explained up front, with detailed tutorials linked separately.
 
 ## 0.461 — 10 September 2026
 
