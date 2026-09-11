@@ -27,6 +27,10 @@ test('downloads applied artifacts and excludes unsaved adjustment previews', asy
         JSON.parse((await download('Download project JSON', '.easyglm-project.json')).toString())
             .models,
     ).toEqual({});
+    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByLabel('Training fraction', { exact: true }).fill('0.7');
+    await button('Preview changes').click();
+    await button('Apply changes').click();
     await button('Model').click();
     await button('Create model').click();
     await button('Fit model').click();
