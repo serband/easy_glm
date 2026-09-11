@@ -86,7 +86,8 @@ applied results; Python reproduction scripts need a saved source-data file.
 
 The **HTML report** includes a training-data summary before the rating factors:
 missing values, ranges, unique counts, small distribution charts, shape statistics
-and correlations between numeric predictors.
+and correlations between numeric predictors. Rating factors start with permutation
+importance and coefficient paths against lambda, where recorded during fitting.
 
 | Design and fit | Validate on training and holdout data |
 | --- | --- |

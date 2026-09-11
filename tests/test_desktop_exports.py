@@ -118,6 +118,51 @@ def fitted_source(client, name="Frequency"):
     return Path(jobs.folder.name) / job["id"] / "fit.pkl"
 
 
+def test_report_reuses_original_fit_importance_cache(export_session, monkeypatch):
+    from easy_glm.desktop.importance_cache import build_packet, read_packet
+
+    client, raw, _, _ = export_session
+    source = fitted_source(client)
+    project = Project.from_dict(client.get("/api/project").json())
+    run = pickle.loads(source.read_bytes())
+    build_packet(project, run, prepare(project, raw), source.parent)
+    assert read_packet(source.parent) is not None
+
+    def no_repeated_importance(*args, **kwargs):
+        raise AssertionError("The report must reuse the fit's cached importance")
+
+    monkeypatch.setattr(
+        "easy_glm.workflow._report_diagnostics.permutation_importance",
+        no_repeated_importance,
+    )
+    response = download(client, "html")
+    assert response.status_code == 200, response.text[:1000]
+    assert "Training permutation importance — original fit" in response.text
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"variable": "Age", "importance": 0.1},
+        {"variable": "Age", "importance": float("nan"), "std": 0.01},
+        {"variable": "Age", "importance": 0.1, "std": -0.01},
+        {"variable": "Age", "importance": "invalid", "std": 0.01},
+    ],
+)
+def test_report_rejects_damaged_importance_cache(row):
+    from easy_glm.desktop.exports import _report_importance
+
+    packet = {
+        "basis": "original",
+        "subset": "train",
+        "repeats": 5,
+        "seed": 42,
+        "training_rows": 700,
+        "rows": [row],
+    }
+    assert _report_importance(packet, 700) is None
+
+
 def test_scorer_excel_script_and_report_include_applied_state_only(
     export_session, monkeypatch
 ):
@@ -217,6 +262,8 @@ def test_scorer_excel_script_and_report_include_applied_state_only(
     assert "<h2>2. Data summary</h2>" in report.text
     assert "Age: training distribution" in report.text
     assert "Excess kurtosis" in report.text
+    assert "Training permutation importance — original fit" in report.text
+    assert 'id="coefficient-paths"' in report.text
     assert "2.3456" in report.text
     assert client.get("/api/project").json() == project_before
     assert revision(client) == rev_before

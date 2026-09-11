@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import pickle
 import tempfile
 from dataclasses import dataclass
@@ -39,6 +40,31 @@ class ExportAttachment:
         return f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(self.filename, safe="")}'
 
 
+def _report_importance(packet: dict | None, training_rows: int) -> pl.DataFrame | None:
+    """A damaged diagnostic cache is a miss, never a broken report download."""
+    if (
+        packet is None
+        or packet.get("basis") != "original"
+        or packet.get("subset") != "train"
+        or packet.get("repeats") != 5
+        or packet.get("seed") != 42
+        or packet.get("training_rows") != training_rows
+        or not isinstance(packet.get("rows"), list)
+    ):
+        return None
+    rows = packet["rows"]
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("variable"), str):
+            return None
+        for key in ("importance", "std"):
+            value = row.get(key)
+            if not isinstance(value, int | float) or not math.isfinite(value):
+                return None
+        if row["std"] < 0:
+            return None
+    return pl.DataFrame(rows)
+
+
 def export_attachment(
     project: Project,
     raw: pl.DataFrame,
@@ -72,9 +98,18 @@ def export_attachment(
             "text/x-python",
         )
     if format == "html":
+        from easy_glm.desktop.importance_cache import read_packet
+
+        packet = read_packet(sources[name])
+        importance = _report_importance(packet, run.train_rows)
         return ExportAttachment(
             to_report_html(
-                project, runs, frame, champion=name, challenger=challenger
+                project,
+                runs,
+                frame,
+                champion=name,
+                challenger=challenger,
+                importance=importance,
             ).encode("utf-8"),
             prefix + "_report.html",
             "text/html",

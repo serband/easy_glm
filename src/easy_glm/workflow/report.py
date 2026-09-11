@@ -33,6 +33,7 @@ from easy_glm.core.excel import interaction_matrices, rate_model_tables
 
 from . import _svg
 from ._report_data import PROFILE_CSS, data_summary_section
+from ._report_diagnostics import DIAGNOSTIC_CSS, fitted_diagnostics_section
 from .diagnostics import (
     ae_by_pair,
     ae_by_variable,
@@ -386,8 +387,10 @@ def _variable_sections(
     subsets: dict[str, _Scored],
     challenger_pred: dict[str, np.ndarray] | None,
     challenger_name: str,
+    diagnostics: str,
 ) -> str:
     out = ['<section id="variables"><h2>3. Rating factors</h2>']
+    out.append(diagnostics)
     out.append(
         '<p class="muted">One block per factor: the fitted relativities, then '
         "actual against expected on the training rows and on the holdout, and the "
@@ -761,12 +764,14 @@ def to_report_html(
     *,
     champion: str,
     challenger: str | None = None,
+    importance: pl.DataFrame | None = None,
 ) -> str:
     """One self-contained HTML page describing ``runs[champion]``.
 
     ``df`` is the prepared frame (with the split column); it is split into
     training and holdout rows exactly as the fit did. Sections: summary (project,
     data, split, metrics), training data profiles and predictor correlations,
+    original-fit permutation importance and stored coefficient paths, then
     one block per rating factor (relativities, actual vs
     expected on train and holdout, the rate table), interaction heatmaps, lift
     and Gini, an appendix with the coefficients and the exported Python script —
@@ -775,6 +780,11 @@ def to_report_html(
 
     The returned string is the whole file: inline stylesheet, charts as SVG, no
     external requests (see the module docstring).
+
+    ``importance`` may supply the champion's cached original-fit training
+    permutation importance (five repeats, seed 42), avoiding repeated scoring.
+    When omitted, it is computed on the supplied training rows. Stored coefficient
+    paths are read without refitting; a fixed-lambda fit has no path to draw.
     """
     if champion not in runs:
         raise KeyError(f"No run for the champion {champion!r}")
@@ -807,7 +817,12 @@ def to_report_html(
         _summary_section(project, run, df, train, holdout, runs, names),
         data_summary_section(run, train, holdout.height),
         _variable_sections(
-            run, tables, subsets, challenger_pred or None, challenger or ""
+            run,
+            tables,
+            subsets,
+            challenger_pred or None,
+            challenger or "",
+            fitted_diagnostics_section(project, run, train, importance=importance),
         ),
         inter,
         _lift_section(subsets, number),
@@ -831,6 +846,8 @@ def to_report_html(
         ("#summary", "Summary"),
         ("#data-summary", "Data summary"),
         ("#variables", "Rating factors"),
+        ("#variable-importance", "Variable importance"),
+        ("#coefficient-paths", "Coefficient paths"),
         *([("#interactions", "Interactions")] if inter else []),
         ("#lift", "Lift and Gini"),
         *([("#compare", f"{champion} vs {challenger}")] if challenger else []),
@@ -847,7 +864,7 @@ def to_report_html(
         f'<html lang="en"><head><meta charset="utf-8">'
         f'<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>{_esc(project.name)} — model report</title>"
-        f'<style>{_CSS}{PROFILE_CSS}</style></head><body><div class="page">'
+        f'<style>{_CSS}{PROFILE_CSS}{DIAGNOSTIC_CSS}</style></head><body><div class="page">'
         f"<h1>{_esc(project.name)} — model report</h1>"
         f'<p class="sub">{subtitle} · generated {_esc(generated)}</p>'
         f'<nav class="toc">{nav}</nav>'

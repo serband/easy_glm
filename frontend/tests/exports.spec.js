@@ -64,6 +64,17 @@ test('downloads applied artifacts and excludes unsaved adjustment previews', asy
     expect(report).toContain('<h2>2. Data summary</h2>');
     expect(report).toContain('training distribution');
     expect(report).toContain('Excess kurtosis');
+    expect(report).toContain('Training permutation importance — original fit');
+    expect(report).toContain('id="coefficient-paths"');
+    const reportPage = await page.context().newPage();
+    reportPage.on('pageerror', (error) => errors.push(error.message));
+    await reportPage.setContent(report);
+    await expect(reportPage.locator('#variable-importance svg')).toHaveCount(1);
+    await reportPage.locator('#coefficient-paths').scrollIntoViewIfNeeded();
+    await expect(reportPage.getByRole('heading', { name: 'Coefficients versus lambda', exact: true })).toBeVisible();
+    expect(await reportPage.evaluate(() => document.body.scrollWidth <= innerWidth + 1)).toBe(true);
+    await reportPage.screenshot({ path: testInfo.outputPath('report-diagnostics-919.png') });
+    await reportPage.close();
     const script = (await download('Download script (.py)', '.py')).toString();
     expect(script).toContain('fit_glm');
     expect(

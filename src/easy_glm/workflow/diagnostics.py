@@ -980,6 +980,128 @@ def _stage_alpha_path(fit: GLMFit) -> pl.DataFrame:
     )
 
 
+COEFFICIENT_PATH_SCHEMA = {
+    "stage": pl.Int64,
+    "l1_ratio": pl.Float64,
+    "alpha": pl.Float64,
+    "feature_index": pl.Int64,
+    "feature": pl.Utf8,
+    "variable": pl.Utf8,
+    "kind": pl.Utf8,
+    "knot": pl.Float64,
+    "level": pl.Utf8,
+    "cell_a": pl.Int64,
+    "cell_b": pl.Int64,
+    "coefficient": pl.Float64,
+    "coefficient_std": pl.Float64,
+    "folds": pl.Int64,
+    "source": pl.Utf8,
+    "selected": pl.Boolean,
+}
+
+
+def coefficient_path(fit: GLMFit) -> pl.DataFrame:
+    """Return stored coefficient trajectories, without refitting or scoring.
+
+    Each row identifies one feature at one (stage, L1 ratio, alpha) point. CV
+    coefficients are the mean over the stored fold fits, with their population
+    standard deviation: they are not the final full-training coefficients. For
+    two-stage fits, stage 1 holds main effects and stage 2 interaction cells;
+    stage 2's original cross-fitted-offset CV paths remain separate from its
+    final-offset refit. Intercepts are excluded, and feature identity comes
+    directly from each stage's DesignSpec metadata.
+
+    ``source`` is ``cv_fold_mean``, ``stored_path`` or ``fixed_fit``. A fixed
+    alpha with no stored path produces one actual coefficient point per feature,
+    never an invented trajectory. ``feature_index`` is local to its stage.
+    """
+    stages = (
+        [(1, fit.stage1), (2, fit.stage2)]
+        if isinstance(fit, TwoStageFit)
+        else [(1, fit)]
+    )
+    rows: list[dict[str, Any]] = []
+    for stage, one_fit in stages:
+        rows.extend(_stage_coefficient_path(one_fit, stage))
+    return pl.DataFrame(rows, schema=COEFFICIENT_PATH_SCHEMA).sort(
+        ["stage", "l1_ratio", "alpha", "feature_index"],
+        descending=[False, False, True, False],
+    )
+
+
+def _stage_coefficient_path(fit: GLMFit, stage: int) -> list[dict[str, Any]]:
+    model = fit.model
+    features = fit.spec.features
+    selected_alpha = float(fit.alpha)
+    selected_l1 = float(getattr(model, "l1_ratio_", model.l1_ratio))
+    stored = getattr(model, "coef_path_", None)
+    alphas = getattr(model, "alphas_", None)
+    folds = 0
+    deviations = None
+    if stored is not None and alphas is not None:
+        paths = np.asarray(stored, dtype=np.float64)
+        penalties = np.atleast_2d(np.asarray(alphas, dtype=np.float64))
+        l1_ratios = np.atleast_1d(np.asarray(model.l1_ratio, dtype=np.float64))
+        if paths.ndim != 4 or paths.shape[1:3] != penalties.shape:
+            raise ValueError(
+                "Stored CV coefficient path does not match its alpha grid."
+            )
+        folds = paths.shape[0]
+        coefficients = paths.mean(axis=0)
+        deviations = paths.std(axis=0)
+        source = "cv_fold_mean"
+    elif stored is not None and getattr(model, "_alphas", None) is not None:
+        coefficients = np.asarray(stored, dtype=np.float64)[None, :, :]
+        penalties = np.atleast_2d(np.asarray(model._alphas, dtype=np.float64))
+        l1_ratios = np.asarray([selected_l1], dtype=np.float64)
+        source = "stored_path"
+    else:
+        coefficients = np.asarray(fit.coef, dtype=np.float64)[None, None, :]
+        penalties = np.asarray([[selected_alpha]], dtype=np.float64)
+        l1_ratios = np.asarray([selected_l1], dtype=np.float64)
+        source = "fixed_fit"
+    if coefficients.shape != (len(l1_ratios), penalties.shape[1], len(features)):
+        raise ValueError("Stored coefficient path does not match the design features.")
+    rows: list[dict[str, Any]] = []
+    for ratio_index, ratio in enumerate(l1_ratios):
+        for alpha_index, alpha in enumerate(penalties[ratio_index]):
+            # These are values from the same stored grid, so exact equality avoids
+            # marking neighbouring tiny alphas selected through an absolute tolerance.
+            selected = float(alpha) == selected_alpha and float(ratio) == selected_l1
+            for feature_index, feature in enumerate(features):
+                value = float(coefficients[ratio_index, alpha_index, feature_index])
+                deviation = (
+                    float(deviations[ratio_index, alpha_index, feature_index])
+                    if deviations is not None
+                    else None
+                )
+                rows.append(
+                    {
+                        "stage": stage,
+                        "l1_ratio": float(ratio),
+                        "alpha": float(alpha),
+                        "feature_index": feature_index,
+                        "feature": feature.name,
+                        "variable": feature.variable,
+                        "kind": feature.kind,
+                        "knot": feature.knot,
+                        "level": feature.level,
+                        "cell_a": feature.cell[0] if feature.cell else None,
+                        "cell_b": feature.cell[1] if feature.cell else None,
+                        "coefficient": value if np.isfinite(value) else None,
+                        "coefficient_std": (
+                            deviation
+                            if deviation is not None and np.isfinite(deviation)
+                            else None
+                        ),
+                        "folds": folds,
+                        "source": source,
+                        "selected": selected,
+                    }
+                )
+    return rows
+
+
 # --------------------------------------------------------------------------
 # headline metrics
 # --------------------------------------------------------------------------

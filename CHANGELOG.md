@@ -4,6 +4,11 @@ This is the user-facing record of useful new features and fixes.
 
 ## Unreleased
 
+- **Importance and coefficient paths in reports.** Rating factors now start with
+  ranked training permutation importance, followed by coefficients versus lambda.
+  Main effects and interaction cells have separate paths, with the selected lambda
+  marked. CV curves show fold-mean coefficients; fixed-lambda fits are identified
+  without inventing a path or refitting. Workbench exports reuse cached importance.
 - **Data summaries in model reports.** A new section before the rating factors
   shows missing values, unique counts, minimum, maximum, range and small
   distribution charts for the selected predictors and modelling fields. It also
