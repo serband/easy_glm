@@ -496,7 +496,11 @@
         }
     }
     async function copyLegacyAsPairStages() {
-        if (!wb?.pair_stage_defaults?.candidates?.length || dirty || selected === '__new__') return;
+        if (
+            wb?.pair_stage_defaults?.search?.method !== 'optuna' ||
+            dirty ||
+            selected === '__new__'
+        ) return;
         saving = true;
         error = '';
         try {
@@ -504,7 +508,11 @@
             let name = baseName;
             for (let suffix = 2; wb.models[name]; suffix++) name = `${baseName} ${suffix}`;
             const pair_stages = cfg.interactions.map((pair) => ({
-                ...structuredClone(wb.pair_stage_defaults),
+                min_weight_share: wb.pair_stage_defaults.min_weight_share,
+                seed: wb.pair_stage_defaults.seed,
+                cv_folds: wb.pair_stage_defaults.cv_folds,
+                search: structuredClone(wb.pair_stage_defaults.search),
+                candidates: [],
                 stage_id: crypto.randomUUID(),
                 a: pair.a,
                 b: pair.b,
@@ -940,7 +948,7 @@
                                 <button
                                     type="button"
                                     disabled={dirty ||
-                                        !wb.pair_stage_defaults?.candidates?.length ||
+                                        wb.pair_stage_defaults?.search?.method !== 'optuna' ||
                                         cfg.interactions.length > 8}
                                     onclick={copyLegacyAsPairStages}
                                     >Copy as sequential pair stages</button

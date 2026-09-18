@@ -68,6 +68,9 @@ def fit_result(
             reuse["fold_predictions"] = True
         stage = re.search(r"Pair stage (\d+)/(\d+)", message)
         fold = re.search(r"fold (\d+)/(\d+)", message)
+        trial = re.search(r"(?<!prefix )trial (\d+)/(\d+)", message)
+        prefix_trial = re.search(r"prefix trial (\d+)/(\d+)", message)
+        inner_fold = re.search(r"inner (\d+)/(\d+)", message)
         if stage:
             progress(
                 {
@@ -76,6 +79,16 @@ def fit_result(
                     "stage_total": int(stage.group(2)) + 1,
                     "fold": int(fold.group(1)) if fold else None,
                     "folds": int(fold.group(2)) if fold else None,
+                    "trial": int(trial.group(1)) if trial else None,
+                    "trials": int(trial.group(2)) if trial else None,
+                    "prefix_trial": (
+                        int(prefix_trial.group(1)) if prefix_trial else None
+                    ),
+                    "prefix_trials": (
+                        int(prefix_trial.group(2)) if prefix_trial else None
+                    ),
+                    "inner_fold": int(inner_fold.group(1)) if inner_fold else None,
+                    "inner_folds": int(inner_fold.group(2)) if inner_fold else None,
                     "prefix_reused": "reused full-training prefix" in message,
                     "cv_pending": bool(fold),
                 }
@@ -109,7 +122,7 @@ def fit_result(
         try:
             with pair_cache_path.open("rb") as handle:
                 saved_pair_cache = pickle.load(handle)
-            if saved_pair_cache.get("format") == 2 and isinstance(
+            if saved_pair_cache.get("format") == 3 and isinstance(
                 saved_pair_cache.get("cache", {}).get("full_prefix"), dict
             ):
                 pair_cache = saved_pair_cache["cache"]
@@ -140,7 +153,7 @@ def fit_result(
                 pair_cache_path.parent.mkdir(parents=True, exist_ok=True)
                 temporary = pair_cache_path.with_suffix(".tmp")
                 with temporary.open("wb") as handle:
-                    pickle.dump({"format": 2, "cache": pair_cache}, handle, protocol=5)
+                    pickle.dump({"format": 3, "cache": pair_cache}, handle, protocol=5)
                 os.replace(temporary, pair_cache_path)
     if main_cache_path is not None:
         main_cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -256,12 +269,22 @@ def result_for(
                 "rows": rows,
             }
     pair_stages = []
+    configured_stages = {
+        configured.stage_id: configured
+        for configured in getattr(run.config, "pair_stages", [])
+    }
     for stage in getattr(run, "pair_stages", []):
         table = stage.table
         cells = table.cells
         pair_stages.append(
             {
                 "stage_id": stage.stage_id,
+                "search": (
+                    asdict(configured_stages[stage.stage_id].search)
+                    if stage.stage_id in configured_stages
+                    and configured_stages[stage.stage_id].search is not None
+                    else None
+                ),
                 "parents": list(stage.parents),
                 "baseline_stage_ids": list(stage.baseline_stage_ids),
                 "chosen_candidate": (
@@ -271,6 +294,12 @@ def result_for(
                 ),
                 "prefix_fingerprint": stage.prefix_fingerprint,
                 "cv_candidates": [asdict(item) for item in stage.cv_candidates],
+                "search_trials": [
+                    asdict(item) for item in getattr(stage, "search_trials", ())
+                ],
+                "prefix_search_trials": [
+                    asdict(item) for item in getattr(stage, "prefix_search_trials", ())
+                ],
                 "prefix_cv_loss": stage.prefix_cv_loss,
                 "table_cv_loss": stage.table_cv_loss,
                 "teacher_cv_loss": stage.teacher_cv_loss,

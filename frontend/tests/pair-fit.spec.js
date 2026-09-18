@@ -34,9 +34,12 @@ test('fitted stages expose pair edits, suffix status, refit impact and narrow la
         [3, 'B × C'],
     ]) {
         const card = page.getByLabel(`Stage ${number} ${label}`);
-        await card.locator('summary').click();
-        await card.getByRole('button', { name: 'Remove setting' }).last().click();
-        await card.getByLabel(`Iterations for stage ${number} candidate 1`).fill('5');
+        await card.getByText('Stage settings').click();
+        await card.getByText('Tuning budget').click();
+        await card.getByLabel(`Tuning trials for stage ${number}`, { exact: true }).fill('1');
+        await card
+            .getByLabel(`Prefix tuning trials for stage ${number}`, { exact: true })
+            .fill('1');
     }
     await page.getByRole('button', { name: 'Create model' }).click();
     await page.getByRole('button', { name: 'Fit all stages' }).click();

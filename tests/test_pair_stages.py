@@ -21,6 +21,7 @@ from easy_glm.workflow.pair_distillation import distill_pair_cells
 from easy_glm.workflow.project import (
     Adjustment,
     PairCandidateConfig,
+    PairSearchConfig,
     PairStageConfig,
     Project,
     VariableDesign,
@@ -264,3 +265,82 @@ def test_grid_limit_fails_before_main_fit(monkeypatch):
     monkeypatch.setattr("easy_glm.workflow.run._fit_main_effects", forbidden_fit)
     with pytest.raises(ValueError, match="above the 10,000 limit"):
         run_model(project, frame, "pair")
+
+
+@pytest.mark.parametrize("auto_stage", ["ab", "bc"])
+def test_optuna_mixed_chain_keeps_fold_local_prefixes(auto_stage):
+    project, frame = _case()
+    stages = project.models["pair"].pair_stages
+    for stage in stages:
+        if stage.stage_id == auto_stage:
+            stage.candidates = []
+            stage.search = (
+                PairSearchConfig(trials=4, prefix_trials=3)
+                if auto_stage == "ab"
+                else PairSearchConfig(trials=2, prefix_trials=2)
+            )
+    run = run_model(project, frame, "pair")
+    first, second = run.pair_stages
+    assert len(run.rate_model.pair_tables) == 2
+    assert len(first.selected_prefix_parameters) == 5
+    assert len(second.selected_prefix_parameters) == 5
+    assert all(len(parameters) == 1 for parameters in second.selected_prefix_parameters)
+    if auto_stage == "ab":
+        assert len(first.search_trials) == 4
+        assert len(first.cv_candidates) == 5  # neutral plus four TPE proposals
+        assert len(second.search_trials) == 0
+        assert len(second.prefix_search_trials) == 20  # five independent studies
+        assert [
+            sum(record.outer_fold == fold for record in second.prefix_search_trials)
+            for fold in range(5)
+        ] == [
+            4
+        ] * 5  # neutral plus three proposals per outer-training partition
+    else:
+        assert len(first.search_trials) == 0
+        assert len(second.search_trials) == 2
+        assert len(second.prefix_search_trials) == 0
+        assert len(second.cv_candidates) == 3
+        assert all(len(choices) == 1 for choices in second.selected_prefix_configs)
+    for artifact in run.pair_stages:
+        assert artifact.table_cv_loss <= artifact.prefix_cv_loss + 1e-8
+        if artifact.search_trials:
+            assert all(record.state == "COMPLETE" for record in artifact.search_trials)
+            assert all(len(record.folds) == 5 for record in artifact.search_trials)
+
+
+def test_optuna_holdout_target_poison_leaves_every_search_trace_unchanged():
+    project, frame = _case()
+    stages = project.models["pair"].pair_stages
+    stages[0].candidates = []
+    stages[0].search = PairSearchConfig(trials=2, prefix_trials=2)
+    stages[1].candidates = []
+    stages[1].search = PairSearchConfig(trials=2, prefix_trials=2)
+    original = run_model(project, frame, "pair")
+    poisoned = frame.with_columns(
+        pl.when(pl.col("split") == 0)
+        .then(pl.lit(100_000.0))
+        .otherwise(pl.col("y"))
+        .alias("y")
+    )
+    repeated = run_model(project, poisoned, "pair")
+    for first, second in zip(original.pair_stages, repeated.pair_stages, strict=True):
+        assert first.chosen_candidate == second.chosen_candidate
+        assert first.cv_candidates == second.cv_candidates
+        assert first.search_trials == second.search_trials
+        assert first.prefix_search_trials == second.prefix_search_trials
+        assert first.selected_prefix_parameters == second.selected_prefix_parameters
+        assert first.prefix_fingerprint == second.prefix_fingerprint
+
+
+def test_prefix_study_cache_changes_when_current_stage_seed_changes():
+    project, frame = _case()
+    first, second = project.models["pair"].pair_stages
+    first.search = PairSearchConfig(trials=1, prefix_trials=1)
+    first.candidates = []
+    cache: dict = {}
+    run_model(project, frame, "pair", pair_stages_cache=cache)
+    assert len(cache["prefix_selection"]) == 5
+    second.seed += 1
+    run_model(project, frame, "pair", pair_stages_cache=cache)
+    assert len(cache["prefix_selection"]) == 10

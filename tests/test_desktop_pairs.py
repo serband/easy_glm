@@ -10,7 +10,7 @@ import polars as pl
 from fastapi.testclient import TestClient
 
 from easy_glm.desktop.jobs import FitJobs, _first_pair_refit, model_key
-from easy_glm.desktop.modeling import ModelEdit, edit_model
+from easy_glm.desktop.modeling import ModelEdit, edit_model, setup_info
 from easy_glm.desktop.server import create_app
 from easy_glm.engine.models import (
     FromToRow,
@@ -24,6 +24,7 @@ from easy_glm.workflow.project import (
     Adjustment,
     ModelConfig,
     PairCandidateConfig,
+    PairSearchConfig,
     PairStageConfig,
     Penalty,
     Project,
@@ -98,6 +99,156 @@ def test_empty_sequential_model_keeps_method_after_roundtrip() -> None:
     reloaded = Project.from_dict(saved)
     assert reloaded.models["Frequency"].pair_method == "sequential_catboost"
     assert not reloaded.models["Frequency"].pair_stages
+
+
+def test_auto_pair_search_roundtrips_and_validates_budget() -> None:
+    project = _project()
+    project.models["Frequency"].pair_stages = [
+        PairStageConfig("auto", "Age", "Region", search=PairSearchConfig())
+    ]
+    assert not project.validate("Frequency")
+    project.models["Frequency"].pair_stages = [
+        PairStageConfig(
+            "auto", "Age", "Region", candidates=[], search=PairSearchConfig()
+        )
+    ]
+    assert not project.validate("Frequency")
+    encoded = project.to_dict()
+    assert encoded["models"]["Frequency"]["pair_stages"][0]["search"] == {
+        "method": "optuna",
+        "trials": 8,
+        "prefix_trials": 4,
+    }
+    loaded = Project.from_dict(encoded)
+    assert loaded.models["Frequency"].pair_stages[0].search == PairSearchConfig()
+    for search in (
+        PairSearchConfig(trials=True),
+        PairSearchConfig(trials=2.5),
+        PairSearchConfig(trials=17),
+        PairSearchConfig(prefix_trials=2.5),
+        PairSearchConfig(prefix_trials=9),
+        PairSearchConfig(trials=2, prefix_trials=3),
+        PairSearchConfig(method="grid"),
+    ):
+        loaded.models["Frequency"].pair_stages[0].search = search
+        assert any("search" in problem for problem in loaded.validate("Frequency"))
+    encoded["models"]["Frequency"]["pair_stages"][0]["search"]["unexpected"] = 1
+    try:
+        Project.from_dict(encoded)
+    except ValueError as exc:
+        assert "pair_stages.search" in str(exc)
+    else:
+        raise AssertionError("Unknown search fields must be rejected")
+
+
+def test_desktop_accepts_auto_search_without_fixed_candidates() -> None:
+    project = _project()
+    project.models["Frequency"].pair_stages.clear()
+    edited = edit_model(
+        project,
+        ModelEdit(
+            session_id="s",
+            revision=0,
+            name="Frequency",
+            fields={
+                "pair_method": "sequential_catboost",
+                "pair_stages": [
+                    {
+                        "stage_id": "auto",
+                        "a": "Age",
+                        "b": "Region",
+                        "candidates": [],
+                        "search": {
+                            "method": "optuna",
+                            "trials": 8,
+                            "prefix_trials": 4,
+                        },
+                    }
+                ],
+            },
+        ),
+    )
+    stage = edited.models["Frequency"].pair_stages[0]
+    assert stage.search == PairSearchConfig()
+    assert not stage.candidates
+    raw = pl.DataFrame(
+        {
+            "Claims": [0, 1, 0, 2, 1, 0],
+            "Age": [20, 30, 40, 50, 60, 70],
+            "Region": ["N", "S", "N", "S", "N", "S"],
+        }
+    )
+    setup = setup_info(edited, raw)
+    preflight = setup["pair_search_preflight"]["Frequency"]
+    assert preflight == [
+        {
+            "stage_id": "auto",
+            "mode": "automatic",
+            "folds": 5,
+            "trials": 8,
+            "prefix_trials": 4,
+            "prefix_stages": 0,
+            "fixed_candidates": None,
+        }
+    ]
+
+
+def test_desktop_auto_fit_publishes_search_evidence() -> None:
+    rng = np.random.default_rng(29)
+    raw = pl.DataFrame(
+        {
+            "Claims": rng.poisson(0.8, 70),
+            "Age": rng.integers(18, 70, 70),
+            "Region": rng.choice(["N", "S"], 70),
+        }
+    )
+    project = Project(name="automatic pair")
+    project.data.roles = {
+        "Claims": "target",
+        "Age": "predictor",
+        "Region": "predictor",
+    }
+    project.data.split.mode = "random"
+    project.models["Frequency"] = ModelConfig(
+        target="Claims",
+        predictors=["Age"],
+        penalty=Penalty(alpha=0.01, cv=None),
+        pair_stages=[
+            PairStageConfig(
+                "auto",
+                "Age",
+                "Region",
+                candidates=[],
+                search=PairSearchConfig(trials=1, prefix_trials=1),
+            )
+        ],
+    )
+    with TestClient(
+        create_app(project, raw, port=8791), base_url="http://127.0.0.1:8791"
+    ) as client:
+        client.headers["X-EasyGLM-Token"] = client.get("/api/session").json()["token"]
+        state = client.get("/api/workbench").json()
+        queued = client.post(
+            "/api/models/Frequency/fit",
+            json={key: state[key] for key in ("session_id", "revision")},
+        )
+        assert queued.status_code == 202, queued.text
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            job = client.get("/api/jobs").json()["Frequency"]
+            if job["status"] not in ("queued", "running"):
+                break
+            time.sleep(0.05)
+        assert job["status"] == "complete", job["message"]
+        result = client.get("/api/results/Frequency").json()
+        stage = result["pair_stages"][0]
+        assert stage["search"] == {
+            "method": "optuna",
+            "trials": 1,
+            "prefix_trials": 1,
+        }
+        assert len(stage["search_trials"]) == 1
+        assert len(stage["cv_candidates"]) == 2  # neutral plus the trial
 
 
 def test_pair_fold_count_requires_integer_five() -> None:

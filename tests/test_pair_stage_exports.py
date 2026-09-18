@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
@@ -21,7 +22,11 @@ from easy_glm.engine.models import (
 )
 from easy_glm.workflow import Project, VariableDesign, prepare, run_model
 from easy_glm.workflow.export import to_scoring_script, to_script
-from easy_glm.workflow.project import PairCandidateConfig, PairStageConfig
+from easy_glm.workflow.project import (
+    PairCandidateConfig,
+    PairSearchConfig,
+    PairStageConfig,
+)
 from easy_glm.workflow.reduction import reduced_challenger
 from easy_glm.workflow.report import to_report_html
 
@@ -115,8 +120,8 @@ import sys
 import polars as pl
 real_import = builtins.__import__
 def blocked(name, *args, **kwargs):
-    if name == 'catboost' or name.startswith('catboost.'):
-        raise AssertionError('scoring imported CatBoost')
+    if name.split('.')[0] in {'catboost', 'optuna'}:
+        raise AssertionError('scoring imported a training dependency')
     return real_import(name, *args, **kwargs)
 builtins.__import__ = blocked
 scope = runpy.run_path(sys.argv[1])
@@ -166,6 +171,25 @@ def test_pair_training_export_replays_workflow_and_saved_screen(tmp_path):
     )
     assert "pair-1" in source
     assert "VariableDesign" not in source
+
+
+def test_pair_training_export_preserves_automatic_search_request(tmp_path):
+    project, run, _ = _staged_run(tmp_path)
+    stage = project.models["priced"].pair_stages[0]
+    stage.search = PairSearchConfig()
+    source = to_script(project, "priced", run=run, output_prefix="automatic")
+    tree = ast.parse(source)
+    project_assignment = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "project" for t in node.targets)
+    )
+    replay_project = Project.from_dict(
+        ast.literal_eval(project_assignment.value.args[0])
+    )
+    assert replay_project.models["priced"].pair_stages[0].search == stage.search
+    assert replay_project.design.variables["x"].knots == [0.0]
 
 
 def _independent_excel_scores(workbook: Path, new_data: Path) -> list[float]:

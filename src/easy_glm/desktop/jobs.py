@@ -11,6 +11,7 @@ import threading
 import time
 from collections.abc import Callable
 from copy import deepcopy
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -206,7 +207,7 @@ class FitJobs:
                     with pair_cache_path.open("wb") as handle:
                         pickle.dump(
                             {
-                                "format": 2,
+                                "format": 3,
                                 "cache": {
                                     "full_prefix": {
                                         stage.prefix_fingerprint: deepcopy(stage)
@@ -333,6 +334,7 @@ class FitJobs:
                     cards.append(
                         {
                             "stage_id": stage.stage_id,
+                            "search": asdict(stage.search) if stage.search else None,
                             "stage_number": index + 2,
                             "status": state,
                             "baseline": ["main"]

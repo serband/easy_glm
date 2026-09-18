@@ -360,6 +360,15 @@ class PairCandidateConfig:
     l2_leaf_reg: float
 
 
+@dataclass
+class PairSearchConfig:
+    """Bounded automatic CPU search for one pair stage."""
+
+    method: str = "optuna"
+    trials: int = 8
+    prefix_trials: int = 4
+
+
 def default_pair_candidates() -> list[PairCandidateConfig]:
     """Bounded, shallow CPU search; the neutral choice is implicit."""
     return [
@@ -381,6 +390,7 @@ class PairStageConfig:
     min_weight_share: float = 0.001
     seed: int = 42
     cv_folds: int = 5
+    search: PairSearchConfig | None = None
 
 
 @dataclass
@@ -1041,11 +1051,43 @@ class Project:
                         f"{name}: pair {stage.stage_id!r} candidates must be a list"
                     )
                     continue
-                if len(stage.candidates) > 3:
+                if stage.search is not None:
+                    search = stage.search
+                    if not isinstance(search, PairSearchConfig):
+                        problems.append(
+                            f"{name}: pair {stage.stage_id!r} search must be an object"
+                        )
+                    else:
+                        if search.method != "optuna":
+                            problems.append(
+                                f"{name}: pair {stage.stage_id!r} search method must be 'optuna'"
+                            )
+                        if (
+                            not isinstance(search.trials, int)
+                            or isinstance(search.trials, bool)
+                            or not 1 <= search.trials <= 16
+                        ):
+                            problems.append(
+                                f"{name}: pair {stage.stage_id!r} search trials must be in [1, 16]"
+                            )
+                        if (
+                            not isinstance(search.prefix_trials, int)
+                            or isinstance(search.prefix_trials, bool)
+                            or not 1 <= search.prefix_trials <= 8
+                            or (
+                                isinstance(search.trials, int)
+                                and not isinstance(search.trials, bool)
+                                and search.prefix_trials > search.trials
+                            )
+                        ):
+                            problems.append(
+                                f"{name}: pair {stage.stage_id!r} search prefix_trials must be in [1, 8] and no greater than trials"
+                            )
+                if stage.search is None and len(stage.candidates) > 3:
                     problems.append(
                         f"{name}: pair {stage.stage_id!r} has over 3 candidates"
                     )
-                if not stage.candidates:
+                if stage.search is None and not stage.candidates:
                     problems.append(
                         f"{name}: pair {stage.stage_id!r} needs at least one teacher candidate"
                     )
@@ -1238,7 +1280,27 @@ class Project:
                         f"models[{name!r}].pair_stages entries must be objects"
                     )
                 stage = dict(stage)
-                raw_candidates = stage.pop("candidates", default_pair_candidates())
+                raw_search = stage.pop("search", None)
+                if raw_search is not None:
+                    if not isinstance(raw_search, dict) or set(raw_search) - {
+                        "method",
+                        "trials",
+                        "prefix_trials",
+                    }:
+                        raise ValueError(
+                            f"models[{name!r}].pair_stages.search must contain only method, trials and prefix_trials"
+                        )
+                    search = _build(
+                        PairSearchConfig,
+                        raw_search,
+                        f"models[{name!r}].pair_stages.search",
+                    )
+                else:
+                    search = None
+                raw_candidates = stage.pop(
+                    "candidates",
+                    [] if search is not None else default_pair_candidates(),
+                )
                 if not isinstance(raw_candidates, list) or not all(
                     isinstance(candidate, dict | PairCandidateConfig)
                     for candidate in raw_candidates
@@ -1261,7 +1323,7 @@ class Project:
                 pair_stages.append(
                     _build(
                         PairStageConfig,
-                        {**stage, "candidates": candidates},
+                        {**stage, "candidates": candidates, "search": search},
                         f"models[{name!r}].pair_stages",
                     )
                 )

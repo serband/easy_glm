@@ -15,6 +15,7 @@ from easy_glm.workflow.project import (
     Interaction,
     ModelConfig,
     PairCandidateConfig,
+    PairSearchConfig,
     PairStageConfig,
     Project,
     VariableDesign,
@@ -84,6 +85,26 @@ def setup_info(project: Project, raw: pl.DataFrame) -> dict[str, Any]:
         problems.append("Assign a target role on Variables and apply it.")
     if not project.predictors:
         problems.append("Assign at least one predictor role on Variables and apply it.")
+    pair_search_preflight = {
+        name: [
+            {
+                "stage_id": stage.stage_id,
+                "mode": "automatic" if stage.search is not None else "fixed",
+                "folds": stage.cv_folds,
+                "trials": stage.search.trials if stage.search is not None else None,
+                "prefix_trials": (
+                    stage.search.prefix_trials if stage.search is not None else None
+                ),
+                "prefix_stages": index,
+                "fixed_candidates": (
+                    len(stage.candidates) if stage.search is None else None
+                ),
+            }
+            for index, stage in enumerate(config.pair_stages)
+        ]
+        for name, config in project.models.items()
+        if config.pair_stages
+    }
     return {
         "columns": columns,
         "split": asdict(project.data.split),
@@ -100,6 +121,8 @@ def setup_info(project: Project, raw: pl.DataFrame) -> dict[str, Any]:
             "min_weight_share": 0.001,
             "seed": 42,
             "cv_folds": 5,
+            "search": asdict(PairSearchConfig()),
+            "search_limits": {"trials": [1, 16], "prefix_trials": [1, 8]},
             "candidates": [
                 {
                     "depth": 2,
@@ -115,6 +138,7 @@ def setup_info(project: Project, raw: pl.DataFrame) -> dict[str, Any]:
                 },
             ],
         },
+        "pair_search_preflight": pair_search_preflight,
     }
 
 
@@ -176,6 +200,7 @@ def _edit_pair_stages(cfg: ModelConfig, values: Any) -> None:
         "a",
         "b",
         "candidates",
+        "search",
         "min_weight_share",
         "seed",
         "cv_folds",
@@ -202,6 +227,17 @@ def _edit_pair_stages(cfg: ModelConfig, values: Any) -> None:
                     "A candidate needs depth, iterations, learning_rate and l2_leaf_reg."
                 )
             parsed.append(PairCandidateConfig(**candidate))
+        raw_search = value.get("search")
+        if raw_search is None:
+            search = None
+        elif not isinstance(raw_search, dict) or set(raw_search) - {
+            "method",
+            "trials",
+            "prefix_trials",
+        }:
+            raise ValueError("Pair search needs only method, trials and prefix_trials.")
+        else:
+            search = PairSearchConfig(**raw_search)
         stages.append(
             PairStageConfig(
                 stage_id=value["stage_id"],
@@ -211,6 +247,7 @@ def _edit_pair_stages(cfg: ModelConfig, values: Any) -> None:
                 min_weight_share=value.get("min_weight_share", 0.001),
                 seed=value.get("seed", 42),
                 cv_folds=value.get("cv_folds", 5),
+                search=search,
             )
         )
     removed = {stage.stage_id for stage in cfg.pair_stages} - {

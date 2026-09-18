@@ -27,6 +27,11 @@
         (left.a === right.a && left.b === right.b) || (left.a === right.b && left.b === right.a);
     const integer = (value, low, high) => Number.isInteger(value) && value >= low && value <= high;
     const positive = (value) => Number.isFinite(value) && value > 0;
+    const automatic = (stage) => stage.search?.method === 'optuna';
+    const compact = (value) =>
+        Number(value)
+            .toPrecision(4)
+            .replace(/\.?0+$/, '');
     const preciseLoss = (value) => Number(value).toPrecision(7);
     const lossChange = (before, after) => {
         const change = after - before;
@@ -36,17 +41,23 @@
         stage.a !== stage.b &&
         eligible.includes(stage.a) &&
         eligible.includes(stage.b) &&
-        Array.isArray(stage.candidates) &&
-        stage.candidates.length >= 1 &&
-        stage.candidates.length <= 3 &&
-        stage.candidates.every(
-            (candidate) =>
-                integer(candidate.depth, 1, 6) &&
-                integer(candidate.iterations, 1, 200) &&
-                positive(candidate.learning_rate) &&
-                candidate.learning_rate <= 1 &&
-                positive(candidate.l2_leaf_reg),
-        ) &&
+        (automatic(stage)
+            ? integer(stage.search.trials, 1, 16) &&
+              integer(stage.search.prefix_trials, 1, 8) &&
+              stage.search.prefix_trials <= stage.search.trials &&
+              Array.isArray(stage.candidates)
+            : stage.search == null &&
+              Array.isArray(stage.candidates) &&
+              stage.candidates.length >= 1 &&
+              stage.candidates.length <= 3 &&
+              stage.candidates.every(
+                  (candidate) =>
+                      integer(candidate.depth, 1, 6) &&
+                      integer(candidate.iterations, 1, 200) &&
+                      positive(candidate.learning_rate) &&
+                      candidate.learning_rate <= 1 &&
+                      positive(candidate.l2_leaf_reg),
+              )) &&
         Number.isFinite(stage.min_weight_share) &&
         stage.min_weight_share >= 0 &&
         stage.min_weight_share < 1 &&
@@ -63,7 +74,7 @@
           );
     $: duplicate = stages.some((stage) => samePair(stage, { a: first, b: second }));
     $: canAdd =
-        Boolean(defaults?.candidates?.length) &&
+        defaults?.search?.method === 'optuna' &&
         stages.length < 8 &&
         eligible.includes(first) &&
         eligible.includes(second) &&
@@ -78,18 +89,19 @@
     function update(index, field, value) {
         onchange(stages.map((stage, at) => (at === index ? { ...stage, [field]: value } : stage)));
     }
-    function updateCandidate(index, candidateIndex, field, value) {
+    function searchBudget(index, field, value) {
+        const search = {
+            ...stages[index].search,
+            [field]: value === '' ? null : Number(value),
+        };
+        update(index, 'search', search);
+    }
+    function switchToAutomatic(index) {
+        if (defaults?.search?.method !== 'optuna') return;
         onchange(
             stages.map((stage, at) =>
                 at === index
-                    ? {
-                          ...stage,
-                          candidates: stage.candidates.map((candidate, atCandidate) =>
-                              atCandidate === candidateIndex
-                                  ? { ...candidate, [field]: value === '' ? null : Number(value) }
-                                  : candidate,
-                          ),
-                      }
+                    ? { ...stage, search: structuredClone(defaults.search), candidates: [] }
                     : stage,
             ),
         );
@@ -98,7 +110,16 @@
         if (!canAdd) return;
         onchange([
             ...stages,
-            { ...structuredClone(defaults), stage_id: crypto.randomUUID(), a: first, b: second },
+            {
+                min_weight_share: defaults.min_weight_share,
+                seed: defaults.seed,
+                cv_folds: defaults.cv_folds,
+                search: structuredClone(defaults.search),
+                stage_id: crypto.randomUUID(),
+                a: first,
+                b: second,
+                candidates: [],
+            },
         ]);
         first = '';
         second = '';
@@ -165,11 +186,9 @@
     </div>
     {#if ['queued', 'running'].includes(job?.status) && job?.progress}
         <p class="help-text" role="status">
-            Stage {job.progress.stage_number || '?'} · {job.progress.fold
-                ? `fold ${job.progress.fold} of ${job.progress.folds}`
-                : 'training'}{job.progress.prefix_reused ? ' · earlier full fit reused' : ''}{job
-                .progress.cv_pending
-                ? ' · cross-validation still running'
+            {job.progress.message || `Stage ${job.progress.stage_number || '?'} · training`}{job
+                .progress.prefix_reused
+                ? ' · earlier full fit reused'
                 : ''}
         </p>
     {/if}
@@ -181,6 +200,11 @@
                 <span class="stage-state">{stageStatus(stage, index)}</span>
             </div>
             <p class="stage-baseline">Baseline: {baseline(stage, index)}</p>
+            <p>
+                {automatic(stage)
+                    ? `Automatic tuning · ${stage.search.trials} trials`
+                    : 'Saved fixed settings'}
+            </p>
             {#if (packet && changedAt < 0) || (packet && index < changedAt)}
                 {#if packet.dimensions}
                     <p>Rate table: {packet.dimensions[0]} × {packet.dimensions[1]} cells</p>
@@ -195,10 +219,15 @@
                     <p>The fit selected no change because this pair did not improve the model.</p>
                 {/if}
                 {#if packet.chosen_candidate}
-                    <p>
-                        Chosen CatBoost setting: depth {packet.chosen_candidate.depth}, {packet
-                            .chosen_candidate.iterations} iterations
-                    </p>
+                    <details class="chosen-settings">
+                        <summary>Selected settings</summary>
+                        <p>
+                            Depth {packet.chosen_candidate.depth} · {packet.chosen_candidate
+                                .iterations} iterations · learning rate {compact(
+                                packet.chosen_candidate.learning_rate,
+                            )} · L2 {compact(packet.chosen_candidate.l2_leaf_reg)}
+                        </p>
+                    </details>
                 {/if}
                 {#if Number.isFinite(packet.loss?.prefix) && Number.isFinite(packet.loss?.table)}
                     <p>
@@ -290,61 +319,67 @@
                         /></label
                     >
                 </div>
-                <p class="help-text">
-                    Five training folds. No change is always considered. Limits: up to 3 CatBoost
-                    settings, depth 6 and 200 iterations.
-                </p>
-                {#each stage.candidates as candidate, candidateIndex}
-                    <fieldset class="candidate-settings">
-                        <legend>CatBoost setting {candidateIndex + 1}</legend>
-                        {#each [['depth', 'Depth'], ['iterations', 'Iterations'], ['learning_rate', 'Learning rate'], ['l2_leaf_reg', 'L2 leaf regularisation']] as [field, label]}
+                {#if automatic(stage)}
+                    <p class="help-text">
+                        Automatic tuning chooses CatBoost settings using five training folds. No
+                        change is always considered.
+                    </p>
+                    <details class="tuning-budget">
+                        <summary>Tuning budget</summary>
+                        <div class="stage-settings">
                             <label
-                                >{label}<input
-                                    aria-label={`${label} for stage ${index + 2} candidate ${candidateIndex + 1}`}
+                                >Trials for this pair<input
+                                    aria-label={`Tuning trials for stage ${index + 2}`}
                                     type="number"
-                                    min={field === 'depth' || field === 'iterations'
-                                        ? '1'
-                                        : '0.000001'}
-                                    max={field === 'depth'
-                                        ? '6'
-                                        : field === 'iterations'
-                                          ? '200'
-                                          : field === 'learning_rate'
-                                            ? '1'
-                                            : undefined}
-                                    step={field === 'depth' || field === 'iterations' ? '1' : 'any'}
-                                    value={candidate[field]}
+                                    min="1"
+                                    max="16"
+                                    step="1"
+                                    value={stage.search.trials}
                                     oninput={(event) =>
-                                        updateCandidate(
+                                        searchBudget(index, 'trials', event.currentTarget.value)}
+                                /></label
+                            >
+                            <label
+                                >Trials for the earlier-stage baseline<input
+                                    aria-label={`Prefix tuning trials for stage ${index + 2}`}
+                                    type="number"
+                                    min="1"
+                                    max="8"
+                                    step="1"
+                                    value={stage.search.prefix_trials}
+                                    oninput={(event) =>
+                                        searchBudget(
                                             index,
-                                            candidateIndex,
-                                            field,
+                                            'prefix_trials',
                                             event.currentTarget.value,
                                         )}
                                 /></label
                             >
+                        </div>
+                        <p class="help-text">
+                            Used when there are earlier pair corrections. Cannot exceed this pair's
+                            trial count.
+                        </p>
+                    </details>
+                {:else}
+                    <p class="help-text">
+                        This stage keeps the fixed CatBoost settings saved with the model.
+                    </p>
+                    <button
+                        type="button"
+                        disabled={defaults?.search?.method !== 'optuna'}
+                        onclick={() => switchToAutomatic(index)}>Switch to automatic tuning</button
+                    >
+                    <details class="saved-settings">
+                        <summary>View saved fixed settings</summary>
+                        {#each stage.candidates as candidate, candidateIndex}
+                            <p>
+                                Setting {candidateIndex + 1}: depth {candidate.depth}, {candidate.iterations}
+                                iterations, learning rate {candidate.learning_rate}, L2 {candidate.l2_leaf_reg}
+                            </p>
                         {/each}
-                        <button
-                            type="button"
-                            disabled={stage.candidates.length === 1}
-                            onclick={() =>
-                                update(
-                                    index,
-                                    'candidates',
-                                    stage.candidates.filter((_, at) => at !== candidateIndex),
-                                )}>Remove setting</button
-                        >
-                    </fieldset>
-                {/each}
-                <button
-                    type="button"
-                    disabled={stage.candidates.length >= 3}
-                    onclick={() =>
-                        update(index, 'candidates', [
-                            ...stage.candidates,
-                            { ...stage.candidates.at(-1) },
-                        ])}>Add CatBoost setting</button
-                >
+                    </details>
+                {/if}
                 {#if !stageValid(stage)}<p class="stage-error" role="alert">
                         Check the pair predictors and bounded stage settings.
                     </p>{/if}
@@ -371,8 +406,8 @@
         <button type="button" disabled={!canAdd} onclick={add}>Add pair correction</button>
     </div>
     {#if duplicate}<p class="stage-error">This pair is already defined.</p>{/if}
-    {#if !defaults?.candidates?.length}<p class="help-text">
-            Pair fitting defaults are loading from the workbench.
+    {#if defaults?.search?.method !== 'optuna'}<p class="help-text">
+            Automatic tuning defaults are loading from the workbench.
         </p>{/if}
     {#if !valid}<p class="stage-error" role="alert">
             Correct the pair-stage settings before saving.
@@ -431,7 +466,6 @@
         margin-top: 12px;
     }
     .stage-settings label,
-    .candidate-settings label,
     .add-stage label {
         display: flex;
         flex-direction: column;
@@ -440,21 +474,13 @@
     }
     .stage-settings input,
     .stage-settings select,
-    .candidate-settings input,
     .add-stage select {
         width: 100%;
     }
-    .candidate-settings {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        align-items: end;
-        margin: 10px 0;
-        border: 1px solid #d8e3dc;
-    }
-    .candidate-settings label {
-        min-width: 100px;
-        flex: 1;
+    .tuning-budget,
+    .saved-settings,
+    .chosen-settings {
+        margin-top: 10px;
     }
     .add-stage {
         align-items: end;

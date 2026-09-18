@@ -50,13 +50,28 @@ seconds, with 411.9 MiB peak process RSS. Selected deployed-table training-CV
 deviance was 1.272470 → 1.213326. This is a larger two-stage resource check;
 it does not establish a memory guarantee for million-row books or eight stages.
 
+With `--rows 100000 --stages 2 --optuna`, the automatic 8-trial main search and
+4-trial whole-prefix search executed 162 CatBoost fits and 30 fold-local main
+GLM fits in 54.286 seconds, with 428.8 MiB peak process RSS. The selected
+deployed-table training-CV deviance was 1.269660 → 1.218588. The search used
+Optuna 4.9.0 TPE with three startup trials for the current stage, two for a
+prior-prefix study, one CPU thread, and no pruning or outer-validation early
+stopping. This measurement included a few seconds of another short CPU check;
+the numbers are observed prototype results rather than an isolated speed claim.
+
 ## Initial v1 limits
 
-- At most eight stages, 10,000 cells per pair grid including missing/Other,
-  three CatBoost candidates per stage, eight deterministic complete prefix
-  configurations in an inner search, depth six and 200 iterations per teacher.
-- Default search: neutral, depth 2 / 60 trees / learning rate 0.08 / L2 3,
-  and depth 3 / 120 trees / learning rate 0.06 / L2 5. CPU thread count is one.
+- At most eight stages and 10,000 cells per pair grid including missing/Other.
+  Fixed mode allows three CatBoost candidates and eight deterministic complete
+  prefix configurations. Automatic mode allows at most 16 current-stage and
+  eight complete-prefix trials; the new workbench defaults are eight and four.
+  Both modes always evaluate the neutral choice separately. CPU thread count
+  is one.
+- The fixed-mode defaults remain depth 2 / 60 trees / learning rate 0.08 /
+  L2 3 and depth 3 / 120 trees / learning rate 0.06 / L2 5. Automatic mode
+  searches depth 2–5, 40–160 trees in steps of 20, learning rate 0.03–0.15
+  and L2 0.1–20 on log scales. A whole-prefix study is rerun on each outer
+  training partition and never receives full-training selected parameters.
 - Preflight, before the main fit, estimates teacher-fit count, at most 30
   distinct fold-main fits for a multi-stage run, the configured main penalty
   CV and alpha grid, cells and table bytes. It refuses more than 5,000
@@ -74,6 +89,6 @@ Poisson/log and Tweedie/log with `1 < power < 2` are the enabled pair families.
 Binomial/logit, Gaussian/identity, Gamma and other links remain on the legacy
 path until their own loss and deployed-table contracts are implemented.
 Training requires the optional `easy-glm[pairs]` extra; saved table scoring does
-not import CatBoost. Manual pair-cell edits replay in CV by exact categorical
+not import CatBoost or Optuna. Manual pair-cell edits replay in CV by exact categorical
 identity and explicit fixed numeric cuts. A changed numeric cut refuses replay
 with an actionable error.

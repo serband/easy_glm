@@ -11,7 +11,7 @@ import numpy as np
 import polars as pl
 
 from easy_glm.workflow import pair_stages
-from easy_glm.workflow.project import PairStageConfig, Project
+from easy_glm.workflow.project import PairSearchConfig, PairStageConfig, Project
 from easy_glm.workflow.run import run_model
 
 
@@ -19,6 +19,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rows", type=int, default=5_000)
     parser.add_argument("--stages", type=int, default=3, choices=(1, 2, 3))
+    parser.add_argument(
+        "--optuna", action="store_true", help="use default 8/4 Optuna studies"
+    )
     args = parser.parse_args()
     rng = np.random.default_rng(241)
     n = args.rows
@@ -55,9 +58,15 @@ def main() -> None:
     config.predictors = ["main"]
     config.penalty.alpha = 0.01
     config.pair_stages = [
-        PairStageConfig("ab", "A", "B"),
-        PairStageConfig("bc", "B", "C"),
-        PairStageConfig("ac", "A", "C"),
+        PairStageConfig(
+            "ab", "A", "B", search=PairSearchConfig() if args.optuna else None
+        ),
+        PairStageConfig(
+            "bc", "B", "C", search=PairSearchConfig() if args.optuna else None
+        ),
+        PairStageConfig(
+            "ac", "A", "C", search=PairSearchConfig() if args.optuna else None
+        ),
     ][: args.stages]
     teacher_fits = 0
     main_fits = 0
@@ -87,6 +96,7 @@ def main() -> None:
                 "train_rows": train_rows,
                 "holdout_rows": n - train_rows,
                 "stages": len(run.pair_stages),
+                "search": "optuna" if args.optuna else "fixed",
                 "candidate_counts": [
                     len(stage.cv_candidates) for stage in run.pair_stages
                 ],

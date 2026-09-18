@@ -55,7 +55,10 @@ MAX_TEACHER_FITS = 5_000
 MAX_SECONDS = 900
 MAX_ESTIMATED_PEAK_BYTES = 3 * 1024**3
 CV_TIE_TOLERANCE = 1e-8
-ALGORITHM_VERSION = "pair-stages-1"
+ALGORITHM_VERSION = "pair-stages-2-optuna"
+SEARCH_SPACE_VERSION = "shallow-v1"
+MAIN_TPE_STARTUP_TRIALS = 3
+PREFIX_TPE_STARTUP_TRIALS = 2
 
 
 @dataclass(frozen=True)
@@ -105,6 +108,18 @@ class CandidateCV:
         return total / sum(f.weight_sum for f in self.folds)
 
 
+@dataclass(frozen=True)
+class SearchTrial:
+    """Serializable evidence for a completed Optuna proposal."""
+
+    number: int
+    state: str
+    candidates: tuple[PairCandidateConfig | None, ...]
+    folds: tuple[FoldLoss, ...]
+    value: float
+    outer_fold: int | None = None
+
+
 @dataclass
 class PairStageArtifact:
     stage_id: str
@@ -127,6 +142,9 @@ class PairStageArtifact:
     status: str = "up_to_date"
     baseline_stage_ids: tuple[str, ...] = ()
     selected_prefix_configs: tuple[tuple[int, ...], ...] = ()
+    selected_prefix_parameters: tuple[tuple[PairCandidateConfig | None, ...], ...] = ()
+    search_trials: tuple[SearchTrial, ...] = ()
+    prefix_search_trials: tuple[SearchTrial, ...] = ()
 
 
 def _response(cfg: ModelConfig, frame: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
@@ -441,6 +459,65 @@ def _prefix_configs(stages: list[PairStageConfig]) -> list[tuple[int, ...]]:
     ]
 
 
+def _optuna_module() -> Any:
+    try:
+        import optuna
+    except ImportError as exc:
+        raise ImportError(
+            "Automatic pair tuning requires Optuna. Install it with "
+            "pip install 'easy_glm[pairs]'."
+        ) from exc
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    return optuna
+
+
+def _suggest_candidate(trial: Any, prefix: str) -> PairCandidateConfig:
+    return PairCandidateConfig(
+        depth=trial.suggest_int(f"{prefix}depth", 2, 5),
+        iterations=trial.suggest_int(f"{prefix}iterations", 40, 160, step=20),
+        learning_rate=trial.suggest_float(
+            f"{prefix}learning_rate", 0.03, 0.15, log=True
+        ),
+        l2_leaf_reg=trial.suggest_float(f"{prefix}l2_leaf_reg", 0.1, 20.0, log=True),
+    )
+
+
+def _suggest_prefix(
+    trial: Any, previous: list[PairStageConfig]
+) -> tuple[PairCandidateConfig | None, ...]:
+    result: list[PairCandidateConfig | None] = []
+    for index, stage in enumerate(previous):
+        if stage.search is None:
+            choice = trial.suggest_int(
+                f"stage_{index}_choice", 0, len(stage.candidates)
+            )
+            result.append(_candidate_options(stage)[choice])
+        elif trial.suggest_categorical(f"stage_{index}_active", [False, True]):
+            result.append(_suggest_candidate(trial, f"stage_{index}_"))
+        else:
+            result.append(None)
+    return tuple(result)
+
+
+def _safe_prefix_params(previous: list[PairStageConfig]) -> dict[str, Any]:
+    """One data-independent full-prefix starting point for a small TPE study."""
+    params: dict[str, Any] = {}
+    for index, stage in enumerate(previous):
+        if stage.search is None:
+            params[f"stage_{index}_choice"] = 1 if stage.candidates else 0
+        else:
+            params.update(
+                {
+                    f"stage_{index}_active": True,
+                    f"stage_{index}_depth": 2,
+                    f"stage_{index}_iterations": 60,
+                    f"stage_{index}_learning_rate": 0.08,
+                    f"stage_{index}_l2_leaf_reg": 3.0,
+                }
+            )
+    return params
+
+
 def preflight_pair_stages(
     stages: list[PairStageConfig],
     project: Project,
@@ -457,7 +534,7 @@ def preflight_pair_stages(
     expected_fits = 0
     grid_cells: list[int] = []
     for index, stage in enumerate(stages):
-        if len(stage.candidates) > MAX_CANDIDATES:
+        if stage.search is None and len(stage.candidates) > MAX_CANDIDATES:
             raise ValueError(
                 f"Stage {stage.stage_id} has too many teacher candidates (limit {MAX_CANDIDATES})"
             )
@@ -473,11 +550,27 @@ def preflight_pair_stages(
             raise ValueError(
                 f"Stage {stage.stage_id} needs {cells:,} cells, above the {MAX_CELLS:,} limit. Reduce bins/levels before fitting"
             )
-        configurations = _prefix_configs(stages[:index])
-        expected_fits += 25 * sum(
-            sum(choice != 0 for choice in config) for config in configurations
+        previous = stages[:index]
+        if any(item.search is not None for item in previous):
+            prefix_trials = (
+                stage.search.prefix_trials
+                if stage.search is not None
+                else max(
+                    item.search.prefix_trials
+                    for item in previous
+                    if item.search is not None
+                )
+            )
+            expected_fits += 25 * prefix_trials * index
+        else:
+            configurations = _prefix_configs(previous)
+            expected_fits += 25 * sum(
+                sum(choice != 0 for choice in config) for config in configurations
+            )
+        candidate_trials = (
+            stage.search.trials if stage.search is not None else len(stage.candidates)
         )
-        expected_fits += 5 * index + 5 * len(stage.candidates) + 1
+        expected_fits += 5 * index + 5 * candidate_trials + 1
     if expected_fits > MAX_TEACHER_FITS:
         raise ValueError(
             f"The requested nested validation may require {expected_fits:,} CatBoost fits (limit {MAX_TEACHER_FITS:,}). Reduce stages/candidates"
@@ -536,6 +629,7 @@ def _dependency_bytes() -> bytes:
     for package in (
         "easy-glm",
         "catboost",
+        "optuna",
         "numpy",
         "polars",
         "glum",
@@ -650,6 +744,19 @@ def fit_pair_stages(
     stages = model_config.pair_stages
     if not stages:
         return copy.deepcopy(main_rate_model), []
+    # Inner and outer folds retain multiple frames.  Keep only fitting and
+    # scoring columns so unrelated prepared columns do not multiply in memory.
+    from .run import exposure_for
+
+    required = {
+        model_config.target,
+        model_config.weight,
+        model_config.offset,
+        exposure_for(project, model_config),
+        *model_config.predictors,
+        *(parent for stage in stages for parent in (stage.a, stage.b)),
+    }
+    train = train.select([name for name in train.columns if name in required])
     if model_config.family not in ("poisson", "tweedie") or (
         model_config.link and model_config.link != "log"
     ):
@@ -674,6 +781,14 @@ def fit_pair_stages(
     full_cache: dict[str, PairStageArtifact] = cache.setdefault("full_prefix", {})
     inner_main_cache: dict[bytes, RateModel] = cache.setdefault("fold_main", {})
     fold_prefix_cache: dict[bytes, RateModel] = cache.setdefault("fold_prefix", {})
+    prefix_selection_cache: dict[
+        bytes,
+        tuple[
+            tuple[PairCandidateConfig | None, ...],
+            tuple[int, ...],
+            tuple[SearchTrial, ...],
+        ],
+    ] = cache.setdefault("prefix_selection", {})
 
     def main_for(partition: pl.DataFrame) -> RateModel:
         if time.monotonic() > deadline:
@@ -761,9 +876,11 @@ def fit_pair_stages(
         return rm
 
     def fixed_prefix(
-        partition: pl.DataFrame, choices: tuple[int, ...], base: RateModel
+        partition: pl.DataFrame,
+        parameters: tuple[PairCandidateConfig | None, ...],
+        base: RateModel,
     ) -> RateModel:
-        prior = stages[: len(choices)]
+        prior = stages[: len(parameters)]
         columns = {
             name
             for name in (
@@ -795,15 +912,17 @@ def fit_pair_stages(
             + json.dumps(pair_design, sort_keys=True, default=str).encode()
             + json.dumps(asdict(project.design.defaults), sort_keys=True).encode()
             + json.dumps(asdict(project.data), sort_keys=True, default=str).encode()
-            + json.dumps(choices).encode()
+            + json.dumps(
+                [asdict(item) if item is not None else None for item in parameters],
+                sort_keys=True,
+            ).encode()
             + json.dumps(_scorer_signature(base), sort_keys=True, default=str).encode()
             + _dependency_bytes()
         ).digest()
         if key in fold_prefix_cache:
             return copy.deepcopy(fold_prefix_cache[key])
         scorer = base
-        for previous, option in zip(stages[: len(choices)], choices, strict=True):
-            candidate = _candidate_options(previous)[option]
+        for previous, candidate in zip(prior, parameters, strict=True):
             table, _ = _fit_table(
                 project,
                 model_config,
@@ -820,56 +939,221 @@ def fit_pair_stages(
 
     def select_prefix(
         outer_train: pl.DataFrame, previous: list[PairStageConfig], outer_fold: int
-    ) -> tuple[int, ...]:
-        configurations = _prefix_configs(previous)
+    ) -> tuple[
+        tuple[PairCandidateConfig | None, ...],
+        tuple[int, ...],
+        tuple[SearchTrial, ...],
+    ]:
+        if not previous:
+            return (), (), ()
+        current = stages[len(previous)]
+        adaptive = any(item.search is not None for item in previous)
+        configurations = _prefix_configs(previous) if not adaptive else []
         if len(configurations) == 1:
-            return configurations[0]
+            choices = configurations[0]
+            return (
+                tuple(
+                    _candidate_options(item)[choice]
+                    for item, choice in zip(previous, choices, strict=True)
+                ),
+                choices,
+                (),
+            )
+        relevant = {
+            name
+            for name in (
+                model_config.target,
+                model_config.weight,
+                model_config.offset,
+                *model_config.predictors,
+                *(parent for item in previous for parent in (item.a, item.b)),
+            )
+            if name is not None
+        }
+        prior_ids = {item.stage_id for item in previous}
+        design_names = set(model_config.predictors) | {
+            parent for item in previous for parent in (item.a, item.b)
+        }
+        search_identity = {
+            "main": _main_settings(model_config),
+            "previous": [asdict(item) for item in previous],
+            "previous_edits": [
+                asdict(adj)
+                for adj in model_config.adjustments
+                if adj.stage_id in prior_ids
+            ],
+            "design": {
+                "defaults": asdict(project.design.defaults),
+                "variables": {
+                    name: asdict(project.design.variables[name])
+                    for name in sorted(design_names)
+                    if name in project.design.variables
+                },
+            },
+            "data": asdict(project.data),
+            "outer_fold": outer_fold,
+            "sampler_seed": current.seed + outer_fold,
+            "sampler_multivariate": False,
+            "prefix_trials": (
+                current.search.prefix_trials
+                if current.search is not None
+                else (
+                    max(
+                        item.search.prefix_trials
+                        for item in previous
+                        if item.search is not None
+                    )
+                    if adaptive
+                    else None
+                )
+            ),
+            "space": SEARCH_SPACE_VERSION,
+            "startup": PREFIX_TPE_STARTUP_TRIALS,
+        }
+        selection_key = hashlib.sha256(
+            _dependency_bytes()
+            + _frame_bytes(outer_train, relevant)
+            + json.dumps(search_identity, sort_keys=True, default=str).encode()
+        ).digest()
+        if selection_key in prefix_selection_cache:
+            return copy.deepcopy(prefix_selection_cache[selection_key])
         inner_folds = _folds(
             outer_train.height, 5, project.data.split.seed + 10_000 + outer_fold
         )
-        scores: list[tuple[float, tuple[int, ...]]] = []
-        for configuration in configurations:
-            loss_sum = 0.0
-            weight_sum = 0.0
-            for inner_fold, val_idx in enumerate(inner_folds):
-                train_idx = np.setdiff1d(
-                    np.arange(outer_train.height), val_idx, assume_unique=True
-                )
-                fit_frame = outer_train[train_idx]
-                val_frame = outer_train[val_idx]
-                base = main_for(fit_frame)
-                scorer = fixed_prefix(fit_frame, configuration, base)
-                y, weight = _response(model_config, val_frame)
-                power = (
-                    model_config.tweedie_power
-                    if model_config.family == "tweedie"
-                    else 1.0
-                )
-                loss_sum += _deviance_sum(
+        contexts: list[
+            tuple[pl.DataFrame, pl.DataFrame, RateModel, np.ndarray, np.ndarray]
+        ] = []
+        for val_idx in inner_folds:
+            train_idx = np.setdiff1d(
+                np.arange(outer_train.height), val_idx, assume_unique=True
+            )
+            fit_frame = outer_train[train_idx]
+            val_frame = outer_train[val_idx]
+            y, weight = _response(model_config, val_frame)
+            contexts.append((fit_frame, val_frame, main_for(fit_frame), y, weight))
+        power = model_config.tweedie_power if model_config.family == "tweedie" else 1.0
+
+        def evaluate_prefix(
+            params: tuple[PairCandidateConfig | None, ...],
+            number: int,
+            total: int,
+        ) -> SearchTrial:
+            folds: list[FoldLoss] = []
+            for inner_fold, (fit_frame, val_frame, base, y, weight) in enumerate(
+                contexts
+            ):
+                scorer = fixed_prefix(fit_frame, params, base)
+                loss = _deviance_sum(
                     y, scorer.predict(val_frame, exposure_col=None), weight, power
                 )
-                weight_sum += float(weight.sum())
+                folds.append(
+                    FoldLoss(inner_fold, loss, float(weight.sum()), loss, None)
+                )
                 if progress:
+                    label = (
+                        "no-correction check"
+                        if number < 0
+                        else f"prefix trial {number + 1}/{total}"
+                    )
                     progress(
                         f"Pair stage {len(previous) + 1}/{len(stages)}: "
-                        f"fold {outer_fold + 1}/5 prefix selection, "
+                        f"fold {outer_fold + 1}/5, {label}, "
                         f"inner {inner_fold + 1}/5"
                     )
-            scores.append((loss_sum / weight_sum, configuration))
-        best_loss = min(score for score, _ in scores)
-        close = [
-            item
-            for item in scores
-            if item[0] <= best_loss + CV_TIE_TOLERANCE * max(1, abs(best_loss))
+            value = sum(item.loss_sum for item in folds) / sum(
+                item.weight_sum for item in folds
+            )
+            return SearchTrial(
+                number, "COMPLETE", params, tuple(folds), value, outer_fold
+            )
+
+        outcome: tuple[
+            tuple[PairCandidateConfig | None, ...],
+            tuple[int, ...],
+            tuple[SearchTrial, ...],
         ]
-        return min(
-            close,
-            key=lambda item: (
-                sum(choice != 0 for choice in item[1]),
-                sum(item[1]),
-                item[1],
-            ),
-        )[1]
+        if adaptive:
+            trial_budget = (
+                current.search.prefix_trials
+                if current.search is not None
+                else max(
+                    item.search.prefix_trials
+                    for item in previous
+                    if item.search is not None
+                )
+            )
+            optuna = _optuna_module()
+            study = optuna.create_study(
+                direction="minimize",
+                sampler=optuna.samplers.TPESampler(
+                    seed=current.seed + outer_fold,
+                    n_startup_trials=PREFIX_TPE_STARTUP_TRIALS,
+                    multivariate=False,
+                ),
+                pruner=optuna.pruners.NopPruner(),
+            )
+            study.enqueue_trial(_safe_prefix_params(previous))
+            trials = [evaluate_prefix((None,) * len(previous), -1, trial_budget)]
+
+            def objective(trial: Any) -> float:
+                params = _suggest_prefix(trial, previous)
+                record = evaluate_prefix(params, trial.number, trial_budget)
+                trials.append(record)
+                return record.value
+
+            study.optimize(objective, n_trials=trial_budget, n_jobs=1)
+            best_loss = min(record.value for record in trials)
+            close = [
+                record
+                for record in trials
+                if record.value <= best_loss + CV_TIE_TOLERANCE * max(1, abs(best_loss))
+            ]
+            selected = min(
+                close,
+                key=lambda item: (
+                    sum(candidate is not None for candidate in item.candidates),
+                    sum(
+                        candidate.depth
+                        for candidate in item.candidates
+                        if candidate is not None
+                    ),
+                    sum(
+                        candidate.iterations
+                        for candidate in item.candidates
+                        if candidate is not None
+                    ),
+                    item.number,
+                ),
+            )
+            outcome = (selected.candidates, (), tuple(trials))
+        else:
+            fixed_records: list[tuple[SearchTrial, tuple[int, ...]]] = []
+            for number, choices in enumerate(configurations):
+                params = tuple(
+                    _candidate_options(item)[choice]
+                    for item, choice in zip(previous, choices, strict=True)
+                )
+                fixed_records.append(
+                    (evaluate_prefix(params, number, len(configurations)), choices)
+                )
+            best_loss = min(record.value for record, _ in fixed_records)
+            close_fixed = [
+                item
+                for item in fixed_records
+                if item[0].value
+                <= best_loss + CV_TIE_TOLERANCE * max(1, abs(best_loss))
+            ]
+            selected, choices = min(
+                close_fixed,
+                key=lambda item: (
+                    sum(choice != 0 for choice in item[1]),
+                    sum(item[1]),
+                    item[1],
+                ),
+            )
+            outcome = (selected.candidates, choices, ())
+        prefix_selection_cache[selection_key] = copy.deepcopy(outcome)
+        return outcome
 
     scorer = copy.deepcopy(main_rate_model)
     artifacts: list[PairStageArtifact] = []
@@ -899,32 +1183,80 @@ def fit_pair_stages(
                 "Clear those edits after reviewing them, then refit; edits on earlier "
                 "frozen stages remain in the baseline"
             )
-        options = _candidate_options(stage)
-        fold_records: list[list[FoldLoss]] = [[] for _ in options]
         chosen_prefix_configs: list[tuple[int, ...]] = []
+        chosen_prefix_parameters: list[tuple[PairCandidateConfig | None, ...]] = []
+        prefix_trials: list[SearchTrial] = []
+        outer_contexts: list[
+            tuple[
+                pl.DataFrame,
+                pl.DataFrame,
+                RateModel,
+                tuple[VariableConfig, VariableConfig],
+                np.ndarray,
+                np.ndarray,
+                np.ndarray,
+                float,
+            ]
+        ] = []
         for fold_index, val_idx in enumerate(outer_folds):
             train_idx = np.setdiff1d(
                 np.arange(train.height), val_idx, assume_unique=True
             )
             fit_frame = train[train_idx]
             val_frame = train[val_idx]
-            prefix_choices = select_prefix(fit_frame, stages[:stage_index], fold_index)
-            chosen_prefix_configs.append(prefix_choices)
+            params, choices, trial_records = select_prefix(
+                fit_frame, stages[:stage_index], fold_index
+            )
+            chosen_prefix_configs.append(choices)
+            chosen_prefix_parameters.append(params)
+            prefix_trials.extend(trial_records)
             fold_base = main_for(fit_frame)
-            fold_prefix = fixed_prefix(fit_frame, prefix_choices, fold_base)
+            fold_prefix = fixed_prefix(fit_frame, params, fold_base)
             y_val, w_val = _response(model_config, val_frame)
             prefix_pred = fold_prefix.predict(val_frame, exposure_col=None)
             prefix_sum = _deviance_sum(y_val, prefix_pred, w_val, power)
-            weight_sum = float(w_val.sum())
-            for candidate_index, candidate in enumerate(options):
-                axes = (
-                    _axis(project, fit_frame, stage.a, model_config.weight),
-                    _axis(project, fit_frame, stage.b, model_config.weight),
+            axes = (
+                _axis(project, fit_frame, stage.a, model_config.weight),
+                _axis(project, fit_frame, stage.b, model_config.weight),
+            )
+            outer_contexts.append(
+                (
+                    fit_frame,
+                    val_frame,
+                    fold_prefix,
+                    axes,
+                    y_val,
+                    w_val,
+                    prefix_pred,
+                    prefix_sum,
                 )
+            )
+
+        stage_contexts = tuple(outer_contexts)
+
+        def evaluate_stage_candidate(
+            candidate: PairCandidateConfig | None,
+            number: int,
+            total: int,
+            stage_spec: PairStageConfig = stage,
+            contexts: tuple[Any, ...] = stage_contexts,
+            current_stage_index: int = stage_index,
+        ) -> CandidateCV:
+            records: list[FoldLoss] = []
+            for fold_index, (
+                fit_frame,
+                val_frame,
+                fold_prefix,
+                axes,
+                y_val,
+                w_val,
+                prefix_pred,
+                prefix_sum,
+            ) in enumerate(contexts):
                 table, teacher = _fit_table(
                     project,
                     model_config,
-                    stage,
+                    stage_spec,
                     candidate,
                     fit_frame,
                     fold_prefix,
@@ -936,17 +1268,19 @@ def fit_pair_stages(
                 teacher_sum = None
                 approximation_sum = None
                 if teacher is not None:
-                    raw_val, _ = _raw_features(val_frame, (stage.a, stage.b), axes)
+                    raw_val, _ = _raw_features(
+                        val_frame, (stage_spec.a, stage_spec.b), axes
+                    )
                     teacher_mean = teacher.predict_mean(raw_val, prefix_pred)
                     teacher_sum = _deviance_sum(y_val, teacher_mean, w_val, power)
                     approximation_sum = _deviance_sum(
                         teacher_mean, table_pred, w_val, power
                     )
-                fold_records[candidate_index].append(
+                records.append(
                     FoldLoss(
                         fold_index,
                         _deviance_sum(y_val, table_pred, w_val, power),
-                        weight_sum,
+                        float(w_val.sum()),
                         prefix_sum,
                         teacher_sum,
                         teacher.target_scale if teacher is not None else None,
@@ -954,13 +1288,57 @@ def fit_pair_stages(
                     )
                 )
                 if progress:
-                    progress(
-                        f"Pair stage {stage_index + 1}/{len(stages)}: fold {fold_index + 1}/5, candidate {candidate_index + 1}/{len(options)}"
+                    label = (
+                        "no-correction check"
+                        if number < 0
+                        else f"trial {number + 1}/{total}"
                     )
-        candidates_cv = tuple(
-            CandidateCV(candidate, tuple(records))
-            for candidate, records in zip(options, fold_records, strict=True)
-        )
+                    progress(
+                        f"Pair stage {current_stage_index + 1}/{len(stages)}: "
+                        f"fold {fold_index + 1}/5, {label}"
+                    )
+            return CandidateCV(candidate, tuple(records))
+
+        search_records: list[SearchTrial] = []
+        if stage.search is None:
+            options = _candidate_options(stage)
+            candidates_cv = tuple(
+                evaluate_stage_candidate(candidate, index, len(options))
+                for index, candidate in enumerate(options)
+            )
+        else:
+            optuna = _optuna_module()
+            search_config = stage.search
+            study = optuna.create_study(
+                direction="minimize",
+                sampler=optuna.samplers.TPESampler(
+                    seed=stage.seed,
+                    n_startup_trials=MAIN_TPE_STARTUP_TRIALS,
+                    multivariate=False,
+                ),
+                pruner=optuna.pruners.NopPruner(),
+            )
+            evaluated = [evaluate_stage_candidate(None, -1, search_config.trials)]
+
+            def objective(
+                trial: Any, trial_budget: int = search_config.trials
+            ) -> float:
+                candidate = _suggest_candidate(trial, "")
+                result = evaluate_stage_candidate(candidate, trial.number, trial_budget)
+                evaluated.append(result)  # noqa: B023 - study completes in this loop
+                search_records.append(  # noqa: B023 - study completes in this loop
+                    SearchTrial(
+                        trial.number,
+                        "COMPLETE",
+                        (candidate,),
+                        result.folds,
+                        result.table_loss,
+                    )
+                )
+                return result.table_loss
+
+            study.optimize(objective, n_trials=stage.search.trials, n_jobs=1)
+            candidates_cv = tuple(evaluated)
         best = min(item.table_loss for item in candidates_cv)
         close = [
             item
@@ -992,6 +1370,8 @@ def fit_pair_stages(
                 asdict(selected.candidate) if selected.candidate is not None else None
             ),
             "algorithm_version": ALGORITHM_VERSION,
+            "search_space_version": SEARCH_SPACE_VERSION,
+            "search": asdict(stage.search) if stage.search is not None else None,
             "dependency_digest": _dependency_bytes().hex(),
             "training_rows": train.height,
             "target_scale": teacher.target_scale if teacher is not None else 1.0,
@@ -1035,6 +1415,9 @@ def fit_pair_stages(
                 previous.stage_id for previous in stages[:stage_index]
             ),
             selected_prefix_configs=tuple(chosen_prefix_configs),
+            selected_prefix_parameters=tuple(chosen_prefix_parameters),
+            search_trials=tuple(search_records),
+            prefix_search_trials=tuple(prefix_trials),
         )
         full_cache[fingerprint] = copy.deepcopy(artifact)
         scorer = next_scorer
