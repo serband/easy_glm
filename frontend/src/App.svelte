@@ -5,6 +5,7 @@
     import ProjectOpen from './ProjectOpen.svelte';
     import ExplorePanel from './ExplorePanel.svelte';
     import VariableScreening from './VariableScreening.svelte';
+    import FeatureSelection from './FeatureSelection.svelte';
     import SplitSettings from './SplitSettings.svelte';
     import BinningSettings from './BinningSettings.svelte';
     let comparison = '',
@@ -402,6 +403,7 @@
     }
     function parseRoles() {
         try {
+            const unchangedJson = jsonText === roleJson();
             const obj = JSON.parse(jsonText);
             if (!obj || Array.isArray(obj) || typeof obj !== 'object')
                 throw new Error('Use a JSON object with the ten roles.');
@@ -525,8 +527,9 @@
             } else if (draft.assignments.split && split.mode === 'column') {
                 split = randomSplitDraft();
             }
-            draft = { ...draft, assignments, roles: grouped, split, binning };
-            preview = null;
+            const nextDraft = { ...draft, assignments, roles: grouped, split, binning };
+            if (!unchangedJson) preview = null;
+            draft = nextDraft;
             error = '';
             binningError = '';
             return true;
@@ -656,7 +659,7 @@
         }
     }
     function prepareScreening() {
-        return !busy && !differentProject && (tab !== 'json' || parseRoles());
+        return !busy && !differentProject && !binningError && (tab !== 'json' || parseRoles());
     }
     async function removeScreenedPredictors(names, expectedContext) {
         const current = JSON.stringify([
@@ -673,6 +676,30 @@
             throw new Error('Only predictors in the checked draft can be removed.');
         draft.roles.predictor = draft.roles.predictor.filter((name) => !removed.has(name));
         draft.roles.ignore = [...new Set([...draft.roles.ignore, ...removed])];
+        touch();
+        await review();
+    }
+    async function stageFeatureSelection(action, names, expectedContext) {
+        const current = JSON.stringify([
+            state?.session_id,
+            state?.project_id,
+            state?.revision,
+            draft,
+            jsonText,
+        ]);
+        if (busy || differentProject || binningError || current !== expectedContext)
+            throw new Error('Settings changed. Run feature selection again before changing roles.');
+        if (!['ignore', 'predictor'].includes(action)) throw new Error('Unknown role change.');
+        const chosen = new Set(names);
+        const eligible = new Set([
+            ...(draft.roles.predictor || []),
+            ...(draft.roles.unassigned || []),
+        ]);
+        if (!chosen.size || [...chosen].some((name) => !eligible.has(name)))
+            throw new Error('Only checked predictor or unassigned candidates can change roles.');
+        draft.roles.predictor = (draft.roles.predictor || []).filter((name) => !chosen.has(name));
+        draft.roles.unassigned = (draft.roles.unassigned || []).filter((name) => !chosen.has(name));
+        draft.roles[action] = [...new Set([...(draft.roles[action] || []), ...chosen])];
         touch();
         await review();
     }
@@ -1070,6 +1097,15 @@
                                 disabled={busy || differentProject}
                                 prepare={prepareScreening}
                                 onRemove={removeScreenedPredictors}
+                            />{/if}
+                        {#if view === 'variables'}<FeatureSelection
+                                {api}
+                                {state}
+                                setup={draft}
+                                context={screeningContext}
+                                disabled={busy || differentProject || !!binningError}
+                                prepare={prepareScreening}
+                                onChange={stageFeatureSelection}
                             />{/if}
                         {#if preview}<section class="preview-card">
                                 <div class="preview-title">

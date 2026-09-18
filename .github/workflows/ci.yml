@@ -97,6 +97,7 @@ jobs:
           npx playwright test --config playwright.session.config.js
           npx playwright test --config playwright.split.config.js
           npx playwright test --config playwright.binning.config.js
+          npx playwright test --config playwright.feature-selection.config.js
           npx playwright test --config playwright.reuse.config.js
           npx playwright test --config playwright.time.config.js
           npx playwright test --config playwright.reduction.config.js

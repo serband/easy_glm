@@ -33,6 +33,10 @@ from easy_glm.desktop.binning import (
 )
 from easy_glm.desktop.exploration import ExplorationCache
 from easy_glm.desktop.exports import ExportRequest, export_attachment
+from easy_glm.desktop.feature_selection import (
+    FeatureSelectionJobs,
+    FeatureSelectionRequest,
+)
 from easy_glm.desktop.jobs import FitJobs, model_key
 from easy_glm.desktop.loading import (
     MAX_UPLOAD_BYTES,
@@ -99,6 +103,7 @@ def create_app(
     reviews = ReviewJobs()
     exploration = ExplorationCache()
     screenings = ScreeningJobs()
+    feature_selections = FeatureSelectionJobs()
     undo_steps = {}
     redo_steps = {}
     if restore_folder is not None and (restore_folder / "history.json").exists():
@@ -124,6 +129,7 @@ def create_app(
     async def lifespan(app: FastAPI):
         yield
         screenings.close()
+        feature_selections.close()
         reviews.close()
         jobs.close()
 
@@ -152,6 +158,7 @@ def create_app(
             if cleared:
                 revision += 1
                 screenings.invalidate((session_id, project_id, revision))
+                feature_selections.invalidate((session_id, project_id, revision))
             job.update(
                 key=model_key(current, name),
                 status="complete",
@@ -272,7 +279,7 @@ def create_app(
             return snapshot()
 
     def candidate(
-        edit: Edit | ScreeningRequest,
+        edit: Edit | ScreeningRequest | FeatureSelectionRequest,
         *,
         validate_split: bool = True,
     ) -> tuple[Project, list[dict[str, str]], list[tuple[str, str]]]:
@@ -422,6 +429,47 @@ def create_app(
             except KeyError as exc:
                 raise HTTPException(404, str(exc.args[0])) from exc
 
+    @app.post("/api/variables/feature-selection", status_code=202)
+    def feature_selection_start(edit: FeatureSelectionRequest) -> dict[str, Any]:
+        with lock:
+            saved, _, _ = candidate(edit, validate_split=False)
+            if not saved.target:
+                raise HTTPException(
+                    422, "Assign a target role before feature selection."
+                )
+            try:
+                return feature_selections.start(
+                    saved,
+                    raw.clone(),
+                    (session_id, project_id, revision),
+                    edit.setup,
+                    edit.options.model_dump(),
+                )
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/feature-selections/{key}")
+    def feature_selection_status(key: str) -> dict[str, Any]:
+        with lock:
+            try:
+                return feature_selections.status(
+                    key, (session_id, project_id, revision)
+                )
+            except KeyError as exc:
+                raise HTTPException(404, str(exc.args[0])) from exc
+
+    @app.post("/api/feature-selections/{key}/cancel")
+    def feature_selection_cancel(key: str, edit: Revision) -> dict[str, Any]:
+        with lock:
+            check_revision(edit)
+            try:
+                feature_selections.cancel(key)
+                return feature_selections.status(
+                    key, (session_id, project_id, revision)
+                )
+            except KeyError as exc:
+                raise HTTPException(404, str(exc.args[0])) from exc
+
     @app.post("/api/variables/preview")
     def preview(edit: Edit) -> dict[str, Any]:
         with lock:
@@ -448,6 +496,7 @@ def create_app(
                 current = result
                 revision += 1
                 screenings.invalidate((session_id, project_id, revision))
+                feature_selections.invalidate((session_id, project_id, revision))
                 jobs.invalidate(current)
             return {**snapshot(), "notices": notices}
 
@@ -474,6 +523,7 @@ def create_app(
             project_id = secrets.token_hex(32)
             token = secrets.token_urlsafe(32)
             screenings.invalidate((session_id, project_id, revision))
+            feature_selections.invalidate((session_id, project_id, revision))
             undo_steps.clear()
             redo_steps.clear()
             result = snapshot()
@@ -585,6 +635,7 @@ def create_app(
                 current = candidate_project
                 revision += 1
                 screenings.invalidate((session_id, project_id, revision))
+                feature_selections.invalidate((session_id, project_id, revision))
                 jobs.invalidate(current)
             return snapshot()
 
@@ -609,6 +660,7 @@ def create_app(
                 current = candidate_project
                 revision += 1
                 screenings.invalidate((session_id, project_id, revision))
+                feature_selections.invalidate((session_id, project_id, revision))
                 return {
                     "snapshot": snapshot(),
                     "name": edit.name,
@@ -647,6 +699,7 @@ def create_app(
                 current = candidate_project
                 revision += 1
                 screenings.invalidate((session_id, project_id, revision))
+                feature_selections.invalidate((session_id, project_id, revision))
                 jobs.invalidate(current)
             return snapshot()
 
@@ -730,6 +783,7 @@ def create_app(
                     current.champion = name
                     revision += 1
                     screenings.invalidate((session_id, project_id, revision))
+                    feature_selections.invalidate((session_id, project_id, revision))
                     return {"snapshot": snapshot()}
                 from easy_glm.desktop.importance_cache import is_importance
 
@@ -787,6 +841,7 @@ def create_app(
                     current.models = saved.models
                     revision += 1
                     screenings.invalidate((session_id, project_id, revision))
+                    feature_selections.invalidate((session_id, project_id, revision))
                     jobs.invalidate(current)
                     return {"snapshot": snapshot()}
                 if edit.action == "delete_snapshot":
@@ -802,6 +857,7 @@ def create_app(
                     current.models[name].snapshots = cfg.snapshots
                     revision += 1
                     screenings.invalidate((session_id, project_id, revision))
+                    feature_selections.invalidate((session_id, project_id, revision))
                     jobs.edited(current, name, jobs.jobs[name]["result"])
                     return {"snapshot": snapshot()}
                 if edit.action == "snapshot":
@@ -822,6 +878,7 @@ def create_app(
                     current.models[name].snapshots = cfg.snapshots
                     revision += 1
                     screenings.invalidate((session_id, project_id, revision))
+                    feature_selections.invalidate((session_id, project_id, revision))
                     jobs.edited(current, name, jobs.jobs[name]["result"])
                     return {"snapshot": snapshot()}
                 if edit.action in (
@@ -959,6 +1016,7 @@ def create_app(
                 cfg.base_rate_override = candidate_config.base_rate_override
                 revision += 1
                 screenings.invalidate((session_id, project_id, revision))
+                feature_selections.invalidate((session_id, project_id, revision))
                 jobs.edited(current, name, candidate_result)
                 return snapshot()
             except (ValueError, KeyError) as exc:
