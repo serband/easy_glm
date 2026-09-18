@@ -2,9 +2,9 @@
 
 This is the user-facing record of useful new features and fixes.
 
-## Unreleased
+## 0.471 — 18 September 2026
 
-- **Feature selection no longer needs temporary files.** Data, progress and results pass directly between the app and its background worker, avoiding access-denied errors when temporary folders are restricted. Progress updates and cancellation still work.
+- Fixed access-denied errors in feature selection by removing its temporary files.
 
 ## 0.470 — 18 September 2026
 
