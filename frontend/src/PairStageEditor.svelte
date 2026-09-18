@@ -146,6 +146,21 @@
         const packet = statusById.get(stage.stage_id);
         return packet ? labels[packet.status] || packet.status : 'Status unavailable';
     }
+    function mainStatus(job, newModel, mainChanged, statuses) {
+        if (['queued', 'running'].includes(job?.status) && job?.progress?.stage_number === 1) {
+            return 'Fitting';
+        }
+        if (newModel) return 'Not fitted';
+        if (mainChanged) return 'Needs refitting';
+        const recorded = statuses.find((stage) => stage.stage_id === 'main');
+        if (recorded) return labels[recorded.status] || recorded.status;
+        // A main-only fit has no pair-stage status record yet.
+        if (job?.applicable) return 'Up to date';
+        if (['queued', 'running'].includes(job?.status)) return 'Fitting';
+        if (job?.status === 'failed') return 'Failed';
+        if (job?.status === 'complete') return 'Needs refitting';
+        return 'Not fitted';
+    }
     function baseline(stage, index) {
         const packet = statusById.get(stage.stage_id);
         if (Array.isArray(packet?.baseline) && (changedAt < 0 || index < changedAt)) {
@@ -165,22 +180,14 @@
 <section class="pair-stages" aria-label="Sequential pair stages">
     <h3 id="model-pair-stages">Interactions — fitted in order</h3>
     <p class="help-text">
-        Fit each interaction in order. Each becomes a rate table; the next builds on the
-        main effects and earlier tables. You can use a predictor here without selecting it as a main
+        Fit each interaction in order. Each becomes a rate table; the next builds on the main
+        effects and earlier tables. You can use a predictor here without selecting it as a main
         effect.
     </p>
     <div class="stage-card main-stage" aria-label="Stage 1 Main effects">
         <div class="stage-line">
             <strong>1 · Main effects</strong>
-            <span class="stage-state"
-                >{['queued', 'running'].includes(job?.status) && job?.progress?.stage_number === 1
-                    ? 'Fitting'
-                    : newModel
-                      ? 'Not fitted'
-                      : mainChanged
-                        ? 'Needs refitting'
-                        : labels[statusById.get('main')?.status] || 'Status unavailable'}</span
-            >
+            <span class="stage-state">{mainStatus(job, newModel, mainChanged, statuses)}</span>
         </div>
         <p>GLM settings and selected main effects</p>
     </div>

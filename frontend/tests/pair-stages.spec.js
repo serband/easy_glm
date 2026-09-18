@@ -18,8 +18,16 @@ test('residual interaction opens an unsaved automatic pair stage for review', as
     await page.getByLabel('Model selection').selectOption('__new__');
     await page.getByLabel('New model name').fill(name);
     await button('Create model').click();
+    const mainStage = page.getByLabel('Stage 1 Main effects', { exact: true });
+    await expect(mainStage).toContainText('Not fitted');
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 45000 });
+    await expect(mainStage).toContainText('Up to date');
+    await page.getByLabel('Include DriverAge', { exact: true }).uncheck();
+    await expect(mainStage).toContainText('Needs refitting');
+    await page.getByLabel('Include DriverAge', { exact: true }).check();
+    await button('Reset model draft').click();
+    await expect(mainStage).toContainText('Up to date');
     const { token } = await (await page.request.get('/api/session')).json();
     const project = async () =>
         (
