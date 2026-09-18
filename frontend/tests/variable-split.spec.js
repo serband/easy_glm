@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
-test('explicit split maps table and JSON and reaches exploration and fit', async ({ page }, testInfo) => {
+test('explicit split maps table and JSON and reaches exploration and fit', async ({
+    page,
+}, testInfo) => {
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     await page.goto('/');
@@ -16,8 +18,8 @@ test('explicit split maps table and JSON and reaches exploration and fit', async
     ).toBeVisible();
     await train.selectOption('"TRAIN"');
     await expect(page.locator('.split-counts')).toContainText('9,000 training · 3,000 holdout');
-    await button('Role JSON').click();
-    const editor = page.getByLabel('Role JSON', { exact: true });
+    await button('Variables JSON').click();
+    const editor = page.getByLabel('Variables JSON', { exact: true });
     const setup = JSON.parse(await editor.inputValue());
     expect(setup.split.column).toBe('train_test');
     expect(setup.split.train_value).toBe('TRAIN');

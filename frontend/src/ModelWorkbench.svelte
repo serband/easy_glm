@@ -188,7 +188,6 @@
         cv = 5,
         pathLength = 20,
         l1 = 1,
-        nBins = 20,
         levelShare = 0.0025,
         kinds = {};
     let interactionsValid = true;
@@ -235,7 +234,7 @@
                   },
               },
               designs: kinds,
-              n_bins: nBins,
+              n_bins: state?.setup?.binning?.default_bins ?? wb?.design.defaults.n_bins ?? 20,
               min_level_share: levelShare,
           }
         : null;
@@ -292,7 +291,6 @@
         cv = cfg.penalty.cv ?? 5;
         pathLength = cfg.penalty.n_alphas;
         l1 = cfg.penalty.l1_ratio;
-        nBins = wb.design.defaults.n_bins;
         levelShare = wb.design.defaults.min_level_share;
         kinds = Object.fromEntries(
             wb.predictors.map((n) => [n, wb.design.variables[n]?.kind || null]),
@@ -317,7 +315,7 @@
                 },
             },
             designs: kinds,
-            n_bins: nBins,
+            n_bins: wb.design.defaults.n_bins,
             min_level_share: levelShare,
         });
         result = null;
@@ -717,16 +715,14 @@
                         </p>
                         <details>
                             <summary>Defaults for every predictor</summary>
+                            <p class="help-text">
+                                Numeric binning is shared across models. Change it in Variables.
+                            </p>
+                            <button type="button" onclick={() => onNavigate('variables')}
+                                >Edit numeric binning in Variables</button
+                            >
                             <div class="form-grid compact">
                                 <label
-                                    >Default bins<input
-                                        aria-label="Default bins"
-                                        type="number"
-                                        min="2"
-                                        max="200"
-                                        bind:value={nBins}
-                                    /></label
-                                ><label
                                     >Minimum category share<input
                                         aria-label="Minimum category share"
                                         type="number"
@@ -735,6 +731,9 @@
                                         step=".001"
                                         bind:value={levelShare}
                                     /></label
+                                ><span class="help-text"
+                                    >Default numeric bins: {state.setup.binning?.default_bins ??
+                                        wb.design.defaults.n_bins}</span
                                 >
                             </div>
                         </details>

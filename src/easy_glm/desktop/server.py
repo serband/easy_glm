@@ -23,6 +23,14 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
+from easy_glm.desktop.binning import (
+    apply_binning_setup,
+    binning_changes,
+    binning_columns,
+    binning_preview,
+    binning_setup,
+    validate_changed_linear_binning,
+)
 from easy_glm.desktop.exploration import ExplorationCache
 from easy_glm.desktop.exports import ExportRequest, export_attachment
 from easy_glm.desktop.jobs import FitJobs, model_key
@@ -70,6 +78,10 @@ class Edit(BaseModel):
     session_id: str
     revision: int = Field(ge=0)
     setup: dict[str, Any]
+
+
+class BinningPreviewEdit(Edit):
+    column: str
 
 
 def create_app(
@@ -238,7 +250,9 @@ def create_app(
             "setup": {
                 **json.loads(variable_setup_json(current, raw.columns)),
                 "split": split_setup(current),
+                "binning": binning_setup(current, raw.columns),
             },
+            "binning_columns": binning_columns(current, raw),
             "single_roles": list(SINGLE_ROLES),
             "group_roles": list(BULK_ROLE_GROUPS),
             "models": list(current.models),
@@ -274,6 +288,8 @@ def create_app(
             )
         setup = dict(edit.setup)
         requested_split = setup.pop("split", None)
+        has_binning = "binning" in setup
+        requested_binning = setup.pop("binning", None)
         rows, errors = parse_variable_setup_json(
             current, raw.columns, json.dumps(setup)
         )
@@ -282,6 +298,8 @@ def create_app(
         result = deepcopy(current)
         _, notices = apply_roles_grid(result, raw.columns, rows)
         try:
+            if has_binning:
+                apply_binning_setup(result, raw.columns, requested_binning)
             if requested_split is not None:
                 if not isinstance(requested_split, dict):
                     raise ValueError("Split settings must be a JSON object.")
@@ -303,6 +321,42 @@ def create_app(
         except (ValueError, TypeError, KeyError, pl.exceptions.PolarsError) as exc:
             raise HTTPException(422, str(exc)) from exc
         changes = variable_setup_changes(current, raw.columns, rows)
+        bin_changes = binning_changes(current, result, raw.columns)
+        if bin_changes:
+            try:
+                validate_changed_linear_binning(current, result, raw)
+            except (ValueError, TypeError, KeyError, pl.exceptions.PolarsError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+        changes.extend(bin_changes)
+        if bin_changes:
+            fitted = [
+                name
+                for name, job in jobs.jobs.items()
+                if job.get("status") == "complete"
+            ]
+            if fitted:
+                notices.append(
+                    (
+                        "warning",
+                        "Applying binning will mark fitted models stale: "
+                        + ", ".join(sorted(fitted))
+                        + ". Fit them again to refresh rate tables.",
+                    )
+                )
+            affected = [
+                name
+                for name, cfg in result.models.items()
+                if cfg.adjustments or cfg.snapshots
+            ]
+            if affected:
+                notices.append(
+                    (
+                        "warning",
+                        "Models with saved adjustments or snapshots may refer to old bands: "
+                        + ", ".join(sorted(affected))
+                        + ". Review them after refitting.",
+                    )
+                )
         changed_split = result.data.split != current.data.split
         if changed_split:
             split = result.data.split
@@ -373,6 +427,17 @@ def create_app(
         with lock:
             _, changes, notices = candidate(edit)
             return {"changes": changes, "notices": notices}
+
+    @app.post("/api/variables/binning-preview")
+    def variable_binning_preview(edit: BinningPreviewEdit) -> dict[str, Any]:
+        with lock:
+            saved, _, _ = candidate(edit, validate_split=False)
+            frame = raw.clone()
+        try:
+            split_counts(saved, frame)
+            return binning_preview(saved, frame, edit.column)
+        except (ValueError, TypeError, KeyError, pl.exceptions.PolarsError) as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @app.post("/api/variables/apply")
     def apply(edit: Edit) -> dict[str, Any]:

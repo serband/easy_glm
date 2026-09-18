@@ -78,8 +78,8 @@ test('actual server restart reconnects plot while retaining names, types, roles 
     await page.getByLabel('Name for DriverAge', { exact: true }).press('Tab');
     await page.getByLabel('Type for DriverAge', { exact: true }).selectOption('categorical');
     await page.getByLabel('Role for VehicleAge', { exact: true }).selectOption('unassigned');
-    await page.getByRole('button', { name: 'Role JSON', exact: true }).click();
-    const editor = page.getByLabel('Role JSON', { exact: true });
+    await page.getByRole('button', { name: 'Variables JSON', exact: true }).click();
+    const editor = page.getByLabel('Variables JSON', { exact: true });
     const raw = await editor.inputValue();
     await editor.fill(raw + '\n');
     await stop();
@@ -148,8 +148,8 @@ test('incomplete JSON survives reconnection and a changed project cannot receive
     page,
 }) => {
     await page.goto('/');
-    await page.getByRole('button', { name: 'Role JSON', exact: true }).click();
-    const editor = page.getByLabel('Role JSON', { exact: true });
+    await page.getByRole('button', { name: 'Variables JSON', exact: true }).click();
+    const editor = page.getByLabel('Variables JSON', { exact: true });
     await editor.fill('{unfinished');
     await stop();
     await start();

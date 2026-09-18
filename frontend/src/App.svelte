@@ -6,14 +6,20 @@
     import ExplorePanel from './ExplorePanel.svelte';
     import VariableScreening from './VariableScreening.svelte';
     import SplitSettings from './SplitSettings.svelte';
+    import BinningSettings from './BinningSettings.svelte';
     let comparison = '',
         modelContext = { fitted: [], selected: '', champion: null };
     let view = 'variables',
         resultsReady = false;
     function modelState(snapshot) {
         const keepDraft = dirty;
+        const variablesChanged =
+            snapshot.session_id !== state?.session_id ||
+            snapshot.project_id !== state?.project_id ||
+            snapshot.revision !== state?.revision ||
+            JSON.stringify(snapshot.setup) !== JSON.stringify(state?.setup);
         state = snapshot;
-        preview = null;
+        if (variablesChanged) preview = null;
         if (!keepDraft) {
             draft = structuredClone(snapshot.setup);
             jsonText = roleJson();
@@ -49,6 +55,8 @@
         roleFilter = 'all';
     let jsonText = '',
         error = '',
+        binningError = '',
+        binningReset = 0,
         notice = '',
         busy = false,
         preview = null,
@@ -72,7 +80,8 @@
     $: dirty =
         state &&
         draft &&
-        (JSON.stringify(draft) !== JSON.stringify(state.setup) ||
+        (Boolean(binningError) ||
+            JSON.stringify(draft) !== JSON.stringify(state.setup) ||
             (tab === 'json' && jsonText !== roleJson()));
     $: screeningContext = JSON.stringify([
         state?.session_id,
@@ -324,6 +333,7 @@
                           train_value: draft.split.train_value,
                       }
                     : null,
+                binning: draft.binning || { default_bins: 20, overrides: {} },
             },
             null,
             2,
@@ -395,8 +405,74 @@
             const obj = JSON.parse(jsonText);
             if (!obj || Array.isArray(obj) || typeof obj !== 'object')
                 throw new Error('Use a JSON object with the ten roles.');
-            if (Object.keys(obj).some((r) => !roles.includes(r)))
-                throw new Error('Use the ten roles shown in the template.');
+            if (Object.keys(obj).some((r) => !roles.includes(r) && r !== 'binning'))
+                throw new Error('Use the roles and binning shown in the template.');
+            let binning = draft.binning;
+            if (Object.hasOwn(obj, 'binning')) {
+                const entry = obj.binning;
+                if (
+                    !entry ||
+                    Array.isArray(entry) ||
+                    typeof entry !== 'object' ||
+                    Object.keys(entry).some((key) => !['default_bins', 'overrides'].includes(key))
+                )
+                    throw new Error('binning needs default_bins and overrides.');
+                const validCount = (value) => Number.isInteger(value) && value >= 2 && value <= 200;
+                if (!validCount(entry.default_bins))
+                    throw new Error('binning.default_bins must be a whole number from 2 to 200.');
+                if (
+                    !entry.overrides ||
+                    Array.isArray(entry.overrides) ||
+                    typeof entry.overrides !== 'object'
+                )
+                    throw new Error('binning.overrides must be an object.');
+                const knownNames = new Set(state.columns.map((column) => column.name));
+                for (const [name, setting] of Object.entries(entry.overrides)) {
+                    if (!knownNames.has(name))
+                        throw new Error(`Unknown binning source column ${JSON.stringify(name)}.`);
+                    if (setting == null) continue;
+                    if (!setting || Array.isArray(setting) || typeof setting !== 'object')
+                        throw new Error(`${name}: binning override must be an object or null.`);
+                    const keys = Object.keys(setting);
+                    if (setting.method === 'quantile') {
+                        if (
+                            keys.some((key) => !['method', 'bins'].includes(key)) ||
+                            !validCount(setting.bins)
+                        )
+                            throw new Error(
+                                `${name}: quantile bins must be a whole number from 2 to 200.`,
+                            );
+                    } else if (setting.method === 'cuts') {
+                        if (
+                            keys.some((key) => !['method', 'cuts'].includes(key)) ||
+                            !Array.isArray(setting.cuts) ||
+                            setting.cuts.some(
+                                (value, index) =>
+                                    typeof value !== 'number' ||
+                                    !Number.isFinite(value) ||
+                                    (index > 0 && value <= setting.cuts[index - 1]),
+                            )
+                        )
+                            throw new Error(
+                                `${name}: cuts must be finite, strictly increasing numbers.`,
+                            );
+                    } else if (setting.method === 'integer') {
+                        if (
+                            keys.some((key) => !['method', 'fallback_bins'].includes(key)) ||
+                            (setting.fallback_bins != null && !validCount(setting.fallback_bins))
+                        )
+                            throw new Error(
+                                `${name}: integer fallback must be a whole number from 2 to 200.`,
+                            );
+                    } else throw new Error(`${name}: unknown binning method.`);
+                }
+                binning = {
+                    default_bins: entry.default_bins,
+                    overrides: Object.fromEntries(
+                        Object.entries(entry.overrides).filter(([, value]) => value != null),
+                    ),
+                };
+            }
             const splitEntry = obj.split;
             if (splitEntry && typeof splitEntry === 'object') {
                 if (
@@ -449,9 +525,10 @@
             } else if (draft.assignments.split && split.mode === 'column') {
                 split = randomSplitDraft();
             }
-            draft = { ...draft, assignments, roles: grouped, split };
+            draft = { ...draft, assignments, roles: grouped, split, binning };
             preview = null;
             error = '';
+            binningError = '';
             return true;
         } catch (e) {
             error = e.message;
@@ -460,6 +537,10 @@
         }
     }
     function switchTab(next) {
+        if (tab === 'table' && binningError) {
+            error = binningError;
+            return;
+        }
         if (tab === 'json' && !parseRoles()) return;
         if (next === 'json') jsonText = roleJson();
         tab = next;
@@ -467,6 +548,8 @@
     }
     function reset() {
         draft = structuredClone(state.setup);
+        binningReset++;
+        binningError = '';
         jsonText = roleJson();
         error = '';
         notice = 'Draft reset to the last applied settings.';
@@ -538,14 +621,33 @@
     }
     async function review() {
         if (tab === 'json' && !parseRoles()) return;
+        if (binningError) {
+            error = binningError;
+            return;
+        }
         busy = true;
         error = '';
+        const reviewed = JSON.stringify([
+            state.session_id,
+            state.project_id,
+            state.revision,
+            draft,
+        ]);
         try {
-            preview = await api('variables/preview', {
+            const result = await api('variables/preview', {
                 session_id: state.session_id,
                 revision: state.revision,
                 setup: draft,
             });
+            if (
+                reviewed !==
+                JSON.stringify([state.session_id, state.project_id, state.revision, draft])
+            ) {
+                preview = null;
+                error = 'Settings changed while previewing. Preview changes again before applying.';
+                return;
+            }
+            preview = result;
             previewScroll = 0;
         } catch (e) {
             error = e.message;
@@ -575,6 +677,10 @@
         await review();
     }
     async function apply() {
+        if (binningError) {
+            error = binningError;
+            return;
+        }
         busy = true;
         error = '';
         try {
@@ -584,6 +690,8 @@
                 setup: draft,
             });
             draft = structuredClone(state.setup);
+            binningReset++;
+            binningError = '';
             jsonText = roleJson();
             preview = null;
             notice = 'Settings applied to this session.';
@@ -730,7 +838,7 @@
                                         onclick={() => switchTab('table')}>Table</button
                                     ><button
                                         class:active={tab === 'json'}
-                                        onclick={() => switchTab('json')}>Role JSON</button
+                                        onclick={() => switchTab('json')}>Variables JSON</button
                                     >
                                 </div>
                                 <span class="edit-status"
@@ -740,7 +848,8 @@
                                 <button onclick={reset} disabled={busy}>Reset</button><button
                                     class="primary"
                                     onclick={review}
-                                    disabled={busy || differentProject}>Preview changes</button
+                                    disabled={busy || differentProject || !!binningError}
+                                    >Preview changes</button
                                 >
                             </div>
                             {#if tab === 'table'}
@@ -860,14 +969,15 @@
                                 </div>
                             {:else}
                                 <div class="json-hint">
-                                    Roles use source column names. Missing columns become ignored.
-                                    The split entry includes its column and training value; the
-                                    other value is holdout. Names and types stay as set in the
-                                    table.
+                                    Roles and binning use source column names. Missing role columns
+                                    become ignored. The split entry includes its column and training
+                                    value; the other value is holdout. A missing binning section
+                                    preserves current settings; a supplied overrides object replaces
+                                    all binning overrides. Names and types stay as set in the table.
                                 </div>
                                 <textarea
                                     class="json-editor"
-                                    aria-label="Role JSON"
+                                    aria-label="Variables JSON"
                                     bind:value={jsonText}
                                     oninput={() => {
                                         preview = null;
@@ -882,6 +992,21 @@
                                 ><span>Revision {state.revision}</span>
                             </div>
                         </section>
+                        {#if tab === 'table'}<BinningSettings
+                                {api}
+                                {state}
+                                setup={draft}
+                                disabled={busy || differentProject}
+                                resetKey={binningReset}
+                                onvalidity={(message) => {
+                                    binningError = message;
+                                    if (message) preview = null;
+                                }}
+                                onchange={(next) => {
+                                    draft = next;
+                                    touch();
+                                }}
+                            />{/if}
                         {#if !draft.assignments.split}
                             <section
                                 class="model-card variable-random-split"
@@ -953,7 +1078,8 @@
                                         class="primary"
                                         disabled={busy ||
                                             differentProject ||
-                                            !preview.changes.length}
+                                            !preview.changes.length ||
+                                            !!binningError}
                                         onclick={apply}>Apply changes</button
                                     >
                                 </div>

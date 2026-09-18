@@ -17,10 +17,11 @@ test('bidirectional roles, name/type preservation, invalid reset and explicit ap
     await page.getByLabel('Name for DriverAge', { exact: true }).press('Tab');
     await page.getByLabel('Type for DriverAge', { exact: true }).selectOption('categorical');
     await page.getByLabel('Role for VehicleAge', { exact: true }).selectOption('unassigned');
-    await page.getByRole('button', { name: 'Role JSON', exact: true }).click();
-    const text = page.getByLabel('Role JSON', { exact: true });
+    await page.getByRole('button', { name: 'Variables JSON', exact: true }).click();
+    const text = page.getByLabel('Variables JSON', { exact: true });
     const setup = JSON.parse(await text.inputValue());
-    expect(Object.keys(setup)).toHaveLength(11);
+    expect(Object.keys(setup)).toHaveLength(12);
+    expect(setup.binning).toEqual({ default_bins: 20, overrides: {} });
     expect(setup.time).toBeNull();
     expect(setup.offset).toBeNull();
     expect(setup.ignore).toContain('InternalCode');
@@ -39,7 +40,7 @@ test('bidirectional roles, name/type preservation, invalid reset and explicit ap
     await expect(page.getByRole('status')).toContainText('Settings applied');
     await page.reload();
     await expect(page.getByLabel('Name for DriverAge', { exact: true })).toHaveValue('Age');
-    await page.getByRole('button', { name: 'Role JSON', exact: true }).click();
+    await page.getByRole('button', { name: 'Variables JSON', exact: true }).click();
     await text.fill('{broken');
     await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
     await expect(page.getByRole('alert')).toBeVisible();
@@ -72,8 +73,8 @@ test('singleton reassignment updates old row and invalid duplicate is refused', 
     await page.goto('/');
     await page.getByLabel('Role for AnnualMileage', { exact: true }).selectOption('target');
     await expect(page.getByLabel('Role for Claims', { exact: true })).toHaveValue('unassigned');
-    await page.getByRole('button', { name: 'Role JSON', exact: true }).click();
-    const text = page.getByLabel('Role JSON', { exact: true });
+    await page.getByRole('button', { name: 'Variables JSON', exact: true }).click();
+    const text = page.getByLabel('Variables JSON', { exact: true });
     const draft = JSON.parse(await text.inputValue());
     draft.ignore.push('AnnualMileage');
     await text.fill(JSON.stringify(draft));

@@ -125,8 +125,8 @@ test('validated full draft is screened; explicit bulk removal synchronises JSON 
     await page.getByLabel('Name for DriverAge', { exact: true }).fill('Age');
     await page.getByLabel('Name for DriverAge', { exact: true }).press('Tab');
     await page.getByLabel('Type for DriverAge', { exact: true }).selectOption('categorical');
-    await button(page, 'Role JSON').click();
-    const editor = page.getByLabel('Role JSON', { exact: true }),
+    await button(page, 'Variables JSON').click();
+    const editor = page.getByLabel('Variables JSON', { exact: true }),
         raw = await editor.inputValue();
     await editor.fill(raw + '\n');
     await button(page, 'Check selected predictors').click();
@@ -175,11 +175,11 @@ test('validated full draft is screened; explicit bulk removal synchronises JSON 
 });
 test('invalid raw role JSON is preserved and never submitted for screening', async ({ page }) => {
     const calls = await mockScan(page);
-    await button(page, 'Role JSON').click();
-    await page.getByLabel('Role JSON', { exact: true }).fill('{unfinished');
+    await button(page, 'Variables JSON').click();
+    await page.getByLabel('Variables JSON', { exact: true }).fill('{unfinished');
     await button(page, 'Check selected predictors').click();
     await expect(page.getByRole('alert')).toBeVisible();
-    await expect(page.getByLabel('Role JSON', { exact: true })).toHaveValue('{unfinished');
+    await expect(page.getByLabel('Variables JSON', { exact: true })).toHaveValue('{unfinished');
     expect(calls.starts).toHaveLength(0);
 });
 for (const change of ['name', 'type', 'role', 'raw JSON', 'options', 'navigation']) {
@@ -199,8 +199,8 @@ for (const change of ['name', 'type', 'role', 'raw JSON', 'options', 'navigation
         else if (change === 'role')
             await page.getByLabel('Role for DriverAge', { exact: true }).selectOption('ignore');
         else if (change === 'raw JSON') {
-            await button(page, 'Role JSON').click();
-            await page.getByLabel('Role JSON', { exact: true }).fill('{unfinished');
+            await button(page, 'Variables JSON').click();
+            await page.getByLabel('Variables JSON', { exact: true }).fill('{unfinished');
         } else if (change === 'options') {
             await panel(page).locator('.screening-settings > summary').click();
             await page.getByLabel('Screening sample rows').fill('5000');

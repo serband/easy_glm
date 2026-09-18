@@ -9,8 +9,8 @@ test('time role survives JSON and shows all-row chronological diagnostics and fa
     await page.goto('/');
     await page.getByRole('button', { name: /^Variables/ }).click();
     await expect(page.getByLabel('Role for Year', { exact: true })).toHaveValue('time');
-    await button('Role JSON').click();
-    const roles = JSON.parse(await page.getByLabel('Role JSON', { exact: true }).inputValue());
+    await button('Variables JSON').click();
+    const roles = JSON.parse(await page.getByLabel('Variables JSON', { exact: true }).inputValue());
     expect(roles.time).toBe('Year');
     await button('Table').click();
     await button('Model').click();
@@ -30,7 +30,10 @@ test('time role survives JSON and shows all-row chronological diagnostics and fa
         page.getByRole('img', { name: 'DriverAge · A/E by period', exact: true }),
     ).toBeVisible({ timeout: 30000 });
     await page.getByLabel('Relative to the whole book in each period').check();
-    await page.screenshot({ path: testInfo.outputPath('easyglm-time-stability.png'), fullPage: true });
+    await page.screenshot({
+        path: testInfo.outputPath('easyglm-time-stability.png'),
+        fullPage: true,
+    });
     await page.getByLabel('Time bands', { exact: true }).fill('3');
     await expect(page.getByText('Year · 12,000 rows · 3 time bands', { exact: true })).toBeVisible({
         timeout: 30000,
