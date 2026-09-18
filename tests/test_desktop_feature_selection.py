@@ -232,6 +232,8 @@ def test_cancel_escalates_when_worker_ignores_terminate(client, monkeypatch):
     killed = threading.Event()
 
     class StubbornWorker(WaitingWorker):
+        entered = threading.Event()
+
         def terminate(self):
             pass
 
@@ -243,6 +245,7 @@ def test_cancel_escalates_when_worker_ignores_terminate(client, monkeypatch):
     response = client.post("/api/variables/feature-selection", json=draft(client))
     assert response.status_code == 202
     key = response.json()["id"]
+    assert StubbornWorker.entered.wait(5)
     assert (
         client.post(
             f"/api/feature-selections/{key}/cancel", json=revision(client)
