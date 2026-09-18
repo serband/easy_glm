@@ -40,6 +40,23 @@ def revision(client):
     return {key: value for key, value in draft(client).items() if key != "setup"}
 
 
+def selection_jobs(client):
+    endpoint = next(
+        route.endpoint
+        for route in client.app.routes
+        if getattr(route, "path", "") == "/api/variables/feature-selection"
+    )
+    return inspect.getclosurevars(endpoint).nonlocals["feature_selections"]
+
+
+def wait_for_worker_exit(client, key):
+    # A result can be published before the worker finishes cleaning up its files.
+    # Tests starting another search must wait for that worker to leave first.
+    thread = selection_jobs(client).tasks[key]["thread"]
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "Feature-selection worker did not finish cleanup"
+
+
 def wait_status(client, key):
     for _ in range(200):
         response = client.get("/api/feature-selections/" + key)
@@ -113,10 +130,12 @@ def test_draft_rename_and_options_fingerprint_do_not_apply(client, monkeypatch):
     assert client.get("/api/jobs").json() == {}
     again = client.post("/api/variables/feature-selection", json=body).json()
     assert again["id"] == first.json()["id"]
+    wait_for_worker_exit(client, first.json()["id"])
     different = client.post(
         "/api/variables/feature-selection", json=body | {"options": {"seed": 7}}
-    ).json()
-    assert different["fingerprint"] != packet["fingerprint"]
+    )
+    assert different.status_code == 202, different.text
+    assert different.json()["fingerprint"] != packet["fingerprint"]
 
 
 @pytest.mark.parametrize(
@@ -194,12 +213,10 @@ def test_cancel_terminates_worker_and_revision_stales_result(client, monkeypatch
     assert WaitingWorker.stopped.wait(2)
     assert "result" not in wait_status(client, key)
 
-    for _ in range(100):
-        second = client.post("/api/variables/feature-selection", json=body)
-        if second.status_code == 202:
-            break
-        time.sleep(0.01)
-    assert second.status_code == 202
+    wait_for_worker_exit(client, key)
+    WaitingWorker.entered.clear()
+    second = client.post("/api/variables/feature-selection", json=body)
+    assert second.status_code == 202, second.text
     assert WaitingWorker.entered.wait(2)
     edit = draft(client)
     edit["setup"]["roles"]["predictor"].remove("Region")
@@ -294,13 +311,16 @@ def test_incomplete_and_stale_selection_cannot_replace_saved_recipe(
     first = client.post("/api/variables/feature-selection", json=draft(client)).json()
     assert wait_status(client, first["id"])["status"] == "complete"
     expected = client.get("/api/project").json()["exploration"]["feature_selection"]
+    wait_for_worker_exit(client, first["id"])
 
     WaitingWorker.entered.clear()
     monkeypatch.setattr(selection.subprocess, "Popen", WaitingWorker)
     second = client.post(
         "/api/variables/feature-selection",
         json=draft(client) | {"options": {"seed": 7}},
-    ).json()
+    )
+    assert second.status_code == 202, second.text
+    second = second.json()
     assert WaitingWorker.entered.wait(2)
     edit = draft(client)
     edit["setup"]["roles"]["predictor"].remove("Age")
@@ -317,12 +337,7 @@ def test_selection_is_not_publicly_complete_until_recipe_is_published(
     client, monkeypatch
 ):
     monkeypatch.setattr(selection.subprocess, "Popen", FinishedWorker)
-    endpoint = next(
-        route.endpoint
-        for route in client.app.routes
-        if getattr(route, "path", "") == "/api/variables/feature-selection"
-    )
-    jobs = inspect.getclosurevars(endpoint).nonlocals["feature_selections"]
+    jobs = selection_jobs(client)
     original = jobs.on_complete
     entered, release = threading.Event(), threading.Event()
 
