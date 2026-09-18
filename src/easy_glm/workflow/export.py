@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pprint
 from typing import Any
 
 from easy_glm.core.design import (
@@ -106,6 +107,46 @@ def _load_code(project: Project) -> list[str]:
         enc = src.options.get("encoding", "latin-1")
         return [f"df = pl.from_pandas(pd.read_sas({src.path!r}, encoding={enc!r}))"]
     raise ValueError(f"Unsupported source type {src.type!r}")
+
+
+def _feature_selection_code(project: Project, prefix: str) -> list[str]:
+    """Render an optional, editable replay of the saved screening recipe."""
+    recipe = project.exploration.get("feature_selection")
+    if recipe is None:
+        return []
+    if not isinstance(recipe, dict) or recipe.get("version") != 1:
+        raise ValueError("Saved feature-selection recipe is invalid or unsupported")
+    if not isinstance(recipe.get("project"), dict) or not isinstance(
+        recipe.get("options"), dict
+    ):
+        raise ValueError(
+            "Saved feature-selection recipe needs project and options objects"
+        )
+    snapshot = pprint.pformat(recipe["project"], width=88, sort_dicts=False)
+    options = recipe.get("options", {})
+    options_text = pprint.pformat(options, width=88, sort_dicts=False)
+    result_path = f"{prefix}_feature_selection.json"
+    return [
+        "",
+        "# --------------------------------------------------- optional feature screen",
+        "# This saved, training-only recipe runs on the raw source, before renames,",
+        "# filters and the final model workflow. Changed source data can change it.",
+        "# The final reviewed predictors below remain explicit; this screen never",
+        "# silently removes a final-model variable.",
+        "RUN_FEATURE_SELECTION = True  # set False to skip this when re-running",
+        f"selection_options = {options_text}",
+        f"screening_project = Project.from_dict({snapshot})",
+        "if RUN_FEATURE_SELECTION:",
+        "    feature_selection = select_variables(screening_project, df, **selection_options)",
+        f"    with open({result_path!r}, 'w', encoding='utf-8') as selection_file:",
+        "        json.dump(feature_selection, selection_file, indent=2)",
+        "    print('feature selection:', feature_selection['tested_count'], 'tested')",
+        "    for item in sorted(feature_selection['rows'],",
+        "                       key=lambda row: row['importance'] if row['importance'] is not None else float('-inf'),",
+        "                       reverse=True)[:10]:",
+        "        print('  ', item['variable'], item['status'], item['importance'])",
+        f"    print('feature-selection report:', {result_path!r})",
+    ]
 
 
 def _fit_code(
@@ -265,6 +306,7 @@ def to_script(
         "",
         "import numpy as np",
         "import polars as pl",
+        "import json",
     ]
     if uses_sas:
         lines.append("import pandas as pd")
@@ -281,9 +323,20 @@ def to_script(
         *(["    fit_two_stage,"] if derive_stages else []),
         "    to_rate_model,",
         ")",
+        "from easy_glm.workflow import build_design",
+        "from easy_glm.workflow.project import Interaction, Project",
+        *(
+            ["from easy_glm.workflow.feature_selection import select_variables"]
+            if isinstance(project.exploration.get("feature_selection"), dict)
+            and isinstance(
+                project.exploration["feature_selection"].get("project"), dict
+            )
+            else []
+        ),
         "",
         "# ---------------------------------------------------------------- 1. data",
         *_load_code(project),
+        *_feature_selection_code(project, prefix),
     ]
     if d.renames:
         lines.append(f"df = df.rename({d.renames!r})")
@@ -352,6 +405,9 @@ def to_script(
         lines.append(f"# excluded after the leakage review: {', '.join(ignored)}")
     alpha: float | None
     if run is not None:
+        lines.append(
+            f"# final reviewed predictors: {cfg.predictors!r}; retained explicitly"
+        )
         lines.append(_spec_code(run.spec))
         alpha = run.fit.alpha
         alpha2 = run.alpha_stage2
@@ -359,78 +415,22 @@ def to_script(
         stage2_chose_by_cv = chose_by_cv and stage2_alpha(cfg) is None
         monotone = dict(run.fit.monotone)
     else:
-        dd = project.design.defaults
+        # build_design is the workflow's one source of truth for per-variable
+        # n_bins, integer cuts, levels, null handling, clamps and interactions.
+        design_snapshot = project.to_dict()
+        design_snapshot["models"] = {}
+        design_snapshot["champion"] = None
+        design_snapshot["exploration"] = {}
+        design_text = pprint.pformat(design_snapshot, width=88, sort_dicts=False)
         lines += [
-            "# (fit in the workbench to have every knot and level written out explicitly)",
-            "spec = DesignSpec.from_data(",
-            f"    train, {cfg.predictors!r},",
-            f"    n_bins={dd.n_bins}, min_level_share={dd.min_level_share}, null_indicator={dd.null_indicator},",
-            f"    weight_col={cfg.weight!r},",
-            *(
-                # "continuous" is a linear term with no interior knots
-                [f"    linear={linear_vars!r},"]
-                if (
-                    linear_vars := [
-                        v
-                        for v, vd in project.design.variables.items()
-                        if vd.kind in ("linear", "continuous") and v in cfg.predictors
-                    ]
-                )
-                else []
-            ),
-            *(
-                [f"    knots={explicit_knots!r},"]
-                if (
-                    explicit_knots := {
-                        v: (
-                            []
-                            if vd.kind == "continuous"
-                            else [float(k) for k in vd.knots]
-                        )
-                        for v, vd in project.design.variables.items()
-                        if (vd.kind == "continuous" or isinstance(vd.knots, list))
-                        and v in cfg.predictors
-                    }
-                )
-                else []
-            ),
-            *(
-                [f"    penalty_weight={pweights!r},"]
-                if (
-                    pweights := {
-                        v: float(vd.penalty_weight)
-                        for v, vd in project.design.variables.items()
-                        if float(vd.penalty_weight) != 1.0 and v in cfg.predictors
-                    }
-                )
-                else []
-            ),
-            *(
-                [f"    clamp={clamps!r},"]
-                if (
-                    clamps := {
-                        v: (float(vd.clamp[0]), float(vd.clamp[1]))
-                        for v, vd in project.design.variables.items()
-                        if vd.kind in ("linear", "continuous")
-                        and vd.clamp
-                        and v in cfg.predictors
-                    }
-                )
-                else []
-            ),
+            "# Rebuild the final design from its saved per-variable settings.",
+            f"final_design_project = Project.from_dict({design_text})",
+            f"predictors = {cfg.predictors!r}  # final reviewed selection; retained explicitly",
+            "spec = build_design(",
+            "    final_design_project, train, predictors,",
+            f"    weight_col={cfg.weight!r}, interactions={cfg.interactions!r},",
             ")",
         ]
-        # the interactions are added one by one, not through from_data's single
-        # `interactions=`, so each keeps its own cell floor and penalty weight
-        weights = f"train[{cfg.weight!r}]" if cfg.weight else "None"
-        for it in cfg.interactions:
-            lines += [
-                "spec.add_interaction(InteractionEncoder.from_data(",
-                f"    spec[{it.a!r}], spec[{it.b!r}], train, weights={weights},",
-                f"    min_cell_exposure={it.min_cell_exposure!r}, "
-                f"penalty_weight={it.penalty_weight!r},",
-                "))",
-            ]
         alpha = cfg.penalty.alpha
         # stage 2 follows stage 1 unless an interaction asked for its own alpha
         # None here means "follow the mains", which is fit_two_stage's own default

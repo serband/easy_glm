@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import runpy
 from pathlib import Path
 
@@ -199,4 +200,100 @@ def test_script_export_refuses_a_pathless_source():
     project = Project(name="In-memory data")
     project.new_model("test")
     with pytest.raises(ValueError, match="Save the source data to a file"):
+        to_script(project, "test")
+
+
+def test_script_replays_saved_feature_screen_before_final_fit(tmp_path, monkeypatch):
+    project = _project(tmp_path)
+    frame = prepare(project)
+    # Save the candidate context first.  The final model is deliberately
+    # reviewed down to x, while the screen must still assess region too.
+    screening_project = project.to_dict()
+    screening_project["models"] = {}
+    screening_project["champion"] = None
+    screening_project["exploration"] = {}
+    project.models["test"].predictors = ["x"]
+    project.data.roles["region"] = "ignore"
+    project.exploration["feature_selection"] = {
+        "version": 1,
+        "project": screening_project,
+        "options": {
+            "family": "poisson",
+            "link": None,
+            "divide_target_by_weight": False,
+            "n_alphas": 2,
+            "repeats": 1,
+            "seed": 11,
+            "include_unassigned": False,
+        },
+        "result": {"rows": [{"variable": "old_browser_result"}]},
+    }
+    run = run_model(project, frame, "test")
+    source = to_script(project, "test", run=run, output_prefix="screened")
+
+    assert "RUN_FEATURE_SELECTION = True" in source
+    assert source.index("select_variables(screening_project, df") < source.index(
+        "# --------------------------------------------------------------- 2. split"
+    )
+    assert "old_browser_result" not in source
+    assert "# final reviewed predictors: ['x']" in source
+
+    path = tmp_path / "screened_rebuild.py"
+    path.write_text(source)
+    monkeypatch.chdir(tmp_path)
+    namespace = runpy.run_path(str(path))
+    report = json.loads((tmp_path / "screened_feature_selection.json").read_text())
+    assert report["training_rows"] == 450
+    assert report["tested_count"] == 2
+    assert {row["variable"] for row in report["rows"]} == {"x", "region"}
+    assert {row["status"] for row in report["rows"]} <= {"signal", "no_signal"}
+    rebuilt = RateModel.from_json(tmp_path / "screened.easyglm")
+    np.testing.assert_allclose(
+        rebuilt.predict(frame, exposure_col=None), run.predict(frame), rtol=1e-10
+    )
+    assert namespace["spec"].main_effects == ["x"]
+
+    # Changing only holdout outcomes and predictor values cannot affect the search.
+    raw = pl.read_parquet(project.data.source.path)
+    raw.with_columns(
+        pl.when(pl.col("traintest") == 0).then(999.0).otherwise(pl.col("x")).alias("x"),
+        pl.when(pl.col("traintest") == 0)
+        .then(10000.0)
+        .otherwise(pl.col("target"))
+        .alias("target"),
+    ).write_parquet(project.data.source.path)
+    rerun = runpy.run_path(str(path))["feature_selection"]
+    for before, after in zip(report["rows"], rerun["rows"], strict=True):
+        assert before["variable"] == after["variable"]
+        assert before["status"] == after["status"]
+        assert before["importance"] == pytest.approx(after["importance"], abs=1e-10)
+        assert before["threshold"] == pytest.approx(after["threshold"], abs=1e-10)
+
+
+@pytest.mark.parametrize(
+    "override",
+    [VariableDesign(n_bins=3), VariableDesign(knots="integer", n_bins=3)],
+)
+def test_unfitted_export_preserves_per_variable_binning(
+    tmp_path, monkeypatch, override
+):
+    project = _project(tmp_path)
+    project.design.defaults.n_bins = 12
+    project.design.variables["x"] = override
+    frame = prepare(project)
+    expected = run_model(project, frame, "test")
+    namespace, rebuilt = _execute(project, None, tmp_path, monkeypatch)
+    assert namespace["spec"].to_dict() == expected.spec.to_dict()
+    np.testing.assert_allclose(
+        rebuilt.predict(frame, exposure_col=None), expected.predict(frame), rtol=1e-10
+    )
+
+
+@pytest.mark.parametrize(
+    "recipe", [{"version": 2}, {"version": 1, "project": {}, "options": []}]
+)
+def test_export_rejects_invalid_saved_search_recipe(tmp_path, recipe):
+    project = _project(tmp_path)
+    project.exploration["feature_selection"] = recipe
+    with pytest.raises(ValueError, match="Saved feature-selection recipe"):
         to_script(project, "test")

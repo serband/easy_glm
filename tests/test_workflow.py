@@ -735,9 +735,10 @@ class TestDiagnostics:
 # export
 # --------------------------------------------------------------------------
 class TestExport:
-    def test_script_without_run_mentions_from_data(self, project):
+    def test_script_without_run_rebuilds_project_design(self, project):
         src = to_script(project, "freq")
-        assert "DesignSpec.from_data" in src
+        assert "build_design(" in src
+        assert "final_design_project" in src
         # this model has an interaction, so the fit is the two-stage one (which
         # stage-by-stage form the script takes is asserted below)
         assert "fit_two_stage(" in src
@@ -869,7 +870,7 @@ class TestExport:
         — and each interaction keeps its own floor and penalty weight."""
         src = to_script(project, "freq", output_prefix="norun_v1")
         assert "fit = fit_two_stage(" in src
-        assert "InteractionEncoder.from_data(" in src
+        assert "interactions=[Interaction(" in src
         assert "min_cell_exposure=0.02" in src and "penalty_weight=1.0" in src
         script = tmp_path / "norun.py"
         script.write_text(src)

@@ -1169,12 +1169,16 @@ class TestWorkflow:
         np.testing.assert_allclose(
             rebuilt.predict(hold, exposure_col=None), run.predict(hold), rtol=1e-10
         )
-        # the no-run script derives the linear design from the data
-        assert "linear=['Mileage']" in to_script(project, "freq")
+        # Rebuild the linear design from the exported settings, without fitting.
         project.design.variables["Mileage"].clamp = [100.0, 25_000.0]
         no_run = to_script(project, "freq")
-        assert "clamp={'Mileage': (100.0, 25000.0)}" in no_run
-        assert "knots={'Mileage': [8000.0, 20000.0]}" in no_run
+        design_source = no_run.split("# ----------------------------------------------------------------- 4. fit")[0]
+        namespace = {}
+        exec(design_source, namespace)
+        encoder = namespace["spec"]["Mileage"]
+        assert isinstance(encoder, LinearEncoder)
+        assert (encoder.lo, encoder.hi) == (100.0, 25_000.0)
+        assert encoder.knots == [8000.0, 20000.0]
 
     def test_apply_adjustments_names_the_refused_entry(self, project, book):
         from easy_glm.workflow import Adjustment, AdjustmentError

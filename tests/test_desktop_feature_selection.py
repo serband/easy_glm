@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import threading
 import time
@@ -99,7 +100,16 @@ def test_draft_rename_and_options_fingerprint_do_not_apply(client, monkeypatch):
     assert packet["result"]["target_raw_name"] == "Claims"
     assert workers[0].project.data.renames == body["setup"]["renames"]
     assert workers[0].options["repeats"] == 5
-    assert client.get("/api/project").json() == before
+    saved = client.get("/api/project").json()
+    recipe = saved["exploration"].pop("feature_selection")
+    assert recipe["version"] == 1
+    assert recipe["project"]["data"]["renames"] == body["setup"]["renames"]
+    assert recipe["project"]["models"] == {}
+    assert recipe["project"]["champion"] is None
+    assert recipe["project"]["exploration"] == {}
+    assert recipe["options"] == workers[0].options
+    assert recipe["result"] == packet["result"]
+    assert saved == before
     assert client.get("/api/jobs").json() == {}
     again = client.post("/api/variables/feature-selection", json=body).json()
     assert again["id"] == first.json()["id"]
@@ -250,3 +260,85 @@ def test_feature_selection_requires_token_and_target(client, monkeypatch):
     client.headers["X-EasyGLM-Token"] = token
     body["setup"]["roles"]["target"] = None
     assert client.post("/api/variables/feature-selection", json=body).status_code == 422
+
+
+def test_recipe_preserves_original_candidates_across_later_apply_and_json_roundtrip(
+    client, monkeypatch
+):
+    monkeypatch.setattr(selection.subprocess, "Popen", FinishedWorker)
+    original = draft(client)
+    packet = client.post("/api/variables/feature-selection", json=original).json()
+    assert wait_status(client, packet["id"])["status"] == "complete"
+    assert revision(client)["revision"] == original["revision"]
+
+    edit = draft(client)
+    edit["setup"]["roles"]["predictor"].remove("Age")
+    edit["setup"]["roles"]["ignore"].append("Age")
+    assert client.post("/api/variables/apply", json=edit).status_code == 200
+    saved = client.get("/api/project").json()
+    assert saved["data"]["roles"]["Age"] == "ignore"
+    recipe = saved["exploration"]["feature_selection"]
+    assert recipe["project"]["data"]["roles"]["Age"] == "predictor"
+    assert (
+        Project.from_dict(saved).to_dict()["exploration"]["feature_selection"] == recipe
+    )
+
+
+def test_incomplete_and_stale_selection_cannot_replace_saved_recipe(
+    client, monkeypatch
+):
+    monkeypatch.setattr(selection.subprocess, "Popen", FinishedWorker)
+    first = client.post("/api/variables/feature-selection", json=draft(client)).json()
+    assert wait_status(client, first["id"])["status"] == "complete"
+    expected = client.get("/api/project").json()["exploration"]["feature_selection"]
+
+    WaitingWorker.entered.clear()
+    monkeypatch.setattr(selection.subprocess, "Popen", WaitingWorker)
+    second = client.post(
+        "/api/variables/feature-selection",
+        json=draft(client) | {"options": {"seed": 7}},
+    ).json()
+    assert WaitingWorker.entered.wait(2)
+    edit = draft(client)
+    edit["setup"]["roles"]["predictor"].remove("Age")
+    edit["setup"]["roles"]["ignore"].append("Age")
+    assert client.post("/api/variables/apply", json=edit).status_code == 200
+    assert wait_status(client, second["id"])["status"] == "stale"
+    assert (
+        client.get("/api/project").json()["exploration"]["feature_selection"]
+        == expected
+    )
+
+
+def test_selection_is_not_publicly_complete_until_recipe_is_published(
+    client, monkeypatch
+):
+    monkeypatch.setattr(selection.subprocess, "Popen", FinishedWorker)
+    endpoint = next(
+        route.endpoint
+        for route in client.app.routes
+        if getattr(route, "path", "") == "/api/variables/feature-selection"
+    )
+    jobs = inspect.getclosurevars(endpoint).nonlocals["feature_selections"]
+    original = jobs.on_complete
+    entered, release = threading.Event(), threading.Event()
+
+    def hold_publish(task, result):
+        entered.set()
+        assert release.wait(2)
+        assert original is not None
+        original(task, result)
+
+    jobs.on_complete = hold_publish
+    started = client.post("/api/variables/feature-selection", json=draft(client)).json()
+    assert entered.wait(2)
+    pending = client.get("/api/feature-selections/" + started["id"]).json()
+    assert pending["status"] == "running" and "result" not in pending
+
+    edit = draft(client)
+    edit["setup"]["roles"]["predictor"].remove("Age")
+    edit["setup"]["roles"]["ignore"].append("Age")
+    assert client.post("/api/variables/apply", json=edit).status_code == 200
+    release.set()
+    assert wait_status(client, started["id"])["status"] == "stale"
+    assert "feature_selection" not in client.get("/api/project").json()["exploration"]

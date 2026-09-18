@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal
@@ -89,6 +90,9 @@ class FeatureSelectionJobs:
         self.active: dict[str, Any] | None = None
         self.closed = False
         self.folder = tempfile.TemporaryDirectory(prefix="easyglm_selection_")
+        # The server installs this. It must run after releasing ``lock``
+        # because server requests take their project lock first.
+        self.on_complete: Callable[[dict[str, Any], dict[str, Any]], None] | None = None
 
     def invalidate(self, generation: Generation) -> None:
         with self.lock:
@@ -100,7 +104,7 @@ class FeatureSelectionJobs:
                     )
 
     def _stop(self, task: dict[str, Any], status: str, message: str) -> None:
-        if task["status"] in ("queued", "running"):
+        if task["status"] in ("queued", "running", "completing"):
             task["cancel"] = True
             process = task.get("process")
             if process is not None and process.poll() is None:
@@ -134,6 +138,13 @@ class FeatureSelectionJobs:
                 raise ValueError(
                     "Feature selection is still finishing. Wait for it before starting again."
                 )
+            # Selection needs only the data/design draft. Keeping previous
+            # models or audit metadata here would recursively carry an older
+            # selection report into every new worker and recipe.
+            screening_project = deepcopy(project)
+            screening_project.models = {}
+            screening_project.champion = None
+            screening_project.exploration = {}
             key = secrets.token_hex(12)
             task: dict[str, Any] = {
                 "id": key,
@@ -145,10 +156,14 @@ class FeatureSelectionJobs:
                 "started": time.monotonic(),
                 "cancel": False,
                 "process": None,
+                # Private immutable source for the exported recipe. It is not
+                # returned in API packets or retained in the worker folder.
+                "recipe_project": screening_project.to_dict(),
+                "recipe_options": deepcopy(options),
             }
             thread = threading.Thread(
                 target=self._run,
-                args=(task, deepcopy(project), raw.clone(), dict(options)),
+                args=(task, screening_project, raw.clone(), dict(options)),
                 daemon=True,
                 name="easyglm-feature-selection",
             )
@@ -171,6 +186,8 @@ class FeatureSelectionJobs:
             project.to_json(folder / "project.json")
             raw.write_parquet(folder / "raw.parquet")
             (folder / "options.json").write_text(json.dumps(options), encoding="utf-8")
+            completing = False
+            completed_result: dict[str, Any] | None = None
             with self.lock:
                 if task["cancel"]:
                     return
@@ -235,10 +252,13 @@ class FeatureSelectionJobs:
                         message="Feature selection worker stopped unexpectedly.",
                     )
                 else:
+                    completed_result = with_raw_names(result, project, raw.columns)
                     task.update(
-                        status="complete",
-                        message="Feature selection complete.",
-                        result=with_raw_names(result, project, raw.columns),
+                        # Do not expose completion before the server has made
+                        # the recipe durable. Otherwise an Apply could advance
+                        # the generation between a complete packet and publish.
+                        status="completing",
+                        message="Saving feature-selection recipe…",
                         progress={
                             "phase": "complete",
                             "completed": result.get("candidate_count", 0),
@@ -247,11 +267,29 @@ class FeatureSelectionJobs:
                             "current_variable": None,
                         },
                     )
+                    completing = True
+            # Do not call the server while holding the jobs lock: its callback
+            # verifies the task while holding the project lock first.
+            if completing and self.on_complete is not None:
+                assert completed_result is not None
+                self.on_complete(task, completed_result)
+            elif completing:
+                with self.lock:
+                    if task["status"] == "completing":
+                        task.update(
+                            status="complete",
+                            message="Feature selection complete.",
+                            result=completed_result,
+                        )
         except (
             Exception
         ) as exc:  # Process boundary: return a message, never a traceback.
             with self.lock:
-                if not task["cancel"] and task["status"] in ("queued", "running"):
+                if not task["cancel"] and task["status"] in (
+                    "queued",
+                    "running",
+                    "completing",
+                ):
                     task.update(
                         status="failed", message=f"Feature selection failed: {exc}"
                     )
@@ -282,10 +320,11 @@ class FeatureSelectionJobs:
 
     def _packet(self, task: dict[str, Any]) -> dict[str, Any]:
         session, project, revision = task["generation"]
+        status = "running" if task["status"] == "completing" else task["status"]
         return deepcopy(
             {
                 "id": task["id"],
-                "status": task["status"],
+                "status": status,
                 "session_id": session,
                 "project_id": project,
                 "revision": revision,
@@ -293,7 +332,7 @@ class FeatureSelectionJobs:
                 "message": task["message"],
                 "progress": task["progress"],
                 "elapsed": task.get("elapsed", time.monotonic() - task["started"]),
-                **({"result": task["result"]} if task["status"] == "complete" else {}),
+                **({"result": task["result"]} if status == "complete" else {}),
             }
         )
 
@@ -309,7 +348,7 @@ class FeatureSelectionJobs:
             if key not in self.tasks:
                 raise KeyError("Feature selection expired. Run it again.")
             task = self.tasks[key]
-            if task["status"] in ("queued", "running"):
+            if task["status"] in ("queued", "running", "completing"):
                 self._stop(task, "cancelled", "Feature selection cancelled.")
 
     def close(self) -> None:
@@ -317,7 +356,7 @@ class FeatureSelectionJobs:
             self.closed = True
             tasks = list(self.tasks.values())
             for task in tasks:
-                if task["status"] in ("queued", "running"):
+                if task["status"] in ("queued", "running", "completing"):
                     self._stop(task, "cancelled", "Session closed.")
         for task in tasks:
             task["thread"].join(timeout=5)

@@ -133,7 +133,7 @@
         {#if names.length}<div class="export-row">
                 <div>
                     <h3>Python script</h3>
-                    <p>Rebuild the model from its source data.</p>
+                    <p>Rebuild the model and rerun any saved variable search.</p>
                 </div>
                 <button onclick={() => download('python')} disabled={!!pending}>
                     {pending === 'python' ? 'Preparing script…' : 'Download script (.py)'}

@@ -183,6 +183,40 @@ def create_app(
             sort_keys=True,
         ).encode()
     ).hexdigest()
+
+    def complete_feature_selection(
+        task: dict[str, Any], result: dict[str, Any]
+    ) -> None:
+        """Keep the latest current feature-selection recipe for Python export.
+
+        This is audit/export metadata, so it neither changes the applied roles
+        nor advances the revision or invalidates any fitted model.
+        """
+        with lock, feature_selections.lock:
+            generation = (session_id, project_id, revision)
+            if (
+                feature_selections.tasks.get(task["id"]) is not task
+                or task["generation"] != generation
+                or task["status"] != "completing"
+            ):
+                return
+            screened_project = deepcopy(task["recipe_project"])
+            screened_project["models"] = {}
+            screened_project["champion"] = None
+            screened_project["exploration"] = {}
+            current.exploration["feature_selection"] = {
+                "version": 1,
+                "project": screened_project,
+                "options": deepcopy(task["recipe_options"]),
+                "result": deepcopy(result),
+            }
+            task.update(
+                status="complete",
+                message="Feature selection complete.",
+                result=deepcopy(result),
+            )
+
+    feature_selections.on_complete = complete_feature_selection
     host = f"127.0.0.1:{port}"
     origin = f"http://{host}"
     static = Path(__file__).with_name("static")
