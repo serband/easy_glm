@@ -2,6 +2,17 @@
 
 This is the user-facing record of useful new features and fixes.
 
+## 0.470 — 18 September 2026
+
+- **Check which variables help on their own.** Optional GLM screening compares each variable with shuffled copies and random noise, using training data only. A ranked chart and sortable results help you decide what to keep.
+- **More flexible interactions.** CatBoost fits each pair in order, building on the main effects and earlier interaction tables. Settings are tuned automatically using cross-validation; the main effects stay unchanged.
+- **Use the same interaction tables everywhere.** Corrections use your chosen bins. Later interactions, diagnostics and exported scoring all use these tables. Heatmaps make them easier to review, with values shown to three decimal places.
+- **See bin changes immediately.** The distribution chart updates as you edit and shows one bar per model bin. All bins fit on screen without scrolling sideways.
+- **Reproduce variable screening in Python.** Exported workflows include the saved search settings, original candidates and your reviewed selections.
+- **Fixes and clearer navigation.** Missing-interaction searches exclude pairs already in the model. “Add and review model” opens the interaction draft, and fit-status labels and variable counts are clearer.
+
+To fit CatBoost interactions, install the optional dependencies with `pip install "easy-glm[pairs]"`. Exported tables can be scored without them.
+
 ## 0.464 — 18 September 2026
 
 - **Control numeric bins on Variables.** Set a default number of bins, or choose a different count or your own cut points for each predictor. Settings apply across models.
