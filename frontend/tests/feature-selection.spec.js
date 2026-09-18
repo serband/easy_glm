@@ -30,7 +30,7 @@ test('one-way screen uses training rows and stages reviewed role changes', async
     await panel.locator(':scope > summary').click();
     await expect(panel).toContainText('4 candidates');
     await expect(page.getByLabel('Divide target by weight for feature selection')).toBeChecked();
-    await expect(panel).toContainText('4 candidate CV fits');
+    await expect(panel).toContainText('you choose what to keep');
     await panel.getByText('Advanced settings', { exact: true }).click();
     await expect(page.getByLabel('Feature selection repeats')).toHaveValue('5');
     const before = await project(page);

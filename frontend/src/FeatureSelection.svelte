@@ -316,18 +316,22 @@
     >
     <div class="selection-body">
         <p>
-            Looks for one-way signal. Variables can still matter through interactions. No signal
-            detected is not proof of no effect.
+            Check which variables help explain the target on their own. Uses training data only; you
+            choose what to keep.
         </p>
-        <p>
-            Each candidate competes with four shuffled copies and independent random noise.
-            Five-fold CV chooses a penalty; full training rows supply the importance scores. This is
-            a screening guide, not a p-value.
-        </p>
-        <p class="selection-cost">
-            {num(candidates.length)} candidate CV fits · five folds and {num(pathLength)} penalty values
-            each · repeated importance checks. No automatic sampling; this may take time.
-        </p>
+        <details class="selection-explanation">
+            <summary>How it works</summary>
+            <p>
+                For each variable, we fit a GLM with four shuffled copies and a random column.
+                Five-fold cross-validation chooses the penalty from {num(pathLength)} values. We then
+                compare permutation importance using all training rows.
+            </p>
+            <p>
+                “Signal detected” means the variable scores above every control and zero. This isn't
+                a significance test: a variable with no detected signal may still be useful in an
+                interaction.
+            </p>
+        </details>
         <div class="selection-role-note">
             Target: <b>{setup?.assignments.target || 'Choose a target above'}</b> · Weight:
             <b>{weight || 'None'}</b>
@@ -684,22 +688,24 @@
     .selection-role-note {
         margin: 13px 0;
     }
-    .selection-cost {
-        color: var(--muted);
-    }
     .selection-options {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 12px;
         margin: 12px 0;
     }
-    .selection-advanced {
+    .selection-advanced,
+    .selection-explanation {
         margin: 12px 0;
         font-size: 11px;
     }
-    .selection-advanced > summary {
+    .selection-advanced > summary,
+    .selection-explanation > summary {
         cursor: pointer;
         color: #345b51;
+    }
+    .selection-explanation > summary {
+        margin-bottom: 8px;
     }
     .selection-options label {
         font-size: 11px;
