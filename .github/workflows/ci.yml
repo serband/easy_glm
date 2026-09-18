@@ -35,7 +35,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install .[dev]
+          pip install ".[dev,pairs]"
       - name: Lint (Ruff)
         run: ruff check .
       - name: Format check (Black)
@@ -71,7 +71,7 @@ jobs:
       - name: Install workbench and browser dependencies
         run: |
           python -m venv .venv
-          .venv/bin/pip install .[dev]
+          .venv/bin/pip install ".[dev,pairs]"
           cd frontend
           npm ci
           npx playwright install --with-deps chromium
@@ -93,6 +93,8 @@ jobs:
           npx playwright test --config playwright.explore.config.js
           npx playwright test --config playwright.models.config.js
           npx playwright test --config playwright.interactions.config.js
+          npx playwright test --config playwright.pair-editor.config.js
+          npx playwright test --config playwright.pair-fit.config.js
           npx playwright test --config playwright.exports.config.js
           npx playwright test --config playwright.session.config.js
           npx playwright test --config playwright.split.config.js
