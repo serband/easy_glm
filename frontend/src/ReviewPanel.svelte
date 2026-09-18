@@ -26,6 +26,7 @@
         edits = {},
         onApplied,
         onReduced = () => {},
+        onIncludePair,
         onClear,
         onNavigate,
         onManual = () => {},
@@ -703,6 +704,9 @@
         busy = true;
         error = '';
         try {
+            if (searchKind === 'interactions' && onIncludePair && (await onIncludePair(row))) {
+                return;
+            }
             const response = await api('review/' + encodeURIComponent(name), {
                 ...rev(),
                 action: row.variables

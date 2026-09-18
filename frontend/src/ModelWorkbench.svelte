@@ -1,6 +1,6 @@
 <script>
     import { formatNumber as num, formatRelativity as rel } from './format.js';
-    import { onDestroy } from 'svelte';
+    import { onDestroy, tick } from 'svelte';
     import ReviewPanel from './ReviewPanel.svelte';
     import TimeDiagnostics from './TimeDiagnostics.svelte';
     import InteractionEditor from './InteractionEditor.svelte';
@@ -162,6 +162,45 @@
             cfg = structuredClone(wb.models[selected]);
             await loadResults(true);
         }
+    }
+    async function includePairDraft({ a, b }) {
+        if (pairMethod !== 'sequential') return false;
+        if (a === b || !wb.predictors.includes(a) || !wb.predictors.includes(b)) {
+            throw new Error('Choose two distinct predictors available on Variables.');
+        }
+        const pairs = cfg.pair_stages || [];
+        const exists = pairs.some(
+            (pair) => (pair.a === a && pair.b === b) || (pair.a === b && pair.b === a),
+        );
+        if (!exists) {
+            if (pairs.length >= 8) throw new Error('A model can have up to eight pair stages.');
+            if (!wb.pair_stage_defaults?.search) {
+                throw new Error('Pair stage defaults are unavailable. Refresh the workbench.');
+            }
+            cfg = {
+                ...cfg,
+                pair_stages: [
+                    ...pairs,
+                    {
+                        min_weight_share: wb.pair_stage_defaults.min_weight_share,
+                        seed: wb.pair_stage_defaults.seed,
+                        cv_folds: wb.pair_stage_defaults.cv_folds,
+                        search: structuredClone(wb.pair_stage_defaults.search),
+                        stage_id: crypto.randomUUID(),
+                        a,
+                        b,
+                        candidates: [],
+                    },
+                ],
+            };
+        }
+        await onNavigate('model');
+        notice = exists
+            ? `${a} × ${b} is already in this model draft.`
+            : `${a} × ${b} added to the draft. Review it, then save model settings before fitting.`;
+        await tick();
+        document.getElementById('model-pair-stages')?.scrollIntoView({ block: 'start' });
+        return true;
     }
     export let api;
     export let state;
@@ -496,11 +535,8 @@
         }
     }
     async function copyLegacyAsPairStages() {
-        if (
-            wb?.pair_stage_defaults?.search?.method !== 'optuna' ||
-            dirty ||
-            selected === '__new__'
-        ) return;
+        if (wb?.pair_stage_defaults?.search?.method !== 'optuna' || dirty || selected === '__new__')
+            return;
         saving = true;
         error = '';
         try {
@@ -1284,6 +1320,7 @@
                     {:else}
                         <ReviewPanel
                             {diagnosticTab}
+                            onIncludePair={includePairDraft}
                             challenger={effectiveChallenger}
                             fitIdentity={job?.id || ''}
                             comparisonFitIdentity={jobs[effectiveChallenger]?.id || ''}

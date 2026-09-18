@@ -1,5 +1,72 @@
 import { test, expect } from '@playwright/test';
 
+test('residual interaction opens an unsaved automatic pair stage for review', async ({ page }) => {
+    test.setTimeout(90000);
+    const button = (name) => page.getByRole('button', { name, exact: true });
+    const name = `Residual pair ${Date.now()}`;
+    const includeRequests = [];
+    page.on('request', (request) => {
+        if (
+            request.method() === 'POST' &&
+            request.url().includes('/api/review/') &&
+            request.postDataJSON()?.action === 'include_pair'
+        )
+            includeRequests.push(request);
+    });
+    await page.goto('/');
+    await button('Model').click();
+    await page.getByLabel('Model selection').selectOption('__new__');
+    await page.getByLabel('New model name').fill(name);
+    await button('Create model').click();
+    await button('Fit model').click();
+    await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 45000 });
+    const { token } = await (await page.request.get('/api/session')).json();
+    const project = async () =>
+        (
+            await page.request.get('/api/project', {
+                headers: { 'X-EasyGLM-Token': token },
+            })
+        ).json();
+    const before = await project();
+    async function search() {
+        await button('Diagnostics').click();
+        await page.getByRole('tab', { name: 'Residual factors', exact: true }).click();
+        await button('Find missing interactions').click();
+        await expect(
+            page.getByRole('heading', { name: 'Missing interactions', exact: true }),
+        ).toBeVisible();
+    }
+    await search();
+    const candidate = page
+        .getByRole('row')
+        .filter({ has: button('Add and review model') })
+        .first();
+    const pairLabel = await candidate.locator('td').first().innerText();
+    await candidate.getByRole('button', { name: 'Add and review model', exact: true }).click();
+    await expect(
+        page.getByRole('heading', { name: 'Model design and fit', exact: true }),
+    ).toBeVisible();
+    await expect(page.getByLabel(`Stage 2 ${pairLabel}`, { exact: true })).toBeVisible();
+    await expect(button('Save model settings')).toBeEnabled();
+    expect((await project()).models[name]).toEqual(before.models[name]);
+    expect(includeRequests).toHaveLength(0);
+    // Reopening the same suggestion must not append another copy or lose the draft.
+    await search();
+    await candidate.getByRole('button', { name: 'Add and review model', exact: true }).click();
+    await expect(page.locator('.pair-stages .stage-card')).toHaveCount(2);
+    const save = page.waitForRequest('**/api/models/save');
+    await button('Save model settings').click();
+    const fields = (await save).postDataJSON().fields;
+    expect(fields.pair_stages).toHaveLength(1);
+    expect(fields.pair_stages[0].search.method).toBe('optuna');
+    expect(fields.pair_stages[0]).not.toHaveProperty('search_limits');
+    expect(fields.interactions).toEqual([]);
+    await expect(
+        page.getByText('Model settings saved. Fit when ready.', { exact: true }),
+    ).toBeVisible();
+    expect((await project()).models[name].pair_stages).toHaveLength(1);
+});
+
 test('sequential pair draft keeps stable IDs, order, and pair-only parents', async ({ page }) => {
     const saves = [];
     page.on('request', (request) => {
