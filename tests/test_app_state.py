@@ -454,10 +454,12 @@ else:
         at = AppTest.from_string(script, default_timeout=180)
         at.run()
         assert not at.exception
-        keys = [
-            k for k in at.session_state.filtered_state if k.startswith("sample_rows_")
+        sample_widgets = [
+            widget
+            for widget in at.number_input
+            if widget.key and widget.key.startswith("sample_rows_")
         ]
-        assert keys and at.session_state[keys[0]] == 60
+        assert len(sample_widgets) == 1 and sample_widgets[0].value == 60
         for phase in (1, 2):  # open the other project, then one more rerun
             at.session_state["phase"] = phase
             at.run()

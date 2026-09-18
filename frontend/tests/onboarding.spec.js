@@ -86,6 +86,8 @@ test('opening data is visible, explicit, and supports files, projects and both e
         await button('Open data').click();
         await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeVisible();
         expect(uploadAttempts).toBe(2);
+        // The heading appears before the post-upload connection refresh finishes.
+        await expect(page.getByLabel('Type for Age', { exact: true })).toBeEnabled();
         await page.unroute('**/api/project/upload?**');
         const raw = await snapshot(page);
         expect(raw.row_count).toBe(3);

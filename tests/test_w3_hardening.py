@@ -533,8 +533,12 @@ def test_breakage_11_bad_project_files_are_messages(workspace, tmp_path):
 
 def test_breakage_12_saving_to_a_bad_path_is_a_message(workspace, tmp_path):
     at = _run(_script("pages_project", str(workspace["project"])))
-    key = [k for k in at.session_state.filtered_state if k.startswith("proj_path_")][0]
-    at.text_input(key=key).set_value("/nonexistent_dir_easy_glm/x.json").run()
+    project_path = next(
+        widget
+        for widget in at.text_input
+        if widget.key and widget.key.startswith("proj_path_")
+    )
+    project_path.set_value("/nonexistent_dir_easy_glm/x.json").run()
     # the "Save project" button has no key: find it by label
     save = [b for b in at.button if b.label == "Save project"][0]
     save.click().run()
