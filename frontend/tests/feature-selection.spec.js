@@ -10,6 +10,16 @@ async function project(page) {
     });
 }
 
+async function variablesSnapshot(page) {
+    return page.evaluate(async () => {
+        const { token } = await (await fetch('/api/session')).json();
+        const response = await fetch('/api/variables', {
+            headers: { 'X-EasyGLM-Token': token },
+        });
+        return response.json();
+    });
+}
+
 test('one-way screen uses training rows and stages reviewed role changes', async ({
     page,
 }, testInfo) => {
@@ -42,6 +52,12 @@ test('one-way screen uses training rows and stages reviewed role changes', async
     await expect(panel.getByText(/tested of 4 candidates/)).toBeVisible({ timeout: 150000 });
     const resultRows = panel.locator('.selection-table-wrap tbody tr:not(.selection-detail)');
     await expect(resultRows).toHaveCount(4);
+    const chart = panel.getByRole('region', { name: 'Ranked feature importance' });
+    await expect(chart.locator('.ranked-list li')).toHaveCount(3);
+    await expect(chart.locator('.ranked-list li').first()).toHaveAttribute('data-variable', 'Risk');
+    await expect(chart.locator('[data-variable="Flat"]')).toHaveCount(0);
+    await expect(chart.getByText('Training deviance increase after shuffling')).toBeVisible();
+    await expect(chart.getByRole('img', { name: /Risk: real importance/ })).toBeVisible();
     await expect(panel.getByLabel('Details for Risk')).toBeVisible();
     await panel.getByLabel('Details for Risk').click();
     await expect(panel).toContainText('Shadow 4:');
@@ -102,6 +118,132 @@ test('one-way screen uses training rows and stages reviewed role changes', async
     await expect(page.getByRole('status').filter({ hasText: 'Settings applied' })).toBeVisible();
     expect((await project(page)).data.roles[rawName]).toBe(intended);
     expect(errors).toEqual([]);
+});
+
+test('ranked chart shares a numeric scale, filters and pages without inventing skipped scores', async ({
+    page,
+}) => {
+    await page.goto('/');
+    const panel = page.getByRole('group', { name: 'One-way feature selection' });
+    await panel.locator(':scope > summary').click();
+    const snapshot = await variablesSnapshot(page);
+    const rows = [
+        {
+            variable: 'Top',
+            raw_name: 'Risk',
+            status: 'signal',
+            importance: 3,
+            threshold: 0.5,
+        },
+        ...Array.from({ length: 43 }, (_, index) => ({
+            variable: `Variable ${String(index + 1).padStart(2, '0')}`,
+            raw_name: `Variable ${index + 1}`,
+            status: 'no_signal',
+            importance: (43 - index) / 100,
+            threshold: 0.5,
+        })),
+        { variable: 'Zero', raw_name: 'Zero', status: 'no_signal', importance: 0, threshold: 0 },
+        {
+            variable: 'Negative',
+            raw_name: 'Negative',
+            status: 'no_signal',
+            importance: -0.4,
+            threshold: 0.2,
+        },
+        { variable: 'Skipped', raw_name: 'Skipped', status: 'skipped', importance: null },
+        { variable: 'Failed', raw_name: 'Failed', status: 'failed', importance: null },
+    ];
+    await page.route('**/api/variables/feature-selection', async (route) => {
+        await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+                id: 'synthetic-ranking',
+                status: 'complete',
+                session_id: snapshot.session_id,
+                project_id: snapshot.project_id,
+                revision: snapshot.revision,
+                fingerprint: 'synthetic-ranking',
+                result: {
+                    training_rows: 180,
+                    candidate_count: rows.length,
+                    tested_count: rows.length - 2,
+                    cv_folds: 5,
+                    repeats: 5,
+                    rows,
+                },
+            }),
+        });
+    });
+    await panel.getByRole('button', { name: 'Run one-way feature selection' }).click();
+    const chart = panel.getByRole('region', { name: 'Ranked feature importance' });
+    await expect(chart.locator('.ranked-list li')).toHaveCount(20);
+    await expect(chart.locator('.ranked-list li').first()).toHaveAttribute('data-variable', 'Top');
+    await expect(chart).toContainText('1 signal detected · 45 no signal detected');
+    await expect(chart).toContainText('2 without a plotted score');
+    await expect(chart).toContainText('Ranked 1–20 of 46 scored candidates');
+    await expect(chart.locator('[data-variable="Skipped"]')).toHaveCount(0);
+    await expect(chart.locator('[data-variable="Failed"]')).toHaveCount(0);
+    const topGeometry = await chart.locator('[data-variable="Top"]').evaluate((item) => ({
+        zero: parseFloat(item.querySelector('.zero-line').style.left),
+        realLeft: parseFloat(item.querySelector('.importance-bar').style.left),
+        realWidth: parseFloat(item.querySelector('.importance-bar').style.width),
+        marker: parseFloat(item.querySelector('.control-marker').style.left),
+    }));
+    expect(topGeometry.realLeft).toBeCloseTo(topGeometry.zero);
+    expect(topGeometry.marker).toBeGreaterThan(topGeometry.zero);
+    expect(topGeometry.realLeft + topGeometry.realWidth).toBeGreaterThan(topGeometry.marker);
+    await expect(
+        chart.getByRole('img', {
+            name: /Top: real importance 3; strongest control benchmark 0.5; Signal detected/,
+        }),
+    ).toBeVisible();
+
+    await chart.getByRole('button', { name: 'Next importance ranks' }).click();
+    await expect(chart).toContainText('Ranked 21–40 of 46 scored candidates');
+    await chart.getByRole('button', { name: 'Next importance ranks' }).click();
+    await expect(chart).toContainText('Ranked 41–46 of 46 scored candidates');
+    await expect(chart.locator('.ranked-list li').last()).toHaveAttribute(
+        'data-variable',
+        'Negative',
+    );
+    const negativeGeometry = await chart.locator('[data-variable="Negative"]').evaluate((item) => ({
+        zero: parseFloat(item.querySelector('.zero-line').style.left),
+        realLeft: parseFloat(item.querySelector('.importance-bar').style.left),
+        realWidth: parseFloat(item.querySelector('.importance-bar').style.width),
+        marker: parseFloat(item.querySelector('.control-marker').style.left),
+    }));
+    expect(negativeGeometry.realLeft).toBeLessThan(negativeGeometry.zero);
+    expect(negativeGeometry.realLeft + negativeGeometry.realWidth).toBeCloseTo(
+        negativeGeometry.zero,
+    );
+    expect(negativeGeometry.marker).toBeGreaterThan(negativeGeometry.zero);
+    await expect(chart.locator('[data-variable="Zero"] .importance-bar')).toHaveCSS('width', '0px');
+
+    const search = panel.getByLabel('Search feature selection results');
+    await search.fill('Variable');
+    await expect(chart).toContainText('Ranked 1–20 of 43 scored candidates');
+    const positiveZero = await chart
+        .locator('.zero-line')
+        .first()
+        .evaluate((line) => line.style.left);
+    expect(positiveZero).toBe('0%');
+    await search.fill('Negative');
+    await expect(chart.locator('.ranked-list li')).toHaveCount(1);
+    const mixedZero = await chart
+        .locator('.zero-line')
+        .first()
+        .evaluate((line) => parseFloat(line.style.left));
+    expect(mixedZero).toBeGreaterThan(50);
+    await search.fill('Zero');
+    await expect(chart.locator('.importance-bar')).toHaveCSS('width', '0px');
+    await search.fill('');
+    await panel.getByLabel('Filter feature selection status').selectOption('skipped');
+    await expect(chart.locator('.ranked-list li')).toHaveCount(0);
+    await expect(chart).toContainText('No scored candidates match this filter');
+    await expect(
+        panel.locator('.selection-table-wrap tbody tr:not(.selection-detail)'),
+    ).toHaveCount(1);
 });
 
 test('cancelled or changed drafts suppress late reports, and invalid JSON cannot start', async ({

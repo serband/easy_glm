@@ -1,5 +1,6 @@
 <script>
     import { onDestroy, tick } from 'svelte';
+    import FeatureSelectionImportance from './FeatureSelectionImportance.svelte';
     import { formatNumber as num } from './format.js';
 
     export let api, state, setup, context, prepare, onChange;
@@ -484,6 +485,10 @@
                     >
                     <span>{num(filtered.length)} results</span>
                 </div>
+                <FeatureSelectionImportance
+                    rows={filtered}
+                    filterKey={query + '\u0000' + statusFilter}
+                />
                 <div class="selection-table-wrap">
                     <table>
                         <thead
