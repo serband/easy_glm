@@ -1022,6 +1022,7 @@
                         {#if tab === 'table'}<BinningSettings
                                 {api}
                                 {state}
+                                active={view === 'variables'}
                                 setup={draft}
                                 disabled={busy || differentProject}
                                 resetKey={binningReset}

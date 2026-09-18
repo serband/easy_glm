@@ -1,4 +1,5 @@
 <script>
+    import { onDestroy } from 'svelte';
     import BinningHistogram from './BinningHistogram.svelte';
 
     export let setup;
@@ -7,6 +8,7 @@
     export let onchange;
     export let onvalidity;
     export let disabled = false;
+    export let active = true;
     export let resetKey = 0;
 
     let search = '';
@@ -22,7 +24,9 @@
     let previewError = '';
     let previewBusy = false;
     let requestId = 0;
-    let previousContext = '';
+    let previewTimer = null;
+    let previousPreviewKey = '';
+    let destroyed = false;
 
     function count(value, label) {
         const text = String(value).trim();
@@ -101,11 +105,9 @@
     }
     function setDefault(value) {
         defaultText = value;
-        invalidate();
         syncValues();
     }
     function chooseMethod(name, method) {
-        invalidate();
         const overrides = { ...pendingOverrides };
         if (method === 'default') delete overrides[name];
         else if (method === 'quantile') {
@@ -121,17 +123,14 @@
     }
     function setCount(name, value) {
         countText = { ...countText, [name]: value };
-        invalidate();
         syncValues();
     }
     function setCuts(name, value) {
         cutsText = { ...cutsText, [name]: value };
-        invalidate();
         syncValues();
     }
     function setFallback(name, value) {
         fallbackText = { ...fallbackText, [name]: value };
-        invalidate();
         syncValues();
     }
     function initialise() {
@@ -156,32 +155,51 @@
                 ]),
         );
         validate();
-        invalidate();
     }
     function invalidate() {
         requestId++;
+        if (previewTimer) clearTimeout(previewTimer);
+        previewTimer = null;
         preview = null;
         previewError = '';
         previewBusy = false;
     }
-    async function loadPreview() {
-        if (!selected || !validate()) return;
-        const id = ++requestId;
-        preview = null;
-        previewError = '';
+    function schedulePreview() {
+        invalidate();
+        if (
+            destroyed ||
+            !active ||
+            disabled ||
+            !selected ||
+            !names.includes(selected) ||
+            !state?.session_id ||
+            !validate()
+        )
+            return;
+        const id = requestId;
         previewBusy = true;
+        previewTimer = setTimeout(() => {
+            previewTimer = null;
+            void loadPreview(id);
+        }, 300);
+    }
+    async function loadPreview(id) {
+        if (destroyed || id !== requestId || !active || disabled || !names.includes(selected))
+            return;
+        const column = selected;
+        const requestSetup = structuredClone(setup);
         try {
             const result = await api('variables/binning-preview', {
                 session_id: state.session_id,
                 revision: state.revision,
-                setup,
-                column: selected,
+                setup: requestSetup,
+                column,
             });
-            if (id === requestId) preview = result;
+            if (!destroyed && id === requestId) preview = result;
         } catch (error) {
-            if (id === requestId) previewError = error.message;
+            if (!destroyed && id === requestId) previewError = error.message;
         } finally {
-            if (id === requestId) previewBusy = false;
+            if (!destroyed && id === requestId) previewBusy = false;
         }
     }
     function summary(name) {
@@ -226,16 +244,34 @@
     $: names = [...new Set([...numericNames, ...Object.keys(pendingOverrides)])];
     $: filtered = names.filter((name) => name.toLowerCase().includes(search.toLowerCase()));
     $: first = Math.max(0, Math.floor(listScroll / 35) - 3);
-    $: if (names.length && !names.includes(selected)) selected = names[0];
-    $: context = JSON.stringify([state?.session_id, state?.revision, setup, selected]);
-    $: if (context !== previousContext) {
-        previousContext = context;
-        invalidate();
+    $: if (!names.includes(selected)) selected = names[0] || '';
+    $: previewKey = JSON.stringify([
+        state?.session_id,
+        state?.project_id,
+        state?.revision,
+        setup,
+        selected,
+        active,
+        disabled,
+        resetKey,
+        defaultText,
+        pendingOverrides,
+        countText,
+        cutsText,
+        fallbackText,
+    ]);
+    $: if (previewKey !== previousPreviewKey) {
+        previousPreviewKey = previewKey;
+        schedulePreview();
     }
     $: if (resetKey !== undefined) {
         resetKey;
         initialise();
     }
+    onDestroy(() => {
+        destroyed = true;
+        invalidate();
+    });
 </script>
 
 <section class="model-card binning-card" aria-label="Numeric binning">
@@ -286,7 +322,6 @@
                                     class:selected={selected === name}
                                     onclick={() => {
                                         selected = name;
-                                        invalidate();
                                     }}
                                     title={name}
                                 >
@@ -370,12 +405,6 @@
                             /></label
                         >
                     {/if}
-                    <button
-                        type="button"
-                        onclick={loadPreview}
-                        disabled={disabled || previewBusy || !!validation}
-                        >Preview bins for {setup.renames[selected] || selected}</button
-                    >
                 </div>{/if}
         </div>
     {:else}<p class="help-text">Assign a numeric predictor above to configure its bins.</p>{/if}
@@ -506,9 +535,6 @@
     .binning-editor label {
         display: block;
         margin-bottom: 12px;
-    }
-    .binning-editor button {
-        margin-top: 8px;
     }
     .binning-preview {
         margin-top: 18px;
