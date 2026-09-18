@@ -904,7 +904,8 @@ class TestWorkflow:
         src = to_script(project, "freq", run=run, output_prefix="cont_v1")
         assert "LinearEncoder('Mileage', [], clamp=(" in src
         no_run = to_script(project, "freq")
-        assert "linear=['Mileage']" in no_run and "knots={'Mileage': []}" in no_run
+        assert "spec = build_design(" in no_run
+        assert "'kind': 'continuous'" in no_run
 
     def test_continuous_exported_scripts_rebuild_the_model(self, project, tmp_path):
         """Both scripts are *executed*, with a run (explicit encoders) and
@@ -1172,7 +1173,9 @@ class TestWorkflow:
         # Rebuild the linear design from the exported settings, without fitting.
         project.design.variables["Mileage"].clamp = [100.0, 25_000.0]
         no_run = to_script(project, "freq")
-        design_source = no_run.split("# ----------------------------------------------------------------- 4. fit")[0]
+        design_source = no_run.split(
+            "# ----------------------------------------------------------------- 4. fit"
+        )[0]
         namespace = {}
         exec(design_source, namespace)
         encoder = namespace["spec"]["Mileage"]

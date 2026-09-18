@@ -247,7 +247,7 @@ User edits relativity in table
   read straight off the coefficients and `log_rel_at_from` accumulates from `lo`,
   so continuity is automatic. Nulls are all-zero band columns plus `is null`.
   A `LinearEncoder` with no interior knots is the `continuous` kind (one band).
-- **Interactions are fitted in two stages, never jointly** (`core/fit.py::fit_two_stage`,
+- **Legacy GLM interactions are fitted in two stages, never jointly** (`core/fit.py::fit_two_stage`,
   the actuary's answer to Q5). Stage 1 is `spec.main_effects_spec()` — bit for bit the
   fit the model gets with no interaction — and stage 2 is `spec.interactions_spec()`
   with `fit_intercept=False` and `offset = eta1` (stage 1's linear predictor plus any
@@ -262,6 +262,23 @@ User edits relativity in table
   branches on a stage 2 (the exported script, the Model page, `EasyGLM.save`) must ask
   the fit. Stage 2 carries no intercept, so any overall re-levelling it wants lands in
   the cells — say so wherever a cell is described as a "pure adjustment".
+- **Sequential CatBoost pair corrections are a separate model path.**
+  `ModelConfig.pair_stages` is ordered and cannot be mixed with legacy GLM
+  interactions. Stage 1 remains the GLM. Every pair stage sees exactly its two
+  raw prepared columns, using the main effects and all earlier **rate tables**
+  as its link-scale baseline. Convert the teacher to a loss-optimal table before
+  fitting the next stage. Never pass earlier raw CatBoost predictions downstream.
+  Main tables and the GLM base rate stay frozen; pair corrections may contain
+  residual one-way effects and change total expected claims.
+- Pair tables have stable stage IDs and their own numeric/category axes; a parent
+  need not be a selected main effect. Do not parse display names or insert dummy
+  main variables. Final scoring, diagnostics and exports use `RateModel`'s tables,
+  with no CatBoost dependency for scoring. GLM coefficients and lambda paths
+  describe only the main-effects fit. Fold validation must rebuild and tune its
+  whole prefix exclusively within that fold's training partition. Appending a
+  stage reuses compatible earlier full-training and fold artefacts; changing an
+  upstream table or stage invalidates its dependent suffix. See
+  `docs/plans/PAIR_STAGE_CONTRACTS.md` for the implementation boundaries.
 - **Band columns and interaction cells carry a `P1`** (`core/fit.py::penalty_weights`).
   glum penalises the *standardised* coefficient, so a column with little spread buys a
   large effect cheaply. For a band the effect is its **rise** (`beta_j x width_j`), so

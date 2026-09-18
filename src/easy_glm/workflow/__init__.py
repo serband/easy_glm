@@ -29,7 +29,7 @@ from .diagnostics import (
     unit_values,
 )
 from .explore import leakage_report, single_factor_strength, univariate
-from .export import to_script
+from .export import to_scoring_script, to_script
 from .prep import (
     add_premium_offset,
     add_split_column,
@@ -149,5 +149,6 @@ __all__ = [
     "coefficient_path",
     "model_metrics",
     "to_script",
+    "to_scoring_script",
     "to_report_html",
 ]

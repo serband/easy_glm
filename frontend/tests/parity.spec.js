@@ -9,6 +9,7 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     await button('Preview changes').click();
     await button('Apply changes').click();
     await button('Model').click();
+    await button('Legacy GLM interactions').click();
     await page.getByLabel('Penalty mode').selectOption('cv');
     await page.getByLabel('CV folds').fill('2');
     await page.getByLabel('Alpha path length').fill('5');

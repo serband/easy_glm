@@ -13,6 +13,7 @@ import numpy as np
 import polars as pl
 
 from ._scoring import (
+    row_index,
     score_categorical,
     score_interaction,
     score_linear,
@@ -25,6 +26,8 @@ from .models import (
     Change,
     FromToRow,
     ModelMetadata,
+    PairCellRow,
+    PairTableConfig,
     Snapshot,
     VariableConfig,
     relativity_label,
@@ -35,7 +38,7 @@ _UNSET = object()
 
 #: ``.easyglm`` file format version written by this release. Readers accept
 #: older versions (migrating them) and refuse newer ones.
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 
 #: How each ``VariableConfig.type`` is scored. Unknown types are an error, never
 #: silently treated as another type.
@@ -113,6 +116,44 @@ def _row_from_dict(r: dict[str, Any]) -> Any:
 
 def _rows_from_list(rows: list[dict[str, Any]]) -> list[Any]:
     return [_row_from_dict(r) for r in rows]
+
+
+def _pair_table_to_dict(table: PairTableConfig) -> dict[str, Any]:
+    return {
+        "stage_id": table.stage_id,
+        "parents": list(table.parents),
+        "axes": [
+            {
+                "type": axis.type,
+                "other_label": axis.other_label,
+                "table": [_row_to_dict(row) for row in axis.table],
+            }
+            for axis in table.axes
+        ],
+        "cells": [asdict(cell) for cell in table.cells],
+        "provenance": table.provenance,
+    }
+
+
+def _pair_table_from_dict(raw: dict[str, Any]) -> PairTableConfig:
+    axes = tuple(
+        VariableConfig(
+            type=axis["type"],
+            table=_rows_from_list(axis["table"]),
+            other_label=axis.get("other_label"),
+        )
+        for axis in raw["axes"]
+    )
+    if len(axes) != 2:
+        raise ValueError("Pair table must contain exactly two axes")
+    cells = [PairCellRow(**cell) for cell in raw["cells"]]
+    return PairTableConfig(
+        stage_id=raw["stage_id"],
+        parents=tuple(raw["parents"]),
+        axes=axes,
+        cells=cells,
+        provenance=raw.get("provenance", {}),
+    )
 
 
 def _split_interaction_name(name: str, variables: dict[str, Any]) -> tuple[str, str]:
@@ -268,6 +309,7 @@ class RateModel:
         snapshots: list[Snapshot] | None = None,
         current_version: int = 0,
         column_mapping: dict[str, str] | None = None,
+        pair_tables: list[PairTableConfig] | None = None,
     ):
         """``column_mapping`` maps *dataset* column names to the model's variable
         names, e.g. ``{"driver_age": "DrivAge"}``; ``predict`` renames before scoring.
@@ -279,6 +321,23 @@ class RateModel:
         self.current_version = current_version
         self._pending_changes: list[Change] = []
         self.column_mapping = column_mapping or {}
+        self.pair_tables = list(pair_tables or [])
+        if any(
+            not isinstance(table.stage_id, str)
+            or not table.stage_id
+            or len(table.parents) != 2
+            or not all(isinstance(parent, str) for parent in table.parents)
+            for table in self.pair_tables
+        ):
+            raise ValueError("Pair tables need string stage IDs and two named parents")
+        ids = [table.stage_id for table in self.pair_tables]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Pair stage IDs must be unique")
+        pairs = [frozenset(table.parents) for table in self.pair_tables]
+        if len(pairs) != len(set(pairs)):
+            raise ValueError("Duplicate or reversed pair tables are not supported")
+        for pair_table in self.pair_tables:
+            self._precompute_pair_table(pair_table)
 
     # -- what one number in these tables means ---------------------------
     @property
@@ -631,6 +690,229 @@ class RateModel:
         RateModel._precompute_interaction(name, cfg, variables)  # validates cells
         return cfg
 
+    @staticmethod
+    def _precompute_pair_table(table: PairTableConfig) -> None:
+        if (
+            not table.stage_id
+            or len(table.parents) != 2
+            or len(table.axes) != 2
+            or table.parents[0] == table.parents[1]
+        ):
+            raise ValueError("Pair table needs a stage ID and two distinct parents")
+        shape = (len(table.axes[0].table), len(table.axes[1].table))
+        if shape[0] * shape[1] > 10_000:
+            raise ValueError(
+                f"Pair table {table.stage_id!r} has {shape[0] * shape[1]:,} cells; "
+                "the maximum is 10,000. Reduce the configured bins or levels."
+            )
+        for axis in table.axes:
+            if axis.type not in ("numeric", "categorical"):
+                raise ValueError(
+                    "Pair axes must be numeric or categorical lookup tables"
+                )
+            if not axis.table:
+                raise ValueError("Pair axes must have at least one row")
+            if axis.type == "numeric":
+                bins = [r for r in axis.table if not _is_null_row(r)]
+                nulls = [r for r in axis.table if _is_null_row(r)]
+                try:
+                    edges = [float(row.to_) for row in bins[:-1]]
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        "Numeric pair axis cuts must be finite and strictly increasing"
+                    ) from exc
+                if (
+                    not bins
+                    or bins[0].from_ is not None
+                    or bins[-1].to_ is not None
+                    or len(nulls) != 1
+                    or axis.table[-1] is not nulls[0]
+                    or not all(np.isfinite(edge) for edge in edges)
+                    or any(
+                        right <= left
+                        for left, right in zip(edges[:-1], edges[1:], strict=True)
+                    )
+                    or any(
+                        a.to_ != b.from_
+                        for a, b in zip(bins[:-1], bins[1:], strict=True)
+                    )
+                ):
+                    raise ValueError(
+                        "Numeric pair axes need tiled open tails and a final missing row"
+                    )
+            else:
+                if (
+                    not _is_null_row(axis.table[-1])
+                    or any(_is_null_row(r) or r.from_ != r.to_ for r in axis.table[:-1])
+                    or len({str(r.from_) for r in axis.table[:-1]})
+                    != len(axis.table) - 1
+                ):
+                    raise ValueError(
+                        "Categorical pair axes need unique levels and a final Other row"
+                    )
+            RateModel._precompute_variables({"axis": axis})
+            if any(not np.isclose(row.relativity, 1.0) for row in axis.table):
+                raise ValueError("Pair axes must have neutral row relativities")
+        matrix = np.ones(shape, dtype=np.float64)
+        seen: set[tuple[int, int]] = set()
+        for cell in table.cells:
+            key = (cell.axis_a_row, cell.axis_b_row)
+            if (
+                any(
+                    not isinstance(index, int) or isinstance(index, bool)
+                    for index in key
+                )
+                or key in seen
+                or not (0 <= key[0] < shape[0] and 0 <= key[1] < shape[1])
+            ):
+                raise ValueError(
+                    f"Pair table {table.stage_id!r} has duplicate or invalid cell {key}"
+                )
+            if not np.isfinite(cell.relativity) or cell.relativity <= 0:
+                raise ValueError(
+                    f"Pair table {table.stage_id!r} has invalid relativity"
+                )
+            if (
+                not isinstance(cell.row_count, int)
+                or isinstance(cell.row_count, bool)
+                or cell.row_count < 0
+                or not np.isfinite(cell.fitting_weight)
+                or cell.fitting_weight < 0
+                or not np.isfinite(cell.weight_share)
+                or not 0 <= cell.weight_share <= 1
+                or (
+                    cell.exposure_total is not None
+                    and (
+                        not np.isfinite(cell.exposure_total) or cell.exposure_total < 0
+                    )
+                )
+            ):
+                raise ValueError(
+                    f"Pair table {table.stage_id!r} has invalid cell support"
+                )
+            seen.add(key)
+            matrix[key] = cell.relativity
+        table.cell_matrix = matrix
+
+    def get_pair_table(self, stage_id: str) -> PairTableConfig:
+        """Return one deployed pair stage by stable ID."""
+        for table in self.pair_tables:
+            if table.stage_id == stage_id:
+                return table
+        raise KeyError(stage_id)
+
+    def add_pair_table(self, table: PairTableConfig) -> None:
+        """Append a validated pair table in deployment order."""
+        if any(existing.stage_id == table.stage_id for existing in self.pair_tables):
+            raise ValueError(f"Pair stage ID {table.stage_id!r} is already deployed")
+        if any(
+            frozenset(existing.parents) == frozenset(table.parents)
+            for existing in self.pair_tables
+        ):
+            raise ValueError("Duplicate or reversed pair tables are not supported")
+        self._precompute_pair_table(table)
+        self.pair_tables.append(table)
+
+    def update_pair_cell(
+        self, stage_id: str, axis_a_row: int, axis_b_row: int, relativity: float
+    ) -> None:
+        """Edit a deployed cell by stable stage ID and canonical axis positions."""
+        table = self.get_pair_table(stage_id)
+        if not np.isfinite(relativity) or relativity <= 0:
+            raise ValueError("Pair cell relativity must be positive and finite")
+        shape = (len(table.axes[0].table), len(table.axes[1].table))
+        if not (0 <= axis_a_row < shape[0] and 0 <= axis_b_row < shape[1]):
+            raise ValueError("Pair cell coordinates are outside the stage axes")
+        row = next(
+            (
+                cell
+                for cell in table.cells
+                if cell.axis_a_row == axis_a_row and cell.axis_b_row == axis_b_row
+            ),
+            None,
+        )
+        if row is None:
+            row = PairCellRow(axis_a_row, axis_b_row, 1.0)
+            table.cells.append(row)
+        old = row.relativity
+        row.relativity = float(relativity)
+        table.cell_matrix[axis_a_row, axis_b_row] = float(relativity)
+        self._pending_changes.append(
+            Change(
+                variable=f"pair:{stage_id}",
+                from_=axis_a_row,
+                to_=axis_b_row,
+                old_relativity=old,
+                new_relativity=float(relativity),
+                is_cell=True,
+            )
+        )
+
+    def _mapped_data(
+        self, data: pl.DataFrame, column_map: dict[str, str] | None
+    ) -> pl.DataFrame:
+        mapping = column_map or self.column_mapping
+        if mapping:
+            rename = {old: new for old, new in mapping.items() if old in data.columns}
+            if rename:
+                return data.rename(rename)
+        return data
+
+    def _pair_multiplier(
+        self, data: pl.DataFrame, table: PairTableConfig
+    ) -> np.ndarray:
+        for parent in table.parents:
+            if parent not in data.columns:
+                raise ValueError(f"Column '{parent}' not found in data")
+        if table.cell_matrix is None:
+            self._precompute_pair_table(table)
+        ia = row_index(data[table.parents[0]], table.axes[0])
+        ib = row_index(data[table.parents[1]], table.axes[1])
+        return table.cell_matrix[ia, ib]
+
+    def linear_predictor(
+        self,
+        data: pl.DataFrame,
+        *,
+        column_map: dict[str, str] | None = None,
+        include_offset: bool = True,
+    ) -> np.ndarray:
+        """Log of the deployed table product, with external offset exactly once.
+
+        Exposure and response-link conversion are deliberately excluded. This
+        is the raw baseline supplied to a subsequent CatBoost pair stage.
+        """
+        data = self._mapped_data(data, column_map)
+        if self.metadata.link != "log":
+            raise ValueError("linear_predictor currently supports log-link models only")
+        if not np.isfinite(self.base_rate) or self.base_rate <= 0:
+            raise ValueError("A log-link model needs a positive finite base rate")
+        result = np.full(len(data), np.log(self.base_rate), dtype=np.float64)
+        for name, config in self.variables.items():
+            if config.type == "interaction":
+                rel = score_interaction(data, config, self.variables)
+            else:
+                if name not in data.columns:
+                    raise ValueError(f"Column '{name}' not found in data")
+                rel = _SCORERS[config.type](data[name], config)
+            if not np.all(np.isfinite(rel) & (rel > 0)):
+                raise ValueError(
+                    f"Variable {name!r} has non-positive or non-finite relativity"
+                )
+            result += np.log(rel)
+        for table in self.pair_tables:
+            rel = self._pair_multiplier(data, table)
+            result += np.log(rel)
+        if include_offset and self.metadata.offset_col:
+            name = self.metadata.offset_col
+            if name not in data.columns:
+                raise ValueError(f"Offset column '{name}' not found in data")
+            offset = data[name].cast(pl.Float64).to_numpy()
+            result += offset if self.metadata.offset_is_log else np.log(offset)
+        if not np.all(np.isfinite(result)):
+            raise ValueError("The deployed linear predictor is not finite")
+        return result
+
     def predict(
         self,
         data: pl.DataFrame,
@@ -651,11 +933,7 @@ class RateModel:
             finally:
                 self.switch_to(saved_version)
 
-        mapping = column_map or self.column_mapping
-        if mapping:
-            rename = {old: new for old, new in mapping.items() if old in data.columns}
-            if rename:
-                data = data.rename(rename)
+        data = self._mapped_data(data, column_map)
 
         result = np.full(len(data), self.base_rate, dtype=float)
 
@@ -685,6 +963,9 @@ class RateModel:
             ):
                 _warn_if_levels_unmatched(name, col, config)
             result *= rel
+
+        for table in self.pair_tables:
+            result *= self._pair_multiplier(data, table)
 
         result = self._apply_offset(result, data)
         result = self._response(result)
@@ -954,6 +1235,7 @@ class RateModel:
             timestamp=datetime.now(timezone.utc).isoformat(),
             parent_version=parent,
             relativities=relativities,
+            pair_tables=copy.deepcopy(self.pair_tables),
             changes=list(self._pending_changes),
             column_mapping=dict(self.column_mapping),
             metadata=metadata_dict,
@@ -989,6 +1271,9 @@ class RateModel:
             self.variables[name].slopes = None
             self.variables[name].starts = None
         RateModel._precompute_variables(self.variables)
+        self.pair_tables = copy.deepcopy(snapshot.pair_tables)
+        for pair_table in self.pair_tables:
+            self._precompute_pair_table(pair_table)
         self.column_mapping = dict(snapshot.column_mapping)
         if snapshot.metadata:
             self.metadata = _metadata_from_dict(snapshot.metadata)
@@ -1057,6 +1342,15 @@ class RateModel:
         path = Path(path)
         path.write_text(json.dumps(data, indent=2, default=str))
 
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-compatible copy of this deployed scorer."""
+        return self._to_dict()
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RateModel:
+        """Load a deployed scorer from its versioned dictionary form."""
+        return cls._from_dict(copy.deepcopy(data))
+
     def to_excel(self, path: str | Path) -> Path:
         """Write the current relativities to an ``.xlsx`` workbook: a ``Summary``
         sheet (base rate, metadata, version) plus one sheet per variable with
@@ -1095,7 +1389,11 @@ class RateModel:
             if cfg.type == "interaction"
         }
         return write_rate_tables_xlsx(
-            rate_model_tables(self), path, summary=summary, matrices=matrices or None
+            rate_model_tables(self),
+            path,
+            summary=summary,
+            matrices=matrices or None,
+            pair_tables=self.pair_tables,
         )
 
     @classmethod
@@ -1105,7 +1403,11 @@ class RateModel:
 
     def _to_dict(self) -> dict[str, Any]:
         return {
-            "format_version": FORMAT_VERSION,
+            "format_version": (
+                FORMAT_VERSION
+                if self.pair_tables or any(s.pair_tables for s in self.snapshots)
+                else 2
+            ),
             "metadata": asdict(self.metadata),
             "base_rate": self.base_rate,
             "current_version": self.current_version,
@@ -1132,6 +1434,15 @@ class RateModel:
                 }
                 for name, config in self.variables.items()
             },
+            **(
+                {
+                    "pair_tables": [
+                        _pair_table_to_dict(table) for table in self.pair_tables
+                    ]
+                }
+                if self.pair_tables
+                else {}
+            ),
             "snapshots": [
                 {
                     "version": s.version,
@@ -1146,6 +1457,15 @@ class RateModel:
                         name: [_row_to_dict(row) for row in table]
                         for name, table in s.relativities.items()
                     },
+                    **(
+                        {
+                            "pair_tables": [
+                                _pair_table_to_dict(table) for table in s.pair_tables
+                            ]
+                        }
+                        if s.pair_tables
+                        else {}
+                    ),
                     "changes": [
                         {
                             "variable": c.variable,
@@ -1198,6 +1518,9 @@ class RateModel:
             )
 
         cls._precompute_variables(variables)
+        pair_tables = [
+            _pair_table_from_dict(table) for table in raw.get("pair_tables", [])
+        ]
 
         metadata = _metadata_from_dict(raw.get("metadata"))
 
@@ -1229,6 +1552,10 @@ class RateModel:
                     timestamp=sdata["timestamp"],
                     parent_version=sdata["parent_version"],
                     relativities=relativities,
+                    pair_tables=[
+                        _pair_table_from_dict(table)
+                        for table in sdata.get("pair_tables", [])
+                    ],
                     changes=changes,
                     metrics=sdata.get("metrics"),
                     column_mapping=sdata.get("column_mapping", {}),
@@ -1243,6 +1570,7 @@ class RateModel:
             snapshots=snapshots,
             current_version=raw.get("current_version", 0),
             column_mapping=column_mapping,
+            pair_tables=pair_tables,
         )
 
     @staticmethod

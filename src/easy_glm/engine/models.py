@@ -108,6 +108,36 @@ class CellRow:
         return (self.from_a, self.to_a, self.from_b, self.to_b)
 
 
+@dataclass
+class PairCellRow:
+    """A deployed pair correction at two canonical axis row positions."""
+
+    axis_a_row: int
+    axis_b_row: int
+    relativity: float
+    row_count: int = 0
+    fitting_weight: float = 0.0
+    weight_share: float = 0.0
+    fallback_reason: str | None = None
+    exposure_total: float | None = None
+
+
+@dataclass
+class PairTableConfig:
+    """One ordered CatBoost-distilled table, independent of main-effect tables.
+
+    Each axis is a numeric or categorical ``VariableConfig`` whose rows define
+    the complete lookup grid. Unlisted cells have neutral relativity 1.0.
+    """
+
+    stage_id: str
+    parents: tuple[str, str]
+    axes: tuple[VariableConfig, VariableConfig]
+    cells: list[PairCellRow]
+    provenance: dict[str, Any] = field(default_factory=dict)
+    cell_matrix: np.ndarray | None = field(default=None, repr=False, compare=False)
+
+
 TableType = Literal["numeric", "categorical", "linear", "interaction"]
 
 
@@ -161,6 +191,7 @@ class Snapshot:
     timestamp: str
     parent_version: int | None
     relativities: dict[str, list[Any]]
+    pair_tables: list[PairTableConfig] = field(default_factory=list)
     changes: list[Change] = field(default_factory=list)
     metrics: dict | None = None
     column_mapping: dict[str, str] = field(default_factory=dict)

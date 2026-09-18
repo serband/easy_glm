@@ -24,6 +24,7 @@ from easy_glm.workflow import (
     rate_model_for,
     totals,
 )
+from easy_glm.workflow.project import pair_stage_fingerprint
 
 from . import charts as C
 from . import grids as G
@@ -820,6 +821,11 @@ def _snapshots(run) -> None:
                         ),
                         adjustments=copy.deepcopy(cfg.adjustments),
                         base_rate_override=cfg.base_rate_override,
+                        pair_stage_fingerprint=(
+                            pair_stage_fingerprint(cfg, run.rate_model)
+                            if cfg.pair_stages
+                            else None
+                        ),
                     )
                 )
                 S.touch()
@@ -851,6 +857,16 @@ def _snapshots(run) -> None:
         )
         if c2.button("Restore", key=key("restore")):
             snap = next(sn for sn in cfg.snapshots if sn.name == chosen)
+            if (
+                cfg.pair_stages
+                and snap.pair_stage_fingerprint
+                != pair_stage_fingerprint(cfg, run.rate_model)
+            ):
+                st.error(
+                    "This snapshot was saved against different pair-stage axes or "
+                    "fitted prefix. Fit the current sequence and take a new snapshot."
+                )
+                return
             gone = missing_variables(run.rate_model, snap.adjustments)
             if gone:
                 # nothing is changed and nothing is saved: a snapshot older than
@@ -968,6 +984,13 @@ def render() -> None:
         return
     challenger = _challenger_selector(c2, run.name)
     cfg = p.models[run.name]
+    if cfg.pair_stages:
+        st.error(
+            "This Streamlit Rate tables page does not display or edit the ordered "
+            "pair corrections. Open the desktop workbench to inspect and edit "
+            "the complete deployed model."
+        )
+        return
     n_inter = sum(
         1 for c in run.rate_model.variables.values() if c.type == "interaction"
     )

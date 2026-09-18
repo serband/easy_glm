@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-FORMAT = 1
+FORMAT = 2
 REPEATS = 5
 SEED = 42
 
@@ -59,6 +59,7 @@ def build_packet(
     from easy_glm.desktop.fit_worker import json_safe, write_json
     from easy_glm.workflow.diagnostics import permutation_importance, unit_values
     from easy_glm.workflow.prep import train_holdout
+    from easy_glm.workflow.run import rate_model_for
 
     train, _ = train_holdout(frame, project.data.split)
     protected = tuple(
@@ -76,8 +77,26 @@ def build_packet(
             "time",
         )
     ) + (project.data.split.column,)
+    pair_parents = tuple(
+        dict.fromkeys(
+            parent
+            for stage in getattr(run.config, "pair_stages", [])
+            for parent in (stage.a, stage.b)
+        )
+    )
+    frozen = rate_model_for(project, run, [], base_rate_override=None)
+
+    def frozen_predict(frame: Any) -> Any:
+        return frozen.predict(frame, exposure_col=None)
+
     rows = permutation_importance(
-        run.fit, train, repeats=REPEATS, seed=SEED, protected_columns=protected
+        run.fit,
+        train,
+        repeats=REPEATS,
+        seed=SEED,
+        protected_columns=protected,
+        scorer=frozen_predict,
+        additional_variables=pair_parents,
     ).to_dicts()
     baseline = rows[0]["baseline_deviance"] if rows else None
     if baseline is None:
@@ -85,7 +104,7 @@ def build_packet(
         baseline = float(
             run.fit.model.family_instance.deviance(
                 y,
-                run.fit.predict(train),
+                frozen_predict(train),
                 sample_weight=w if run.fit.weight_col else None,
             )
         ) / float(w.sum())
@@ -96,6 +115,7 @@ def build_packet(
             "metric": "Mean deviance increase",
             "subset": "train",
             "basis": "original",
+            "scoring_basis": "complete frozen rate tables",
             "repeats": REPEATS,
             "seed": SEED,
             "training_rows": train.height,

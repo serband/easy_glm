@@ -20,6 +20,15 @@ def eligible_variables(run: Any) -> list[str]:
             continue
         names.append(name)
         groups += count
+    for pair in getattr(run.rate_model, "pair_tables", []):
+        for parent, axis in zip(pair.parents, pair.axes, strict=True):
+            if parent in names:
+                continue
+            count = len(axis.table)
+            if count > 500 or groups + count > 10000 or len(names) >= 128:
+                continue
+            names.append(parent)
+            groups += count
     return names
 
 
@@ -156,8 +165,18 @@ def build_packet(
         },
     }
     for name in names:
+        pair_axis = next(
+            (
+                axis
+                for pair in getattr(run.rate_model, "pair_tables", [])
+                for parent, axis in zip(pair.parents, pair.axes, strict=True)
+                if parent == name
+            ),
+            None,
+        )
+        config = run.rate_model.variables.get(name, pair_axis)
         packet["variables"][name] = {
-            "kind": run.rate_model.variables[name].type,
+            "kind": config.type if config is not None else None,
             "subsets": {},
         }
         for subset, mask in masks.items():

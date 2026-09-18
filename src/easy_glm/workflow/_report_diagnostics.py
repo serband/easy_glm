@@ -46,10 +46,14 @@ def _importance_section(
     train: pl.DataFrame,
     importance: pl.DataFrame | None,
 ) -> str:
+    pair_tables = getattr(run.rate_model, "pair_tables", ())
+    whole_model = bool(pair_tables)
     out = [
         '<section id="variable-importance" class="report-diagnostic">',
         "<h3>Variable importance</h3>",
-        '<p class="muted">Original fit · training data · five shuffles per predictor. '
+        '<p class="muted">'
+        + ("Complete deployed scorer" if whole_model else "Original fit")
+        + " · training data · five shuffles per predictor. "
         "Larger increases in mean deviance indicate greater importance.</p>",
     ]
     if train.height < 2:
@@ -69,9 +73,19 @@ def _importance_section(
                 "split",
             }
         ) + (project.data.split.column,)
-        if importance is None:
+        # Older desktop caches describe only the GLM. Until a cache carries
+        # scorer provenance, a pair report must compute its own complete score.
+        if importance is None or whole_model:
             importance = permutation_importance(
-                run.fit, train, repeats=5, seed=42, protected_columns=protected
+                run.fit,
+                train,
+                repeats=5,
+                seed=42,
+                protected_columns=protected,
+                scorer=run.predict if whole_model else None,
+                additional_variables=tuple(
+                    parent for table in pair_tables for parent in table.parents
+                ),
             )
         rows = (
             importance.sort(
@@ -83,7 +97,12 @@ def _importance_section(
         if rows:
             out.append(
                 permutation_importance_chart(
-                    rows[:30], title="Training permutation importance — original fit"
+                    rows[:30],
+                    title=(
+                        "Training permutation importance — complete deployed scorer"
+                        if whole_model
+                        else "Training permutation importance — original fit"
+                    ),
                 )
             )
             out.append(
@@ -102,9 +121,14 @@ def _importance_section(
 
 
 def _coefficient_section(run: ModelRun) -> str:
+    pair_model = bool(getattr(run.rate_model, "pair_tables", ()))
     out = [
         '<section id="coefficient-paths" class="report-diagnostic">',
-        "<h3>Coefficients versus lambda</h3>",
+        (
+            "<h3>Main-effects GLM coefficients versus lambda</h3>"
+            if pair_model
+            else "<h3>Coefficients versus lambda</h3>"
+        ),
         '<p class="muted">Stronger regularisation is to the right. Each line is one '
         "encoded coefficient; magnitudes depend on the variable's scale and encoding.</p>",
     ]

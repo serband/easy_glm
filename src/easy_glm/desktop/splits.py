@@ -56,7 +56,7 @@ def split_counts(project: Project, raw: pl.DataFrame) -> dict[str, int]:
                 return False
             if isinstance(value, bool):
                 return str(value).lower() == str(train).lower()
-            if isinstance(value, (int, float)):
+            if isinstance(value, int | float):
                 try:
                     return float(value) == float(train)
                 except (ValueError, TypeError):

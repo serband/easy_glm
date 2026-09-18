@@ -207,7 +207,8 @@ for (const change of ['name', 'type', 'role', 'raw JSON', 'options', 'navigation
         } else await button(page, 'Project & data').click();
         calls.releaseStart();
         await expect.poll(() => calls.cancellations).toBe(1);
-        if (change === 'navigation') await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
+        if (change === 'navigation')
+            await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
         await expect(
             page.getByRole('region', { name: 'Possible target leakage', exact: true }),
         ).toHaveCount(0);
@@ -230,6 +231,7 @@ test('actual training scan is read-only; applying flagged removals cleans model 
     page,
 }) => {
     await button(page, 'Model').click();
+    await button(page, 'Legacy GLM interactions').click();
     await page.getByLabel('Interaction first factor').selectOption('DriverAge');
     await page.getByLabel('Interaction second factor').selectOption('AnnualMileage');
     await button(page, 'Add interaction').click();

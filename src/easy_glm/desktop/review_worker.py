@@ -26,7 +26,7 @@ from easy_glm.workflow.diagnostics import (
     totals,
 )
 from easy_glm.workflow.prep import prepare, train_holdout
-from easy_glm.workflow.project import Project
+from easy_glm.workflow.project import Adjustment, Project
 from easy_glm.workflow.run import (
     ModelRun,
     rate_model_for,
@@ -37,6 +37,24 @@ from easy_glm.workflow.run import (
 
 def grouping(run: ModelRun, variable: str) -> dict[str, Any]:
     if variable not in run.spec.main_effects:
+        for pair in getattr(run.rate_model, "pair_tables", []):
+            for parent, axis in zip(pair.parents, pair.axes, strict=True):
+                if parent != variable:
+                    continue
+                from easy_glm.engine.models import level_label
+
+                return {
+                    "knots": axis.breakpoints if axis.type == "numeric" else None,
+                    "fitted_levels": (
+                        [row.from_ for row in axis.table]
+                        if axis.type == "categorical"
+                        else None
+                    ),
+                    "fitted_labels": [
+                        level_label(row, axis.other_label) for row in axis.table
+                    ],
+                    "other_label": axis.other_label,
+                }
         return {}
     enc = run.spec[variable]
     return {
@@ -44,6 +62,115 @@ def grouping(run: ModelRun, variable: str) -> dict[str, Any]:
         "fitted_levels": list(enc.levels) if hasattr(enc, "levels") else None,
         "fitted_labels": run.tables[variable]["label"].to_list(),
         "other_label": run.rate_model.variables[variable].other_label,
+    }
+
+
+def pair_edit_preview(
+    project: Project,
+    run: ModelRun,
+    frame: pl.DataFrame,
+    train: pl.DataFrame,
+    stage_id: str,
+    edits: dict[str, float],
+) -> dict[str, Any]:
+    """Preview canonical stage-cell overrides through the complete scorer."""
+    from easy_glm.core.excel import pair_table_frames
+
+    before = run.rate_model.clone()
+    original = rate_model_for(project, run, [], base_rate_override=None)
+    config = project.models[run.name]
+    table = before.get_pair_table(stage_id)
+    fitted_table = original.get_pair_table(stage_id)
+    old_adjustments = copy.deepcopy(config.adjustments)
+    old_rows = pair_table_frames(before)[stage_id].to_dicts()
+    for key, value in edits.items():
+        try:
+            index = int(key)
+            relativity = float(value)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                "A pair edit needs a cell row number and numeric relativity."
+            ) from exc
+        if (
+            not 0 <= index < len(table.cells)
+            or not math.isfinite(relativity)
+            or relativity <= 0
+        ):
+            raise ValueError(
+                "Every pair edit must name an existing cell and a finite positive relativity."
+            )
+        cell = table.cells[index]
+        base_cell = fitted_table.cells[index]
+        if (cell.axis_a_row, cell.axis_b_row) != (
+            base_cell.axis_a_row,
+            base_cell.axis_b_row,
+        ):
+            raise ValueError(
+                "The fitted pair axes changed; refit before editing this cell."
+            )
+        row_a = table.axes[0].table[cell.axis_a_row]
+        row_b = table.axes[1].table[cell.axis_b_row]
+        config.adjustments = [
+            item
+            for item in config.adjustments
+            if not (
+                item.stage_id == stage_id
+                and item.axis_a_row == cell.axis_a_row
+                and item.axis_b_row == cell.axis_b_row
+            )
+        ]
+        if relativity != base_cell.relativity:
+            config.adjustments.append(
+                Adjustment(
+                    variable=stage_id,
+                    from_=row_a.from_,
+                    to_=row_a.to_,
+                    relativity=relativity,
+                    from_b=row_b.from_,
+                    to_b=row_b.to_,
+                    cell=True,
+                    stage_id=stage_id,
+                    axis_a_row=cell.axis_a_row,
+                    axis_b_row=cell.axis_b_row,
+                )
+            )
+    rebuild_rate_model(project, run, frame)
+    new_rows = pair_table_frames(run.rate_model)[stage_id].to_dicts()
+    changes = [
+        {
+            "row": index + 1,
+            "label": f"{old['label_a']} × {old['label_b']}",
+            "before": old["relativity"],
+            "after": new["relativity"],
+        }
+        for index, (old, new) in enumerate(zip(old_rows, new_rows, strict=True))
+        if old["relativity"] != new["relativity"]
+    ]
+    previous = expected_claims(before, train, config)
+    after = expected_claims(run.rate_model, train, config)
+    return {
+        "changes": changes,
+        "kind": "pair",
+        "preview_table": {
+            "columns": list(new_rows[0]) if new_rows else [],
+            "rows": [
+                dict(row, fitted=fitted_table.cells[index].relativity)
+                for index, row in enumerate(new_rows)
+            ],
+            "kind": "pair",
+            "offset": 0,
+            "total": len(new_rows),
+        },
+        "changed": config.adjustments != old_adjustments,
+        "project": project.to_dict(),
+        "result": result_for(project, frame, run),
+        "rows": [],
+        "note": "Manual pair-cell adjustment. Later stages need refitting against the edited prefix.",
+        "before_base_rate": before.base_rate,
+        "after_base_rate": run.rate_model.base_rate,
+        "before_expected": previous,
+        "after_expected": after,
+        "change": after / previous - 1 if previous else None,
     }
 
 
@@ -169,6 +296,13 @@ def review(
         raise ValueError("The selected subset has no rows.")
     action = request["action"]
     variable = request.get("variable")
+    stage_id = request.get("stage_id")
+    if action == "edit" and stage_id is not None:
+        if stage_id not in {table.stage_id for table in run.rate_model.pair_tables}:
+            raise ValueError("Choose a fitted pair stage.")
+        return pair_edit_preview(
+            project, run, frame, train, stage_id, request.get("edits", {})
+        )
     available = [
         c
         for c in frame.columns

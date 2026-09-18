@@ -3,7 +3,9 @@ fit, compile the RateModel, apply manual adjustments, compute metrics."""
 
 from __future__ import annotations
 
+import copy
 import math
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -244,6 +246,8 @@ class ModelRun:
     #: predictors left out of the design because they are constant or all-null
     #: on the training rows (the fit ran without them; the page names them)
     dropped_predictors: list[str] = field(default_factory=list)
+    #: Ordered frozen CatBoost pair tables and their fold-local selection evidence.
+    pair_stages: list[Any] = field(default_factory=list)
 
     def predict(self, df: pl.DataFrame) -> np.ndarray:
         """Per-unit predictions from the (possibly adjusted) rate model."""
@@ -303,6 +307,32 @@ def apply_adjustments(rm: RateModel, cfg: ModelConfig) -> None:
     """Apply ``cfg.adjustments`` to ``rm`` in order. Raises
     :class:`AdjustmentError` for an adjustment the model refuses."""
     for adj in cfg.adjustments:
+        stage_id = adj.stage_id
+        if stage_id is not None:
+            if adj.axis_a_row is None or adj.axis_b_row is None:
+                raise AdjustmentError(
+                    adj, "Pair adjustment needs canonical axis row indices"
+                )
+            try:
+                table = rm.get_pair_table(stage_id)
+                axis_a_row = table.axes[0].table[adj.axis_a_row]
+                axis_b_row = table.axes[1].table[adj.axis_b_row]
+                if (
+                    axis_a_row.from_,
+                    axis_a_row.to_,
+                    axis_b_row.from_,
+                    axis_b_row.to_,
+                ) != (adj.from_, adj.to_, adj.from_b, adj.to_b):
+                    raise ValueError(
+                        "Pair adjustment no longer matches the stage's exact axis rows; "
+                        "use fixed cuts/levels or reset the edit before fitting"
+                    )
+                rm.update_pair_cell(
+                    stage_id, adj.axis_a_row, adj.axis_b_row, float(adj.relativity)
+                )
+            except (IndexError, KeyError, ValueError) as exc:
+                raise AdjustmentError(adj, str(exc)) from exc
+            continue
         config = rm.variables.get(adj.variable)
         if config is None:
             # an AdjustmentError, not a KeyError: the caller's job is to drop it
@@ -382,6 +412,8 @@ def run_model(
     *,
     progress: Callable[[str], None] | None = None,
     main_effects_cache: dict[str, Any] | None = None,
+    pair_stages_cache: dict[str, Any] | None = None,
+    replay_pair_adjustments: bool = False,
 ) -> ModelRun:
     """Fit ``project.models[model_name]`` on the training rows of the prepared
     frame ``df`` (must contain the split column) and return a :class:`ModelRun`.
@@ -412,6 +444,14 @@ def run_model(
     train, holdout = train_holdout(df, project.data.split)
     if train.is_empty():
         raise ValueError("No training rows after the split")
+    if cfg.pair_stages:
+        from .pair_stages import MAX_SECONDS, preflight_pair_stages
+
+        # Refuse an oversized pair grid/search before fitting even the main GLM.
+        preflight_pair_stages(cfg.pair_stages, project, train, cfg)
+        pair_deadline = time.monotonic() + MAX_SECONDS
+    else:
+        pair_deadline = None
 
     dropped: list[str] = []
     spec = build_design(
@@ -472,7 +512,29 @@ def run_model(
         model_type=cfg.family,
         offset_is_premium=offset_is_premium(project, cfg),
     )
-    apply_adjustments(rm, cfg)
+    if cfg.pair_stages:
+        from .pair_stages import fit_pair_stages
+
+        # Main/base edits are part of every pair-stage baseline. Pair-cell edits
+        # are applied as their own tables are attached by the staged fitter.
+        main_cfg = replace(
+            cfg,
+            adjustments=[adj for adj in cfg.adjustments if adj.stage_id is None],
+        )
+        apply_adjustments(rm, main_cfg)
+        rm, pair_artifacts = fit_pair_stages(
+            project,
+            train,
+            cfg,
+            rm,
+            cache=pair_stages_cache,
+            progress=progress,
+            deadline_monotonic=pair_deadline,
+            replay_pair_adjustments=replay_pair_adjustments,
+        )
+    else:
+        apply_adjustments(rm, cfg)
+        pair_artifacts = []
     frames = {"train": train, "holdout": holdout}
     preds = {
         k: rm.predict(v, exposure_col=None)
@@ -499,6 +561,7 @@ def run_model(
         train_rows=train.height,
         holdout_rows=holdout.height,
         dropped_predictors=dropped,
+        pair_stages=pair_artifacts,
     )
 
 
@@ -607,11 +670,20 @@ def rate_model_for(
         exposure_col=exposure_for(project, cfg),
         train_test_col=project.data.split.column,
         model_type=cfg.family,
+        offset_is_premium=offset_is_premium(project, cfg),
     )
-    if adjustments is None:
-        apply_adjustments(rm, cfg)
-    else:
-        apply_adjustments(rm, replace(cfg, adjustments=list(adjustments)))
+    selected = (
+        cfg if adjustments is None else replace(cfg, adjustments=list(adjustments))
+    )
+    main_edits = [adj for adj in selected.adjustments if adj.stage_id is None]
+    apply_adjustments(rm, replace(selected, adjustments=main_edits))
+    for artifact in run.pair_stages:
+        rm.add_pair_table(copy.deepcopy(artifact.table))
+        stage_edits = [
+            adj for adj in selected.adjustments if adj.stage_id == artifact.stage_id
+        ]
+        if stage_edits:
+            apply_adjustments(rm, replace(selected, adjustments=stage_edits))
     return rm
 
 
@@ -623,7 +695,18 @@ def missing_variables(rm: RateModel, adjustments: list[Adjustment]) -> list[str]
     should say which factors are missing and leave the model alone rather than
     apply half of them.
     """
-    return sorted({a.variable for a in adjustments if a.variable not in rm.variables})
+    known_pairs = {table.stage_id for table in rm.pair_tables}
+    return sorted(
+        {
+            a.variable
+            for a in adjustments
+            if (
+                a.stage_id not in known_pairs
+                if a.stage_id is not None
+                else a.variable not in rm.variables
+            )
+        }
+    )
 
 
 def rebalance_override(
@@ -753,16 +836,6 @@ def rebuild_rate_model(project: Project, run: ModelRun, df: pl.DataFrame) -> Mod
     cfg = project.models[run.name]
     rm = rate_model_for(project, run)
 
-    rm = to_rate_model(
-        run.fit,
-        base=cfg.base,  # type: ignore[arg-type]
-        base_rate_override=cfg.base_rate_override,
-        exposure_col=exposure_for(project, cfg),
-        train_test_col=project.data.split.column,
-        model_type=cfg.family,
-        offset_is_premium=offset_is_premium(project, cfg),
-    )
-    apply_adjustments(rm, cfg)
     train, holdout = train_holdout(df, project.data.split)
     frames = {
         k: v

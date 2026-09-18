@@ -148,6 +148,8 @@ def permutation_importance(
     repeats: int = 5,
     seed: int = 42,
     protected_columns: tuple[str, ...] = (),
+    scorer: Any | None = None,
+    additional_variables: tuple[str, ...] = (),
 ) -> pl.DataFrame:
     """Rank original predictors by the training mean-deviance increase on shuffle.
 
@@ -167,6 +169,9 @@ def permutation_importance(
         for encoder in (interaction.a, interaction.b):
             if encoder.variable not in fixed and encoder.variable not in variables:
                 variables.append(encoder.variable)
+    for variable in additional_variables:
+        if variable not in fixed and variable not in variables:
+            variables.append(variable)
     y, weights = unit_values(train, fit)
     weight = weights if fit.weight_col else None
     denominator = float(weights.sum())
@@ -178,7 +183,10 @@ def permutation_importance(
     family = fit.model.family_instance
 
     def loss(frame: pl.DataFrame) -> float:
-        prediction = np.asarray(fit.predict(frame, offset=offset), dtype=np.float64)
+        prediction = np.asarray(
+            fit.predict(frame, offset=offset) if scorer is None else scorer(frame),
+            dtype=np.float64,
+        )
         value = (
             float(family.deviance(y, prediction, sample_weight=weight)) / denominator
         )
@@ -1184,6 +1192,29 @@ def _model_tables(run: Any) -> dict[str, tuple[str, pl.DataFrame]]:
     }
 
 
+def _pair_model_tables(
+    rate_model: Any,
+) -> dict[frozenset[str], tuple[str, dict[str, float]]]:
+    """Pair cells keyed by parent identity and oriented canonical axis labels."""
+    from easy_glm.core.excel import pair_table_frames
+
+    frames = pair_table_frames(rate_model)
+    result: dict[frozenset[str], tuple[str, dict[str, float]]] = {}
+    for pair in rate_model.pair_tables:
+        parents = frozenset(pair.parents)
+        first, second = sorted(pair.parents)
+        values: dict[str, float] = {}
+        for row in frames[pair.stage_id].iter_rows(named=True):
+            labels = {
+                pair.parents[0]: row["label_a"],
+                pair.parents[1]: row["label_b"],
+            }
+            band = f"{first}: {labels[first]} × {second}: {labels[second]}"
+            values[band] = float(row["relativity"])
+        result[parents] = (pair.stage_id, values)
+    return result
+
+
 def _label_values(table: pl.DataFrame) -> dict[str, float]:
     """``{rate-table row label: current relativity}`` — how categoricals and
     interaction cells are matched between two models."""
@@ -1387,6 +1418,32 @@ def relativity_diff(run_a: Any, run_b: Any, tol: float = 0.01) -> pl.DataFrame:
     for var, (kind_b, _table_b) in b_tables.items():
         if var not in a_tables:
             _row(var, kind_b, WHOLE_VARIABLE, "only_in_b")
+
+    pair_a = _pair_model_tables(run_a.rate_model)
+    pair_b = _pair_model_tables(run_b.rate_model)
+    for parents in sorted(
+        pair_a.keys() | pair_b.keys(), key=lambda pair: tuple(sorted(pair))
+    ):
+        name = " × ".join(sorted(parents))
+        if parents not in pair_b:
+            _row(name, f"pair stage {pair_a[parents][0]}", WHOLE_VARIABLE, "only_in_a")
+            continue
+        if parents not in pair_a:
+            _row(name, f"pair stage {pair_b[parents][0]}", WHOLE_VARIABLE, "only_in_b")
+            continue
+        id_a, cells_a = pair_a[parents]
+        id_b, cells_b = pair_b[parents]
+        kind = f"pair stage {id_a}" if id_a == id_b else f"pair stage {id_a} → {id_b}"
+        for band in sorted(cells_a.keys() | cells_b.keys()):
+            _compare_pair(
+                _row,
+                name,
+                kind,
+                band,
+                cells_a.get(band),
+                cells_b.get(band),
+                tol,
+            )
 
     return pl.DataFrame(rows, schema=DIFF_SCHEMA).sort(
         ["abs_log_diff", "variable", "band"],

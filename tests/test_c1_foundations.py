@@ -66,7 +66,8 @@ class TestFormatVersion:
         _, fit, rm = fit_and_rm
         rm.to_json(tmp_path / "m.easyglm")
         raw = json.loads((tmp_path / "m.easyglm").read_text())
-        assert raw["format_version"] == FORMAT_VERSION == 2
+        assert raw["format_version"] == 2  # Legacy-only files remain readable by v2.
+        assert FORMAT_VERSION == 3
         meta = raw["metadata"]
         assert meta["offset_col"] == "logprem" and meta["offset_is_log"] is True
         assert meta["link"] == "log" and meta["divide_target_by_weight"] is True
@@ -75,7 +76,7 @@ class TestFormatVersion:
         _, _, rm = fit_and_rm
         raw = rm._to_dict()
         raw["format_version"] = FORMAT_VERSION + 1
-        with pytest.raises(ValueError, match="format version 3"):
+        with pytest.raises(ValueError, match=f"format version {FORMAT_VERSION + 1}"):
             RateModel._from_dict(raw)
 
     def test_versionless_0_3_file_loads_and_scores_identically(self, fit_and_rm):
@@ -102,7 +103,7 @@ class TestFormatVersion:
         assert legacy.metadata.offset_col is None
         assert legacy.metadata.divide_target_by_weight is None  # unknown for old files
         np.testing.assert_array_equal(legacy.predict(df), rm_no_offset.predict(df))
-        assert legacy._to_dict()["format_version"] == FORMAT_VERSION
+        assert legacy._to_dict()["format_version"] == 2
 
     def test_unknown_metadata_keys_are_ignored(self, fit_and_rm):
         _, _, rm = fit_and_rm
@@ -235,7 +236,8 @@ class TestProjectFormat:
 
     def test_v1_project_loads_and_is_migrated(self):
         back = Project.from_dict(self._v1())
-        assert back.version == PROJECT_VERSION == 2
+        assert back.version == PROJECT_VERSION == 3
+        assert back.to_dict()["version"] == 2
         assert back.models["m"].target == "y"
 
     def test_unknown_keys_warn_but_load(self):
@@ -291,7 +293,7 @@ class TestReal030Fixture:
             rm.predict(score), saved["with_exposure"].to_numpy()
         )
         assert len(rm.snapshots) == 2 and rm.metadata.divide_target_by_weight is None
-        assert rm._to_dict()["format_version"] == FORMAT_VERSION
+        assert rm._to_dict()["format_version"] == 2
 
 
 def test_unknown_table_type_rejected_at_load(fit_and_rm):
@@ -306,7 +308,7 @@ def test_null_format_version_is_treated_as_v1(fit_and_rm):
     _, _, rm = fit_and_rm
     raw = rm._to_dict()
     raw["format_version"] = None
-    assert RateModel._from_dict(raw)._to_dict()["format_version"] == FORMAT_VERSION
+    assert RateModel._from_dict(raw)._to_dict()["format_version"] == 2
 
 
 def test_offset_nulls_propagate_identically(fit_and_rm):

@@ -14,13 +14,13 @@ import polars as pl
 
 from easy_glm.desktop.diagnostic_views import compatible
 from easy_glm.desktop.modeling import Revision
-from easy_glm.workflow.export import to_script
+from easy_glm.workflow.export import to_scoring_script, to_script
 from easy_glm.workflow.prep import prepare
 from easy_glm.workflow.project import Project, safe_filename
 from easy_glm.workflow.report import to_report_html
 from easy_glm.workflow.run import ModelRun, rebuild_rate_model
 
-ExportFormat = Literal["xlsx", "easyglm", "python", "html"]
+ExportFormat = Literal["xlsx", "easyglm", "python", "python_score", "html"]
 
 
 class ExportRequest(Revision):
@@ -40,7 +40,9 @@ class ExportAttachment:
         return f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(self.filename, safe="")}'
 
 
-def _report_importance(packet: dict | None, training_rows: int) -> pl.DataFrame | None:
+def _report_importance(
+    packet: dict | None, training_rows: int, *, pair_stages: bool = False
+) -> pl.DataFrame | None:
     """A damaged diagnostic cache is a miss, never a broken report download."""
     if (
         packet is None
@@ -49,6 +51,9 @@ def _report_importance(packet: dict | None, training_rows: int) -> pl.DataFrame 
         or packet.get("repeats") != 5
         or packet.get("seed") != 42
         or packet.get("training_rows") != training_rows
+        or (
+            pair_stages and packet.get("scoring_basis") != "complete frozen rate tables"
+        )
         or not isinstance(packet.get("rows"), list)
     ):
         return None
@@ -97,11 +102,19 @@ def export_attachment(
             prefix + ".py",
             "text/x-python",
         )
+    if format == "python_score":
+        return ExportAttachment(
+            to_scoring_script(run, output_prefix=prefix).encode("utf-8"),
+            prefix + "_scorer.py",
+            "text/x-python",
+        )
     if format == "html":
         from easy_glm.desktop.importance_cache import read_packet
 
         packet = read_packet(sources[name])
-        importance = _report_importance(packet, run.train_rows)
+        importance = _report_importance(
+            packet, run.train_rows, pair_stages=bool(run.config.pair_stages)
+        )
         return ExportAttachment(
             to_report_html(
                 project,

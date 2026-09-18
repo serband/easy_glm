@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import pprint
 from typing import Any
 
@@ -16,6 +17,100 @@ from easy_glm.core.fit import TwoStageFit
 
 from .project import ModelConfig, Project, premium_offset_column
 from .run import ModelRun, exposure_for, stage2_alpha
+
+
+def to_scoring_script(run: ModelRun, *, output_prefix: str | None = None) -> str:
+    """Export the exact deployed tables as a standalone, CatBoost-free scorer.
+
+    This is a frozen scoring artefact. :func:`to_script` instead re-runs the
+    training workflow, which may select different parameters on changed data.
+    """
+    payload = json.dumps(run.rate_model.to_dict(), ensure_ascii=False, default=str)
+    prefix = output_prefix or run.name
+    return "\n".join(
+        [
+            f'"""Frozen table-only scorer for {run.name!r}.',
+            "",
+            "This script contains the exact deployed GLM and ordered pair tables.",
+            "It scores prepared data and does not train or import CatBoost.",
+            '"""',
+            "",
+            "import json",
+            "from easy_glm.engine import RateModel",
+            "",
+            f"rate_model = RateModel.from_dict(json.loads({payload!r}))",
+            "",
+            "_MODEL_EXPOSURE = object()",
+            "",
+            "def predict(data, *, exposure_col=_MODEL_EXPOSURE, column_map=None):",
+            '    """Score prepared rows through the frozen, ordered rate tables.',
+            "",
+            "    Omit exposure_col to use the model's saved exposure setting; pass None",
+            '    for unit predictions, as the workbench does for its diagnostics."""',
+            "    if exposure_col is _MODEL_EXPOSURE:",
+            "        return rate_model.predict(data, column_map=column_map)",
+            "    return rate_model.predict(data, exposure_col=exposure_col, column_map=column_map)",
+            "",
+            "if __name__ == '__main__':",
+            f"    rate_model.to_json({prefix + '.easyglm'!r})",
+            f"    rate_model.to_excel({prefix + '_rate_tables.xlsx'!r})",
+            "",
+        ]
+    )
+
+
+def _pair_training_script(project: Project, model: str, prefix: str) -> str:
+    """Replay preparation, optional screening, and the complete staged fit."""
+    snapshot = pprint.pformat(project.to_dict(), width=88, sort_dicts=False)
+    uses_sas = project.data.source.type.lower() == "sas7bdat"
+    lines = [
+        f'"""{project.name} — model {model!r}: training workflow replay.',
+        "",
+        "Running this script refits the main GLM and every CatBoost pair stage in",
+        "order, then exports their deployed tables. Use the frozen scoring export",
+        "when byte-for-byte identical saved tables are required.",
+        '"""',
+        "",
+        "import json",
+        "import polars as pl",
+    ]
+    if uses_sas:
+        lines.append("import pandas as pd")
+    lines.extend(
+        [
+            "from easy_glm.workflow import Project, prepare, run_model, totals, train_holdout",
+            *(
+                ["from easy_glm.workflow.feature_selection import select_variables"]
+                if isinstance(project.exploration.get("feature_selection"), dict)
+                and isinstance(
+                    project.exploration["feature_selection"].get("project"), dict
+                )
+                else []
+            ),
+            "",
+            "# Saved preparation, Variables bin settings, main fit and ordered pair stages.",
+            f"project = Project.from_dict({snapshot})",
+            *_load_code(project),
+            *_feature_selection_code(project, prefix),
+            "prepared = prepare(project, df)",
+            f"run = run_model(project, prepared, {model!r}, replay_pair_adjustments=True)",
+            "rate_model = run.rate_model",
+            f"rate_model.to_json({prefix + '.easyglm'!r})",
+            f"rate_model.to_excel({prefix + '_rate_tables.xlsx'!r})",
+            "train, holdout = train_holdout(prepared, project.data.split)",
+            "if not holdout.is_empty():",
+            "    actual, expected, _ = totals(",
+            "        holdout, run.config, run.predict(holdout)",
+            "    )",
+            "    holdout_expected = float(expected.sum())",
+            "    holdout_ae = (float(actual.sum()) / holdout_expected",
+            "                  if holdout_expected > 0 else float('nan'))",
+            "    print('holdout A/E:', holdout_ae)",
+            "print('pair stages:', len(run.pair_stages))",
+            "",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _lit(value: Any) -> str:
@@ -287,6 +382,8 @@ def to_script(
             "Save the source data to a file and select it before exporting a Python script."
         )
     prefix = output_prefix or model
+    if cfg.pair_stages:
+        return _pair_training_script(project, model, prefix)
     uses_sas = d.source.type.lower() == "sas7bdat"
     # Whether there really were two stages is a property of the *fit*, not of the
     # encoders: an interaction whose every cell is below the exposure floor has an

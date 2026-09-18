@@ -5,14 +5,22 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 import warnings
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
 
 def json_safe(value: Any) -> Any:
     """Represent undefined diagnostics as JSON null, never NaN/Infinity."""
+    import numpy as np
+
+    if isinstance(value, np.ndarray):
+        return [json_safe(item) for item in value.tolist()]
+    if isinstance(value, np.generic):
+        return json_safe(value.item())
     if isinstance(value, float) and not math.isfinite(value):
         return None
     if isinstance(value, dict):
@@ -37,6 +45,7 @@ def fit_result(
     progress: Any,
     artifact: Path | None = None,
     main_cache_path: Path | None = None,
+    pair_cache_path: Path | None = None,
 ) -> dict[str, Any]:
     """A JSON result, including current adjusted tables, from the canonical engine."""
     from easy_glm.workflow.prep import prepare
@@ -57,7 +66,22 @@ def fit_result(
             reuse["main_effects"] = True
         if "reusing main-effects fold predictions" in message:
             reuse["fold_predictions"] = True
-        progress(message)
+        stage = re.search(r"Pair stage (\d+)/(\d+)", message)
+        fold = re.search(r"fold (\d+)/(\d+)", message)
+        if stage:
+            progress(
+                {
+                    "message": message,
+                    "stage_number": int(stage.group(1)) + 1,
+                    "stage_total": int(stage.group(2)) + 1,
+                    "fold": int(fold.group(1)) if fold else None,
+                    "folds": int(fold.group(2)) if fold else None,
+                    "prefix_reused": "reused full-training prefix" in message,
+                    "cv_pending": bool(fold),
+                }
+            )
+        else:
+            progress(message)
 
     main_cache: dict[str, Any] | None = None
     if main_cache_path is not None:
@@ -65,7 +89,7 @@ def fit_result(
         try:
             with main_cache_path.open("rb") as handle:
                 saved_cache = pickle.load(handle)  # Private, local worker cache only.
-            if saved_cache.get("format") == 1 and isinstance(
+            if saved_cache.get("format") == 2 and isinstance(
                 saved_cache.get("cache"), dict
             ):
                 main_cache = saved_cache["cache"]
@@ -80,16 +104,49 @@ def fit_result(
             ImportError,
         ):
             pass
+    pair_cache: dict[str, Any] = {"full_prefix": {}}
+    if pair_cache_path is not None and project.models[name].pair_stages:
+        try:
+            with pair_cache_path.open("rb") as handle:
+                saved_pair_cache = pickle.load(handle)
+            if saved_pair_cache.get("format") == 2 and isinstance(
+                saved_pair_cache.get("cache", {}).get("full_prefix"), dict
+            ):
+                pair_cache = saved_pair_cache["cache"]
+        except (
+            OSError,
+            EOFError,
+            pickle.UnpicklingError,
+            AttributeError,
+            KeyError,
+            TypeError,
+            ValueError,
+            ImportError,
+        ):
+            pass
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        run = run_model(
-            project, frame, name, progress=fit_progress, main_effects_cache=main_cache
-        )
+        try:
+            run = run_model(
+                project,
+                frame,
+                name,
+                progress=fit_progress,
+                main_effects_cache=main_cache,
+                pair_stages_cache=pair_cache,
+            )
+        finally:
+            if pair_cache_path is not None and project.models[name].pair_stages:
+                pair_cache_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = pair_cache_path.with_suffix(".tmp")
+                with temporary.open("wb") as handle:
+                    pickle.dump({"format": 2, "cache": pair_cache}, handle, protocol=5)
+                os.replace(temporary, pair_cache_path)
     if main_cache_path is not None:
         main_cache_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = main_cache_path.with_suffix(".tmp")
         with temporary.open("wb") as handle:
-            pickle.dump({"format": 1, "cache": main_cache}, handle, protocol=5)
+            pickle.dump({"format": 2, "cache": main_cache}, handle, protocol=5)
         os.replace(temporary, main_cache_path)
     if artifact is not None:
         with (artifact / "fit.pkl").open("wb") as handle:
@@ -175,6 +232,71 @@ def result_for(
         key: table_payload(run.rate_model, key, table)
         for key, table in rate_model_tables(run.rate_model).items()
     }
+    pair_tables: dict[str, Any] = {}
+    if getattr(run.rate_model, "pair_tables", None):
+        from easy_glm.core.excel import pair_table_frames
+
+        fitted_by_id = {
+            stage.stage_id: stage.table for stage in getattr(run, "pair_stages", [])
+        }
+        for stage_id, table in pair_table_frames(run.rate_model).items():
+            rows = table.to_dicts()
+            fitted = fitted_by_id.get(stage_id)
+            if fitted is not None:
+                values = {
+                    (cell.axis_a_row, cell.axis_b_row): cell.relativity
+                    for cell in fitted.cells
+                }
+                for row in rows:
+                    row["fitted"] = values.get(
+                        (row["axis_a_row"], row["axis_b_row"]), 1.0
+                    )
+            pair_tables[stage_id] = {
+                "columns": list(rows[0]) if rows else list(table.columns),
+                "rows": rows,
+            }
+    pair_stages = []
+    for stage in getattr(run, "pair_stages", []):
+        table = stage.table
+        cells = table.cells
+        pair_stages.append(
+            {
+                "stage_id": stage.stage_id,
+                "parents": list(stage.parents),
+                "baseline_stage_ids": list(stage.baseline_stage_ids),
+                "chosen_candidate": (
+                    asdict(stage.chosen_candidate)
+                    if is_dataclass(stage.chosen_candidate)
+                    else stage.chosen_candidate
+                ),
+                "prefix_fingerprint": stage.prefix_fingerprint,
+                "cv_candidates": [asdict(item) for item in stage.cv_candidates],
+                "prefix_cv_loss": stage.prefix_cv_loss,
+                "table_cv_loss": stage.table_cv_loss,
+                "teacher_cv_loss": stage.teacher_cv_loss,
+                "approximation_loss": stage.approximation_loss,
+                "observed_table_minus_teacher_cv_loss": getattr(
+                    stage, "observed_table_minus_teacher_cv_loss", None
+                ),
+                "training_teacher_loss": stage.training_teacher_loss,
+                "training_table_loss": stage.training_table_loss,
+                "fit_seconds": stage.fit_seconds,
+                "reused": stage.reused,
+                "status": stage.status,
+                "dimensions": [len(axis.table) for axis in table.axes],
+                "support": {
+                    "supported_cells": sum(
+                        cell.fallback_reason is None for cell in cells
+                    ),
+                    "total_cells": len(cells),
+                    "training_weight_share": sum(
+                        cell.weight_share
+                        for cell in cells
+                        if cell.fallback_reason is None
+                    ),
+                },
+            }
+        )
     return json_safe(
         {
             "review_variables": [
@@ -205,6 +327,8 @@ def result_for(
             "metrics": run.metrics,
             "lift": charts,
             "tables": tables,
+            "pair_tables": pair_tables,
+            "pair_stages": pair_stages,
             "base_rate": run.rate_model.base_rate,
             "link": run.fit.link,
             "relativity_label": run.rate_model.relativity_label,
@@ -222,8 +346,11 @@ def main() -> None:
 
     folder, name = Path(sys.argv[1]), sys.argv[2]
 
-    def progress(message: str) -> None:
-        write_json(folder / "progress.json", {"message": message})
+    def progress(message: str | dict[str, Any]) -> None:
+        write_json(
+            folder / "progress.json",
+            message if isinstance(message, dict) else {"message": message},
+        )
 
     try:
         result = fit_result(
@@ -233,6 +360,7 @@ def main() -> None:
             progress,
             folder,
             Path(sys.argv[3]) if len(sys.argv) > 3 else None,
+            Path(sys.argv[4]) if len(sys.argv) > 4 else None,
         )
     except (
         Exception

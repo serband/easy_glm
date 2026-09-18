@@ -88,10 +88,21 @@
             <div class="export-row">
                 <div>
                     <h3>Scorer</h3>
-                    <p>JSON model for scoring new data.</p>
+                    <p>Frozen fitted tables for scoring new data without CatBoost.</p>
                 </div>
                 <button onclick={() => download('easyglm')} disabled={!!pending}>
                     {pending === 'easyglm' ? 'Preparing scorer…' : 'Download scorer (.easyglm)'}
+                </button>
+            </div>
+            <div class="export-row">
+                <div>
+                    <h3>Python scoring script</h3>
+                    <p>Score with the exact frozen tables, without retraining.</p>
+                </div>
+                <button onclick={() => download('python_score')} disabled={!!pending}>
+                    {pending === 'python_score'
+                        ? 'Preparing scorer script…'
+                        : 'Download scoring script (.py)'}
                 </button>
             </div>
             <div class="export-row">
@@ -132,8 +143,10 @@
         </div>
         {#if names.length}<div class="export-row">
                 <div>
-                    <h3>Python script</h3>
-                    <p>Rebuild the model and rerun any saved variable search.</p>
+                    <h3>Python training script</h3>
+                    <p>
+                        Rerun the full fitting workflow, including pair stages and variable search.
+                    </p>
                 </div>
                 <button onclick={() => download('python')} disabled={!!pending}>
                     {pending === 'python' ? 'Preparing script…' : 'Download script (.py)'}

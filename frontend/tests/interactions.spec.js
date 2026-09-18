@@ -20,6 +20,7 @@ test('interaction definitions are visible, editable drafts and fitted only on re
     });
     await page.goto('/');
     await button('Model').click();
+    await button('Legacy GLM interactions').click();
     await expect(interactions).toContainText('No interactions defined.');
     await page.getByLabel('Interaction first factor', { exact: true }).selectOption('DriverAge');
     await page.getByLabel('Interaction second factor', { exact: true }).selectOption('Region');

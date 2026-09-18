@@ -13,6 +13,7 @@
     export let fitIdentity = '',
         comparisonFitIdentity = '',
         table = null,
+        chartTable = null,
         children,
         api,
         state,
@@ -184,7 +185,13 @@
         const version = adjustmentEpoch;
         const requestKey = adjustmentRequestKey;
         const action = tool === 'manual' ? 'edit' : tool;
-        const extra = tool === 'manual' ? { edits: { ...edits } } : { options: toolOptions() };
+        const extra =
+            tool === 'manual'
+                ? {
+                      edits: { ...edits },
+                      ...(tableKind === 'pair' ? { stage_id: variable } : {}),
+                  }
+                : { options: toolOptions() };
         adjustmentPending = true;
         const dispatch = async () => {
             if (destroyed || version !== adjustmentEpoch || requestKey !== adjustmentRequestKey)
@@ -210,7 +217,8 @@
                 ? 'Enter positive values for each edited row.'
                 : '';
         if (Object.keys(edits).length) return 'Apply or discard your row edits first.';
-        if (tableKind === 'interaction') return 'Edit interaction cells in the table.';
+        if (tableKind === 'interaction' || tableKind === 'pair')
+            return 'Edit individual cells in the rate table.';
         if (['moving', 'isotonic'].includes(tool) && tableKind === 'categorical' && !ordered)
             return 'Confirm that these levels have a meaningful order.';
         if (
@@ -318,7 +326,7 @@
         !busy &&
         loadedKey === key &&
         selectedVariable &&
-        (view === 'tables' || diagnosticTab === 'variable') &&
+        (view === 'tables' ? tableKind !== 'pair' : diagnosticTab === 'variable') &&
         attemptedVariableKey !== desiredVariableKey
     )
         run('variable');
@@ -403,7 +411,8 @@
             activeDiagnosticTab = diagnosticTab;
             if (diagnosticTab === 'residual') inspectedResidual = false;
             else await runTab();
-        } else if (variable) await run('variable', { variable });
+        } else if (variable && tableKind !== 'pair') await run('variable', { variable });
+        else if (tableKind === 'pair') rememberAppliedView();
     }
     async function run(action, extra = {}, pairVersion = null, adjustmentVersion = null) {
         if (destroyed) return;
@@ -782,6 +791,7 @@
 
 {#snippet previewControls()}
     {#if previewMatches}<div class="preview-impact">
+            {#if preview.note}<p>{preview.note}</p>{/if}
             {#if tool === 'isotonic' && preview.tool_details && preview.changes?.length === 0 && !preview.canApply && preview.before_base_rate === preview.after_base_rate}<p
                 >
                     No changes needed.
@@ -865,16 +875,26 @@
                           ? 'Saved adjustments'
                           : 'Original fit'}
             </p>
-            <RateChart
-                table={(previewMatches && preview.preview_table) ||
-                    (acknowledgedMatches && acknowledgedPreview.preview_table) ||
-                    table}
-                {variable}
-                label={rateLabel}
-                fittedLabel="Original fit"
-                currentLabel="Adjusted"
-                preview={!!(previewMatches && preview.preview_table)}
-            />
+            {#if tableKind !== 'pair' || (chartTable?.rows?.length && chartTable.rows.length <= 1600)}<RateChart
+                    table={(previewMatches &&
+                        (tableKind !== 'pair' ||
+                            preview.preview_table?.rows?.length === chartTable?.rows?.length) &&
+                        preview.preview_table) ||
+                        (acknowledgedMatches &&
+                            (tableKind !== 'pair' ||
+                                acknowledgedPreview.preview_table?.rows?.length ===
+                                    chartTable?.rows?.length) &&
+                            acknowledgedPreview.preview_table) ||
+                        chartTable ||
+                        table}
+                    {variable}
+                    label={rateLabel}
+                    fittedLabel="Original fit"
+                    currentLabel="Adjusted"
+                    preview={!!(previewMatches && preview.preview_table)}
+                />{:else if tableKind === 'pair'}<p class="help-text">
+                    The table is too large for a heatmap. Use the rate table below.
+                </p>{/if}
         {/if}
         {#if feedback}<div class="message success review-feedback" role="status">
                 {feedback}
@@ -1062,15 +1082,15 @@
                         <option value="">Choose adjustment…</option>
                         {#each [['moving', 'Moving average'], ['isotonic', 'Isotonic smoothing'], ['cap', 'Cap / floor'], ['manual', 'Manual rows']] as [value, label]}<option
                                 {value}
-                                disabled={tableKind === 'interaction' && value !== 'manual'}
-                                >{label}</option
+                                disabled={['interaction', 'pair'].includes(tableKind) &&
+                                    value !== 'manual'}>{label}</option
                             >{/each}
                     </select></label
                 >
             </div>
-            {#if tableKind === 'interaction'}<p>
-                    Interaction cells are edited individually in the rate table. Smoothing applies
-                    to main factors.
+            {#if tableKind === 'interaction' || tableKind === 'pair'}<p>
+                    {tableKind === 'pair' ? 'Pair cells' : 'Interaction cells'} are edited individually
+                    in the rate table. Smoothing applies to main factors.
                 </p>
             {:else}
                 <div class="adjustment-parameters">
@@ -1167,9 +1187,12 @@
                 <button disabled={busy || info.link === 'logit'} onclick={() => run('rebalance')}
                     >Preview rebalance base rate</button
                 >
-                <button disabled={busy} onclick={() => run('reset_variable')}
-                    >Reset this variable</button
-                ><button disabled={busy} onclick={() => run('reset')}>Reset all adjustments</button>
+                {#if tableKind !== 'pair'}<button
+                        disabled={busy}
+                        onclick={() => run('reset_variable')}>Reset this variable</button
+                    >{/if}<button disabled={busy} onclick={() => run('reset')}
+                    >Reset all adjustments</button
+                >
             </div>
             <p class="help-text">
                 Rebalance restores the original fitted training total by changing only the base
@@ -1264,8 +1287,8 @@
                 above 1 means underprediction, below 1 means overprediction.
             </p>
             <p class="help-text">
-                Bands are ranked by champion ÷ challenger prediction, lowest first. Band numbers
-                are ranks, not ratios.
+                Bands are ranked by champion ÷ challenger prediction, lowest first. Band numbers are
+                ranks, not ratios.
             </p>
         {:else if note && view !== 'tables'}<p class="help-text">{note}</p>{/if}
         {#if view !== 'tables'}{@render previewControls()}{/if}
@@ -1329,7 +1352,7 @@
         {@render children?.()}
         {#if view !== 'tables'}{@render aeContent()}{/if}
     </section>
-    {#if view === 'tables'}<section
+    {#if view === 'tables' && tableKind !== 'pair'}<section
             class={view === 'tables' ? 'model-card rate-ae review-panel' : 'review-ae'}
             aria-label={view === 'tables' ? 'Actual versus expected' : undefined}
         >

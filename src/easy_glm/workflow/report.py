@@ -30,6 +30,7 @@ import numpy as np
 import polars as pl
 
 from easy_glm.core.excel import interaction_matrices, rate_model_tables
+from easy_glm.engine.models import level_label
 
 from . import _svg
 from ._report_data import PROFILE_CSS, data_summary_section
@@ -44,6 +45,7 @@ from .diagnostics import (
     lift_table,
     relativity_diff,
     totals,
+    unit_values,
 )
 from .export import to_script
 from .prep import train_holdout
@@ -176,6 +178,14 @@ class _Scored:
         )
 
 
+def _required_columns(run: ModelRun) -> set[str]:
+    return set(run.spec.required_columns) | {
+        parent
+        for table in getattr(run.rate_model, "pair_tables", ())
+        for parent in table.parents
+    }
+
+
 # --------------------------------------------------------------------------
 # sections
 # --------------------------------------------------------------------------
@@ -196,9 +206,9 @@ def _metrics_table(runs: dict[str, ModelRun], names: list[str]) -> str:
         )
         body.append(f"<tr><th>{_esc(label)}</th>{row}</tr>")
     extra = [
-        ("alpha", lambda r: _num(r.alpha, 6)),
-        ("non-zero terms", lambda r: f"{int((r.fit.coef != 0).sum()):,}"),
-        ("terms in the design", lambda r: f"{len(r.fit.coef):,}"),
+        ("main GLM alpha", lambda r: _num(r.alpha, 6)),
+        ("main GLM non-zero terms", lambda r: f"{int((r.fit.coef != 0).sum()):,}"),
+        ("main GLM design terms", lambda r: f"{len(r.fit.coef):,}"),
         ("interactions", lambda r: str(len(r.config.interactions))),
         (
             "linear terms",
@@ -263,10 +273,18 @@ def _summary_section(
         ("offset", cfg.offset or "—"),
         ("predictors", ", ".join(cfg.predictors)),
         (
+            "ordered pair corrections",
+            ", ".join(
+                f"{i + 2}: {stage.a} × {stage.b} [{stage.stage_id}]"
+                for i, stage in enumerate(getattr(cfg, "pair_stages", ()))
+            )
+            or "none",
+        ),
+        (
             "interactions",
             ", ".join(f"{i.a} × {i.b}" for i in cfg.interactions) or "none",
         ),
-        ("alpha", _num(run.alpha, 6)),
+        ("main GLM alpha", _num(run.alpha, 6)),
         (
             "non-zero terms",
             f"{int((run.fit.coef != 0).sum()):,} of {len(run.fit.coef):,}",
@@ -549,6 +567,182 @@ def _knots_and_levels(run: ModelRun) -> tuple[dict, dict]:
     return knots, levels
 
 
+def _pair_table_frame(table: Any) -> pl.DataFrame:
+    """Every deployed cell, with the stage's own axis labels and support."""
+    a, b = table.axes
+    labels_a = [level_label(row, a.other_label) for row in a.table]
+    labels_b = [level_label(row, b.other_label) for row in b.table]
+    cells = {(row.axis_a_row, row.axis_b_row): row for row in table.cells}
+    rows = []
+    for i, label_a in enumerate(labels_a):
+        for j, label_b in enumerate(labels_b):
+            cell = cells.get((i, j))
+            rows.append(
+                {
+                    "axis_a_row": i,
+                    "axis_b_row": j,
+                    "label_a": label_a,
+                    "label_b": label_b,
+                    "relativity": float(cell.relativity) if cell else 1.0,
+                    "row_count": cell.row_count if cell else 0,
+                    "fitting_weight": float(cell.fitting_weight) if cell else 0.0,
+                    "weight_share": float(cell.weight_share) if cell else 0.0,
+                    "fallback_reason": (
+                        cell.fallback_reason if cell else "unlisted neutral cell"
+                    ),
+                }
+            )
+    return pl.DataFrame(rows)
+
+
+def _pair_prefix_metrics(
+    run: ModelRun, frame: pl.DataFrame
+) -> list[tuple[float, float]]:
+    """(expected total, weighted mean deviance) after each deployed stage."""
+    if frame.is_empty():
+        return []
+    y, weights = unit_values(frame, run.config)
+    weight = weights if run.config.weight else None
+    denominator = float(weights.sum())
+    family = run.fit.model.family_instance
+    scorer = run.rate_model.clone()
+    complete_tables = scorer.pair_tables
+    results = []
+    for count in range(len(run.rate_model.pair_tables) + 1):
+        scorer.pair_tables = complete_tables[:count]
+        prediction = scorer.predict(frame, exposure_col=None)
+        expected = float(totals(frame, run.config, prediction)[1].sum())
+        loss = float(family.deviance(y, prediction, sample_weight=weight)) / denominator
+        results.append((expected, loss))
+    return results
+
+
+def _pair_sections(run: ModelRun, subsets: dict[str, _Scored], number: int) -> str:
+    tables = getattr(run.rate_model, "pair_tables", ())
+    if not tables:
+        return ""
+    artefacts = {stage.stage_id: stage for stage in getattr(run, "pair_stages", ())}
+    prefix_metrics = {
+        label: _pair_prefix_metrics(run, scored.frame)
+        for label, scored in subsets.items()
+        if not scored.empty
+    }
+    out = [
+        f'<section id="pair-stages"><h2>{number}. Sequential pair corrections</h2>',
+        '<p class="muted">Stage 1 is the main-effects GLM. Each numbered pair '
+        "table multiplies the complete frozen prefix before it. A pair can also "
+        "contain one-way effects. These grids are the deployed effects, not raw "
+        "CatBoost teacher predictions.</p>",
+        '<p class="muted">CV losses use observed outcomes. Approximation loss '
+        "uses CatBoost's soft means as the target on held-back folds; it is "
+        "nonnegative. A negative table-minus-CatBoost CV change means the "
+        "deployed table scored better against observed outcomes.</p>",
+    ]
+    for index, table in enumerate(tables, start=2):
+        a, b = table.parents
+        frame = _pair_table_frame(table)
+        artefact = artefacts.get(table.stage_id)
+        supported = frame.filter(pl.col("fallback_reason").is_null()).height
+        rows_a = [
+            level_label(row, table.axes[0].other_label) for row in table.axes[0].table
+        ]
+        rows_b = [
+            level_label(row, table.axes[1].other_label) for row in table.axes[1].table
+        ]
+        out.extend(
+            [
+                f'<section class="variable" id="pair-{_slug(table.stage_id)}">',
+                f"<h3>Stage {index}: {_esc(a)} × {_esc(b)} "
+                f'<span class="tag">{_esc(table.stage_id)}</span></h3>',
+                _pairs_table(
+                    [
+                        (
+                            "baseline",
+                            (
+                                "Main-effects GLM"
+                                if index == 2
+                                else f"Stages 1–{index - 1}"
+                            ),
+                        ),
+                        ("table dimensions", f"{len(rows_a)} × {len(rows_b)}"),
+                        ("supported cells", f"{supported:,} of {frame.height:,}"),
+                        (
+                            "chosen teacher",
+                            (
+                                "neutral correction"
+                                if artefact is not None
+                                and artefact.chosen_candidate is None
+                                else str(getattr(artefact, "chosen_candidate", "—"))
+                            ),
+                        ),
+                        (
+                            "prefix CV loss",
+                            _num(getattr(artefact, "prefix_cv_loss", None), 6),
+                        ),
+                        (
+                            "table CV loss",
+                            _num(getattr(artefact, "table_cv_loss", None), 6),
+                        ),
+                        (
+                            "teacher CV loss",
+                            _num(getattr(artefact, "teacher_cv_loss", None), 6),
+                        ),
+                        (
+                            "teacher-to-table approximation loss",
+                            _num(getattr(artefact, "approximation_loss", None), 6),
+                        ),
+                        (
+                            "CV deviance change: table minus CatBoost",
+                            _num(
+                                getattr(
+                                    artefact,
+                                    "observed_table_minus_teacher_cv_loss",
+                                    None,
+                                ),
+                                6,
+                            ),
+                        ),
+                    ]
+                ),
+            ]
+        )
+        for subset, metrics in prefix_metrics.items():
+            before, after = metrics[index - 2], metrics[index - 1]
+            out.append(
+                f'<p class="muted">{_esc(subset)} deployed prefix: expected total '
+                f"{_esc(_num(before[0], 2))} → {_esc(_num(after[0], 2))}; "
+                f"weighted mean deviance {_esc(_num(before[1], 6))} → "
+                f"{_esc(_num(after[1], 6))}.</p>"
+            )
+        if frame.height <= 400:
+            matrix = [[1.0 for _ in rows_b] for _ in rows_a]
+            support = [[0.0 for _ in rows_b] for _ in rows_a]
+            for row in frame.iter_rows(named=True):
+                i, j = row["axis_a_row"], row["axis_b_row"]
+                matrix[i][j] = row["relativity"]
+                support[i][j] = row["fitting_weight"]
+            out.append(
+                _svg.heatmap(
+                    rows_a,
+                    rows_b,
+                    matrix,
+                    row_name=a,
+                    col_name=b,
+                    hover={"training fitting weight": support},
+                    title=f"Stage {index} {a} × {b}: deployed pair relativities",
+                )
+            )
+        out.extend(
+            [
+                "<h4>All deployed cells and support</h4>",
+                _table(frame, max_rows=frame.height),
+                "</section>",
+            ]
+        )
+    out.append("</section>")
+    return "".join(out)
+
+
 def _lift_section(subsets: dict[str, _Scored], number: int) -> str:
     out = [
         f'<section id="lift"><h2>{number}. Lift and Gini</h2>',
@@ -664,7 +858,7 @@ def _no_comparison_section(
 ) -> str:
     """Stand in for the comparison when the challenger cannot be scored on
     these rows — a named challenger and no comparison would read as a bug."""
-    missing = [c for c in other.spec.required_columns if c not in df.columns]
+    missing = [c for c in _required_columns(other) if c not in df.columns]
     why = (
         "the prepared data no longer has the columns it needs ("
         + ", ".join(missing)
@@ -688,16 +882,22 @@ def _appendix(project: Project, champion: str, run: ModelRun, number: int) -> st
     except Exception as exc:  # noqa: BLE001 - the report must still render
         script = f"# The script could not be rendered: {exc}"
     coefs = run.fit.coef_table()
+    pair_model = bool(getattr(run.rate_model, "pair_tables", ()))
     return (
         f'<section id="appendix"><h2>{number}. Appendix</h2>'
-        "<h3>Coefficients</h3>"
-        '<p class="muted">The fitted GLM coefficients on the log scale, one per '
+        + (
+            "<h3>Main-effects GLM coefficients</h3>"
+            if pair_model
+            else "<h3>Coefficients</h3>"
+        )
+        + '<p class="muted">The fitted GLM coefficients on the log scale, one per '
         "design column. A zero coefficient is a term the penalty removed.</p>"
         f"{_table(coefs, digits=6, max_rows=1000)}"
         "<h3>The model as a Python script</h3>"
-        '<p class="muted">Running this file rebuilds the model, its rate tables '
-        "and the <code>.easyglm</code> scorer, using only the public easy_glm "
-        "API — the reproducible record of what was fitted.</p>"
+        '<p class="muted">Running this file retrains the workflow and exports '
+        "its deployed tables. Training on changed data can select different "
+        "parameters; the separate frozen scoring export contains the exact saved "
+        "tables.</p>"
         f"<pre>{_esc(script)}</pre>"
         "</section>"
     )
@@ -801,7 +1001,7 @@ def to_report_html(
     challenger_pred: dict[str, np.ndarray] = {}
     if challenger:
         other = runs[challenger]
-        missing = [c for c in other.spec.required_columns if c not in df.columns]
+        missing = [c for c in _required_columns(other) if c not in df.columns]
         if not missing:
             for label, scored in subsets.items():
                 if scored.empty:
@@ -812,7 +1012,9 @@ def to_report_html(
 
     tables = rate_model_tables(run.rate_model)
     inter = _interaction_sections(run, tables, subsets)
-    number = 5 if inter else 4
+    pair_number = 5 if inter else 4
+    pair_sections = _pair_sections(run, subsets, pair_number)
+    number = pair_number + 1 if pair_sections else pair_number
     body = [
         _summary_section(project, run, df, train, holdout, runs, names),
         data_summary_section(run, train, holdout.height),
@@ -825,6 +1027,7 @@ def to_report_html(
             fitted_diagnostics_section(project, run, train, importance=importance),
         ),
         inter,
+        pair_sections,
         _lift_section(subsets, number),
     ]
     number += 1
@@ -849,6 +1052,7 @@ def to_report_html(
         ("#variable-importance", "Variable importance"),
         ("#coefficient-paths", "Coefficient paths"),
         *([("#interactions", "Interactions")] if inter else []),
+        *([("#pair-stages", "Pair corrections")] if pair_sections else []),
         ("#lift", "Lift and Gini"),
         *([("#compare", f"{champion} vs {challenger}")] if challenger else []),
         ("#appendix", "Appendix"),

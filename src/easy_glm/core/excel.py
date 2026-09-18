@@ -15,7 +15,14 @@ from typing import Any
 
 import polars as pl
 
-from easy_glm.engine.models import CellRow, level_label
+from easy_glm.engine.models import (
+    CellRow,
+    FromToRow,
+    PairCellRow,
+    PairTableConfig,
+    VariableConfig,
+    level_label,
+)
 from easy_glm.engine.rate_model import RateModel
 
 _INVALID_SHEET_CHARS = re.compile(r"[\[\]:*?/\\]")
@@ -72,6 +79,98 @@ def rate_model_tables(rm: RateModel) -> dict[str, pl.DataFrame]:
         base = rm.snapshots[0].relativities.get(var) if rm.snapshots else None
         out[var] = variable_frame(cfg, fitted=base)
     return out
+
+
+def pair_table_frames(rm: RateModel) -> dict[str, pl.DataFrame]:
+    """Long deployed pair tables keyed by stable stage ID, separate from mains."""
+    out: dict[str, pl.DataFrame] = {}
+    for table in rm.pair_tables:
+        axis_a, axis_b = table.axes
+        cells = {(c.axis_a_row, c.axis_b_row): c for c in table.cells}
+        rows: list[dict[str, Any]] = []
+        for ia, a in enumerate(axis_a.table):
+            for ib, b in enumerate(axis_b.table):
+                cell = cells.get((ia, ib))
+                rows.append(
+                    {
+                        "stage_id": table.stage_id,
+                        "parent_a": table.parents[0],
+                        "parent_b": table.parents[1],
+                        "axis_a_row": ia,
+                        "axis_b_row": ib,
+                        "from_a": a.from_,
+                        "to_a": a.to_,
+                        "from_b": b.from_,
+                        "to_b": b.to_,
+                        "label_a": level_label(a, axis_a.other_label),
+                        "label_b": level_label(b, axis_b.other_label),
+                        "relativity": cell.relativity if cell else 1.0,
+                        "row_count": cell.row_count if cell else 0,
+                        "fitting_weight": cell.fitting_weight if cell else 0.0,
+                        "weight_share": cell.weight_share if cell else 0.0,
+                        "fallback_reason": (
+                            cell.fallback_reason if cell else "unrepresented"
+                        ),
+                        "exposure_total": cell.exposure_total if cell else None,
+                    }
+                )
+        out[table.stage_id] = pl.DataFrame(rows)
+    return out
+
+
+def pair_tables_from_xlsx(path: str | Path) -> list[PairTableConfig]:
+    """Rebuild the ordered pair tables from an exported workbook alone."""
+    manifest = pl.read_excel(path, sheet_name="Pair stages")
+    tables: list[PairTableConfig] = []
+    for stage in manifest.sort("order").iter_rows(named=True):
+        axes: list[VariableConfig] = []
+        for side in ("a", "b"):
+            frame = pl.read_excel(path, sheet_name=stage[f"axis_{side}_sheet"])
+            axis_type = stage[f"axis_{side}_type"]
+            rows = [
+                FromToRow(
+                    row["from"],
+                    row["to"],
+                    float(row["relativity"]),
+                    float(row["exposure"] or 0.0),
+                )
+                for row in frame.iter_rows(named=True)
+            ]
+            axes.append(
+                VariableConfig(
+                    type=axis_type,
+                    table=rows,
+                    other_label=stage[f"axis_{side}_other_label"] or None,
+                )
+            )
+        cells_frame = pl.read_excel(path, sheet_name=stage["cells_sheet"])
+        cells = [
+            PairCellRow(
+                axis_a_row=int(row["axis_a_row"]),
+                axis_b_row=int(row["axis_b_row"]),
+                relativity=float(row["relativity"]),
+                row_count=int(row["row_count"] or 0),
+                fitting_weight=float(row["fitting_weight"] or 0),
+                weight_share=float(row["weight_share"] or 0),
+                fallback_reason=row["fallback_reason"],
+                exposure_total=(
+                    None
+                    if row["exposure_total"] is None
+                    else float(row["exposure_total"])
+                ),
+            )
+            for row in cells_frame.iter_rows(named=True)
+        ]
+        tables.append(
+            PairTableConfig(
+                stage_id=stage["stage_id"],
+                parents=(stage["parent_a"], stage["parent_b"]),
+                axes=(axes[0], axes[1]),
+                cells=cells,
+                provenance=json.loads(stage["provenance_json"] or "{}"),
+            )
+        )
+    return tables
 
 
 def variable_frame(cfg, *, fitted: list[Any] | None = None) -> pl.DataFrame:
@@ -221,6 +320,7 @@ def write_rate_tables_xlsx(
     coef_table: pl.DataFrame | None = None,
     index_sheet: bool = True,
     matrices: Mapping[str, tuple] | None = None,
+    pair_tables: list[PairTableConfig] | None = None,
 ) -> Path:
     """Write ``tables`` to an ``.xlsx`` workbook, one worksheet per table.
 
@@ -257,6 +357,71 @@ def write_rate_tables_xlsx(
         if coef_table is not None:
             used.add("coefficients")
             coef_table.write_excel(workbook=wb, worksheet="Coefficients", autofit=True)
+
+        if pair_tables:
+            manifest = wb.add_worksheet("Pair stages")
+            used.add("pair stages")
+            manifest.write_row(
+                0,
+                0,
+                [
+                    "order",
+                    "stage_id",
+                    "parent_a",
+                    "parent_b",
+                    "axis_a_sheet",
+                    "axis_b_sheet",
+                    "cells_sheet",
+                    "axis_a_type",
+                    "axis_b_type",
+                    "axis_a_other_label",
+                    "axis_b_other_label",
+                    "provenance_json",
+                ],
+                bold,
+            )
+            pair_frames = pair_table_frames(RateModel(1.0, {}, pair_tables=pair_tables))
+            for order, table in enumerate(pair_tables, start=1):
+                a_sheet = sheet_name(f"Pair {order} A", used)
+                b_sheet = sheet_name(f"Pair {order} B", used)
+                cells_sheet = sheet_name(f"Pair {order} cells", used)
+                variable_frame(table.axes[0]).write_excel(
+                    workbook=wb, worksheet=a_sheet, autofit=True
+                )
+                variable_frame(table.axes[1]).write_excel(
+                    workbook=wb, worksheet=b_sheet, autofit=True
+                )
+                pair_frames[table.stage_id].write_excel(
+                    workbook=wb, worksheet=cells_sheet, autofit=True
+                )
+                manifest.write_row(
+                    order,
+                    0,
+                    [
+                        order,
+                        table.stage_id,
+                        *table.parents,
+                        a_sheet,
+                        b_sheet,
+                        cells_sheet,
+                        table.axes[0].type,
+                        table.axes[1].type,
+                        table.axes[0].other_label or "",
+                        table.axes[1].other_label or "",
+                        json.dumps(table.provenance, default=str),
+                    ],
+                )
+                index_rows.extend(
+                    [
+                        (a_sheet, f"{table.stage_id} axis A", len(table.axes[0].table)),
+                        (b_sheet, f"{table.stage_id} axis B", len(table.axes[1].table)),
+                        (
+                            cells_sheet,
+                            f"{table.stage_id} cells",
+                            len(table.axes[0].table) * len(table.axes[1].table),
+                        ),
+                    ]
+                )
 
         for key, frame in tables.items():
             name = sheet_name(str(key), used)

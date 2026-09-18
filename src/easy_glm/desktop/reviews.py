@@ -55,6 +55,7 @@ class ReviewEdit(Revision):
     n_bins: int = Field(default=10, ge=3, le=50)
     tolerance: float = Field(default=0.01, ge=0, le=5)
     variable: str | None = None
+    stage_id: str | None = None
     subset: Literal["train", "holdout", "all"] = "train"
     a: str | None = None
     b: str | None = None

@@ -4,6 +4,7 @@
     import ReviewPanel from './ReviewPanel.svelte';
     import TimeDiagnostics from './TimeDiagnostics.svelte';
     import InteractionEditor from './InteractionEditor.svelte';
+    import PairStageEditor from './PairStageEditor.svelte';
     import DiagnosticTable from './DiagnosticTable.svelte';
     import { comparisonIssue, comparisonMetrics, comparisonSettings } from './comparison.js';
     import { rateChartKind } from './rateChartData.js';
@@ -191,6 +192,8 @@
         levelShare = 0.0025,
         kinds = {};
     let interactionsValid = true;
+    let pairStagesValid = true;
+    let pairMethod = 'legacy';
     let termSearch = '',
         termScroll = 0,
         subset = 'holdout',
@@ -224,6 +227,8 @@
                   divide_target_by_weight: cfg.divide_target_by_weight,
                   predictors: cfg.predictors,
                   interactions: cfg.interactions,
+                  pair_stages: cfg.pair_stages || [],
+                  pair_method: pairMethod === 'sequential' ? 'sequential_catboost' : 'legacy_glm',
                   tweedie_power: cfg.tweedie_power,
                   base: cfg.base,
                   penalty: {
@@ -239,8 +244,32 @@
           }
         : null;
     $: dirty = payload && JSON.stringify(payload) !== baseline;
+    function supportsPair(model) {
+        return (
+            (model?.family === 'poisson' ||
+                (model?.family === 'tweedie' &&
+                    model.tweedie_power > 1 &&
+                    model.tweedie_power < 2)) &&
+            (model?.link == null || model.link === 'log')
+        );
+    }
+    $: pairCapability = supportsPair(cfg);
+    $: savedStages = wb?.models[selected]?.pair_stages || [];
+    $: mainChanged =
+        selected === '__new__' ||
+        (payload && baseline
+            ? JSON.stringify({ ...payload, fields: { ...payload.fields, pair_stages: [] } }) !==
+              JSON.stringify({
+                  ...JSON.parse(baseline),
+                  fields: { ...JSON.parse(baseline).fields, pair_stages: [] },
+              })
+            : false);
     $: active = Object.values(jobs).some((j) => ['queued', 'running'].includes(j.status));
     $: job = jobs[selected];
+    $: mainStageStatus = wb?.stage_statuses?.[selected]?.[0]?.status;
+    $: fitAllStages =
+        Boolean(cfg?.pair_stages?.length) &&
+        ['not_fitted', 'needs_refitting', 'failed'].includes(mainStageStatus);
     $: applicable = Boolean(job?.applicable);
     $: onReady(applicable);
     $: filteredTerms = wb
@@ -249,6 +278,15 @@
     $: termStart = Math.max(0, Math.floor(termScroll / 34) - 3);
     $: tableStart = Math.max(0, Math.floor(tableScroll / 32) - 3);
     $: lift = result?.lift?.[subset] || [];
+    $: pairChartTable = result?.pair_tables?.[tableName]
+        ? {
+              ...result.pair_tables[tableName],
+              kind: 'pair',
+              display_label: result.table_index.find((item) => item.name === tableName)?.label,
+              total: result.pair_tables[tableName].rows.length,
+              offset: 0,
+          }
+        : null;
     $: maxRate = Math.max(
         0.000001,
         ...lift.flatMap((r) => [r.actual_rate || 0, r.expected_rate || 0]),
@@ -262,6 +300,8 @@
         divide_target_by_weight: false,
         predictors: [],
         interactions: [],
+        pair_stages: [],
+        pair_method: 'sequential_catboost',
         tweedie_power: 1.5,
         base: 'modal',
         penalty: { alpha: 0.001, cv: null, n_alphas: 20, l1_ratio: 1 },
@@ -286,6 +326,14 @@
                 predictors: [...wb.predictors],
             },
         );
+        pairMethod =
+            selected === '__new__'
+                ? supportsPair(cfg)
+                    ? 'sequential'
+                    : 'legacy'
+                : cfg.pair_method === 'sequential_catboost' || cfg.pair_stages?.length
+                  ? 'sequential'
+                  : 'legacy';
         mode = cfg.penalty.alpha === null ? 'cv' : 'fixed';
         fixedAlpha = cfg.penalty.alpha ?? 0.001;
         cv = cfg.penalty.cv ?? 5;
@@ -305,6 +353,8 @@
                 divide_target_by_weight: cfg.divide_target_by_weight,
                 predictors: cfg.predictors,
                 interactions: cfg.interactions,
+                pair_stages: cfg.pair_stages || [],
+                pair_method: pairMethod === 'sequential' ? 'sequential_catboost' : 'legacy_glm',
                 tweedie_power: cfg.tweedie_power,
                 base: cfg.base,
                 penalty: {
@@ -416,8 +466,12 @@
         }
     }
     async function saveModel() {
-        if (!interactionsValid) {
-            error = 'Check the interaction settings before saving.';
+        if (
+            !interactionsValid ||
+            !pairStagesValid ||
+            ((cfg.pair_stages || []).length > 0 && !pairCapability)
+        ) {
+            error = 'Check the pair settings before saving.';
             return;
         }
         saving = true;
@@ -434,6 +488,42 @@
             onState(snapshot);
             await refresh(false);
             notice = 'Model settings saved. Fit when ready.';
+        } catch (e) {
+            error = e.message;
+        } finally {
+            saving = false;
+        }
+    }
+    async function copyLegacyAsPairStages() {
+        if (!wb?.pair_stage_defaults?.candidates?.length || dirty || selected === '__new__') return;
+        saving = true;
+        error = '';
+        try {
+            const baseName = `${selected} pair stages`;
+            let name = baseName;
+            for (let suffix = 2; wb.models[name]; suffix++) name = `${baseName} ${suffix}`;
+            const pair_stages = cfg.interactions.map((pair) => ({
+                ...structuredClone(wb.pair_stage_defaults),
+                stage_id: crypto.randomUUID(),
+                a: pair.a,
+                b: pair.b,
+            }));
+            const snapshot = await api('models/save', {
+                ...rev(),
+                name,
+                create: true,
+                ...payload,
+                fields: {
+                    ...payload.fields,
+                    interactions: [],
+                    pair_stages,
+                    pair_method: 'sequential_catboost',
+                },
+            });
+            selected = name;
+            onState(snapshot);
+            await refresh(false);
+            notice = 'Pair-stage copy created. Fit its ordered stages when ready.';
         } catch (e) {
             error = e.message;
         } finally {
@@ -463,7 +553,15 @@
         }
     }
     function setModelField(field, value) {
-        cfg = { ...cfg, [field]: value };
+        const next = { ...cfg, [field]: value };
+        if (
+            selected === '__new__' &&
+            !cfg.pair_stages?.length &&
+            supportsPair(cfg) !== supportsPair(next)
+        ) {
+            pairMethod = supportsPair(next) ? 'sequential' : 'legacy';
+        }
+        cfg = next;
     }
     function toggle(name, checked) {
         cfg = {
@@ -494,6 +592,7 @@
             name = selected,
             variable = tableName,
             offset = tableOffset;
+        const indexItem = sourceResult?.table_index?.find((item) => item.name === variable);
         if (!preserveEdits) rowEdits = {};
         if (!preserveEdits || tableLoadedKey !== key) {
             table = null;
@@ -516,14 +615,18 @@
             const data = await api(
                 'results/' +
                     encodeURIComponent(name) +
-                    '/table?variable=' +
+                    '/table?' +
+                    (indexItem?.kind === 'pair' ? 'stage_id=' : 'variable=') +
                     encodeURIComponent(variable) +
                     '&offset=' +
                     offset +
                     '&limit=200',
             );
             if (!valid()) return;
-            table = { ...data, kind: rateChartKind(data, variable, wb) };
+            table = {
+                ...data,
+                kind: indexItem?.kind === 'pair' ? 'pair' : rateChartKind(data, variable, wb),
+            };
             tableLoadedKey = key;
         } catch (e) {
             if (!valid()) return;
@@ -626,8 +729,13 @@
             <nav class="section-nav" aria-label="Model sections">
                 <a href="#model-definition">Model definition</a><a href="#factor-design"
                     >Factor design</a
-                >{#if wb.predictors.length}<a href="#model-interactions"
-                        >Interactions ({cfg.interactions.length})</a
+                >{#if wb.predictors.length}<a
+                        href={pairMethod === 'sequential'
+                            ? '#model-pair-stages'
+                            : '#model-interactions'}
+                        >{pairMethod === 'sequential'
+                            ? `Pair stages (${cfg.pair_stages?.length || 0})`
+                            : `Interactions (${cfg.interactions.length})`}</a
                     >{/if}<a href="#fit-settings">Fit and results</a>
             </nav>
             <fieldset disabled={saving} class="edit-fieldset">
@@ -700,7 +808,8 @@
                     <div class="section-heading">
                         <h2 id="factor-design">Factor design</h2>
                         <span
-                            >{cfg.predictors.length} main effects · {cfg.interactions.length} interactions</span
+                            >{cfg.predictors.length} main effects · {cfg.interactions.length} interactions
+                            · {cfg.pair_stages?.length || 0} pair stages</span
                         >
                     </div>
                     {#if !wb.predictors.length}
@@ -786,12 +895,61 @@
                             </div>{:else}<p class="help-text">
                                 No predictors match this search.
                             </p>{/if}
-                        <InteractionEditor
-                            interactions={cfg.interactions}
-                            onchange={(pairs) => (cfg = { ...cfg, interactions: pairs })}
-                            predictors={cfg.predictors}
-                            bind:valid={interactionsValid}
-                        />
+                        {#if selected === '__new__' && !cfg.interactions.length && !(cfg.pair_stages || []).length}
+                            <div class="pair-method">
+                                <button
+                                    type="button"
+                                    aria-pressed={pairMethod === 'legacy'}
+                                    onclick={() => (pairMethod = 'legacy')}
+                                    >Legacy GLM interactions</button
+                                >
+                                <button
+                                    type="button"
+                                    aria-pressed={pairMethod === 'sequential'}
+                                    onclick={() => (pairMethod = 'sequential')}
+                                    >Sequential CatBoost pairs</button
+                                >
+                            </div>
+                        {/if}
+                        {#if pairMethod === 'sequential'}
+                            {#if !pairCapability}<p class="prerequisites" role="alert">
+                                    Sequential pairs currently require Poisson or Tweedie with a log
+                                    link and Tweedie power strictly between 1 and 2.
+                                </p>{/if}
+                            <PairStageEditor
+                                stages={cfg.pair_stages || []}
+                                onchange={(stages) => (cfg = { ...cfg, pair_stages: stages })}
+                                eligible={wb.predictors}
+                                defaults={wb.pair_stage_defaults}
+                                statuses={wb.stage_statuses?.[selected] || []}
+                                {job}
+                                {mainChanged}
+                                newModel={selected === '__new__'}
+                                {savedStages}
+                                bind:valid={pairStagesValid}
+                            />
+                        {:else}
+                            <InteractionEditor
+                                interactions={cfg.interactions}
+                                onchange={(pairs) => (cfg = { ...cfg, interactions: pairs })}
+                                predictors={cfg.predictors}
+                                bind:valid={interactionsValid}
+                            />
+                            {#if selected !== '__new__' && pairCapability}
+                                <button
+                                    type="button"
+                                    disabled={dirty ||
+                                        !wb.pair_stage_defaults?.candidates?.length ||
+                                        cfg.interactions.length > 8}
+                                    onclick={copyLegacyAsPairStages}
+                                    >Copy as sequential pair stages</button
+                                >
+                                <p class="help-text">
+                                    The copy keeps this model and its main effects. The new pair
+                                    stages need a fresh fit.
+                                </p>
+                            {/if}
+                        {/if}
                     {/if}
                     {#if Object.keys(cfg.monotone || {}).length}<div class="preserved">
                             Retained monotone constraints: {Object.entries(cfg.monotone)
@@ -874,7 +1032,12 @@
                         L1 ratio 1 is lasso; 0 is ridge. Save changes before fitting.
                     </p>
                     <div class="model-actions">
-                        <button class="primary" onclick={saveModel} disabled={!interactionsValid}
+                        <button
+                            class="primary"
+                            onclick={saveModel}
+                            disabled={!interactionsValid ||
+                                !pairStagesValid ||
+                                (cfg.pair_stages?.length && !pairCapability)}
                             >{selected === '__new__'
                                 ? 'Create model'
                                 : 'Save model settings'}</button
@@ -886,10 +1049,50 @@
                             disabled={selected === '__new__' ||
                                 dirty ||
                                 active ||
-                                wb.problems.length > 0}>Fit model</button
+                                wb.problems.length > 0}
+                            >{cfg.pair_stages?.length
+                                ? fitAllStages
+                                    ? 'Fit all stages'
+                                    : 'Fit remaining stages'
+                                : 'Fit model'}</button
                         >
                     </div>
-                    {#if wb.models[selected]?.adjustments?.length || wb.models[selected]?.base_rate_override != null}
+                    {#if cfg.pair_stages?.length && wb.stage_refit_preview?.[selected]?.first_refit_stage}
+                        <div class="refit-preview" role="status">
+                            <strong
+                                >{fitAllStages
+                                    ? 'Fit main effects and pair stages'
+                                    : `Fit remaining from stage ${wb.stage_refit_preview[selected].first_refit_stage}`}</strong
+                            >
+                            <p>
+                                {wb.stage_refit_preview[selected].stage_ids.length} pair stage{wb
+                                    .stage_refit_preview[selected].stage_ids.length === 1
+                                    ? ''
+                                    : 's'} will be fitted.
+                            </p>
+                            {#if wb.stage_refit_preview[selected].cleared_adjustments.length}
+                                <p>
+                                    {wb.stage_refit_preview[selected].cleared_adjustments.length} manual
+                                    cell edit{wb.stage_refit_preview[selected].cleared_adjustments
+                                        .length === 1
+                                        ? ''
+                                        : 's'} in those stages will be replaced after the fit succeeds:
+                                </p>
+                                <ul>
+                                    {#each wb.stage_refit_preview[selected].cleared_adjustments as adjustment}
+                                        <li>
+                                            {cfg.pair_stages.find(
+                                                (stage) => stage.stage_id === adjustment.stage_id,
+                                            )?.a} × {cfg.pair_stages.find(
+                                                (stage) => stage.stage_id === adjustment.stage_id,
+                                            )?.b} · cell {adjustment.axis_a_row + 1}, {adjustment.axis_b_row +
+                                                1} · rate {rel(adjustment.relativity)}
+                                        </li>
+                                    {/each}
+                                </ul>
+                            {/if}
+                        </div>
+                    {:else if !cfg.pair_stages?.length && (wb.models[selected]?.adjustments?.length || wb.models[selected]?.base_rate_override != null)}
                         <p class="help-text">A new fit starts with unadjusted rates.</p>
                     {/if}
                     {#if dirty}<p class="help-text">Save the model changes before fitting.</p>{/if}
@@ -1100,12 +1303,121 @@
                                 loadTable();
                             }}
                             >{#each result.table_index as item}<option value={item.name}
-                                    >{item.name} · {item.rows} rows</option
+                                    >{item.label || item.name} · {item.rows} rows</option
                                 >{/each}</select
                         ></label
                     >
                 </div>
-                {#if table}<div class="rate-primary">
+                {#if table?.kind === 'pair'}
+                    <ReviewPanel
+                        challenger={effectiveChallenger}
+                        fitIdentity={job?.id || ''}
+                        comparisonFitIdentity={jobs[effectiveChallenger]?.id || ''}
+                        bind:this={tableReview}
+                        bind:busy={reviewBusy}
+                        bind:committing={reviewCommitting}
+                        {api}
+                        {state}
+                        name={selected}
+                        {view}
+                        bind:subset
+                        tableKind="pair"
+                        {table}
+                        chartTable={pairChartTable}
+                        rateLabel={result.relativity_label}
+                        variable={tableName}
+                        edits={rowEdits}
+                        onApplied={reviewed}
+                        onReduced={reduced}
+                        onClear={clearEdits}
+                        {onNavigate}
+                    >
+                        {#snippet children()}
+                            <div class="model-card" aria-label="Pair rate table">
+                                <h3>Pair rate table</h3>
+                                <p class="help-text">
+                                    These are the rates used when scoring. The CatBoost fit created
+                                    this table.
+                                </p>
+                                <label class="help-text"
+                                    ><input type="checkbox" bind:checked={tableDetails} /> Show all columns</label
+                                >
+                                <div class="rate-grid">
+                                    <table>
+                                        <thead
+                                            ><tr
+                                                >{#each table.columns.filter((column) => tableDetails || ['label_a', 'label_b', 'fitted', 'relativity', 'row_count', 'fitting_weight', 'weight_share', 'fallback_reason'].includes(column)) as column}<th
+                                                        >{column.replaceAll('_', ' ')}</th
+                                                    >{/each}</tr
+                                            ></thead
+                                        >
+                                        <tbody
+                                            >{#each table.rows as row, rowIndex}<tr
+                                                    >{#each table.columns.filter((column) => tableDetails || ['label_a', 'label_b', 'fitted', 'relativity', 'row_count', 'fitting_weight', 'weight_share', 'fallback_reason'].includes(column)) as column}<td
+                                                            >{#if column === 'relativity'}<input
+                                                                    class="relativity-input"
+                                                                    aria-label={'Pair relativity row ' +
+                                                                        (table.offset +
+                                                                            rowIndex +
+                                                                            1)}
+                                                                    type="number"
+                                                                    min="0"
+                                                                    step="0.0001"
+                                                                    disabled={reviewCommitting}
+                                                                    value={rowEdits[
+                                                                        table.offset + rowIndex
+                                                                    ] ??
+                                                                        rel(row.relativity, {
+                                                                            grouping: false,
+                                                                        })}
+                                                                    oninput={(event) =>
+                                                                        editRow(
+                                                                            table.offset + rowIndex,
+                                                                            event.currentTarget
+                                                                                .value,
+                                                                        )}
+                                                                />{:else}{column === 'fitted'
+                                                                    ? rel(row[column])
+                                                                    : num(row[column])}{/if}</td
+                                                        >{/each}</tr
+                                                >{/each}</tbody
+                                        >
+                                    </table>
+                                </div>
+                                <div class="results-toolbar table-paging">
+                                    <span
+                                        >Rows {table.offset + 1}–{Math.min(
+                                            table.offset + table.rows.length,
+                                            table.total,
+                                        )} of {table.total}</span
+                                    >
+                                    <div class="spacer"></div>
+                                    <button
+                                        disabled={tableBusy ||
+                                            Object.keys(rowEdits).length > 0 ||
+                                            tableOffset === 0}
+                                        onclick={() => {
+                                            tableOffset = Math.max(0, tableOffset - 200);
+                                            loadTable();
+                                        }}>Previous rows</button
+                                    >
+                                    <button
+                                        disabled={tableBusy ||
+                                            Object.keys(rowEdits).length > 0 ||
+                                            tableOffset + 200 >= table.total}
+                                        onclick={() => {
+                                            tableOffset += 200;
+                                            loadTable();
+                                        }}>Next rows</button
+                                    >
+                                </div>
+                                {#if Object.keys(rowEdits).length}<button onclick={clearEdits}
+                                        >Discard row edits</button
+                                    >{/if}
+                            </div>
+                        {/snippet}
+                    </ReviewPanel>
+                {:else if table}<div class="rate-primary">
                         <ReviewPanel
                             challenger={effectiveChallenger}
                             fitIdentity={job?.id || ''}

@@ -35,14 +35,18 @@
 
     $: rowLabels = formatLabels(rowNames);
     $: colLabels = formatLabels(colNames);
+    $: pairTable = table?.kind === 'pair';
+    $: supportField = pairTable ? 'fitting_weight' : 'exposure';
     function path(points) {
         return points.map((p) => `${p.x},${190 - (p.value / plot.max) * 150}`).join(' ');
     }
     function color(row) {
-        if (!row || !row.exposure) return '#eef2ef';
+        if (!row) return '#eef2ef';
+        if (!row[supportField] && !pairTable) return '#eef2ef';
         const value = row[cellView];
-        if (cellView === 'exposure')
+        if (cellView === supportField)
             return `color-mix(in srgb, var(--chart-exposure, #c9a16a) ${100 * (0.1 + (0.8 * value) / plot.maxExposure)}%, transparent)`;
+        if (pairTable && !row.fitting_weight) return '#eef2ef';
         return value >= 1
             ? `rgba(195,91,72,${Math.min(0.8, 0.15 + Math.abs(Math.log(value)))})`
             : `rgba(40,119,98,${Math.min(0.8, 0.15 + Math.abs(Math.log(value)))})`;
@@ -50,14 +54,18 @@
 </script>
 
 <section class="rate-chart-card" aria-label="Relativity chart">
-    <h2>{variable} · {label}</h2>
+    <h2>{table?.display_label || variable} · {label}</h2>
     {#if plot.interaction}
         <label
-            >Cell values<select aria-label="Interaction chart values" bind:value={cellView}
+            >Cell values<select
+                aria-label={pairTable ? 'Pair chart values' : 'Interaction chart values'}
+                bind:value={cellView}
                 ><option value="relativity"
                     >{showAdjusted ? currentLabel : fittedLabel} relativity</option
                 >{#if showAdjusted}<option value="fitted">{fittedLabel} relativity</option
-                    >{/if}<option value="exposure">Exposure</option></select
+                    >{/if}<option value={supportField}
+                    >{pairTable ? 'Fitting weight' : 'Exposure'}</option
+                ></select
             ></label
         >
         <div class="heatmap-scroll">
@@ -74,9 +82,9 @@
                                     (r) => r.label_a === name && r.label_b === other,
                                 )}<td
                                     style:background={color(cell)}
-                                    title={`${fittedLabel} ${rel(cell?.fitted)}; ${showAdjusted ? `${currentLabel} ${rel(cell?.relativity)}; ` : ''}exposure ${num(cell?.exposure)}`}
-                                    >{cell?.exposure
-                                        ? cellView === 'exposure'
+                                    title={`${fittedLabel} ${rel(cell?.fitted)}; ${showAdjusted ? `${currentLabel} ${rel(cell?.relativity)}; ` : ''}${pairTable ? 'fitting weight' : 'exposure'} ${num(cell?.[supportField])}${pairTable && cell?.fallback_reason ? `; ${cell.fallback_reason}` : ''}`}
+                                    >{pairTable || cell?.exposure
+                                        ? cellView === supportField
                                             ? num(cell[cellView])
                                             : rel(cell[cellView])
                                         : '—'}</td
@@ -86,7 +94,9 @@
             </table>
         </div>
         <p class="help-text">
-            Cells without exposure are blank. Choose exposure to see their support.
+            {pairTable
+                ? 'Every configured cell is shown. Grey cells have no fitting weight and use the neutral rate 1.'
+                : 'Cells without exposure are blank. Choose exposure to see their support.'}
         </p>
     {:else}
         <div class="rate-plot-scroll">
@@ -220,6 +230,12 @@
 </section>
 
 <style>
+    .rate-chart-card > label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+    }
     .exposure-caption {
         color: var(--chart-exposure-text, #805a29);
     }

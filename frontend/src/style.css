@@ -772,8 +772,35 @@ main {
     line-height: 1.6;
     color: var(--muted);
 }
+.pair-method {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 18px;
+}
+.pair-method button[aria-pressed='true'] {
+    background: #eaf3ed;
+    border-color: #84b09a;
+    color: #205e4e;
+    font-weight: 650;
+}
 .model-actions {
     margin-top: 20px;
+}
+.refit-preview {
+    margin-top: 14px;
+    padding: 12px 14px;
+    border: 1px solid #e8d6b4;
+    border-radius: 6px;
+    background: #fff8ed;
+    font-size: 12px;
+}
+.refit-preview p {
+    margin: 6px 0 0;
+}
+.refit-preview ul {
+    margin: 7px 0 0;
+    padding-left: 20px;
 }
 .job-card {
     background: #eaf3ed;

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pickle
 import secrets
 import shutil
 import threading
@@ -65,7 +66,7 @@ from easy_glm.desktop.splits import (
 )
 from easy_glm.workflow.explore import univariate
 from easy_glm.workflow.prep import apply_variables
-from easy_glm.workflow.project import SINGLE_ROLES, Project
+from easy_glm.workflow.project import SINGLE_ROLES, Project, pair_stage_fingerprint
 from easy_glm.workflow.variables import (
     BULK_ROLE_GROUPS,
     apply_roles_grid,
@@ -150,17 +151,34 @@ def create_app(
                 )
                 return
             cfg = current.models[name]
-            cleared = bool(cfg.adjustments) or cfg.base_rate_override is not None
-            cfg.adjustments = []
-            cfg.base_rate_override = None
-            undo_steps.pop(name, None)
-            redo_steps.pop(name, None)
+            cleared = False
+            if not cfg.pair_stages:
+                cleared = bool(cfg.adjustments) or cfg.base_rate_override is not None
+                cfg.adjustments = []
+                cfg.base_rate_override = None
+                undo_steps.pop(name, None)
+                redo_steps.pop(name, None)
+            else:
+                # Undo states captured against older fitted axes/provenance
+                # cannot safely cross an explicit staged refit.
+                clear = set(job.get("clear_stage_ids", []))
+                if clear:
+                    kept = [
+                        adjustment
+                        for adjustment in cfg.adjustments
+                        if adjustment.stage_id not in clear
+                    ]
+                    cleared = len(kept) != len(cfg.adjustments)
+                    cfg.adjustments = kept
+                undo_steps.pop(name, None)
+                redo_steps.pop(name, None)
             if cleared:
                 revision += 1
                 screenings.invalidate((session_id, project_id, revision))
                 feature_selections.invalidate((session_id, project_id, revision))
             job.update(
                 key=model_key(current, name),
+                project=deepcopy(current),
                 status="complete",
                 message=(
                     "Unchanged main effects reused. Diagnostics and rate tables are ready."
@@ -169,8 +187,18 @@ def create_app(
                 ),
                 result=result,
             )
+            jobs.remember_complete(name)
 
     jobs.on_complete = complete_fit
+
+    def snapshot_pair_identity(name: str, source: Path) -> str | None:
+        cfg = current.models[name]
+        if not cfg.pair_stages:
+            return None
+        with (source / "fit.pkl").open("rb") as handle:
+            run = pickle.load(handle)  # private fit artifact created by this app
+        return pair_stage_fingerprint(cfg, run.rate_model)
+
     token = secrets.token_urlsafe(32)
     session_id = secrets.token_urlsafe(16)
     project_id = hashlib.sha256(
@@ -648,11 +676,15 @@ def create_app(
             saved, saved_raw = deepcopy(current), raw.clone()
             saved_revision, saved_session = revision, session_id
             saved_jobs = jobs.status(saved)
+            saved_stage_statuses = jobs.stage_statuses(saved)
+            saved_refit_previews = jobs.refit_previews(saved)
         return {
             **setup_info(saved, saved_raw),
             "revision": saved_revision,
             "session_id": saved_session,
             "jobs": saved_jobs,
+            "stage_statuses": saved_stage_statuses,
+            "stage_refit_preview": saved_refit_previews,
             "champion": saved.champion,
         }
 
@@ -773,14 +805,35 @@ def create_app(
             return {
                 **{k: v for k, v in result.items() if k != "tables"},
                 "table_index": [
-                    {"name": key, "rows": len(table["rows"])}
+                    {"name": key, "rows": len(table["rows"]), "kind": "main"}
                     for key, table in result["tables"].items()
+                ]
+                + [
+                    {
+                        "name": key,
+                        "stage_id": key,
+                        "label": next(
+                            (
+                                f"{stage.a} × {stage.b}"
+                                for stage in current.models[name].pair_stages
+                                if stage.stage_id == key
+                            ),
+                            key,
+                        ),
+                        "rows": len(table["rows"]),
+                        "kind": "pair",
+                    }
+                    for key, table in result.get("pair_tables", {}).items()
                 ],
             }
 
     @app.get("/api/results/{name}/table")
     def result_table(
-        name: str, variable: str, offset: int = 0, limit: int = 200
+        name: str,
+        variable: str = "",
+        stage_id: str | None = None,
+        offset: int = 0,
+        limit: int = 200,
     ) -> dict[str, Any]:
         if offset < 0 or not 1 <= limit <= 500:
             raise HTTPException(
@@ -791,9 +844,15 @@ def create_app(
                 result = jobs.result(current, name)
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
-            if variable not in result["tables"]:
+            tables = (
+                result.get("pair_tables", {})
+                if stage_id is not None
+                else result["tables"]
+            )
+            key = stage_id if stage_id is not None else variable
+            if key not in tables:
                 raise HTTPException(404, "Unknown fitted variable.")
-            table = result["tables"][variable]
+            table = tables[key]
             return {
                 "columns": table["columns"],
                 "rows": table["rows"][offset : offset + limit],
@@ -907,6 +966,7 @@ def create_app(
                             label,
                             adjustments=deepcopy(cfg.adjustments),
                             base_rate_override=cfg.base_rate_override,
+                            pair_stage_fingerprint=snapshot_pair_identity(name, source),
                         )
                     )
                     current.models[name].snapshots = cfg.snapshots
@@ -937,6 +997,15 @@ def create_app(
                         )
                         if matched is None:
                             raise ValueError("Choose an existing snapshot.")
+                        if (
+                            cfg.pair_stages
+                            and matched.pair_stage_fingerprint
+                            != snapshot_pair_identity(name, source)
+                        ):
+                            raise ValueError(
+                                "This snapshot was saved against different pair-stage axes or fitted prefix. "
+                                "Fit the current sequence and save a new snapshot before restoring it."
+                            )
                         cfg.adjustments = deepcopy(matched.adjustments)
                         cfg.base_rate_override = matched.base_rate_override
                     elif edit.action == "reset_variable":
@@ -1069,6 +1138,10 @@ def create_app(
                 "variables": columns,
                 "predictors": current.models[name].predictors,
                 "interactions": [i.__dict__ for i in current.models[name].interactions],
+                "pair_stages": [
+                    {"stage_id": stage.stage_id, "a": stage.a, "b": stage.b}
+                    for stage in current.models[name].pair_stages
+                ],
                 "model_names": list(current.models),
                 "variable_info": jobs.result(current, name)
                 .get("diagnostic_info", {})

@@ -118,7 +118,7 @@ _SAMPLE_KEYS = ("sample_rows", "sample_seed")
 #: 7 — E merged after D5 and G: D5+A2 and E+A2 had each moved the merged tree
 #: to 6 on their own branches, so the release tree moves on once more. Every
 #: reason above applies to a run pickled before this number.
-PERSIST_FORMAT = 8
+PERSIST_FORMAT = 9
 #: A marker left by *another* session is only removed once it is this old:
 #: younger than this it may belong to a fit that is still running in another
 #: tab, and taking its marker away would cost that tab its own warning.
@@ -190,11 +190,17 @@ def model_hash(project: Project, model: str) -> str:
     post-fit (adjustments, base-rate override, notes)."""
     d = project.to_dict()
     cfg = dict(d["models"][model])
-    cfg.pop("adjustments", None)  # applied post-fit, never require a refit
+    staged = bool(cfg.get("pair_stages"))
+    if not staged:
+        cfg.pop("adjustments", None)  # legacy edits are post-fit
     cfg.pop("snapshots", None)  # named copies of the adjustments; same reason
-    cfg.pop("base_rate_override", None)
+    if not staged:
+        cfg.pop("base_rate_override", None)
     cfg.pop("notes", None)
-    design = {v: d["design"]["variables"].get(v) for v in cfg["predictors"]}
+    design_names = set(cfg["predictors"])
+    for stage in cfg.get("pair_stages", []):
+        design_names.update((stage["a"], stage["b"]))
+    design = {v: d["design"]["variables"].get(v) for v in sorted(design_names)}
     return spec_hash(
         {
             "data": _data_dict(project, with_sample=False),
@@ -1094,6 +1100,14 @@ def fit_progress_callback():
 
 def fit_model(model: str) -> ModelRun:
     p = project()
+    if (
+        p.models[model].pair_stages
+        or p.models[model].pair_method == "sequential_catboost"
+    ):
+        raise ValueError(
+            "Ordered CatBoost pair stages are fitted in the desktop workbench. "
+            "Open this project there to fit and inspect the complete model."
+        )
     df = prepared_frame()
     if df is None:
         raise ValueError("Load data first (Project page).")

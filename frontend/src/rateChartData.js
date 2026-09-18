@@ -24,7 +24,7 @@ export function rateChartKind(table, variable, workbench) {
 export function rateChartData(table) {
     const rows = table?.rows || [];
     const linear = ['linear', 'continuous'].includes(table?.kind);
-    const interaction = table?.kind === 'interaction';
+    const interaction = table?.kind === 'interaction' || table?.kind === 'pair';
     const numeric = linear || table?.kind === 'step';
     const edges = rows
         .flatMap((r) => [r.from, r.to])
@@ -119,6 +119,9 @@ export function rateChartData(table) {
         numeric,
         nullRow,
         max: Math.max(1, ...points.flatMap((p) => [...p.fitted, ...p.current].map((v) => v.value))),
-        maxExposure: Math.max(1, ...rows.map((r) => r.exposure || 0)),
+        maxExposure: Math.max(
+            1,
+            ...rows.map((r) => (table?.kind === 'pair' ? r.fitting_weight : r.exposure) || 0),
+        ),
     };
 }

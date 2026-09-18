@@ -8,6 +8,7 @@ executes it; :mod:`easy_glm.workflow.export` renders it as a Python script.
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import math
 import os
@@ -34,7 +35,7 @@ def _is_finite_number(value: Any) -> bool:
     line in the problem list. Checking this first turns it into that line.
     """
     return (
-        isinstance(value, (int, float))
+        isinstance(value, int | float)
         and not isinstance(value, bool)
         and math.isfinite(value)
     )
@@ -114,7 +115,7 @@ def safe_filename(name: str, fallback: str = "model") -> str:
     return cleaned[:80] if re.search(r"\w", cleaned) else fallback
 
 
-PROJECT_VERSION = 2  # 1 = easy_glm 0.3 files (loaded and migrated)
+PROJECT_VERSION = 3  # v3 adds ordered CatBoost pair-stage configuration
 
 ROLES = (
     "target",
@@ -297,6 +298,10 @@ class Adjustment:
     from_b: Any = None
     to_b: Any = None
     cell: bool = False
+    #: pair-stage edits address the stable stage ID and canonical axis rows
+    stage_id: str | None = None
+    axis_a_row: int | None = None
+    axis_b_row: int | None = None
 
 
 @dataclass
@@ -316,6 +321,10 @@ class TableSnapshot:
     adjustments: list[Adjustment] = field(default_factory=list)
     #: the base-rate override in force when the snapshot was taken
     base_rate_override: float | None = None
+    #: deployed prefix identity at capture time (stage config/order, axes and
+    #: exact table values); a mismatched restore must not claim downstream fits
+    #: remain current. ``None`` is the legacy snapshot format.
+    pair_stage_fingerprint: str | None = None
 
 
 @dataclass
@@ -342,6 +351,39 @@ class Interaction:
 
 
 @dataclass
+class PairCandidateConfig:
+    """A fixed CPU CatBoost candidate for one pair-stage search."""
+
+    depth: int
+    iterations: int
+    learning_rate: float
+    l2_leaf_reg: float
+
+
+def default_pair_candidates() -> list[PairCandidateConfig]:
+    """Bounded, shallow CPU search; the neutral choice is implicit."""
+    return [
+        PairCandidateConfig(2, 60, 0.08, 3.0),
+        PairCandidateConfig(3, 120, 0.06, 5.0),
+    ]
+
+
+@dataclass
+class PairStageConfig:
+    """One ordered correction trained from exactly two raw predictor columns."""
+
+    stage_id: str
+    a: str
+    b: str
+    candidates: list[PairCandidateConfig] = field(
+        default_factory=default_pair_candidates
+    )
+    min_weight_share: float = 0.001
+    seed: int = 42
+    cv_folds: int = 5
+
+
+@dataclass
 class ModelConfig:
     family: str = "poisson"
     #: only for ``family="tweedie"``: the power of the compound Poisson-Gamma,
@@ -357,6 +399,8 @@ class ModelConfig:
     penalty: Penalty = field(default_factory=Penalty)
     monotone: dict[str, str] = field(default_factory=dict)
     interactions: list[Interaction] = field(default_factory=list)
+    pair_method: str = "legacy_glm"
+    pair_stages: list[PairStageConfig] = field(default_factory=list)
     base: str = "modal"
     base_rate_override: float | None = None
     adjustments: list[Adjustment] = field(default_factory=list)
@@ -376,7 +420,11 @@ class ModelConfig:
         """
 
         def keep(adjustments: list[Adjustment]) -> tuple[list[Adjustment], int]:
-            kept = [a for a in adjustments if a.variable != variable]
+            kept = [
+                a
+                for a in adjustments
+                if a.variable != variable and a.stage_id != variable
+            ]
             return kept, len(adjustments) - len(kept)
 
         self.adjustments, dropped = keep(self.adjustments)
@@ -384,6 +432,55 @@ class ModelConfig:
             snap.adjustments, gone = keep(snap.adjustments)
             dropped += gone
         return dropped
+
+
+def pair_stage_fingerprint(config: ModelConfig, rate_model: Any) -> str:
+    """Identity of a snapshot's ordered stage configuration and fitted axes.
+
+    Manual relativity/base-rate edits are excluded so a saved snapshot remains
+    restorable after another reversible edit. Fitted stage provenance remains
+    included; downstream staleness after restore is checked separately.
+    """
+    scorer = rate_model.to_dict()
+    pair_tables = [
+        {
+            "stage_id": table["stage_id"],
+            "parents": table["parents"],
+            "axes": [
+                {
+                    "type": axis["type"],
+                    "other_label": axis.get("other_label"),
+                    "rows": [(row.get("from"), row.get("to")) for row in axis["table"]],
+                }
+                for axis in table["axes"]
+            ],
+            "provenance": table.get("provenance", {}),
+        }
+        for table in scorer.get("pair_tables", [])
+    ]
+    payload = {
+        "stage_config": [asdict(stage) for stage in config.pair_stages],
+        "main_axes": {
+            name: {
+                "type": table["type"],
+                "rows": [
+                    (
+                        row.get("from"),
+                        row.get("to"),
+                        row.get("from_a"),
+                        row.get("to_a"),
+                        row.get("from_b"),
+                        row.get("to_b"),
+                    )
+                    for row in table["table"]
+                ],
+            }
+            for name, table in scorer["variables"].items()
+        },
+        "pair_tables": pair_tables,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _adjustment_to_dict(a: dict[str, Any]) -> dict[str, Any]:
@@ -395,6 +492,15 @@ def _adjustment_to_dict(a: dict[str, Any]) -> dict[str, Any]:
         "from": a["from_"],
         "to": a["to_"],
         "relativity": a["relativity"],
+        **(
+            {
+                "stage_id": a["stage_id"],
+                "axis_a_row": a["axis_a_row"],
+                "axis_b_row": a["axis_b_row"],
+            }
+            if a.get("stage_id") is not None
+            else {}
+        ),
         **(
             {"from_b": a["from_b"], "to_b": a["to_b"], "cell": True}
             if a["cell"]
@@ -416,6 +522,9 @@ def _adjustment_from_dict(a: dict[str, Any], where: str) -> Adjustment:
             "from_b",
             "to_b",
             "cell",
+            "stage_id",
+            "axis_a_row",
+            "axis_b_row",
         },
         where,
     )
@@ -427,6 +536,9 @@ def _adjustment_from_dict(a: dict[str, Any], where: str) -> Adjustment:
         from_b=a.get("from_b"),
         to_b=a.get("to_b"),
         cell=bool(a.get("cell", False)),
+        stage_id=a.get("stage_id"),
+        axis_a_row=a.get("axis_a_row"),
+        axis_b_row=a.get("axis_b_row"),
     )
 
 
@@ -604,6 +716,13 @@ class Project:
                 if it.b == old:
                     it.b = new
                     hit = True
+            for stage in cfg.pair_stages:
+                if stage.a == old:
+                    stage.a = new
+                    hit = True
+                if stage.b == old:
+                    stage.b = new
+                    hit = True
             snapshot_adjustments = [a for s in cfg.snapshots for a in s.adjustments]
             for adj in [*cfg.adjustments, *snapshot_adjustments]:
                 parts = adj.variable.split(INTERACTION_SEP)
@@ -621,7 +740,10 @@ class Project:
         notices (a predictor that left a model, an interaction dropped ...)."""
         notices: list[str] = []
         was_premium = self.data.roles.get(column) == "current_premium"
-        self.set_role(column, role)
+        if role == "unassigned":
+            self.data.roles.pop(column, None)
+        else:
+            self.set_role(column, role)
         if was_premium and role != "current_premium":
             # the derived log(premium) column is gone with the role; a model
             # still offsetting on it would fail at the next fit
@@ -648,9 +770,22 @@ class Project:
                     f"Interaction(s) {', '.join(it.name for it in dropped)} removed from "
                     f"model {name}: {column} is no longer a predictor"
                 )
+            dropped_stages = [
+                stage for stage in cfg.pair_stages if column in (stage.a, stage.b)
+            ]
+            if dropped_stages:
+                cfg.pair_stages = [
+                    stage for stage in cfg.pair_stages if stage not in dropped_stages
+                ]
+                notices.append(
+                    f"Pair stage(s) {', '.join(s.stage_id for s in dropped_stages)} "
+                    f"removed from model {name}: {column} is no longer a predictor"
+                )
             cfg.drop_adjustments_for(column)
             for interaction in dropped:
                 cfg.drop_adjustments_for(interaction.name)
+            for stage in dropped_stages:
+                cfg.drop_adjustments_for(stage.stage_id)
             cfg.monotone.pop(column, None)
         return notices
 
@@ -686,6 +821,12 @@ class Project:
                     if parent not in have:
                         problems.append(
                             f"{name}: interaction parent {parent!r} is not in the data"
+                        )
+            for stage in cfg.pair_stages:
+                for parent in (stage.a, stage.b):
+                    if parent not in have:
+                        problems.append(
+                            f"{name}: pair-stage parent {parent!r} is not in the data"
                         )
         return problems
 
@@ -727,7 +868,7 @@ class Project:
                     "designs only"
                 )
             if vd.clamp is not None and (
-                not isinstance(vd.clamp, (list, tuple))
+                not isinstance(vd.clamp, list | tuple)
                 or len(vd.clamp) != 2
                 or not all(_is_finite_number(v) for v in vd.clamp)
                 or not vd.clamp[0] < vd.clamp[1]
@@ -823,6 +964,139 @@ class Project:
                         "constraints apply to numeric designs only"
                     )
             seen_pairs: set[frozenset[str]] = set()
+            if cfg.pair_method not in ("legacy_glm", "sequential_catboost"):
+                problems.append(f"{name}: unknown pair method {cfg.pair_method!r}")
+            if cfg.interactions and cfg.pair_method == "sequential_catboost":
+                problems.append(
+                    f"{name}: sequential CatBoost models cannot use legacy interactions"
+                )
+            if cfg.pair_stages and cfg.interactions:
+                problems.append(
+                    f"{name}: pair stages cannot be mixed with legacy interactions"
+                )
+            if cfg.pair_stages and (
+                cfg.family not in ("poisson", "tweedie")
+                or cfg.link not in (None, "log")
+            ):
+                problems.append(
+                    f"{name}: pair stages support Poisson/log and Tweedie/log only"
+                )
+            stage_ids: set[str] = set()
+            for stage in cfg.pair_stages:
+                if not isinstance(stage.stage_id, str) or not stage.stage_id.strip():
+                    problems.append(f"{name}: pair stage needs a nonempty stage_id")
+                else:
+                    if stage.stage_id == "main":
+                        problems.append(
+                            f"{name}: pair stage ID 'main' is reserved for the main-effects stage"
+                        )
+                    if stage.stage_id in stage_ids:
+                        problems.append(
+                            f"{name}: pair stage ID {stage.stage_id!r} listed twice"
+                        )
+                    stage_ids.add(stage.stage_id)
+                if not isinstance(stage.a, str) or not isinstance(stage.b, str):
+                    problems.append(f"{name}: pair parents must be column names")
+                    continue
+                if stage.a == stage.b:
+                    problems.append(
+                        f"{name}: pair stage {stage.stage_id!r} repeats a parent"
+                    )
+                pair = frozenset((stage.a, stage.b))
+                if pair in seen_pairs:
+                    problems.append(
+                        f"{name}: pair {stage.a!r} × {stage.b!r} listed twice"
+                    )
+                seen_pairs.add(pair)
+                for parent in (stage.a, stage.b):
+                    if self.data.roles.get(parent) != "predictor":
+                        problems.append(
+                            f"{name}: pair parent {parent!r} must have predictor role"
+                        )
+                if not (
+                    _is_finite_number(stage.min_weight_share)
+                    and 0 <= stage.min_weight_share < 1
+                ):
+                    problems.append(
+                        f"{name}: pair {stage.stage_id!r} min_weight_share must be in [0, 1)"
+                    )
+                if (
+                    not isinstance(stage.seed, int)
+                    or isinstance(stage.seed, bool)
+                    or not 0 <= stage.seed <= 2**31 - 1
+                ):
+                    problems.append(
+                        f"{name}: pair {stage.stage_id!r} seed must be in [0, 2^31-1]"
+                    )
+                if (
+                    not isinstance(stage.cv_folds, int)
+                    or isinstance(stage.cv_folds, bool)
+                    or stage.cv_folds != 5
+                ):
+                    problems.append(
+                        f"{name}: pair {stage.stage_id!r} cv_folds must be 5 in v1"
+                    )
+                if not isinstance(stage.candidates, list):
+                    problems.append(
+                        f"{name}: pair {stage.stage_id!r} candidates must be a list"
+                    )
+                    continue
+                if len(stage.candidates) > 3:
+                    problems.append(
+                        f"{name}: pair {stage.stage_id!r} has over 3 candidates"
+                    )
+                if not stage.candidates:
+                    problems.append(
+                        f"{name}: pair {stage.stage_id!r} needs at least one teacher candidate"
+                    )
+                for candidate in stage.candidates:
+                    if not isinstance(candidate, PairCandidateConfig):
+                        problems.append(f"{name}: malformed pair candidate")
+                        continue
+                    if (
+                        not isinstance(candidate.depth, int)
+                        or isinstance(candidate.depth, bool)
+                        or not 1 <= candidate.depth <= 6
+                    ):
+                        problems.append(
+                            f"{name}: pair candidate depth must be in [1, 6]"
+                        )
+                    if (
+                        not isinstance(candidate.iterations, int)
+                        or isinstance(candidate.iterations, bool)
+                        or not 1 <= candidate.iterations <= 200
+                    ):
+                        problems.append(
+                            f"{name}: pair candidate iterations must be in [1, 200]"
+                        )
+                    if not (
+                        _is_finite_number(candidate.learning_rate)
+                        and 0 < candidate.learning_rate <= 1
+                    ):
+                        problems.append(
+                            f"{name}: pair candidate learning_rate must be in (0, 1]"
+                        )
+                    if not (
+                        _is_finite_number(candidate.l2_leaf_reg)
+                        and candidate.l2_leaf_reg > 0
+                    ):
+                        problems.append(
+                            f"{name}: pair candidate l2_leaf_reg must be > 0"
+                        )
+            for adj in cfg.adjustments:
+                if adj.stage_id is None:
+                    continue
+                if not isinstance(adj.stage_id, str) or adj.stage_id not in stage_ids:
+                    problems.append(
+                        f"{name}: pair adjustment has unknown stage ID {adj.stage_id!r}"
+                    )
+                if not adj.cell or any(
+                    not isinstance(index, int) or isinstance(index, bool) or index < 0
+                    for index in (adj.axis_a_row, adj.axis_b_row)
+                ):
+                    problems.append(
+                        f"{name}: pair adjustment needs nonnegative canonical axis rows and cell=True"
+                    )
             for it in cfg.interactions:
                 if it.a == it.b:
                     problems.append(f"{name}: interaction {it.a!r} × itself")
@@ -864,7 +1138,18 @@ class Project:
     # -- (de)serialisation ---------------------------------------------
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
+        # Keep ordinary legacy projects readable by version-2 installations.
+        d["version"] = (
+            3
+            if any(
+                m.pair_method == "sequential_catboost" or m.pair_stages
+                for m in self.models.values()
+            )
+            else 2
+        )
         for m in d["models"].values():
+            if m["pair_stages"]:
+                m["pair_method"] = "sequential_catboost"
             m["adjustments"] = [_adjustment_to_dict(a) for a in m["adjustments"]]
             for snap in m.get("snapshots", []):
                 snap["adjustments"] = [
@@ -936,12 +1221,50 @@ class Project:
                             for a in snap.get("adjustments", [])
                         ],
                         base_rate_override=snap.get("base_rate_override"),
+                        pair_stage_fingerprint=snap.get("pair_stage_fingerprint"),
                     )
                 )
             interactions = [
                 _build(Interaction, it, f"models[{name!r}].interactions")
                 for it in m.pop("interactions", [])
             ]
+            pair_stages = []
+            raw_stages = m.pop("pair_stages", [])
+            if not isinstance(raw_stages, list):
+                raise ValueError(f"models[{name!r}].pair_stages must be a list")
+            for stage in raw_stages:
+                if not isinstance(stage, dict):
+                    raise ValueError(
+                        f"models[{name!r}].pair_stages entries must be objects"
+                    )
+                stage = dict(stage)
+                raw_candidates = stage.pop("candidates", default_pair_candidates())
+                if not isinstance(raw_candidates, list) or not all(
+                    isinstance(candidate, dict | PairCandidateConfig)
+                    for candidate in raw_candidates
+                ):
+                    raise ValueError(
+                        f"models[{name!r}].pair_stages.candidates must be a list of objects"
+                    )
+                candidates = [
+                    (
+                        candidate
+                        if isinstance(candidate, PairCandidateConfig)
+                        else _build(
+                            PairCandidateConfig,
+                            candidate,
+                            f"models[{name!r}].pair_stages.candidates",
+                        )
+                    )
+                    for candidate in raw_candidates
+                ]
+                pair_stages.append(
+                    _build(
+                        PairStageConfig,
+                        {**stage, "candidates": candidates},
+                        f"models[{name!r}].pair_stages",
+                    )
+                )
             models[name] = _build(
                 ModelConfig,
                 {
@@ -950,6 +1273,11 @@ class Project:
                     "adjustments": adjustments,
                     "snapshots": snapshots,
                     "interactions": interactions,
+                    "pair_method": m.get(
+                        "pair_method",
+                        "sequential_catboost" if pair_stages else "legacy_glm",
+                    ),
+                    "pair_stages": pair_stages,
                 },
                 f"models[{name!r}]",
             )

@@ -132,13 +132,16 @@ def apply_roles_grid(
         role = r.get("role") or "unassigned"
         if role == "unassigned":
             if final in p.data.roles:
-                old_role = p.data.roles.pop(final)
+                old_role = p.data.roles[final]
                 if old_role == "predictor":
-                    notices.extend(("warning", n) for n in _drop_from_models(p, final))
+                    notices.extend(
+                        ("warning", n) for n in p.apply_role_change(final, "unassigned")
+                    )
                 elif old_role == "current_premium":
                     notices.extend(
                         ("warning", n) for n in _drop_premium_offset(p, final)
                     )
+                p.data.roles.pop(final, None)
                 changed = True
         elif p.data.roles.get(final) != role:
             notices.extend(("warning", n) for n in p.apply_role_change(final, role))
@@ -394,21 +397,5 @@ def _drop_premium_offset(p: Project, column: str) -> list[str]:
 
 
 def _drop_from_models(p: Project, column: str) -> list[str]:
-    """Remove a column that is no longer a predictor from every model."""
-    notes: list[str] = []
-    for name, cfg in p.models.items():
-        if column in cfg.predictors:
-            cfg.predictors = [v for v in cfg.predictors if v != column]
-            notes.append(f"{column} was removed from model {name}: it is unassigned")
-        dropped = [it for it in cfg.interactions if column in (it.a, it.b)]
-        if dropped:
-            cfg.interactions = [it for it in cfg.interactions if it not in dropped]
-            notes.append(
-                f"Interaction(s) {', '.join(it.name for it in dropped)} removed from "
-                f"model {name}"
-            )
-        cfg.drop_adjustments_for(column)
-        for interaction in dropped:
-            cfg.drop_adjustments_for(interaction.name)
-        cfg.monotone.pop(column, None)
-    return notes
+    """Keep derived-column removal and the roles grid on one cleanup rule."""
+    return p.apply_role_change(column, "unassigned")

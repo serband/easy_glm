@@ -14,6 +14,8 @@ from easy_glm.workflow.project import (
     FAMILIES,
     Interaction,
     ModelConfig,
+    PairCandidateConfig,
+    PairStageConfig,
     Project,
     VariableDesign,
     validate_model_name,
@@ -94,6 +96,25 @@ def setup_info(project: Project, raw: pl.DataFrame) -> dict[str, Any]:
         "offset": project.offset_column,
         "design": project.to_dict()["design"],
         "families": list(FAMILIES),
+        "pair_stage_defaults": {
+            "min_weight_share": 0.001,
+            "seed": 42,
+            "cv_folds": 5,
+            "candidates": [
+                {
+                    "depth": 2,
+                    "iterations": 60,
+                    "learning_rate": 0.08,
+                    "l2_leaf_reg": 3.0,
+                },
+                {
+                    "depth": 3,
+                    "iterations": 120,
+                    "learning_rate": 0.06,
+                    "l2_leaf_reg": 5.0,
+                },
+            ],
+        },
     }
 
 
@@ -146,6 +167,60 @@ def _edit_interactions(cfg: ModelConfig, values: Any) -> None:
     cfg.interactions = interactions
 
 
+def _edit_pair_stages(cfg: ModelConfig, values: Any) -> None:
+    """Replace the ordered pair recipe, retaining stable stage identities."""
+    if not isinstance(values, list):
+        raise ValueError("Pair stages must be an ordered list.")
+    allowed = {
+        "stage_id",
+        "a",
+        "b",
+        "candidates",
+        "min_weight_share",
+        "seed",
+        "cv_folds",
+    }
+    candidate_fields = {"depth", "iterations", "learning_rate", "l2_leaf_reg"}
+    stages: list[PairStageConfig] = []
+    for value in values:
+        if not isinstance(value, dict) or set(value) - allowed:
+            raise ValueError(
+                "Each pair stage needs an ID, two parents and candidate settings."
+            )
+        if not all(
+            isinstance(value.get(key), str) and value[key].strip()
+            for key in ("stage_id", "a", "b")
+        ):
+            raise ValueError("Each pair stage needs an ID and two column names.")
+        candidates = value.get("candidates", [])
+        if not isinstance(candidates, list):
+            raise ValueError("Pair stage candidates must be a list.")
+        parsed = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict) or set(candidate) != candidate_fields:
+                raise ValueError(
+                    "A candidate needs depth, iterations, learning_rate and l2_leaf_reg."
+                )
+            parsed.append(PairCandidateConfig(**candidate))
+        stages.append(
+            PairStageConfig(
+                stage_id=value["stage_id"],
+                a=value["a"],
+                b=value["b"],
+                candidates=parsed,
+                min_weight_share=value.get("min_weight_share", 0.001),
+                seed=value.get("seed", 42),
+                cv_folds=value.get("cv_folds", 5),
+            )
+        )
+    removed = {stage.stage_id for stage in cfg.pair_stages} - {
+        stage.stage_id for stage in stages
+    }
+    for stage_id in removed:
+        cfg.drop_adjustments_for(stage_id)
+    cfg.pair_stages = stages
+
+
 def edit_model(project: Project, edit: ModelEdit) -> Project:
     candidate = deepcopy(project)
     if edit.create:
@@ -169,6 +244,8 @@ def edit_model(project: Project, edit: ModelEdit) -> Project:
         "divide_target_by_weight",
         "predictors",
         "interactions",
+        "pair_method",
+        "pair_stages",
         "penalty",
         "tweedie_power",
         "base",
@@ -180,6 +257,8 @@ def edit_model(project: Project, edit: ModelEdit) -> Project:
     for key, value in edit.fields.items():
         if key == "interactions":
             _edit_interactions(cfg, value)
+        elif key == "pair_stages":
+            _edit_pair_stages(cfg, value)
         elif key == "penalty":
             if not isinstance(value, dict) or set(value) - {
                 "alpha",
