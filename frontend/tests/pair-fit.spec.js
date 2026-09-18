@@ -25,10 +25,10 @@ test('fitted stages expose pair edits, suffix status, refit impact and narrow la
     );
     await page.getByLabel('New pair first predictor').selectOption('A');
     await page.getByLabel('New pair second predictor').selectOption('B');
-    await page.getByRole('button', { name: 'Add pair correction' }).click();
+    await page.getByRole('button', { name: 'Add interaction' }).click();
     await page.getByLabel('New pair first predictor').selectOption('B');
     await page.getByLabel('New pair second predictor').selectOption('C');
-    await page.getByRole('button', { name: 'Add pair correction' }).click();
+    await page.getByRole('button', { name: 'Add interaction' }).click();
     for (const [number, label] of [
         [2, 'A × B'],
         [3, 'B × C'],

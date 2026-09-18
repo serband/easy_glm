@@ -163,9 +163,9 @@
 </script>
 
 <section class="pair-stages" aria-label="Sequential pair stages">
-    <h3 id="model-pair-stages">Sequential pair corrections</h3>
+    <h3 id="model-pair-stages">Interactions — fitted in order</h3>
     <p class="help-text">
-        Fit each pair in order. Each correction becomes a rate table; the next pair builds on the
+        Fit each interaction in order. Each becomes a rate table; the next builds on the
         main effects and earlier tables. You can use a predictor here without selecting it as a main
         effect.
     </p>
@@ -357,7 +357,7 @@
                             >
                         </div>
                         <p class="help-text">
-                            Used when there are earlier pair corrections. Cannot exceed this pair's
+                            Used when there are earlier interactions. Cannot exceed this pair's
                             trial count.
                         </p>
                     </details>
@@ -386,7 +386,7 @@
             </details>
         </div>
     {/each}
-    {#if stages.length === 0}<p class="help-text">No pair corrections defined.</p>{/if}
+    {#if stages.length === 0}<p class="help-text">No interactions added yet.</p>{/if}
     <div class="add-stage">
         <label
             >First predictor<select aria-label="New pair first predictor" bind:value={first}
@@ -403,7 +403,7 @@
                     >{/each}</select
             ></label
         >
-        <button type="button" disabled={!canAdd} onclick={add}>Add pair correction</button>
+        <button type="button" disabled={!canAdd} onclick={add}>Add interaction</button>
     </div>
     {#if duplicate}<p class="stage-error">This pair is already defined.</p>{/if}
     {#if defaults?.search?.method !== 'optuna'}<p class="help-text">

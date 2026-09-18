@@ -87,10 +87,10 @@ test('sequential pair draft keeps stable IDs, order, and pair-only parents', asy
     await page.getByLabel('Include VehicleAge', { exact: true }).uncheck();
     await page.getByLabel('New pair first predictor').selectOption('DriverAge');
     await page.getByLabel('New pair second predictor').selectOption('VehicleAge');
-    await page.getByRole('button', { name: 'Add pair correction' }).click();
+    await page.getByRole('button', { name: 'Add interaction' }).click();
     await page.getByLabel('New pair first predictor').selectOption('Region');
     await page.getByLabel('New pair second predictor').selectOption('DriverAge');
-    await page.getByRole('button', { name: 'Add pair correction' }).click();
+    await page.getByRole('button', { name: 'Add interaction' }).click();
     await expect(stages.getByLabel('Stage 2 DriverAge × VehicleAge')).toContainText(
         'Baseline: Main effects',
     );
@@ -192,7 +192,7 @@ test('saved fixed settings remain fixed until explicitly switched to automatic t
     await page.getByLabel('New model name').fill(name);
     await page.getByLabel('New pair first predictor').selectOption('DriverAge');
     await page.getByLabel('New pair second predictor').selectOption('Region');
-    await page.getByRole('button', { name: 'Add pair correction' }).click();
+    await page.getByRole('button', { name: 'Add interaction' }).click();
     await page.getByRole('button', { name: 'Create model' }).click();
     const initial = saves.at(-1);
     const session = await (await page.request.get('/api/session')).json();

@@ -779,7 +779,7 @@
                             ? '#model-pair-stages'
                             : '#model-interactions'}
                         >{pairMethod === 'sequential'
-                            ? `Pair stages (${cfg.pair_stages?.length || 0})`
+                            ? `Interactions (${cfg.pair_stages?.length || 0})`
                             : `Interactions (${cfg.interactions.length})`}</a
                     >{/if}<a href="#fit-settings">Fit and results</a>
             </nav>
