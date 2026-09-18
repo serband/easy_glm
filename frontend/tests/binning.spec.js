@@ -1,5 +1,11 @@
 import { test, expect } from '@playwright/test';
 
+function cutLines(panel) {
+    return panel
+        .locator('.model-cut')
+        .evaluateAll((lines) => lines.map((line) => Number(line.getAttribute('data-cut'))));
+}
+
 test('numeric binning stays in sync and reaches fitted rate tables', async ({ page }, testInfo) => {
     const errors = [];
     let previews = 0;
@@ -136,6 +142,75 @@ test('numeric binning stays in sync and reaches fitted rate tables', async ({ pa
     expect(errors).toEqual([]);
 });
 
+test('training distribution stays fixed while default bins and custom cuts move', async ({
+    page,
+}) => {
+    await page.goto('/');
+    const panel = page.getByRole('region', { name: 'Numeric binning' });
+    await panel.getByRole('button', { name: /^Mileage/ }).click();
+    const firstResponse = page.waitForResponse('**/api/variables/binning-preview');
+    await page.getByRole('button', { name: 'Preview bins for Mileage' }).click();
+    const first = await (await firstResponse).json();
+    expect(first.histogram.bars).toHaveLength(40);
+    expect(first.histogram.finite_rows).toBe(1800);
+    expect(first.histogram.bars.reduce((total, bar) => total + bar.rows, 0)).toBe(1800);
+    const figure = panel.locator('figure.binning-histogram');
+    await expect(figure).toContainText('Equal-width bars show the distribution');
+    await expect(figure.locator('.distribution-bar')).toHaveCount(40);
+    const firstBar = first.histogram.bars[0];
+    await expect(figure.locator('.distribution-bar').first().locator('title')).toHaveText(
+        `Training values ${firstBar.lower} to ${firstBar.upper}: ${firstBar.rows} rows`,
+    );
+    const beforeCuts = await cutLines(panel);
+    expect(beforeCuts.length).toBeGreaterThan(5);
+
+    await page.getByLabel('Default number of bins', { exact: true }).fill('8');
+    await expect(figure).toHaveCount(0);
+    const secondResponse = page.waitForResponse('**/api/variables/binning-preview');
+    await page.getByRole('button', { name: 'Preview bins for Mileage' }).click();
+    const second = await (await secondResponse).json();
+    expect(second.histogram).toEqual(first.histogram);
+    expect(second.actual_bins).toBeLessThan(first.actual_bins);
+    await expect(figure.locator('.distribution-bar')).toHaveCount(40);
+    expect(await cutLines(panel)).not.toEqual(beforeCuts);
+
+    await panel.getByRole('button', { name: /^VehicleAge/ }).click();
+    await page.getByLabel('Binning method for VehicleAge').selectOption('cuts');
+    await page.getByLabel('Custom cuts for VehicleAge').fill('0, 2, 4');
+    const thirdResponse = page.waitForResponse('**/api/variables/binning-preview');
+    await page.getByRole('button', { name: 'Preview bins for VehicleAge' }).click();
+    const third = await (await thirdResponse).json();
+    expect(third.histogram.finite_rows).toBeLessThan(third.training_rows);
+    expect(await cutLines(panel)).toEqual([0, 2, 4]);
+    await expect(figure.locator('.axis-label')).toHaveText('Rows');
+    await expect(figure.locator('.value-tick').first()).toHaveAttribute('text-anchor', 'start');
+    await expect(figure.locator('.value-tick').last()).toHaveAttribute('text-anchor', 'end');
+    const emptyBar = third.histogram.bars.findIndex((bar) => bar.rows === 0);
+    expect(emptyBar).toBeGreaterThanOrEqual(0);
+    await expect(figure.locator('.distribution-bar').nth(emptyBar)).toHaveAttribute('height', '0');
+    await expect(panel.getByText('Bin counts and intervals')).toBeVisible();
+    await panel.getByText('Bin counts and intervals').click();
+    await expect(panel.getByRole('table')).toBeVisible();
+
+    await page.getByLabel('Custom cuts for VehicleAge').fill('-10, 0, 2, 4, 10');
+    await expect(figure).toHaveCount(0);
+    const outsideResponse = page.waitForResponse('**/api/variables/binning-preview');
+    await page.getByRole('button', { name: 'Preview bins for VehicleAge' }).click();
+    const outside = await (await outsideResponse).json();
+    expect(outside.histogram).toEqual(third.histogram);
+    expect(await cutLines(panel)).toEqual([0, 2, 4]);
+    await expect(figure).toContainText('2 model boundaries outside the range are omitted.');
+
+    await page.getByLabel('Type for VehicleAge').selectOption('categorical');
+    await expect(figure).toHaveCount(0);
+    const inactiveResponse = page.waitForResponse('**/api/variables/binning-preview');
+    await page.getByRole('button', { name: 'Preview bins for VehicleAge' }).click();
+    const inactive = await (await inactiveResponse).json();
+    expect(inactive.active).toBe(false);
+    await expect(panel).toContainText('Saved numeric setting is inactive');
+    await expect(figure).toHaveCount(0);
+});
+
 test('a delayed preview cannot overwrite a newer draft', async ({ page }) => {
     await page.goto('/');
     const panel = page.getByRole('region', { name: 'Numeric binning' });
@@ -155,9 +230,11 @@ test('a delayed preview cannot overwrite a newer draft', async ({ page }) => {
     await page.getByRole('button', { name: 'Preview bins for VehicleAge', exact: true }).click();
     await request;
     await page.getByLabel('Custom cuts for VehicleAge').fill('0, 2, 4');
+    await expect(panel.locator('figure.binning-histogram')).toHaveCount(0);
     const response = page.waitForResponse('**/api/variables/binning-preview');
     release();
     await response;
     await expect(panel.locator('.binning-preview')).toHaveCount(0);
+    await expect(panel.locator('figure.binning-histogram')).toHaveCount(0);
     await page.getByRole('button', { name: 'Reset', exact: true }).click();
 });

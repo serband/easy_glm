@@ -1,4 +1,6 @@
 <script>
+    import BinningHistogram from './BinningHistogram.svelte';
+
     export let setup;
     export let state;
     export let api;
@@ -393,19 +395,28 @@
             </p>
             {#if !preview.active}<p>Saved numeric setting is inactive for this factor kind.</p>{/if}
             {#each preview.warnings || [] as warning}<p class="binning-warning">{warning}</p>{/each}
-            <div class="binning-preview-scroll">
-                <table>
-                    <thead><tr><th>Interval</th><th>Rows</th><th>Exposure</th></tr></thead><tbody>
-                        {#each preview.rows || [] as row}<tr
-                                ><td>{row.label}</td><td>{row.rows?.toLocaleString()}</td><td
-                                    >{row.exposure == null
-                                        ? '—'
-                                        : row.exposure.toLocaleString()}</td
-                                ></tr
-                            >{/each}
-                    </tbody>
-                </table>
-            </div>
+            {#if preview.active && preview.histogram}<BinningHistogram
+                    histogram={preview.histogram}
+                    intervals={preview.rows || []}
+                    name={preview.name || preview.column}
+                />{/if}
+            <details class="binning-intervals">
+                <summary>Bin counts and intervals</summary>
+                <div class="binning-preview-scroll">
+                    <table>
+                        <thead><tr><th>Interval</th><th>Rows</th><th>Exposure</th></tr></thead
+                        ><tbody>
+                            {#each preview.rows || [] as row}<tr
+                                    ><td>{row.label}</td><td>{row.rows?.toLocaleString()}</td><td
+                                        >{row.exposure == null
+                                            ? '—'
+                                            : row.exposure.toLocaleString()}</td
+                                    ></tr
+                                >{/each}
+                        </tbody>
+                    </table>
+                </div>
+            </details>
         </div>
     {/if}
 </section>
@@ -506,6 +517,15 @@
     }
     .binning-preview p {
         margin: 5px 0;
+    }
+    .binning-intervals {
+        margin-top: 13px;
+    }
+    .binning-intervals summary {
+        cursor: pointer;
+        color: #284c69;
+        font-size: 12px;
+        font-weight: 600;
     }
     .binning-preview-scroll {
         overflow: auto;

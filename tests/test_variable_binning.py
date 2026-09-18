@@ -103,6 +103,47 @@ def test_quantile_ties_reduce_actual_bins() -> None:
     assert any("Tied" in warning for warning in result["warnings"])
 
 
+def test_histogram_counts_training_distribution_independently_of_cuts() -> None:
+    p = _project()
+    p.design.variables["age"] = VariableDesign(knots=[0.0, 1.0])
+    before = deepcopy(p)
+    first = binning_preview(p, _raw(), "age")
+    histogram = first["histogram"]
+    assert histogram["finite_rows"] == 6
+    assert sum(bar["rows"] for bar in histogram["bars"]) == 6
+    assert histogram["bars"][0]["lower"] == -1
+    assert histogram["bars"][-1]["upper"] == 3  # Holdout's 9 is excluded.
+    assert histogram["bars"][-1]["rows"] == 1  # Maximum is included.
+    assert len(histogram["bars"]) <= 40
+    assert p == before
+    p.design.variables["age"].knots = [0.5, 2.0]
+    changed = binning_preview(p, _raw(), "age")
+    assert changed["histogram"] == histogram
+    assert changed["rows"] != first["rows"]
+
+
+def test_histogram_handles_constant_and_nonfinite_training_values() -> None:
+    p = _project()
+    p.design.variables["age"] = VariableDesign(knots=[0.0])
+    raw = pl.DataFrame(
+        {
+            "age": [2.0, 2.0, None, float("nan"), float("inf"), 99.0],
+            "claims": [0] * 6,
+            "traintest": [1, 1, 1, 1, 1, 0],
+        }
+    )
+    histogram = binning_preview(p, raw, "age")["histogram"]
+    assert histogram["finite_rows"] == 2
+    assert len(histogram["bars"]) == 1
+    assert histogram["bars"][0]["rows"] == 2
+    assert histogram["bars"][0]["lower"] < 2 < histogram["bars"][0]["upper"]
+    empty = raw.with_columns(pl.lit(None, dtype=pl.Float64).alias("age"))
+    assert binning_preview(p, empty, "age")["histogram"] == {
+        "bars": [],
+        "finite_rows": 0,
+    }
+
+
 def test_numeric_string_cast_and_exposure_use_prepared_training_rows() -> None:
     p = _project()
     p.data.types["age"] = "numeric"

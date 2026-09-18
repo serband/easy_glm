@@ -231,6 +231,31 @@ def validate_changed_linear_binning(
             )
 
 
+def _histogram(values: np.ndarray) -> dict[str, Any]:
+    """A bounded, fixed-resolution distribution, independent of model cuts."""
+    finite = values[np.isfinite(values)]
+    if not finite.size:
+        return {"bars": [], "finite_rows": 0}
+    lower, upper = float(finite.min()), float(finite.max())
+    if lower == upper:
+        padding = max(abs(lower) * 0.01, 0.5)
+        limit = float(np.finfo(np.float64).max)
+        edges = np.array([max(-limit, lower - padding), min(limit, upper + padding)])
+    else:
+        # Scaling avoids overflowing the range for large, opposite-sign values.
+        scale = max(abs(lower), abs(upper), 1.0)
+        edges = np.unique(np.linspace(lower / scale, upper / scale, 41) * scale)
+        edges[0], edges[-1] = lower, upper
+    counts, edges = np.histogram(finite, bins=edges)
+    return {
+        "bars": [
+            {"lower": float(lo), "upper": float(hi), "rows": int(count)}
+            for lo, hi, count in zip(edges[:-1], edges[1:], counts, strict=True)
+        ],
+        "finite_rows": int(finite.size),
+    }
+
+
 def binning_preview(project: Project, raw: pl.DataFrame, column: str) -> dict[str, Any]:
     """Compute one draft column's bands from the same prepared training data as fit."""
     if column not in raw.columns:
@@ -261,6 +286,7 @@ def binning_preview(project: Project, raw: pl.DataFrame, column: str) -> dict[st
         "training_rows": training.height,
         "warnings": [],
         "active": active,
+        "histogram": {"bars": [], "finite_rows": 0},
     }
     if not active:
         result["warnings"].append(
@@ -270,6 +296,7 @@ def binning_preview(project: Project, raw: pl.DataFrame, column: str) -> dict[st
     if not series.dtype.is_numeric():
         raise ValueError(f"{name!r} is not numeric after variable preparation.")
     values = series.cast(pl.Float64).to_numpy()
+    result["histogram"] = _histogram(values)
     nan = np.isnan(values)
     result["missing_rows"] = int(nan.sum())
     result["nonfinite_rows"] = int(
