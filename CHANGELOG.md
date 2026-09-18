@@ -2,6 +2,13 @@
 
 This is the user-facing record of useful new features and fixes.
 
+## 0.464 — 18 September 2026
+
+- **Control numeric bins on Variables.** Set a default number of bins, or choose a different count or your own cut points for each predictor. Settings apply across models.
+- **Preview before applying.** See the band boundaries, training-row counts and missing values before fitting. Changing bins marks existing fits as needing an update.
+- **Binning in Variables JSON.** The renamed Role JSON editor includes binning settings and stays in sync with the controls. Saved projects keep your choices.
+- **More reliable change previews.** Background model updates no longer dismiss a pending Variables preview.
+
 ## 0.463 — 11 September 2026
 
 - **Smaller challenger models.** Keep the top N predictors or choose them individually from Variable importance, then fit and compare a separate model.
