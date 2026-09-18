@@ -875,7 +875,7 @@
                           ? 'Saved adjustments'
                           : 'Original fit'}
             </p>
-            {#if tableKind !== 'pair' || (chartTable?.rows?.length && chartTable.rows.length <= 1600)}<RateChart
+            {#if tableKind !== 'pair' || chartTable?.rows?.length}<RateChart
                     table={(previewMatches &&
                         (tableKind !== 'pair' ||
                             preview.preview_table?.rows?.length === chartTable?.rows?.length) &&
@@ -893,7 +893,7 @@
                     currentLabel="Adjusted"
                     preview={!!(previewMatches && preview.preview_table)}
                 />{:else if tableKind === 'pair'}<p class="help-text">
-                    The table is too large for a heatmap. Use the rate table below.
+                    The interaction heatmap will appear when the pair table is available.
                 </p>{/if}
         {/if}
         {#if feedback}<div class="message success review-feedback" role="status">

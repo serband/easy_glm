@@ -1596,3 +1596,54 @@ main {
     height: 36px;
     margin-bottom: 0;
 }
+
+/* Keep the interaction view legible while larger matrices scroll locally. */
+.interaction-key {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    margin-top: 14px;
+    font-size: 12px;
+    color: var(--muted);
+}
+.interaction-key span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.interaction-key i {
+    width: 14px;
+    height: 14px;
+    border: 1px solid #cbd2d6;
+    border-radius: 3px;
+}
+.heat-low {
+    background: #b1d0c5;
+}
+.heat-neutral {
+    background: #fff;
+}
+.heat-high {
+    background: #e4b3a9;
+}
+.interaction-matrix .relativity-heatmap {
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+}
+.interaction-matrix .relativity-heatmap td {
+    text-align: center;
+    min-width: 64px;
+    padding: 10px;
+}
+.interaction-matrix .relativity-heatmap thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #f3f4f5;
+}
+.interaction-matrix .relativity-heatmap tbody th {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: #f3f4f5;
+}

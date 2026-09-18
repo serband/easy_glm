@@ -37,6 +37,13 @@
     $: colLabels = formatLabels(colNames);
     $: pairTable = table?.kind === 'pair';
     $: supportField = pairTable ? 'fitting_weight' : 'exposure';
+    $: cellsByLabel = new Map(
+        (table?.rows || []).map((row) => [JSON.stringify([row.label_a, row.label_b]), row]),
+    );
+    const cellNumber = (value) =>
+        typeof value === 'number' && Number.isFinite(value)
+            ? Number(value.toFixed(3)).toLocaleString('en-GB', { maximumFractionDigits: 3 })
+            : '—';
     function path(points) {
         return points.map((p) => `${p.x},${190 - (p.value / plot.max) * 150}`).join(' ');
     }
@@ -47,14 +54,24 @@
         if (cellView === supportField)
             return `color-mix(in srgb, var(--chart-exposure, #c9a16a) ${100 * (0.1 + (0.8 * value) / plot.maxExposure)}%, transparent)`;
         if (pairTable && !row.fitting_weight) return '#eef2ef';
+        if (value === 1) return '#ffffff';
         return value >= 1
             ? `rgba(195,91,72,${Math.min(0.8, 0.15 + Math.abs(Math.log(value)))})`
             : `rgba(40,119,98,${Math.min(0.8, 0.15 + Math.abs(Math.log(value)))})`;
     }
 </script>
 
-<section class="rate-chart-card" aria-label="Relativity chart">
-    <h2>{table?.display_label || variable} · {label}</h2>
+<section
+    class="rate-chart-card"
+    aria-label="Relativity chart"
+    id={plot.interaction ? 'interaction-heatmap' : undefined}
+>
+    <h2>
+        {plot.interaction
+            ? 'Interaction heatmap'
+            : `${table?.display_label || variable} · ${label}`}
+    </h2>
+    {#if plot.interaction}<h3>{table?.display_label || variable}</h3>{/if}
     {#if plot.interaction}
         <label
             >Cell values<select
@@ -68,25 +85,39 @@
                 ></select
             ></label
         >
-        <div class="heatmap-scroll">
-            <table class="relativity-heatmap">
+        <div class="interaction-key" aria-label="Heatmap colour key">
+            {#if cellView === supportField}<span
+                    >Deeper amber = more {pairTable ? 'fitting weight' : 'exposure'}</span
+                >
+            {:else}<span><i class="heat-low"></i>Below 1 · lower rate</span><span
+                    ><i class="heat-neutral"></i>1 · no change</span
+                ><span><i class="heat-high"></i>Above 1 · higher rate</span>{/if}
+        </div>
+        {#if table?.parents}<p class="help-text">
+                Rows: <strong>{table.parents[0]}</strong> · Columns:
+                <strong>{table.parents[1]}</strong>
+            </p>{/if}
+        <div class="heatmap-scroll interaction-matrix">
+            <table class="relativity-heatmap" aria-label="Interaction relativities matrix">
                 <thead
                     ><tr
-                        ><th></th>{#each colNames as name, i}<th title={name}>{colLabels[i]}</th
+                        ><th scope="col"
+                            >{table?.parents
+                                ? `${table.parents[0]} / ${table.parents[1]}`
+                                : 'Rows / columns'}</th
+                        >{#each colNames as name, i}<th scope="col" title={name}>{colLabels[i]}</th
                             >{/each}</tr
                     ></thead
                 ><tbody
                     >{#each rowNames as name, i}<tr
                             ><th title={name}>{rowLabels[i]}</th
-                            >{#each colNames as other}{@const cell = table.rows.find(
-                                    (r) => r.label_a === name && r.label_b === other,
+                            >{#each colNames as other}{@const cell = cellsByLabel.get(
+                                    JSON.stringify([name, other]),
                                 )}<td
                                     style:background={color(cell)}
-                                    title={`${fittedLabel} ${rel(cell?.fitted)}; ${showAdjusted ? `${currentLabel} ${rel(cell?.relativity)}; ` : ''}${pairTable ? 'fitting weight' : 'exposure'} ${num(cell?.[supportField])}${pairTable && cell?.fallback_reason ? `; ${cell.fallback_reason}` : ''}`}
+                                    title={`${fittedLabel} ${cellNumber(cell?.fitted)}; ${showAdjusted ? `${currentLabel} ${cellNumber(cell?.relativity)}; ` : ''}${pairTable ? 'fitting weight' : 'exposure'} ${num(cell?.[supportField])}${pairTable && cell?.fallback_reason ? `; ${cell.fallback_reason}` : ''}`}
                                     >{pairTable || cell?.exposure
-                                        ? cellView === supportField
-                                            ? num(cell[cellView])
-                                            : rel(cell[cellView])
+                                        ? cellNumber(cell?.[cellView])
                                         : '—'}</td
                                 >{/each}</tr
                         >{/each}</tbody
@@ -95,7 +126,7 @@
         </div>
         <p class="help-text">
             {pairTable
-                ? 'Every configured cell is shown. Grey cells have no fitting weight and use the neutral rate 1.'
+                ? 'Each cell is the correction used when scoring, rounded to three decimals. Grey cells have no training data.'
                 : 'Cells without exposure are blank. Choose exposure to see their support.'}
         </p>
     {:else}

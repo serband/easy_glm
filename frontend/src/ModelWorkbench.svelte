@@ -282,6 +282,7 @@
         ? {
               ...result.pair_tables[tableName],
               kind: 'pair',
+              parents: result.pair_stages?.find((stage) => stage.stage_id === tableName)?.parents,
               display_label: result.table_index.find((item) => item.name === tableName)?.label,
               total: result.pair_tables[tableName].rows.length,
               offset: 0,
@@ -1334,7 +1335,8 @@
                     >
                         {#snippet children()}
                             <div class="model-card" aria-label="Pair rate table">
-                                <h3>Pair rate table</h3>
+                                <h3>Edit pair table</h3>
+                                <a href="#interaction-heatmap">View interaction heatmap ↑</a>
                                 <p class="help-text">
                                     These are the rates used when scoring. The CatBoost fit created
                                     this table.
