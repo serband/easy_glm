@@ -64,6 +64,10 @@
                 (setup?.roles.predictor || []).includes(column.name) ||
                 (includeUnassigned && (setup?.roles.unassigned || []).includes(column.name)),
         ) || [];
+    $: predictorCount = candidates.filter((column) =>
+        (setup?.roles.predictor || []).includes(column.name),
+    ).length;
+    $: unassignedCount = candidates.length - predictorCount;
     $: validOptions =
         families.includes(family) &&
         (!link || links[family].includes(link)) &&
@@ -312,13 +316,38 @@
 
 <details class="selection-card" aria-label="One-way feature selection">
     <summary
-        >One-way feature selection <span>optional · {candidates.length} candidates</span></summary
+        >One-way feature selection <span>optional · {candidates.length} variables to test</span
+        ></summary
     >
     <div class="selection-body">
         <p>
             Check which variables help explain the target on their own. Uses training data only; you
             choose what to keep.
         </p>
+        <p class="selection-scope">
+            Testing {predictorCount} assigned {predictorCount === 1 ? 'predictor' : 'predictors'}
+            {#if includeUnassigned}
+                + {unassignedCount} unassigned {unassignedCount === 1 ? 'variable' : 'variables'}.
+            {:else}. Unassigned variables are excluded.{/if}
+            This includes the predictors already chosen on Variables.
+        </p>
+        <details class="selection-variable-list">
+            <summary>Variables to test ({candidates.length})</summary>
+            {#if candidates.length}
+                <ul>
+                    {#each candidates as column}
+                        <li>
+                            {column.name}
+                            <span
+                                >— {(setup?.roles.predictor || []).includes(column.name)
+                                    ? 'Predictor'
+                                    : 'Unassigned'}</span
+                            >
+                        </li>
+                    {/each}
+                </ul>
+            {:else}<p>Assign a predictor role above, or include unassigned variables.</p>{/if}
+        </details>
         <details class="selection-explanation">
             <summary>How it works</summary>
             <p>
@@ -391,10 +420,10 @@
             <label
                 ><input
                     type="checkbox"
-                    aria-label="Include unassigned candidates"
+                    aria-label="Also test unassigned variables"
                     bind:checked={includeUnassigned}
                     disabled={disabled || pending}
-                />Include unassigned candidates</label
+                />Also test unassigned variables</label
             >
         </div>
         <details class="selection-advanced">
@@ -481,7 +510,7 @@
                 <span
                     >{num(job?.progress?.completed || 0)} of {num(
                         job?.progress?.total || candidates.length,
-                    )} candidates · {num(job?.elapsed || 0)} seconds</span
+                    )} variables · {num(job?.elapsed || 0)} seconds</span
                 >
             </div>{/if}
         {#if error}<p role="alert" class="selection-error">{error}</p>{/if}
@@ -489,7 +518,7 @@
         {#if result}<div class="selection-results">
                 <div class="selection-summary">
                     <b
-                        >{num(result.tested_count)} tested of {num(result.candidate_count)} candidates</b
+                        >{num(result.tested_count)} of {num(result.candidate_count)} variables tested</b
                     ><span
                         >{num(result.training_rows)} training rows · {num(result.cv_folds || 5)} CV folds
                         · {num(result.repeats ?? repeats)} importance repeats</span
@@ -652,6 +681,15 @@
 </details>
 
 <style>
+    .selection-variable-list ul {
+        max-height: 180px;
+        overflow-y: auto;
+        padding-left: 22px;
+        overflow-wrap: anywhere;
+    }
+    .selection-variable-list span {
+        color: var(--muted);
+    }
     .selection-card {
         margin-top: 20px;
         border: 1px solid var(--border);

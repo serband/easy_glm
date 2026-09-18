@@ -28,7 +28,21 @@ test('one-way screen uses training rows and stages reviewed role changes', async
     await page.goto('/');
     const panel = page.getByRole('group', { name: 'One-way feature selection' });
     await panel.locator(':scope > summary').click();
-    await expect(panel).toContainText('4 candidates');
+    await expect(panel).toContainText('4 variables to test');
+    await expect(panel.locator('.selection-scope')).toContainText(
+        '2 assigned predictors + 2 unassigned variables',
+    );
+    await panel.getByText('Variables to test (4)', { exact: true }).click();
+    await expect(panel.locator('.selection-variable-list li')).toHaveCount(4);
+    await expect(panel.locator('.selection-variable-list')).toContainText('Risk — Predictor');
+    await page.getByLabel('Also test unassigned variables').uncheck();
+    await expect(panel).toContainText('2 variables to test');
+    await expect(panel.locator('.selection-scope')).toContainText(
+        'Unassigned variables are excluded',
+    );
+    await expect(panel.locator('.selection-variable-list li')).toHaveCount(2);
+    await page.getByLabel('Also test unassigned variables').check();
+    await expect(panel.locator('.selection-variable-list li')).toHaveCount(4);
     await expect(page.getByLabel('Divide target by weight for feature selection')).toBeChecked();
     await expect(panel).toContainText('you choose what to keep');
     await panel.getByText('Advanced settings', { exact: true }).click();
@@ -49,7 +63,7 @@ test('one-way screen uses training rows and stages reviewed role changes', async
     });
     expect(submitted.setup.binning.default_bins).toBe(6);
     expect(submitted.setup.binning.overrides.Risk).toEqual({ method: 'cuts', cuts: [0.5] });
-    await expect(panel.getByText(/tested of 4 candidates/)).toBeVisible({ timeout: 150000 });
+    await expect(panel.getByText('3 of 4 variables tested')).toBeVisible({ timeout: 150000 });
     const resultRows = panel.locator('.selection-table-wrap tbody tr:not(.selection-detail)');
     await expect(resultRows).toHaveCount(4);
     await expect(panel.getByLabel('Feature selection table order')).toHaveValue('importance');
@@ -116,6 +130,7 @@ test('one-way screen uses training rows and stages reviewed role changes', async
     const json = JSON.parse(await page.getByLabel('Variables JSON').inputValue());
     expect(json[intended]).toContain(rawName);
     await page.getByRole('button', { name: 'Table', exact: true }).click();
+    await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
     await page.getByRole('button', { name: 'Apply changes' }).click();
     await expect(page.getByRole('status').filter({ hasText: 'Settings applied' })).toBeVisible();
     expect((await project(page)).data.roles[rawName]).toBe(intended);
@@ -305,7 +320,7 @@ test('cancelled or changed drafts suppress late reports, and invalid JSON cannot
     const lateResponse = page.waitForResponse('**/api/variables/feature-selection');
     release();
     await lateResponse;
-    await expect(panel.getByText(/tested of .* candidates/)).toHaveCount(0);
+    await expect(panel.getByText(/of .* variables tested/)).toHaveCount(0);
     await page.getByRole('button', { name: 'Variables JSON' }).click();
     await page.getByLabel('Variables JSON').fill('{unfinished');
     let starts = 0;
