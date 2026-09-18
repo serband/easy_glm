@@ -34,6 +34,43 @@ from easy_glm.workflow.project import (
 from easy_glm.workflow.variables import apply_roles_grid
 
 
+def test_missing_interactions_excludes_pair_stages_in_either_order(
+    tmp_path, monkeypatch
+):
+    from test_pair_stage_exports import _staged_run
+
+    from easy_glm.desktop import review_worker
+
+    project, run, frame = _staged_run(tmp_path)
+    run.config.predictors = ["region", "x", "segment"]
+    run.config.pair_stages = [PairStageConfig("pair-1", "x", "region")]
+    # The fixture supplies a frozen, scored pair table; keep it for this search.
+    monkeypatch.setattr(review_worker, "rebuild_rate_model", lambda *args: None)
+    seen = []
+
+    def search(data, predictors, actual, expected, weight, *, pairs, **kwargs):
+        seen.extend(pairs)
+        assert data.height == 110  # Training rows only.
+        np.testing.assert_allclose(expected, run.predict(data))
+        return pl.DataFrame([{"a": a, "b": b} for a, b in pairs])
+
+    monkeypatch.setattr(review_worker, "residual_pair_search", search)
+    result = review_worker.review(project, run, frame, {"action": "interactions"})
+    assert seen == [("region", "segment"), ("x", "segment")]
+    assert len(result["rows"]) == 2
+    # Once all pairs are present, there is no search work or missing-pair result.
+    run.config.pair_stages.extend(
+        [
+            PairStageConfig("pair-2", "segment", "region"),
+            PairStageConfig("pair-3", "segment", "x"),
+        ]
+    )
+    seen.clear()
+    result = review_worker.review(project, run, frame, {"action": "interactions"})
+    assert result["rows"] == []
+    assert seen == []
+
+
 def _project() -> Project:
     project = Project(name="pairs")
     project.data.roles = {"Claims": "target", "Age": "predictor", "Region": "predictor"}

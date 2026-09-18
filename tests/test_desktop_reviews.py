@@ -144,6 +144,8 @@ def test_include_interaction_and_edit_cell_without_refitting(review_session):
     assert not client.get("/api/jobs").json()["Frequency"]["applicable"]
     client.post("/api/models/Frequency/fit", json=revision(client))
     assert wait_fit(client)["status"] == "complete"
+    missing = review(client, "interactions")["data"]["rows"]
+    assert all({row["a"], row["b"]} != {"Age", "Region"} for row in missing)
     table = client.get(
         "/api/results/Frequency/table", params={"variable": "Age×Region", "limit": 500}
     ).json()

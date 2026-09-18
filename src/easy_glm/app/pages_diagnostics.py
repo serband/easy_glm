@@ -596,6 +596,7 @@ def render() -> None:
             )
         )
         existing = {frozenset((it.a, it.b)) for it in cfg.interactions}
+        existing.update(frozenset((stage.a, stage.b)) for stage in cfg.pair_stages)
         pairs = [
             (mains[i], mains[j])
             for i in range(len(mains))

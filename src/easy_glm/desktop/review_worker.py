@@ -434,6 +434,7 @@ def review(
         else:
             predictors = run.config.predictors
             existing = {frozenset((i.a, i.b)) for i in run.config.interactions}
+            existing.update(frozenset((s.a, s.b)) for s in run.config.pair_stages)
             pairs = [
                 (a, b)
                 for i, a in enumerate(predictors)
