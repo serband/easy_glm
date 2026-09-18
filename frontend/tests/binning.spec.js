@@ -196,6 +196,40 @@ test('distribution bars follow the selected model bins and their exact row count
     await expect(figure.locator('.distribution-bar')).toHaveCount(second.actual_bins);
     expect(await displayedCuts(panel)).not.toEqual(beforeCuts);
 
+    const manyBinsResponse = previewResponse(
+        page,
+        'Mileage',
+        (request) => request.setup.binning.default_bins === 50,
+    );
+    await page.getByLabel('Default number of bins', { exact: true }).fill('50');
+    const manyBins = await (await manyBinsResponse).json();
+    expect(manyBins.actual_bins).toBe(50);
+    await expect(figure.locator('.distribution-bar')).toHaveCount(50);
+    for (const width of [867, 390]) {
+        await page.setViewportSize({ width, height: 782 });
+        await expect
+            .poll(() =>
+                figure.locator('.chart-container').evaluate((chart) => {
+                    const bounds = chart.getBoundingClientRect();
+                    return (
+                        chart.scrollWidth <= chart.clientWidth + 1 &&
+                        Array.from(chart.querySelectorAll('.distribution-bar')).every((bar) => {
+                            const rect = bar.getBoundingClientRect();
+                            return (
+                                rect.width > 0 &&
+                                rect.left >= bounds.left &&
+                                rect.right <= bounds.right
+                            );
+                        })
+                    );
+                }),
+            )
+            .toBe(true);
+        expect(await figure.locator('.value-tick').count()).toBeLessThan(50);
+        expect(await figure.locator('.distribution-bar title').count()).toBe(50);
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+
     await panel.getByRole('button', { name: /^VehicleAge/ }).click();
     await page.getByLabel('Binning method for VehicleAge').selectOption('cuts');
     const thirdResponse = previewResponse(

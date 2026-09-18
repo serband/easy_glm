@@ -7,13 +7,20 @@
     const top = 25;
     const plotHeight = 174;
     const height = 292;
+    let chartWidth = 640;
 
     $: bars = Array.isArray(intervals)
         ? intervals.filter((row) => Number.isFinite(row.rows) && row.rows >= 0)
         : [];
-    $: width = Math.max(640, left + bars.length * 84 + right);
+    $: width = chartWidth || 640;
     $: plotWidth = width - left - right;
     $: slot = plotWidth / Math.max(1, bars.length);
+    $: labelCount = Math.min(bars.length, Math.max(2, Math.floor(plotWidth / 90)));
+    $: labelledBars = new Set(
+        Array.from({ length: labelCount }, (_, index) =>
+            Math.round((index * (bars.length - 1)) / Math.max(1, labelCount - 1)),
+        ),
+    );
     $: tallest = Math.max(1, ...bars.map((bar) => bar.rows));
     $: totalRows = bars.reduce((total, bar) => total + bar.rows, 0);
 
@@ -33,10 +40,9 @@
     {#if !bars.length}
         <p>No numeric model bins to plot.</p>
     {:else}
-        <div class="chart-scroll">
+        <div class="chart-container" bind:clientWidth={chartWidth}>
             <svg
                 viewBox={`0 0 ${width} ${height}`}
-                style:width={bars.length > 8 ? `${width}px` : '100%'}
                 role="img"
                 aria-label={`Training rows by model bin for ${name}: ${totalRows.toLocaleString()} rows in ${bars.length} bins`}
             >
@@ -77,14 +83,14 @@
                     >
                         <title>{bar.label}: {bar.rows} rows</title>
                     </rect>
-                    <text
-                        class="value-tick"
-                        x={centre}
-                        y={top + plotHeight + 17}
-                        text-anchor="end"
-                        transform={`rotate(-42 ${centre} ${top + plotHeight + 17})`}
-                        >{bar.label}</text
-                    >
+                    {#if labelledBars.has(index)}<text
+                            class="value-tick"
+                            x={centre}
+                            y={top + plotHeight + 17}
+                            text-anchor="end"
+                            transform={`rotate(-42 ${centre} ${top + plotHeight + 17})`}
+                            >{bar.label}</text
+                        >{/if}
                 {/each}
             </svg>
         </div>
@@ -118,13 +124,13 @@
         color: #566875;
         font-size: 12px;
     }
-    .chart-scroll {
+    .chart-container {
         max-width: 100%;
-        overflow-x: auto;
-        overflow-y: hidden;
+        min-width: 0;
     }
     svg {
         display: block;
+        width: 100%;
         height: auto;
         margin-top: 9px;
     }
