@@ -33,6 +33,7 @@
         note = '',
         query = '',
         statusFilter = 'all',
+        tableOrder = 'importance',
         page = 0,
         selected = new Set(),
         expanded = new Set();
@@ -89,6 +90,9 @@
                     value?.toLowerCase().includes(query.trim().toLowerCase()),
                 )) &&
             (statusFilter === 'all' || row.status === statusFilter),
+    );
+    $: tableRows = [...filtered].sort(
+        tableOrder === 'outcome' ? compareByOutcome : compareByImportance,
     );
     $: actionable = new Set(
         (result?.rows || [])
@@ -273,6 +277,30 @@
                 failed: 'Failed',
             }[status] || status
         );
+    }
+    function compareNames(left, right) {
+        return String(left.variable || '').localeCompare(String(right.variable || ''));
+    }
+    function compareScores(left, right) {
+        const leftHasScore = Number.isFinite(left.importance);
+        const rightHasScore = Number.isFinite(right.importance);
+        if (leftHasScore !== rightHasScore) return leftHasScore ? -1 : 1;
+        if (leftHasScore && left.importance !== right.importance)
+            return right.importance - left.importance;
+        return compareNames(left, right);
+    }
+    function compareByImportance(left, right) {
+        const leftScored =
+            ['signal', 'no_signal'].includes(left.status) && Number.isFinite(left.importance);
+        const rightScored =
+            ['signal', 'no_signal'].includes(right.status) && Number.isFinite(right.importance);
+        if (leftScored !== rightScored) return leftScored ? -1 : 1;
+        return leftScored ? compareScores(left, right) : compareNames(left, right);
+    }
+    function compareByOutcome(left, right) {
+        const order = { signal: 0, no_signal: 1, skipped: 2, failed: 3 };
+        const group = (order[left.status] ?? 4) - (order[right.status] ?? 4);
+        return group || compareScores(left, right);
     }
     onDestroy(() => {
         alive = false;
@@ -489,6 +517,19 @@
                     rows={filtered}
                     filterKey={query + '\u0000' + statusFilter}
                 />
+                <label class="selection-table-order"
+                    >Table order<select
+                        aria-label="Feature selection table order"
+                        value={tableOrder}
+                        onchange={(event) => {
+                            tableOrder = event.currentTarget.value;
+                            page = 0;
+                        }}
+                    >
+                        <option value="importance">Importance (highest first)</option>
+                        <option value="outcome">Outcome, then importance</option>
+                    </select></label
+                >
                 <div class="selection-table-wrap">
                     <table>
                         <thead
@@ -498,7 +539,7 @@
                                 ><th>Strongest control</th><th>Margin</th><th>Details</th></tr
                             ></thead
                         ><tbody>
-                            {#each filtered.slice(page * pageSize, (page + 1) * pageSize) as row (row.variable)}
+                            {#each tableRows.slice(page * pageSize, (page + 1) * pageSize) as row (row.variable)}
                                 <tr
                                     ><td
                                         ><input
@@ -733,6 +774,17 @@
     }
     .selection-controls input {
         width: min(270px, 100%);
+    }
+    .selection-table-order {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 8px 0;
+        color: var(--muted);
+        font-size: 11px;
+    }
+    .selection-table-order select {
+        width: min(240px, 100%);
     }
     .selection-table-wrap {
         overflow-x: auto;

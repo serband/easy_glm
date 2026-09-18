@@ -52,6 +52,8 @@ test('one-way screen uses training rows and stages reviewed role changes', async
     await expect(panel.getByText(/tested of 4 candidates/)).toBeVisible({ timeout: 150000 });
     const resultRows = panel.locator('.selection-table-wrap tbody tr:not(.selection-detail)');
     await expect(resultRows).toHaveCount(4);
+    await expect(panel.getByLabel('Feature selection table order')).toHaveValue('importance');
+    await expect(resultRows.first().locator('td:nth-child(2) strong')).toHaveText('Risk');
     const chart = panel.getByRole('region', { name: 'Ranked feature importance' });
     await expect(chart.locator('.ranked-list li')).toHaveCount(3);
     await expect(chart.locator('.ranked-list li').first()).toHaveAttribute('data-variable', 'Risk');
@@ -135,6 +137,13 @@ test('ranked chart shares a numeric scale, filters and pages without inventing s
             importance: 3,
             threshold: 0.5,
         },
+        {
+            variable: 'Weak signal',
+            raw_name: 'Weak',
+            status: 'signal',
+            importance: 0.2,
+            threshold: 0.1,
+        },
         ...Array.from({ length: 43 }, (_, index) => ({
             variable: `Variable ${String(index + 1).padStart(2, '0')}`,
             raw_name: `Variable ${index + 1}`,
@@ -179,9 +188,9 @@ test('ranked chart shares a numeric scale, filters and pages without inventing s
     const chart = panel.getByRole('region', { name: 'Ranked feature importance' });
     await expect(chart.locator('.ranked-list li')).toHaveCount(20);
     await expect(chart.locator('.ranked-list li').first()).toHaveAttribute('data-variable', 'Top');
-    await expect(chart).toContainText('1 signal detected · 45 no signal detected');
+    await expect(chart).toContainText('2 signal detected · 45 no signal detected');
     await expect(chart).toContainText('2 without a plotted score');
-    await expect(chart).toContainText('Ranked 1–20 of 46 scored candidates');
+    await expect(chart).toContainText('Ranked 1–20 of 47 scored candidates');
     await expect(chart.locator('[data-variable="Skipped"]')).toHaveCount(0);
     await expect(chart.locator('[data-variable="Failed"]')).toHaveCount(0);
     const topGeometry = await chart.locator('[data-variable="Top"]').evaluate((item) => ({
@@ -200,9 +209,9 @@ test('ranked chart shares a numeric scale, filters and pages without inventing s
     ).toBeVisible();
 
     await chart.getByRole('button', { name: 'Next importance ranks' }).click();
-    await expect(chart).toContainText('Ranked 21–40 of 46 scored candidates');
+    await expect(chart).toContainText('Ranked 21–40 of 47 scored candidates');
     await chart.getByRole('button', { name: 'Next importance ranks' }).click();
-    await expect(chart).toContainText('Ranked 41–46 of 46 scored candidates');
+    await expect(chart).toContainText('Ranked 41–47 of 47 scored candidates');
     await expect(chart.locator('.ranked-list li').last()).toHaveAttribute(
         'data-variable',
         'Negative',
@@ -219,6 +228,33 @@ test('ranked chart shares a numeric scale, filters and pages without inventing s
     );
     expect(negativeGeometry.marker).toBeGreaterThan(negativeGeometry.zero);
     await expect(chart.locator('[data-variable="Zero"] .importance-bar')).toHaveCSS('width', '0px');
+
+    const tableRows = panel.locator('.selection-table-wrap tbody tr:not(.selection-detail)');
+    const tableNames = tableRows.locator('td:nth-child(2) strong');
+    const tableOrder = panel.getByLabel('Feature selection table order');
+    await expect(tableOrder).toHaveValue('importance');
+    await expect(tableNames.first()).toHaveText('Top');
+    await expect(tableNames.nth(1)).toHaveText('Variable 01');
+    await panel.getByLabel('Select feature Top').check();
+    await panel.getByRole('button', { name: 'Next feature results' }).click();
+    await expect(tableNames.first()).toHaveText('Variable 10');
+    await tableOrder.selectOption('outcome');
+    await expect(tableNames.first()).toHaveText('Top');
+    await expect(tableNames.nth(1)).toHaveText('Weak signal');
+    await expect(panel.getByLabel('Select feature Top')).toBeChecked();
+    await expect(chart).toContainText('Ranked 41–47 of 47 scored candidates');
+    for (let index = 0; index < 4; index++)
+        await panel.getByRole('button', { name: 'Next feature results' }).click();
+    await expect(tableNames.nth((await tableNames.count()) - 2)).toHaveText('Skipped');
+    await expect(tableNames.last()).toHaveText('Failed');
+    await tableOrder.selectOption('importance');
+    await expect(tableNames.first()).toHaveText('Top');
+    await expect(tableNames.nth(1)).toHaveText('Variable 01');
+    await expect(panel.getByLabel('Select feature Top')).toBeChecked();
+    for (let index = 0; index < 4; index++)
+        await panel.getByRole('button', { name: 'Next feature results' }).click();
+    await expect(tableNames.nth((await tableNames.count()) - 2)).toHaveText('Failed');
+    await expect(tableNames.last()).toHaveText('Skipped');
 
     const search = panel.getByLabel('Search feature selection results');
     await search.fill('Variable');
