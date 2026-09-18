@@ -103,7 +103,7 @@ test('numeric binning stays in sync and reaches fitted rate tables', async ({ pa
     const exported = await api('project');
     expect(exported.body.design.defaults.n_bins).toBe(8);
     expect(exported.body.design.variables.VehicleAge.knots).toEqual([0, 1, 2, 3, 4, 5]);
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await panel.getByRole('button', { name: /^VehicleAge/ }).click();
     await button('Preview bins for VehicleAge').click();
     await expect(panel).toContainText('7 actual bins');

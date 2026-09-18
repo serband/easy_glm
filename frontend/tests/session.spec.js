@@ -89,7 +89,7 @@ test('actual server restart reconnects plot while retaining names, types, roles 
     await expect(
         page.getByRole('img', { name: 'One-way effects of Region', exact: true }),
     ).toBeVisible();
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await expect(editor).toHaveValue(raw + '\n');
     await expect(page.getByRole('alert')).toHaveCount(0);
     await page.getByRole('button', { name: 'Table', exact: true }).click();
@@ -112,7 +112,7 @@ test('restart refuses a previously previewed Apply even when revision is again z
     await stop();
     await start();
     await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await expect(page.getByRole('alert')).toContainText('Preview changes again');
     expect((await readProject()).data.roles.Region).toBe('predictor');
     await expect(page.getByLabel('Role for Region', { exact: true })).toHaveValue('ignore');
@@ -158,7 +158,7 @@ test('incomplete JSON survives reconnection and a changed project cannot receive
     await expect(
         page.getByRole('img', { name: 'One-way effects of Region', exact: true }),
     ).toBeVisible();
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await expect(editor).toHaveValue('{unfinished');
     await expect(page.getByRole('alert')).toHaveCount(0);
     await page.getByRole('button', { name: 'Reset', exact: true }).click();
@@ -175,9 +175,9 @@ test('incomplete JSON survives reconnection and a changed project cannot receive
     });
     await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await page.getByLabel('Plot variable', { exact: true }).selectOption('DriverAge');
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await expect(page.getByRole('alert')).toContainText('different project');
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await expect(editor).toHaveValue(kept);
     await expect(page.getByRole('button', { name: 'Preview changes', exact: true })).toBeDisabled();
     await expect(page.getByRole('button', { name: 'Download draft', exact: true })).toBeVisible();

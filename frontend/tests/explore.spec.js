@@ -153,7 +153,7 @@ test('training observed rates share an aligned chart with exposure and update wi
     const count = requests.length;
     await page
         .getByRole('navigation', { name: 'Workbench' })
-        .getByRole('button', { name: /^Variables/ })
+        .getByRole('button', { name: /^Variables\s*\d*$/ })
         .click();
     const freshRead = page.waitForResponse((r) => r.url().includes('/api/explore?'));
     await explore(page);

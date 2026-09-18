@@ -207,7 +207,7 @@ for (const change of ['name', 'type', 'role', 'raw JSON', 'options', 'navigation
         } else await button(page, 'Project & data').click();
         calls.releaseStart();
         await expect.poll(() => calls.cancellations).toBe(1);
-        if (change === 'navigation') await page.getByRole('button', { name: /^Variables/ }).click();
+        if (change === 'navigation') await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
         await expect(
             page.getByRole('region', { name: 'Possible target leakage', exact: true }),
         ).toHaveCount(0);
@@ -237,7 +237,7 @@ test('actual training scan is read-only; applying flagged removals cleans model 
     await expect(
         page.getByText('Model settings saved. Fit when ready.', { exact: true }),
     ).toBeVisible();
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     const { headers } = await session(page);
     const readProject = async () => (await page.request.get('/api/project', { headers })).json();
     const before = await readProject();

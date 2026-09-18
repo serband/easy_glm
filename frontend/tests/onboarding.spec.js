@@ -304,7 +304,7 @@ test('a stale opener reconnects without losing its draft or replaying Open', asy
         expect((await snapshot(page)).project_id).toBe(before.project_id);
         await page
             .getByRole('navigation', { name: 'Workbench' })
-            .getByRole('button', { name: /^Variables/ })
+            .getByRole('button', { name: /^Variables\s*\d*$/ })
             .click();
         await expect(page.getByLabel('Type for Rating', { exact: true })).toHaveValue(
             'categorical',

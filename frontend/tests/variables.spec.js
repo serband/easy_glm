@@ -11,7 +11,7 @@ test('bidirectional roles, name/type preservation, invalid reset and explicit ap
     await expect(page.getByLabel('Role for DriverAge', { exact: true })).toHaveValue('predictor');
     await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await expect(page.getByRole('img', { name: /One-way effects of/ }).first()).toBeVisible();
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     const base = requests.length;
     await page.getByLabel('Name for DriverAge', { exact: true }).fill('Age');
     await page.getByLabel('Name for DriverAge', { exact: true }).press('Tab');
@@ -121,7 +121,7 @@ test('workflow pages keep a Variables draft and expose honest project/export sco
     await expect(
         page.getByRole('button', { name: 'Download project JSON', exact: true }),
     ).toBeEnabled();
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await expect(page.getByLabel('Name for Claims', { exact: true })).toHaveValue('KeptDraft');
     await page.setViewportSize({ width: 884, height: 773 });
     expect(

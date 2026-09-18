@@ -45,7 +45,7 @@ test('explicit split maps table and JSON and reaches exploration and fit', async
     );
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 45000 });
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await page.locator('.split-row-values').scrollIntoViewIfNeeded();
     await page.screenshot({
         path: testInfo.outputPath('variables-split.png'),
@@ -67,7 +67,7 @@ test('explicit split maps table and JSON and reaches exploration and fit', async
     await expect(page.getByRole('status').filter({ hasText: 'Settings applied' })).toBeVisible();
     await button('Model').click();
     await expect(page.locator('.split-settings')).toHaveCount(0);
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await page.getByLabel('Training fraction', { exact: true }).fill('0.8');
     await page.getByLabel('Split seed', { exact: true }).fill('73');
     await button('Preview changes').click();

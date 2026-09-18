@@ -13,7 +13,7 @@ test('Variables → split/model → background fit → diagnostics → rate tabl
         page.getByRole('heading', { name: 'Model design and fit', exact: true }),
     ).toBeVisible();
     await expect(page.getByRole('button', { name: 'Fit model', exact: true })).toBeDisabled();
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await page.getByLabel('Training fraction', { exact: true }).fill('0.75');
     await page.getByLabel('Split seed', { exact: true }).fill('43');
     await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
@@ -38,7 +38,7 @@ test('Variables → split/model → background fit → diagnostics → rate tabl
 
     await page.getByRole('button', { name: 'Fit model', exact: true }).click();
     const started = performance.now();
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await expect(page.getByLabel('Role for Claims', { exact: true })).toBeVisible();
     expect(performance.now() - started).toBeLessThan(1000);
     await page.getByRole('button', { name: 'Model', exact: true }).click();
@@ -74,7 +74,7 @@ test('Variables → split/model → background fit → diagnostics → rate tabl
     await expect(page.locator('.category-bar').first()).toBeVisible();
     await expect(page.locator('.numeric-curve')).toHaveCount(0);
 
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await page.getByLabel('Role for VehicleAge', { exact: true }).selectOption('ignore');
     await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
     await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
@@ -91,7 +91,7 @@ test('unapplied Variables draft survives navigation through model setup', async 
     await page.getByLabel('Name for Claims', { exact: true }).press('Tab');
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await expect(page.getByLabel('Model target', { exact: true })).toHaveValue('Claims');
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await expect(page.getByLabel('Name for Claims', { exact: true })).toHaveValue(
         'UnappliedClaims',
     );

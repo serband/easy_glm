@@ -106,7 +106,7 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
         .click();
     await expect(page.getByLabel('Include AnnualMileage', { exact: true })).toBeChecked();
     await expect(page.getByText('Fit needs updating', { exact: true })).toBeVisible();
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await expect(page.getByLabel('Role for AnnualMileage', { exact: true })).toHaveValue(
         'predictor',
     );
