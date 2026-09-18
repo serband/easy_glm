@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import secrets
-import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from collections import OrderedDict
@@ -20,6 +17,7 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from easy_glm.app import _launcher_env
+from easy_glm.desktop.feature_selection_ipc import read_message, write_request
 from easy_glm.desktop.modeling import Revision
 from easy_glm.desktop.screening import draft_fingerprint
 from easy_glm.workflow.project import Project
@@ -74,14 +72,8 @@ def with_raw_names(
     return result
 
 
-def _read_json(path: Path, limit: int) -> Any:
-    if path.stat().st_size > limit:
-        raise ValueError("Feature selection output exceeded its size limit.")
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 class FeatureSelectionJobs:
-    """One process at a time, with bounded packets and promptly removed inputs."""
+    """One process at a time, exchanging data and bounded messages through pipes."""
 
     def __init__(self) -> None:
         self.lock = threading.RLock()
@@ -89,7 +81,6 @@ class FeatureSelectionJobs:
         self.generation: Generation | None = None
         self.active: dict[str, Any] | None = None
         self.closed = False
-        self.folder = tempfile.TemporaryDirectory(prefix="easyglm_selection_")
         # The server installs this. It must run after releasing ``lock``
         # because server requests take their project lock first.
         self.on_complete: Callable[[dict[str, Any], dict[str, Any]], None] | None = None
@@ -157,7 +148,7 @@ class FeatureSelectionJobs:
                 "cancel": False,
                 "process": None,
                 # Private immutable source for the exported recipe. It is not
-                # returned in API packets or retained in the worker folder.
+                # returned in API packets.
                 "recipe_project": screening_project.to_dict(),
                 "recipe_options": deepcopy(options),
             }
@@ -180,62 +171,98 @@ class FeatureSelectionJobs:
         raw: pl.DataFrame,
         options: dict[str, Any],
     ) -> None:
-        folder = Path(self.folder.name) / task["id"]
+        process = None
+        transfers: list[threading.Thread] = []
+        errors: list[Exception] = []
+        transfer_failed = threading.Event()
+        result: dict[str, Any] | None = None
         try:
-            folder.mkdir()
-            project.to_json(folder / "project.json")
-            raw.write_parquet(folder / "raw.parquet")
-            (folder / "options.json").write_text(json.dumps(options), encoding="utf-8")
             completing = False
             completed_result: dict[str, Any] | None = None
             with self.lock:
                 if task["cancel"]:
                     return
-                with (folder / "worker.log").open("w") as log:
-                    process = subprocess.Popen(
-                        [
-                            sys.executable,
-                            "-m",
-                            "easy_glm.desktop.feature_selection_worker",
-                            str(folder),
-                        ],
-                        env={
-                            **_launcher_env(),
-                            "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
-                            "OMP_NUM_THREADS": "1",
-                            "OPENBLAS_NUM_THREADS": "1",
-                            "MKL_NUM_THREADS": "1",
-                            "POLARS_MAX_THREADS": "2",
-                        },
-                        stdout=log,
-                        stderr=subprocess.STDOUT,
-                    )
+                process = subprocess.Popen(
+                    [sys.executable, "-m", "easy_glm.desktop.feature_selection_worker"],
+                    env={
+                        **_launcher_env(),
+                        "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+                        "PYTHONDONTWRITEBYTECODE": "1",
+                        "OMP_NUM_THREADS": "1",
+                        "OPENBLAS_NUM_THREADS": "1",
+                        "MKL_NUM_THREADS": "1",
+                        "POLARS_MAX_THREADS": "2",
+                    },
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
                 task.update(
                     process=process, status="running", message="Worker starting…"
                 )
+            assert process.stdin is not None and process.stdout is not None
+
+            def send_input() -> None:
+                try:
+                    with process.stdin:
+                        write_request(process.stdin, project, raw, options)
+                except Exception as exc:
+                    errors.append(exc)
+                    transfer_failed.set()
+
+            def receive_output() -> None:
+                nonlocal result
+                try:
+                    with process.stdout:
+                        while (packet := read_message(process.stdout)) is not None:
+                            value = packet.get("value")
+                            if not isinstance(value, dict) or result is not None:
+                                raise ValueError("Invalid feature selection response.")
+                            if packet.get("type") == "result":
+                                result = value
+                            elif packet.get("type") == "progress":
+                                with self.lock:
+                                    if (
+                                        not task["cancel"]
+                                        and task["status"] == "running"
+                                    ):
+                                        task["progress"] = value
+                                        task["message"] = str(
+                                            value.get("message", task["message"])
+                                        )
+                            else:
+                                raise ValueError("Unknown feature selection response.")
+                except Exception as exc:
+                    errors.append(exc)
+                    transfer_failed.set()
+
+            # Neither pipe may block cancellation, including while a large
+            # input is being sent. Drain output concurrently to avoid deadlocks.
+            for target in (send_input, receive_output):
+                thread = threading.Thread(
+                    target=target,
+                    daemon=True,
+                    name=f"easyglm-selection-{target.__name__}",
+                )
+                thread.start()
+                transfers.append(thread)
             while process.poll() is None:
                 with self.lock:
                     if task["cancel"]:
-                        if process.poll() is None:
-                            if (
-                                time.monotonic()
-                                - task.setdefault("terminate_started", time.monotonic())
-                                > 1
-                            ):
-                                process.kill()
-                            else:
-                                process.terminate()
-                    else:
-                        try:
-                            progress = _read_json(folder / "progress.json", 16_384)
-                            if isinstance(progress, dict):
-                                task["progress"] = progress
-                                task["message"] = str(
-                                    progress.get("message", task["message"])
-                                )
-                        except (OSError, ValueError, json.JSONDecodeError):
-                            pass
+                        if (
+                            time.monotonic()
+                            - task.setdefault("terminate_started", time.monotonic())
+                            > 1
+                        ):
+                            process.kill()
+                        else:
+                            process.terminate()
+                    elif transfer_failed.is_set():
+                        raise errors[0]
                 time.sleep(0.1)
+            process.wait()
+            for thread in transfers:
+                thread.join()
             with self.lock:
                 if (
                     task["cancel"]
@@ -243,14 +270,15 @@ class FeatureSelectionJobs:
                     or self.closed
                 ):
                     return
-                result = _read_json(folder / "result.json", 8_000_000)
-                if "error" in result:
+                if result is not None and "error" in result:
                     task.update(status="failed", message=str(result["error"])[:1000])
-                elif process.returncode:
+                elif process.returncode or result is None:
                     task.update(
                         status="failed",
                         message="Feature selection worker stopped unexpectedly.",
                     )
+                elif errors:
+                    raise errors[0]
                 else:
                     completed_result = with_raw_names(result, project, raw.columns)
                     task.update(
@@ -294,10 +322,18 @@ class FeatureSelectionJobs:
                         status="failed", message=f"Feature selection failed: {exc}"
                     )
         finally:
+            if process is not None:
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
+                for thread in transfers:
+                    thread.join()
+                for stream in (process.stdin, process.stdout):
+                    if stream is not None:
+                        stream.close()
             with self.lock:
                 task["elapsed"] = time.monotonic() - task["started"]
                 task["process"] = None
-            shutil.rmtree(folder, ignore_errors=True)
 
     def _prune(self) -> None:
         complete = [
@@ -360,6 +396,3 @@ class FeatureSelectionJobs:
                     self._stop(task, "cancelled", "Session closed.")
         for task in tasks:
             task["thread"].join(timeout=5)
-        # Never remove a worker's input directory while it may still write to it.
-        if all(not task["thread"].is_alive() for task in tasks):
-            self.folder.cleanup()

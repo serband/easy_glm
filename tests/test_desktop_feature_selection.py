@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import inspect
-import json
+import os
+import sys
+import tempfile
 import threading
 import time
-from pathlib import Path
 
 import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
 from easy_glm.desktop import feature_selection as selection
+from easy_glm.desktop.feature_selection_ipc import read_request, write_message
 from easy_glm.desktop.server import create_app
 from easy_glm.workflow import Project
 
@@ -50,7 +52,7 @@ def selection_jobs(client):
 
 
 def wait_for_worker_exit(client, key):
-    # A result can be published before the worker finishes cleaning up its files.
+    # A result can be published before the job thread finishes releasing its resources.
     # Tests starting another search must wait for that worker to leave first.
     thread = selection_jobs(client).tasks[key]["thread"]
     thread.join(timeout=5)
@@ -58,7 +60,8 @@ def wait_for_worker_exit(client, key):
 
 
 def wait_status(client, key):
-    for _ in range(200):
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
         response = client.get("/api/feature-selections/" + key)
         assert response.status_code == 200
         packet = response.json()
@@ -68,16 +71,54 @@ def wait_status(client, key):
     pytest.fail("Feature selection did not finish")
 
 
-class FinishedWorker:
+class PipeWorker:
+    """A fake process with real pipes, so transport and cleanup are exercised."""
+
     def __init__(self, command, **kwargs):
-        folder = Path(command[-1])
-        self.project = Project.from_json(folder / "project.json")
-        self.raw = pl.read_parquet(folder / "raw.parquet")
-        self.options = json.loads((folder / "options.json").read_text())
-        self.returncode = 0
-        (folder / "result.json").write_text(
-            json.dumps(
-                {
+        input_read, input_write = os.pipe()
+        output_read, output_write = os.pipe()
+        self.stdin = os.fdopen(input_write, "wb")
+        self.stdout = os.fdopen(output_read, "rb")
+        self.input = os.fdopen(input_read, "rb")
+        self.output = os.fdopen(output_write, "wb")
+        self.returncode = None
+        self.finished = threading.Event()
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def run(self):
+        try:
+            with self.input, self.output:
+                self.project, self.raw, self.options = read_request(self.input)
+                self.respond()
+        finally:
+            if self.returncode is None:
+                self.returncode = 0
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self):
+        self.thread.join(timeout=5)
+        assert not self.thread.is_alive()
+        return self.returncode
+
+    def terminate(self):
+        self.returncode = -15
+        self.finished.set()
+
+    def kill(self):
+        self.returncode = -9
+        self.finished.set()
+
+
+class FinishedWorker(PipeWorker):
+    def respond(self):
+        write_message(
+            self.output,
+            {
+                "type": "result",
+                "value": {
                     "target": "Claims",
                     "weight": None,
                     "offset": None,
@@ -85,15 +126,9 @@ class FinishedWorker:
                         {"variable": "Region", "role": "predictor", "status": "signal"},
                         {"variable": "Age", "role": "predictor", "status": "no_signal"},
                     ],
-                }
-            )
+                },
+            },
         )
-
-    def poll(self):
-        return self.returncode
-
-    def terminate(self):
-        self.returncode = -15
 
 
 def test_draft_rename_and_options_fingerprint_do_not_apply(client, monkeypatch):
@@ -167,31 +202,29 @@ def test_invalid_options_are_rejected_before_worker(client, monkeypatch, options
     assert calls == []
 
 
-class WaitingWorker:
+class WaitingWorker(PipeWorker):
     entered = threading.Event()
     stopped = threading.Event()
 
-    def __init__(self, command, **kwargs):
-        self.returncode = None
-        self.folder = Path(command[-1])
-        (self.folder / "progress.json").write_text(
-            json.dumps(
-                {
+    def respond(self):
+        write_message(
+            self.output,
+            {
+                "type": "progress",
+                "value": {
                     "phase": "fit",
                     "completed": 1,
                     "total": 3,
                     "current_variable": "Age",
                     "message": "Fitting Age",
-                }
-            )
+                },
+            },
         )
         self.entered.set()
-
-    def poll(self):
-        return self.returncode
+        assert self.finished.wait(10)
 
     def terminate(self):
-        self.returncode = -15
+        super().terminate()
         self.stopped.set()
 
 
@@ -227,7 +260,7 @@ def test_cancel_terminates_worker_and_revision_stales_result(client, monkeypatch
     assert client.post("/api/variables/feature-selection", json=body).status_code == 409
 
 
-def test_real_worker_completes_and_cleans_its_inputs():
+def test_real_worker_completes_through_pipes():
     project = Project(name="Worker smoke")
     project.data.roles = {"Claims": "target", "Constant": "predictor"}
     project.data.split.mode = "random"
@@ -255,7 +288,7 @@ def test_cancel_escalates_when_worker_ignores_terminate(client, monkeypatch):
             pass
 
         def kill(self):
-            self.returncode = -9
+            super().kill()
             killed.set()
 
     monkeypatch.setattr(selection.subprocess, "Popen", StubbornWorker)
@@ -360,3 +393,212 @@ def test_selection_is_not_publicly_complete_until_recipe_is_published(
     release.set()
     assert wait_status(client, started["id"])["status"] == "stale"
     assert "feature_selection" not in client.get("/api/project").json()["exploration"]
+
+
+@pytest.mark.parametrize("family", ["poisson", "tweedie"])
+def test_real_fit_works_when_filesystem_writes_are_denied(monkeypatch, family):
+    from easy_glm.workflow.feature_selection import select_variables
+    from easy_glm.workflow.project import VariableDesign
+
+    project = Project(name="No files")
+    project.data.roles = {
+        "y": "target",
+        "x": "predictor",
+        "split": "split",
+        "w": "weight",
+        "o": "offset",
+    }
+    project.data.split.mode = "column"
+    project.data.split.column = "split"
+    project.design.defaults.n_bins = 3
+    project.design.variables["x"] = VariableDesign(knots=[0.5])
+    raw = pl.DataFrame(
+        {
+            "y": [0.0, 3.0, 0.0, 2.0] * 30 + [9999.0] * 20,
+            "x": [0, 1, 0, 1] * 35,
+            "split": [1] * 120 + [0] * 20,
+            "w": [1.0, 2.0] * 70,
+            "o": [0.1] * 140,
+        }
+    )
+    options = {"n_alphas": 3, "repeats": 1, "family": family}
+    expected = select_variables(project, raw, **options)
+    assert expected["rows"][0]["status"] == "signal"
+    real_popen = selection.subprocess.Popen
+
+    def launch(command, **kwargs):
+        # The hook runs in the real child before importing the worker. Deny
+        # Python filesystem writes everywhere, not just one possible temp root.
+        command = [
+            sys.executable,
+            "-c",
+            """
+import os, sys
+
+def deny_writes(event, args):
+    if event == 'open' and isinstance(args[0], (str, bytes)):
+        if args[2] & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC):
+            raise PermissionError('File writes are blocked in this test')
+    if event in {'os.mkdir', 'os.rename', 'os.remove', 'tempfile.mkdtemp', 'tempfile.mkstemp'}:
+        raise PermissionError('File changes are blocked in this test')
+
+sys.addaudithook(deny_writes)
+from easy_glm.desktop.feature_selection_worker import main
+main()
+""",
+        ]
+        return real_popen(command, **kwargs)
+
+    def deny_temp(*args, **kwargs):
+        raise PermissionError("Feature selection must not allocate temporary files")
+
+    monkeypatch.setattr(selection.subprocess, "Popen", launch)
+    # Also catch attempts to reintroduce the parent's former job directory.
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", deny_temp)
+    jobs = selection.FeatureSelectionJobs()
+    try:
+        packet = jobs.start(project, raw, ("session", "project", 0), {}, options)
+        jobs.tasks[packet["id"]]["thread"].join(timeout=15)
+        assert not jobs.tasks[packet["id"]]["thread"].is_alive()
+        packet = jobs.status(packet["id"], ("session", "project", 0))
+        assert packet["status"] == "complete", packet["message"]
+        result = packet["result"]
+        assert result["training_rows"] == 120
+        assert result["rows"][0]["status"] == expected["rows"][0]["status"]
+        assert result["rows"][0]["importance"] == pytest.approx(
+            expected["rows"][0]["importance"], abs=1e-10
+        )
+    finally:
+        jobs.close()
+
+
+def test_progress_arrives_before_result_and_close_reaps_worker(client, monkeypatch):
+    WaitingWorker.entered.clear()
+    monkeypatch.setattr(selection.subprocess, "Popen", WaitingWorker)
+    response = client.post("/api/variables/feature-selection", json=draft(client))
+    key = response.json()["id"]
+    assert WaitingWorker.entered.wait(5)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        packet = client.get("/api/feature-selections/" + key).json()
+        if packet["progress"]["phase"] == "fit":
+            break
+        time.sleep(0.01)
+    assert packet["status"] == "running"
+    assert packet["message"] == "Fitting Age"
+    assert packet["progress"]["completed"] == 1
+    jobs = selection_jobs(client)
+    process = jobs.tasks[key]["process"]
+    jobs.close()
+    wait_for_worker_exit(client, key)
+    assert process.poll() is not None
+    assert process.stdin.closed and process.stdout.closed
+
+
+@pytest.mark.parametrize("mode", ["error", "truncated", "oversized", "crash"])
+def test_worker_failure_does_not_publish_and_can_restart(client, monkeypatch, mode):
+    from easy_glm.desktop.feature_selection_ipc import MESSAGE_LIMIT
+
+    class BrokenWorker(PipeWorker):
+        def respond(self):
+            if mode == "error":
+                write_message(
+                    self.output,
+                    {"type": "result", "value": {"error": "Invalid target"}},
+                )
+            elif mode == "truncated":
+                self.output.write(b'{"type": "result"')
+            elif mode == "oversized":
+                self.output.write(b"x" * (MESSAGE_LIMIT + 1))
+                self.output.flush()
+            else:
+                self.returncode = 1
+
+    monkeypatch.setattr(selection.subprocess, "Popen", BrokenWorker)
+    response = client.post("/api/variables/feature-selection", json=draft(client))
+    key = response.json()["id"]
+    packet = wait_status(client, key)
+    assert packet["status"] == "failed"
+    assert "result" not in packet
+    if mode == "error":
+        assert packet["message"] == "Invalid target"
+    assert "feature_selection" not in client.get("/api/project").json()["exploration"]
+    wait_for_worker_exit(client, key)
+    monkeypatch.setattr(selection.subprocess, "Popen", FinishedWorker)
+    restarted = client.post("/api/variables/feature-selection", json=draft(client))
+    assert restarted.status_code == 202
+    assert wait_status(client, restarted.json()["id"])["status"] == "complete"
+
+
+def test_pipe_request_preserves_column_types_and_values():
+    from datetime import date
+
+    from polars.testing import assert_frame_equal
+
+    from easy_glm.desktop.feature_selection_ipc import write_request
+
+    raw = pl.DataFrame(
+        {
+            "category": pl.Series(["A", None, "B"], dtype=pl.Categorical),
+            "number": [1.0, float("nan"), None],
+            "date": [date(2025, 1, 1), None, date(2025, 2, 1)],
+            "unicode": ["café", "東京", "\n"],
+        }
+    )
+    project = Project(name="Unicode é")
+    worker = FinishedWorker([])
+    try:
+        with worker.stdin:
+            write_request(worker.stdin, project, raw, {"seed": 7})
+        worker.wait()
+        assert worker.project.to_dict() == project.to_dict()
+        assert_frame_equal(worker.raw, raw)
+        assert worker.options == {"seed": 7}
+    finally:
+        worker.stdout.close()
+
+
+def test_cancel_during_large_input_transfer_reaps_real_worker(monkeypatch):
+    real_popen = selection.subprocess.Popen
+    processes = []
+
+    def launch(command, **kwargs):
+        process = real_popen(
+            [
+                sys.executable,
+                "-c",
+                """
+import sys, threading
+from easy_glm.desktop.feature_selection_ipc import write_message
+write_message(sys.stdout.buffer, {'type': 'progress', 'value': {'phase': 'waiting'}})
+threading.Event().wait(30)
+""",
+            ],
+            **kwargs,
+        )
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(selection.subprocess, "Popen", launch)
+    jobs = selection.FeatureSelectionJobs()
+    generation = ("session", "project", 0)
+    try:
+        # Larger than the OS pipe buffer; the child deliberately never reads it.
+        packet = jobs.start(
+            Project(), pl.DataFrame({"x": range(500_000)}), generation, {}, {}
+        )
+        key = packet["id"]
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if jobs.status(key, generation)["progress"]["phase"] == "waiting":
+                break
+            time.sleep(0.01)
+        assert jobs.status(key, generation)["progress"]["phase"] == "waiting"
+        jobs.cancel(key)
+        jobs.tasks[key]["thread"].join(timeout=5)
+        assert not jobs.tasks[key]["thread"].is_alive()
+        assert jobs.status(key, generation)["status"] == "cancelled"
+        assert processes[0].poll() is not None
+        assert processes[0].stdin.closed and processes[0].stdout.closed
+    finally:
+        jobs.close()

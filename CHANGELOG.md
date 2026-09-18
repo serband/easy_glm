@@ -2,6 +2,10 @@
 
 This is the user-facing record of useful new features and fixes.
 
+## Unreleased
+
+- **Feature selection no longer needs temporary files.** Data, progress and results pass directly between the app and its background worker, avoiding access-denied errors when temporary folders are restricted. Progress updates and cancellation still work.
+
 ## 0.470 — 18 September 2026
 
 - **Check which variables help on their own.** Optional GLM screening compares each variable with shuffled copies and random noise, using training data only. A ranked chart and sortable results help you decide what to keep.
