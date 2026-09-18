@@ -424,8 +424,7 @@
             </p>
             {#if !preview.active}<p>Saved numeric setting is inactive for this factor kind.</p>{/if}
             {#each preview.warnings || [] as warning}<p class="binning-warning">{warning}</p>{/each}
-            {#if preview.active && preview.histogram}<BinningHistogram
-                    histogram={preview.histogram}
+            {#if preview.active && preview.rows?.length}<BinningHistogram
                     intervals={preview.rows || []}
                     name={preview.name || preview.column}
                 />{/if}

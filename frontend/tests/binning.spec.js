@@ -1,9 +1,18 @@
 import { test, expect } from '@playwright/test';
 
-function cutLines(panel) {
-    return panel
-        .locator('.model-cut')
-        .evaluateAll((lines) => lines.map((line) => Number(line.getAttribute('data-cut'))));
+function displayedCuts(panel) {
+    return panel.locator('.distribution-bar').evaluateAll((bars) =>
+        [
+            ...new Set(
+                bars.flatMap((bar) =>
+                    ['data-lower', 'data-upper']
+                        .map((key) => bar.getAttribute(key))
+                        .filter((value) => value != null && value !== '')
+                        .map(Number),
+                ),
+            ),
+        ].sort((a, b) => a - b),
+    );
 }
 
 function previewResponse(page, column, accepts = () => true) {
@@ -155,7 +164,7 @@ test('numeric binning stays in sync and reaches fitted rate tables', async ({ pa
     expect(errors).toEqual([]);
 });
 
-test('training distribution stays fixed while default bins and custom cuts move', async ({
+test('distribution bars follow the selected model bins and their exact row counts', async ({
     page,
 }) => {
     await page.goto('/');
@@ -163,17 +172,16 @@ test('training distribution stays fixed while default bins and custom cuts move'
     const firstResponse = previewResponse(page, 'Mileage');
     await panel.getByRole('button', { name: /^Mileage/ }).click();
     const first = await (await firstResponse).json();
-    expect(first.histogram.bars).toHaveLength(40);
-    expect(first.histogram.finite_rows).toBe(1800);
-    expect(first.histogram.bars.reduce((total, bar) => total + bar.rows, 0)).toBe(1800);
+    expect(first.rows.reduce((total, bar) => total + bar.rows, 0)).toBe(1800);
     const figure = panel.locator('figure.binning-histogram');
-    await expect(figure).toContainText('Equal-width bars show the distribution');
-    await expect(figure.locator('.distribution-bar')).toHaveCount(40);
-    const firstBar = first.histogram.bars[0];
+    await expect(figure).toContainText('One bar per model bin');
+    await expect(figure.locator('.distribution-bar')).toHaveCount(first.actual_bins);
+    await expect(figure.locator('.model-cut')).toHaveCount(0);
+    const firstBar = first.rows[0];
     await expect(figure.locator('.distribution-bar').first().locator('title')).toHaveText(
-        `Training values ${firstBar.lower} to ${firstBar.upper}: ${firstBar.rows} rows`,
+        `${firstBar.label}: ${firstBar.rows} rows`,
     );
-    const beforeCuts = await cutLines(panel);
+    const beforeCuts = await displayedCuts(panel);
     expect(beforeCuts.length).toBeGreaterThan(5);
 
     const secondResponse = previewResponse(
@@ -184,10 +192,9 @@ test('training distribution stays fixed while default bins and custom cuts move'
     await page.getByLabel('Default number of bins', { exact: true }).fill('8');
     await expect(figure).toHaveCount(0);
     const second = await (await secondResponse).json();
-    expect(second.histogram).toEqual(first.histogram);
     expect(second.actual_bins).toBeLessThan(first.actual_bins);
-    await expect(figure.locator('.distribution-bar')).toHaveCount(40);
-    expect(await cutLines(panel)).not.toEqual(beforeCuts);
+    await expect(figure.locator('.distribution-bar')).toHaveCount(second.actual_bins);
+    expect(await displayedCuts(panel)).not.toEqual(beforeCuts);
 
     await panel.getByRole('button', { name: /^VehicleAge/ }).click();
     await page.getByLabel('Binning method for VehicleAge').selectOption('cuts');
@@ -198,14 +205,16 @@ test('training distribution stays fixed while default bins and custom cuts move'
     );
     await page.getByLabel('Custom cuts for VehicleAge').fill('0, 2, 4');
     const third = await (await thirdResponse).json();
-    expect(third.histogram.finite_rows).toBeLessThan(third.training_rows);
-    expect(await cutLines(panel)).toEqual([0, 2, 4]);
+    expect(third.missing_rows).toBeGreaterThan(0);
+    await expect(figure.locator('.distribution-bar')).toHaveCount(4);
+    expect(await displayedCuts(panel)).toEqual([0, 2, 4]);
+    expect(
+        await figure
+            .locator('.distribution-bar')
+            .evaluateAll((bars) => bars.map((bar) => Number(bar.getAttribute('data-rows')))),
+    ).toEqual(third.rows.map((row) => row.rows));
+    await expect(figure.locator('.value-tick')).toHaveText(third.rows.map((row) => row.label));
     await expect(figure.locator('.axis-label')).toHaveText('Rows');
-    await expect(figure.locator('.value-tick').first()).toHaveAttribute('text-anchor', 'start');
-    await expect(figure.locator('.value-tick').last()).toHaveAttribute('text-anchor', 'end');
-    const emptyBar = third.histogram.bars.findIndex((bar) => bar.rows === 0);
-    expect(emptyBar).toBeGreaterThanOrEqual(0);
-    await expect(figure.locator('.distribution-bar').nth(emptyBar)).toHaveAttribute('height', '0');
     await expect(panel.getByText('Bin counts and intervals')).toBeVisible();
     await panel.getByText('Bin counts and intervals').click();
     await expect(panel.getByRole('table')).toBeVisible();
@@ -218,9 +227,20 @@ test('training distribution stays fixed while default bins and custom cuts move'
     await page.getByLabel('Custom cuts for VehicleAge').fill('-10, 0, 2, 4, 10');
     await expect(figure).toHaveCount(0);
     const outside = await (await outsideResponse).json();
-    expect(outside.histogram).toEqual(third.histogram);
-    expect(await cutLines(panel)).toEqual([0, 2, 4]);
-    await expect(figure).toContainText('2 model boundaries outside the range are omitted.');
+    await expect(figure.locator('.distribution-bar')).toHaveCount(6);
+    expect(await displayedCuts(panel)).toEqual([-10, 0, 2, 4, 10]);
+    expect(
+        await figure
+            .locator('.distribution-bar')
+            .evaluateAll((bars) => bars.map((bar) => Number(bar.getAttribute('data-rows')))),
+    ).toEqual(outside.rows.map((row) => row.rows));
+    const emptyBar = outside.rows.findIndex((bar) => bar.rows === 0);
+    expect(emptyBar).toBeGreaterThanOrEqual(0);
+    await expect(figure.locator('.distribution-bar').nth(emptyBar)).toHaveAttribute('height', '0');
+    await page.setViewportSize({ width: 390, height: 780 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(
+        true,
+    );
 
     const inactiveResponse = previewResponse(page, 'VehicleAge', (request) =>
         request.setup.types.categorical?.includes('VehicleAge'),
@@ -270,7 +290,7 @@ test('a delayed preview cannot overwrite a newer draft', async ({ page }) => {
     await page.getByLabel('Custom cuts for VehicleAge').fill('0, 2, 4');
     await expect(panel.locator('figure.binning-histogram')).toHaveCount(0);
     await newerResponse;
-    await expect.poll(() => cutLines(panel)).toEqual([0, 2, 4]);
+    await expect.poll(() => displayedCuts(panel)).toEqual([0, 2, 4]);
     const oldResponse = previewResponse(
         page,
         'VehicleAge',
@@ -278,7 +298,7 @@ test('a delayed preview cannot overwrite a newer draft', async ({ page }) => {
     );
     release();
     await oldResponse;
-    expect(await cutLines(panel)).toEqual([0, 2, 4]);
+    expect(await displayedCuts(panel)).toEqual([0, 2, 4]);
 });
 
 test('automatic previews debounce edits, skip invalid drafts, and stop off the Variables page', async ({

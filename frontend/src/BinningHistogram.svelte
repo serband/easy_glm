@@ -1,146 +1,93 @@
 <script>
-    export let histogram;
     export let intervals = [];
     export let name = '';
 
-    const width = 640;
-    const height = 260;
-    const left = 48;
-    const right = 14;
-    const top = 22;
-    const bottom = 39;
-    const plotWidth = width - left - right;
-    const plotHeight = height - top - bottom;
+    const left = 49;
+    const right = 16;
+    const top = 25;
+    const plotHeight = 174;
+    const height = 292;
 
-    $: bars = Array.isArray(histogram?.bars)
-        ? histogram.bars.filter(
-              (bar) =>
-                  Number.isFinite(bar.lower) &&
-                  Number.isFinite(bar.upper) &&
-                  bar.upper > bar.lower &&
-                  Number.isFinite(bar.rows) &&
-                  bar.rows >= 0,
-          )
+    $: bars = Array.isArray(intervals)
+        ? intervals.filter((row) => Number.isFinite(row.rows) && row.rows >= 0)
         : [];
-    $: finiteRows = histogram?.finite_rows ?? 0;
-    $: minimum = bars.length ? Math.min(...bars.map((bar) => bar.lower)) : 0;
-    $: maximum = bars.length ? Math.max(...bars.map((bar) => bar.upper)) : 1;
-    $: range = maximum - minimum;
-    $: scale = Math.max(Math.abs(minimum), Math.abs(maximum), 1);
-    $: scaledMinimum = minimum / scale;
-    $: scaledRange = maximum / scale - scaledMinimum;
+    $: width = Math.max(640, left + bars.length * 84 + right);
+    $: plotWidth = width - left - right;
+    $: slot = plotWidth / Math.max(1, bars.length);
     $: tallest = Math.max(1, ...bars.map((bar) => bar.rows));
-    $: ticks = Array.from({ length: 5 }, (_, index) =>
-        Number.isFinite(range)
-            ? minimum + (range * index) / 4
-            : (scaledMinimum + (scaledRange * index) / 4) * scale,
-    );
-    $: boundaries = [
-        ...new Set(
-            intervals
-                .flatMap((interval) => [interval.lower, interval.upper])
-                .filter((value) => typeof value === 'number' && Number.isFinite(value)),
-        ),
-    ].sort((a, b) => a - b);
-    $: cuts = boundaries.filter((value) => value >= minimum && value <= maximum);
-    $: omittedCuts = boundaries.length - cuts.length;
+    $: totalRows = bars.reduce((total, bar) => total + bar.rows, 0);
 
-    function x(value) {
-        const proportion = Number.isFinite(range)
-            ? (value - minimum) / range
-            : (value / scale - scaledMinimum) / scaledRange;
-        return left + proportion * plotWidth;
-    }
     function y(rows) {
         return top + plotHeight * (1 - rows / tallest);
     }
-    function short(value) {
-        if (value && (Math.abs(value) >= 1e6 || Math.abs(value) < 0.001))
-            return Number(value).toExponential(2);
-        return Number(value).toLocaleString(undefined, { maximumSignificantDigits: 4 });
+    function count(value) {
+        return Number(value).toLocaleString(undefined, { maximumFractionDigits: 0 });
     }
 </script>
 
 <figure class="binning-histogram" aria-label="Training distribution">
     <figcaption>
         <strong>Training distribution</strong>
-        <span
-            >Equal-width bars show the distribution; dashed lines show proposed model cuts within
-            the observed range.{#if omittedCuts}
-                {omittedCuts} model {omittedCuts === 1 ? 'boundary' : 'boundaries'} outside the range
-                {omittedCuts === 1 ? 'is' : 'are'} omitted.{/if}</span
-        >
+        <span>One bar per model bin, showing training rows in that interval.</span>
     </figcaption>
-    {#if !finiteRows || !bars.length || !(maximum > minimum) || (!Number.isFinite(range) && !scaledRange)}
-        <p>No finite training values to plot.</p>
+    {#if !bars.length}
+        <p>No numeric model bins to plot.</p>
     {:else}
-        <svg
-            viewBox={`0 0 ${width} ${height}`}
-            role="img"
-            aria-label={`Training distribution for ${name}: ${finiteRows.toLocaleString()} finite training rows and ${cuts.length} proposed cut lines`}
-            preserveAspectRatio="xMidYMid meet"
-        >
-            <title>Training distribution for {name}</title>
-            <desc>
-                Equal-width histogram of finite training values with dashed proposed model cuts.
-            </desc>
-            <text class="axis-label" x={left} y={13}>Rows</text>
-            <line class="axis" x1={left} y1={top} x2={left} y2={top + plotHeight} />
-            <line
-                class="axis"
-                x1={left}
-                y1={top + plotHeight}
-                x2={left + plotWidth}
-                y2={top + plotHeight}
-            />
-            {#each [0, tallest / 2, tallest] as value}
-                <line class="grid" x1={left} x2={left + plotWidth} y1={y(value)} y2={y(value)} />
-                <text class="count-tick" x={left - 7} y={y(value) + 4} text-anchor="end"
-                    >{short(value)}</text
-                >
-            {/each}
-            {#each bars as bar}
-                <rect
-                    class="distribution-bar"
-                    data-lower={bar.lower}
-                    data-upper={bar.upper}
-                    x={x(bar.lower) + 0.4}
-                    y={y(bar.rows)}
-                    width={Math.max(0.5, x(bar.upper) - x(bar.lower) - 0.8)}
-                    height={top + plotHeight - y(bar.rows)}
-                >
-                    <title>Training values {bar.lower} to {bar.upper}: {bar.rows} rows</title>
-                </rect>
-            {/each}
-            {#each cuts as cut}
+        <div class="chart-scroll">
+            <svg
+                viewBox={`0 0 ${width} ${height}`}
+                style:width={bars.length > 8 ? `${width}px` : '100%'}
+                role="img"
+                aria-label={`Training rows by model bin for ${name}: ${totalRows.toLocaleString()} rows in ${bars.length} bins`}
+            >
+                <title>Training rows by model bin for {name}</title>
+                <desc>Each bar shows the exact training-row count for one model interval.</desc>
+                <text class="axis-label" x={left} y={14}>Rows</text>
+                <line class="axis" x1={left} y1={top} x2={left} y2={top + plotHeight} />
                 <line
-                    class="model-cut"
-                    data-cut={cut}
-                    x1={x(cut)}
-                    x2={x(cut)}
-                    y1={top}
-                    y2={top + plotHeight}
-                >
-                    <title>Proposed model cut at {cut}</title>
-                </line>
-            {/each}
-            {#each ticks as value, index}
-                <line
-                    class="tick"
-                    x1={x(value)}
-                    x2={x(value)}
+                    class="axis"
+                    x1={left}
                     y1={top + plotHeight}
-                    y2={top + plotHeight + 5}
+                    x2={left + plotWidth}
+                    y2={top + plotHeight}
                 />
-                <text
-                    class="value-tick"
-                    x={x(value)}
-                    y={height - 12}
-                    text-anchor={index === 0 ? 'start' : index === 4 ? 'end' : 'middle'}
-                    >{short(value)}</text
-                >
-            {/each}
-        </svg>
+                {#each [0, tallest / 2, tallest] as value}
+                    <line
+                        class="grid"
+                        x1={left}
+                        x2={left + plotWidth}
+                        y1={y(value)}
+                        y2={y(value)}
+                    />
+                    <text class="count-tick" x={left - 7} y={y(value) + 4} text-anchor="end"
+                        >{count(value)}</text
+                    >
+                {/each}
+                {#each bars as bar, index}
+                    {@const centre = left + slot * (index + 0.5)}
+                    <rect
+                        class="distribution-bar"
+                        data-lower={bar.lower == null ? undefined : bar.lower}
+                        data-upper={bar.upper == null ? undefined : bar.upper}
+                        data-rows={bar.rows}
+                        x={centre - slot * 0.37}
+                        y={y(bar.rows)}
+                        width={slot * 0.74}
+                        height={top + plotHeight - y(bar.rows)}
+                    >
+                        <title>{bar.label}: {bar.rows} rows</title>
+                    </rect>
+                    <text
+                        class="value-tick"
+                        x={centre}
+                        y={top + plotHeight + 17}
+                        text-anchor="end"
+                        transform={`rotate(-42 ${centre} ${top + plotHeight + 17})`}
+                        >{bar.label}</text
+                    >
+                {/each}
+            </svg>
+        </div>
     {/if}
 </figure>
 
@@ -171,12 +118,15 @@
         color: #566875;
         font-size: 12px;
     }
+    .chart-scroll {
+        max-width: 100%;
+        overflow-x: auto;
+        overflow-y: hidden;
+    }
     svg {
         display: block;
-        width: 100%;
         height: auto;
         margin-top: 9px;
-        overflow: visible;
     }
     .distribution-bar {
         fill: #4b82b6;
@@ -184,22 +134,12 @@
     .distribution-bar:hover {
         fill: #1c5f9e;
     }
-    .model-cut {
-        stroke: #bf5a1d;
-        stroke-width: 2;
-        stroke-dasharray: 6 4;
-        pointer-events: stroke;
-    }
     .axis {
         stroke: #607486;
         stroke-width: 1;
     }
     .grid {
         stroke: #dce5ec;
-        stroke-width: 1;
-    }
-    .tick {
-        stroke: #607486;
         stroke-width: 1;
     }
     text {
