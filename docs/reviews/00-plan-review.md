@@ -291,7 +291,7 @@ read code-review threads to find their questions. Keep "reviewer may not edit co
   CategoricalEncoder)`; asserts vanish under `python -O` and a third encoder kind falls
   into the categorical branch. Use explicit `if/elif/else: raise NotImplementedError`.
 - CI sets `EASY_GLM_MAX_ROWS=500`; nothing in `src/` or `tests/` reads it.
-- "`pip install easy_glm` is lighter than 0.3": beyond DuckDB, `matplotlib`, `seaborn`,
+- "`pip install easy-glm` is lighter than 0.3": beyond DuckDB, `matplotlib`, `seaborn`,
   `rdata`, `scikit-learn` and `joblib` are hard dependencies; moving the plotting ones to
   the `viz` extra is cheap (`test_imports.py` already asserts lazy import).
 - `scripts/` holds eight one-off investigation scripts using the legacy API; delete

@@ -2,7 +2,7 @@
 
 **Verified package version: `easy-glm==0.471`. Guide date: 19 September 2026.**
 
-Give this whole file to the LLM helping you. It is a usage reference, not a request to modify the package. The Python import is `easy_glm`; the package can be installed as `easy-glm`. Examples use Polars DataFrames.
+Give this whole file to the LLM helping you. It is a usage reference, not a request to modify the package. Install as `easy-glm`; import in Python as `easy_glm`. Examples use Polars DataFrames.
 
 This guide describes the released implementation. Earlier design discussions and some older source docstrings do not describe every detail of the current desktop workbench. In particular, distinguish legacy GLM interactions from the newer ordered CatBoost interaction tables.
 

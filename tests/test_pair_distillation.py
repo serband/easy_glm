@@ -189,7 +189,7 @@ def test_missing_training_dependency_gives_install_command(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", blocked)
-    with pytest.raises(ImportError, match=r"pip install 'easy_glm\[pairs\]'"):
+    with pytest.raises(ImportError, match=r"pip install 'easy-glm\[pairs\]'"):
         fit_catboost_pair_raw(
             np.array([[0.0, 1.0], [1.0, 0.0]]),
             np.array([0.0, 1.0]),

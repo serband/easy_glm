@@ -10,7 +10,7 @@ Nothing that worked in 0.3 changes its numbers; the old blueprint / DuckDB route
 
 - The 0.2-era pipeline (`generate_blueprint`, `prepare_data`, `fit_lasso_glm`, `ratetable`, `generate_all_ratetables`) and the DuckDB database engine it needed. Since 0.3 these only existed as deprecated aliases; the workbench and `EasyGLM.fit` never used them.
 - Eight exploratory scripts and a prototype example that only ran against that pipeline.
-- `matplotlib` / `seaborn` are no longer installed by default (only needed for the optional matplotlib charts: `pip install "easy_glm[viz]"`).
+- `matplotlib` / `seaborn` are no longer installed by default (only needed for the optional matplotlib charts: `pip install "easy-glm[viz]"`).
 
 ## What is guaranteed
 
@@ -31,7 +31,7 @@ Nothing that worked in 0.3 changes its numbers; the old blueprint / DuckDB route
 
 Rate tables vs GLM on the holdout: max relative difference below 1e-12: yes
 
-## Install footprint (base `pip install easy_glm`)
+## Install footprint (base `pip install easy-glm`)
 
 - v0.3.0: 11 required packages (polars, numpy, pyarrow, glum, matplotlib, seaborn, scikit-learn, pandas, rdata, joblib, xlsxwriter)
 - now: 8 required packages (polars, numpy, pyarrow, glum, pandas, rdata, joblib, xlsxwriter)

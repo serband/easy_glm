@@ -242,7 +242,7 @@ Ideas intentionally left for later releases are in
 ## 0.4.2 — 3 September 2026
 
 - Included the browser workbench and its charting dependencies in the normal
-  `pip install easy_glm` installation.
+  `pip install easy-glm` installation.
 - Added the `easy-glm-workbench` launch command and the first guided French
   motor sample.
 - Improved explanations of project state, setup progress, fitted versus

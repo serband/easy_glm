@@ -145,7 +145,7 @@ Four layers, all automated except the last:
 ### Per workstream
 
 **C — legacy removal**
-- Tests: the full suite passes with the legacy modules deleted; `pip install easy_glm` in a clean venv has no DuckDB; the benchmark runner produces easy_glm rows on all four families; `RateModel.from_glm_model(fit)` equals `to_rate_model(fit)`.
+- Tests: the full suite passes with the legacy modules deleted; `pip install easy-glm` in a clean venv has no DuckDB; the benchmark runner produces easy_glm rows on all four families; `RateModel.from_glm_model(fit)` equals `to_rate_model(fit)`.
 - Actuarial check: none needed beyond "nothing changed": golden French motor numbers identical before and after.
 
 **G — scale**
@@ -317,7 +317,7 @@ Rules
 * A realistic model (interactions, derived columns from conditional
   expressions, a categorical recode, a piecewise-linear term) can be built
   entirely in the workbench and exported as a script that reproduces it.
-* No DuckDB anywhere; `pip install easy_glm` is lighter than 0.3.
+* No DuckDB anywhere; `pip install easy-glm` is lighter than 0.3.
 * Reloading the browser does not lose a fit.
 * 5M synthetic rows × ~200 design columns fit in < 3 GB peak memory; float32
   coefficients agree with float64 to 1e-6 on the French motor set.

@@ -147,7 +147,7 @@ the four datasets, both easy_glm rows have non-null `Deviance`.
 - `test_golden.py` docstring: "a refit on the same machine reproduces coefficients to
   1e-15" is accurate but "bitwise" it is not — see the numbers below; worth saying
   so explicitly so nobody tightens `RTOL` later.
-- README §1 "Optional: matplotlib charts" should mention `pip install "easy_glm[viz]"`
+- README §1 "Optional: matplotlib charts" should mention `pip install "easy-glm[viz]"`
   next to the call, since a base install now raises there.
 - README quick-start uses `np.random.rand` (unseeded) for the split while every
   example seeds `default_rng(42)`; use the seeded form.
@@ -253,7 +253,7 @@ contains no matplotlib, seaborn, duckdb, rdata, streamlit, statsmodels or catboo
 it does contain scikit-learn, which glum imports (hence the wording nit).
 `find_spec`: matplotlib, seaborn, duckdb, statsmodels, catboost absent; sklearn,
 rdata present. `plot_all_ratetables(...)` raises
-`ImportError: plot_all_ratetables needs matplotlib and seaborn: pip install "easy_glm[viz]"`;
+`ImportError: plot_all_ratetables needs matplotlib and seaborn: pip install "easy-glm[viz]"`;
 after `uv pip install ".[viz]"` the same call renders (Agg backend).
 
 **Actuarial check.** `scripts/checks/c2_legacy_removal.py` exits 0 (no `GOLDEN

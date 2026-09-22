@@ -535,7 +535,7 @@ is created and written (`--out .../deep/a/b/c` → exit 0, file present).
 `import easy_glm.cli` succeeds, `'streamlit' in sys.modules` is `False`, and
 `main(['validate', ...])` returns 0. The only Streamlit import is inside
 `cmd_workbench`, behind an `ImportError` handler that names `pip install
-'easy_glm[ui]'`.
+'easy-glm[ui]'`.
 
 **Round trip.** `easy-glm run` on a rate-change project wrote all four artefacts;
 the emitted script executed standalone and its `.easyglm` matched the CLI's to

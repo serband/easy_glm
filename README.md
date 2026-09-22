@@ -8,12 +8,14 @@ from a local browser workbench.
 Requires Python 3.10–3.14. Run in a terminal:
 
 ```bash
-pip install --upgrade easy_glm
+python -m pip install --upgrade easy-glm
 easy-glm-workbench
 ```
 
 Your browser opens automatically. Keep the terminal open while you work.
 Restart the workbench after upgrading.
+
+Install as `easy-glm`; import in Python as `easy_glm`.
 
 ## Build a model
 

@@ -137,7 +137,7 @@ def render(numbers: dict, before: list[str] | None, after: list[str]) -> str:
         "never used them.",
         "- Eight exploratory scripts and a prototype example that only ran against that pipeline.",
         "- `matplotlib` / `seaborn` are no longer installed by default (only needed for the "
-        'optional matplotlib charts: `pip install "easy_glm[viz]"`).',
+        'optional matplotlib charts: `pip install "easy-glm[viz]"`).',
         "",
         "## What is guaranteed",
         "",
@@ -164,7 +164,7 @@ def render(numbers: dict, before: list[str] | None, after: list[str]) -> str:
         "Rate tables vs GLM on the holdout: max relative difference below 1e-12: "
         + ("yes" if numbers["max_rel_diff_tables_vs_glm"] < 1e-12 else "NO"),
         "",
-        "## Install footprint (base `pip install easy_glm`)",
+        "## Install footprint (base `pip install easy-glm`)",
         "",
     ]
     if before is not None:

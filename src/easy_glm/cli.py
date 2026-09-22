@@ -302,7 +302,7 @@ def cmd_workbench(args: argparse.Namespace) -> int:
         from easy_glm.app import launch
     except ImportError as exc:  # pragma: no cover - depends on the install
         raise CliError(
-            f"the workbench dependencies are missing: reinstall easy_glm ({exc})"
+            f"the workbench dependencies are missing: reinstall easy-glm ({exc})"
         ) from exc
     try:
         proc = launch(

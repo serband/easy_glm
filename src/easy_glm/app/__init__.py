@@ -12,7 +12,7 @@ or from Python::
 
 The GUI edits a :class:`easy_glm.workflow.Project`; everything it does can be
 exported as a Python script from the Export page. It is included in the normal
-``pip install easy_glm`` installation.
+``pip install easy-glm`` installation.
 """
 
 from __future__ import annotations

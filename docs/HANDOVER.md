@@ -97,7 +97,7 @@ deliverable readable from a phone via GitHub.
    and `twine check` locally, install the wheel in a fresh venv and run
    `tests/test_readme.py` against it; then the owner merges/tags (the tag
    triggers `.github/workflows/publish.yml`); confirm on PyPI with a fresh
-   `pip install easy_glm==<version>` and the README test.
+   `pip install easy-glm==<version>` and the README test.
 
 Merge conflicts to expect between parallel pieces: `PERSIST_FORMAT` (take the
 highest + 1), `CHANGELOG.md` / `AGENTS.md` (union), `core/fit.py` around
