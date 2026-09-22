@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import polars as pl
 
 
@@ -68,6 +69,7 @@ def importance_sample_indices(
     if n_rows < 1:
         raise ValueError("Variable importance needs at least one training row.")
     all_indices = np.arange(n_rows, dtype=np.int64)
+    full_weights: npt.NDArray[np.float64]
     if weights is None:
         full_weights = np.ones(n_rows, dtype=np.float64)
     else:
@@ -81,6 +83,7 @@ def importance_sample_indices(
         raise ValueError("Variable importance needs positive finite total weight.")
 
     reasons: list[str] = []
+    indices: npt.NDArray[np.int64]
     if percentage == 100:
         indices = all_indices
     else:
