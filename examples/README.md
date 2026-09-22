@@ -1,6 +1,8 @@
 # EasyGLM examples
 
-Start with the example closest to what you want to do:
+**[Build a model in Python](python_modelling_walkthrough.md)** — a complete, step-by-step walkthrough: set bands, fit a GLM, inspect A/E, search for missing factors, add interactions and export the tables.
+
+Other examples:
 
 | Example | What it demonstrates |
 | --- | --- |
@@ -12,5 +14,5 @@ Start with the example closest to what you want to do:
 | [Score new data](score_new_data.py) | Load a saved rate model and apply it to another dataset. |
 
 The main [README](../README.md) contains the shortest install and first-fit
-route. The walkthrough below is the fuller graphical example; the Python files
-are deliberately runnable rather than copies of the same prose.
+route. The Python modelling walkthrough includes all the code on the page;
+the workbench walkthrough covers the graphical interface.

@@ -1,6 +1,6 @@
 # French motor walkthrough: verification record
 
-This accompanies the [interactive Python walkthrough](../FRENCH_MOTOR_PYTHON_WALKTHROUGH.md)
+This accompanies the [interactive Python walkthrough](../../examples/python_modelling_walkthrough.md)
 and its [numbered Python cells](french_motor_walkthrough.py). It records a developer
 replay of the illustrative decisions. In an actual modelling session, stop at the
 review points and record your own choices.

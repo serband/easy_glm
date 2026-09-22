@@ -1,6 +1,6 @@
 # French motor Python reference: complete code and additional examples
 
-Start with the [practical lesson](FRENCH_MOTOR_PYTHON_WALKTHROUGH.md) for the
+Start with the [practical lesson](../examples/python_modelling_walkthrough.md) for the
 explanations and results. This reference preserves the complete code blocks,
 additional examples and technical checks for looking things up as you work.
 
@@ -1502,9 +1502,8 @@ Keep these together:
 - package/source version and environment;
 - validation metrics and review notes.
 
-The parity assertion should compare unit predictions with exposure multiplication
-disabled on both sides. A second assertion may compare expected claim totals with
-exposure applied exactly once.
+Use `exposure_col=None` to compare rates. Multiply rates by exposure to compare
+expected claim counts.
 
 **Example LLM prompt**
 

@@ -223,11 +223,11 @@ skinny = EasyGLM.fit(
 )
 ```
 
-`divide_target_by_weight=True` fits `ClaimNb / Exposure`, weighted by `Exposure`. Do not divide the target yourself as well. `cv=5` uses five folds to select the penalty from eight values.
+`divide_target_by_weight=True` fits `ClaimNb / Exposure`, weighted by `Exposure`. `cv=5` uses five folds to select the penalty from eight values.
 
 `easyglm_design_kwargs` above handles explicit cuts and a shared automatic bin count. For different automatic counts per variable, use `Project` and `run_model`, shown in the interaction section below.
 
-Predictions from `EasyGLM.predict` are rates:
+Predictions are claims per unit of exposure. Multiply by exposure to get expected claims:
 
 ```python
 predicted_rate = skinny.predict(train).to_numpy()
@@ -304,7 +304,7 @@ for variable in ["DrivAge", "VehAge"]:
 print(skinny.rate_model.to_dict()["variables"]["DrivAge"])
 ```
 
-![Driver-age A/E and exposure](examples/french_motor_outputs/skinny_train_ae_DrivAge.png)
+![Driver-age A/E and exposure](../docs/examples/french_motor_outputs/skinny_train_ae_DrivAge.png)
 
 Here the total training A/E is 0.99999. The age bands still differ: the oldest band is around 0.89 and the 45–55 band around 1.08. Check these against exposure and the fitted relativities before changing the bands or adding more flexibility.
 
@@ -620,7 +620,7 @@ figure.savefig(OUTPUT / "pair1_relativity_heatmap.png", dpi=130)
 plt.show()
 ```
 
-![DrivAge × BonusMalus relativities and exposure](examples/french_motor_outputs/pair1_relativity_heatmap.png)
+![DrivAge × BonusMalus relativities and exposure](../docs/examples/french_motor_outputs/pair1_relativity_heatmap.png)
 
 Each cell shows its relativity, with training exposure underneath. Check the thin cells and the size of the correction as well as the CV result:
 
@@ -967,4 +967,4 @@ results = {
 
 The export uses `accepted_run`. These checks reload the saved tables and run the generated scorer against the same policies. CatBoost is not needed to score the saved tables.
 
-The [recorded results](examples/french_motor_walkthrough_results.md) include timings and verification notes.
+The [recorded results](../docs/examples/french_motor_walkthrough_results.md) include timings and verification notes.
