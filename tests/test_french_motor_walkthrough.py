@@ -13,7 +13,7 @@ from easy_glm import RateModel
 
 ROOT = Path(__file__).resolve().parents[1]
 LESSON = ROOT / "docs" / "examples" / "french_motor_walkthrough.py"
-GUIDE = ROOT / "examples" / "python_modelling_walkthrough.md"
+GUIDE = ROOT / "examples" / "pricing_walkthrough.md"
 CELL_MARKER = re.compile(r"(?m)^# %% (\d+) — (.+)$")
 PYTHON_FENCE = re.compile(r"(?ms)^```python[^\n]*\n(.*?)^```[ \t]*$")
 

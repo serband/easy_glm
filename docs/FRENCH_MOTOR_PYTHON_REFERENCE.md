@@ -1,6 +1,6 @@
 # French motor Python reference: complete code and additional examples
 
-Start with the [practical lesson](../examples/python_modelling_walkthrough.md) for the
+Start with the [practical lesson](../examples/pricing_walkthrough.md) for the
 explanations and results. This reference preserves the complete code blocks,
 additional examples and technical checks for looking things up as you work.
 

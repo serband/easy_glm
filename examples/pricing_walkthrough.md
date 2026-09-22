@@ -1,4 +1,4 @@
-# Building models in Python
+# Building a pricing model
 
 Run the Python blocks on this page in order, in the same notebook or Python session. All imports, setup and plotting code are included. Stop after each fit to inspect the results before making the next change.
 

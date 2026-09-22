@@ -1,6 +1,6 @@
 # EasyGLM examples
 
-**[Build a model in Python](python_modelling_walkthrough.md)** — a complete, step-by-step walkthrough: set bands, fit a GLM, inspect A/E, search for missing factors, add interactions and export the tables.
+**[Build a pricing model](pricing_walkthrough.md)** — a complete, step-by-step walkthrough: set bands, fit a GLM, inspect A/E, search for missing factors, add interactions and export the tables.
 
 Other examples:
 
@@ -14,5 +14,5 @@ Other examples:
 | [Score new data](score_new_data.py) | Load a saved rate model and apply it to another dataset. |
 
 The main [README](../README.md) contains the shortest install and first-fit
-route. The Python modelling walkthrough includes all the code on the page;
+route. The pricing walkthrough includes all the code on the page;
 the workbench walkthrough covers the graphical interface.
