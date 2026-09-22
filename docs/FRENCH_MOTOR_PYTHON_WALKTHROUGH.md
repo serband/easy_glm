@@ -1,10 +1,49 @@
 # Building models in Python
 
-Open the [Python example](examples/french_motor_walkthrough.py) in VS Code or Jupyter. Run one cell at a time. The examples below use the objects created in that file; the [code reference](FRENCH_MOTOR_PYTHON_REFERENCE.md) contains the full blocks and additional examples.
+Run the Python blocks on this page in order, in the same notebook or Python session. All imports, setup and plotting code are included. Stop after each fit to inspect the results before making the next change.
+
+## Install and import
+
+Use the development checkout on `codex/french-motor-python-walkthrough`, based on revision `22bbd7d`. These examples use additions that are not all available in PyPI v0.471. From the checkout, install:
+
+```bash
+python -m pip install -e ".[pairs]"
+```
+
+Start your Python session in the checkout directory. The sample is `tests/fixtures/french_motor_50k.parquet`.
+
+```python
+import copy
+import json
+import os
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import polars as pl
+from matplotlib.colors import TwoSlopeNorm
+
+from easy_glm import EasyGLM, RateModel, add_train_test_split
+from easy_glm.engine.models import level_label
+from easy_glm.workflow import (
+    DataSource, Penalty, Project, Split, VariableDesign,
+    ae_by_pair, ae_by_variable, build_design, gini, model_metrics,
+    null_model_predict, pearson_dispersion, prepare,
+    residual_factor_search, residual_pair_search, run_model,
+    to_scoring_script, totals, unit_values,
+)
+from easy_glm.workflow.project import PairSearchConfig, PairStageConfig
+
+DATA_PATH = Path("tests/fixtures/french_motor_50k.parquet").resolve()
+OUTPUT = Path(os.environ.get(
+    "EASY_GLM_LESSON_OUTPUT", "french_motor_lesson_output"
+)).resolve()
+OUTPUT.mkdir(parents=True, exist_ok=True)
+```
 
 ## Load data and set the split
 
-Run Cells 1–2. The example uses the bundled French motor data. For your own data, change `DATA_PATH`, adapt the column names and roles, and remove the sample-specific 50,000-row assertion.
+Read the sample and make a 70/30 split. For your own data, change `DATA_PATH` and the column names used below.
 
 ```python
 raw_without_split = pl.read_parquet(DATA_PATH).sort("IDpol")
@@ -16,6 +55,11 @@ raw = add_train_test_split(
 )
 train = raw.filter(pl.col("traintest") == 1)
 locked_holdout = raw.filter(pl.col("traintest") == 0)
+
+# Save the split with the data so reopening the project uses the same rows.
+SPLIT_DATA_PATH = OUTPUT / "french_motor_50k_fixed_split.parquet"
+raw.write_parquet(SPLIT_DATA_PATH)
+print({"train": train.height, "holdout": locked_holdout.height})
 ```
 
 Keep the same split for every model you compare. Use training data for fitting, variable searches and interaction searches. Leave the holdout until you have chosen the model specification.
@@ -24,9 +68,14 @@ The sample gives 34,887 training rows and 15,113 holdout rows. Its exposure incl
 
 ## Set variable roles and bands
 
-Run Cell 3. Roles determine which columns are available for modelling. The predictor list passed to a fit determines which ones that particular model uses.
+Roles determine which columns are available for modelling. The predictor list passed to a fit determines which ones that particular model uses.
 
 ```python
+settings_project = Project(name="French motor frequency")
+settings_project.data.source = DataSource(type="parquet", path=str(SPLIT_DATA_PATH))
+settings_project.data.split = Split(
+    mode="column", column="traintest", train_value=1, holdout_value=0,
+)
 settings_project.data.roles = {
     "IDpol": "id",
     "ClaimNb": "target",
@@ -45,6 +94,7 @@ For numeric variables, choose a default bin count, a count for an individual var
 
 ```python
 settings_project.design.defaults.n_bins = 8
+settings_project.design.defaults.min_level_share = 0.0025
 
 # This variable gets its own automatic bin count.
 settings_project.design.variables["VehPower"] = VariableDesign(
@@ -70,6 +120,13 @@ CUSTOM_KNOTS = {
     "BonusMalus": [50, 60, 75, 100, 125],
     "Density": [50, 200, 1_000, 5_000, 10_000],
 }
+for variable, cuts in CUSTOM_KNOTS.items():
+    settings_project.design.variables[variable] = VariableDesign(
+        kind="step", knots=cuts,
+    )
+settings_project.design.variables["Area"] = VariableDesign(
+    kind="categorical", max_levels=6,
+)
 ```
 
 To save or edit these choices as JSON:
@@ -77,15 +134,79 @@ To save or edit these choices as JSON:
 ```python
 settings_json = json.dumps(settings_project.to_dict(), indent=2)
 settings_roundtrip = Project.from_dict(json.loads(settings_json))
+errors = settings_roundtrip.validate(columns=train.columns)
+if errors:
+    raise ValueError(errors)
+(OUTPUT / "variables_project.json").write_text(settings_json, encoding="utf-8")
+print(settings_json)
+
+# Use these same cuts when grouping the diagnostics.
+DIAGNOSTIC_KNOTS = {
+    name: list(design.knots)
+    for name, design in settings_roundtrip.design.variables.items()
+    if isinstance(design.knots, list)
+}
 ```
 
 The relevant sections are `data.roles`, `data.split`, `design.defaults` and `design.variables`. This is the full Python project format. The smaller Variables JSON shown in the workbench uses a different structure.
 
-Cell 3 also prints the resulting cuts. On this sample, requesting six bins for `VehPower` gives four distinct cuts: 5, 6, 7 and 8.
+To see the automatic cuts, build the design on training data. This copy removes the explicit vehicle-age cuts so you can compare the default count, the vehicle-power override and the fixed driver-age cuts:
+
+```python
+binning_demo = Project.from_dict(settings_roundtrip.to_dict())
+del binning_demo.design.variables["VehAge"]
+binning_spec = build_design(
+    binning_demo, train, ["VehAge", "VehPower", "DrivAge"], weight_col="Exposure",
+)
+print({name: list(binning_spec[name].knots)
+       for name in ["VehAge", "VehPower", "DrivAge"]})
+```
+
+On this sample, requesting six bins for `VehPower` gives four distinct cuts: 5, 6, 7 and 8.
 
 ## Fit the first GLM
 
-Run Cell 4. Start with `DrivAge` and `VehAge`:
+Start with `DrivAge` and `VehAge`. Define this function to pass the saved bin settings into `EasyGLM.fit`:
+
+```python
+def easyglm_design_kwargs(project: Project, predictors: list[str]) -> dict[str, object]:
+    """Pass explicit cuts and shared bin defaults to EasyGLM.fit."""
+    defaults = project.design.defaults
+    knots: dict[str, list[float]] = {}
+    categorical: list[str] = []
+    for variable in predictors:
+        design = project.design.variables.get(variable, VariableDesign())
+        unsupported = (
+            design.kind not in (None, "step", "categorical")
+            or design.clamp is not None
+            or design.monotone is not None
+            or design.penalty_weight != 1.0
+            or design.levels is not None
+        )
+        if unsupported:
+            raise ValueError(
+                f"Use Project/run_model for the design settings on {variable}."
+            )
+        if design.kind == "categorical":
+            categorical.append(variable)
+        if isinstance(design.knots, list):
+            knots[variable] = [float(value) for value in design.knots]
+        elif design.n_bins not in (None, defaults.n_bins):
+            raise ValueError(
+                f"{variable} uses per-variable automatic n_bins={design.n_bins}. "
+                "Use Project/run_model to preserve per-variable automatic bin "
+                "settings."
+            )
+    return {
+        "n_bins": defaults.n_bins,
+        "min_level_share": defaults.min_level_share,
+        "null_indicator": defaults.null_indicator,
+        "knots": knots,
+        "categorical": categorical,
+    }
+```
+
+Then fit:
 
 ```python
 skinny = EasyGLM.fit(
@@ -104,7 +225,7 @@ skinny = EasyGLM.fit(
 
 `divide_target_by_weight=True` fits `ClaimNb / Exposure`, weighted by `Exposure`. Do not divide the target yourself as well. `cv=5` uses five folds to select the penalty from eight values.
 
-`easyglm_design_kwargs` is a helper in the example file. It passes the bin settings into `EasyGLM.fit`. For designs it cannot represent, such as different automatic bin counts for individual variables, it directs you to `Project` and `run_model`; it does not discard the setting.
+`easyglm_design_kwargs` above handles explicit cuts and a shared automatic bin count. For different automatic counts per variable, use `Project` and `run_model`, shown in the interaction section below.
 
 Predictions from `EasyGLM.predict` are rates:
 
@@ -117,7 +238,71 @@ expected_claims = predicted_rate * train["Exposure"].to_numpy()
 
 ## Inspect A/E and the fitted tables
 
-Run Cell 5. It produces training A/E plots with exposure by band.
+Calculate actual and expected claim counts, then plot A/E with exposure by band. Define the plotting function once:
+
+```python
+def plot_ae_support(
+    frame: pl.DataFrame,
+    variable: str,
+    actual: np.ndarray,
+    expected: np.ndarray,
+    exposure: np.ndarray,
+    *,
+    title: str,
+) -> pl.DataFrame:
+    """Plot training A/E with the exposure supporting every fixed band."""
+    table = ae_by_variable(
+        frame,
+        variable,
+        actual,
+        expected,
+        exposure,
+        knots=DIAGNOSTIC_KNOTS.get(variable),
+    )
+    labels = table["label"].to_list()
+    positions = np.arange(len(labels))
+    figure, ae_axis = plt.subplots(figsize=(9, 4))
+    exposure_axis = ae_axis.twinx()
+    exposure_axis.bar(
+        positions,
+        table["exposure"].to_numpy(),
+        color="#d8e6f3",
+        label="Exposure",
+    )
+    ae_axis.set_zorder(exposure_axis.get_zorder() + 1)
+    ae_axis.patch.set_visible(False)
+    ae_axis.plot(
+        positions,
+        table["ae"].to_numpy(),
+        color="#b23a48",
+        marker="o",
+        label="A/E",
+    )
+    ae_axis.axhline(1.0, color="black", linewidth=1, linestyle="--")
+    ae_axis.set_xticks(positions, labels, rotation=35, ha="right")
+    ae_axis.set_ylabel("Actual / expected")
+    exposure_axis.set_ylabel("Exposure")
+    ae_axis.set_title(title)
+    figure.tight_layout()
+    return table
+```
+
+```python
+skinny_actual, skinny_expected, skinny_exposure = totals(
+    train, skinny.glm, skinny.predict(train).to_numpy(),
+)
+print({"train_ae": float(skinny_actual.sum() / skinny_expected.sum())})
+for variable in ["DrivAge", "VehAge"]:
+    ae_table = plot_ae_support(
+        train, variable, skinny_actual, skinny_expected, skinny_exposure,
+        title=f"Two-factor model: {variable}",
+    )
+    print(ae_table)
+    plt.savefig(OUTPUT / f"skinny_train_ae_{variable}.png", dpi=130)
+    plt.show()
+
+print(skinny.rate_model.to_dict()["variables"]["DrivAge"])
+```
 
 ![Driver-age A/E and exposure](examples/french_motor_outputs/skinny_train_ae_DrivAge.png)
 
@@ -138,13 +323,16 @@ Keep solver warnings with the model output. Some runs of this example emitted gl
 
 ## Search for missing main effects
 
-Run Cell 6. `totals` converts the model's rate predictions into actual and expected claim totals for the residual search:
+`totals` converts the model's rate predictions into actual and expected claim totals for the residual search:
 
 ```python
 actual, expected, exposure = totals(
     train, skinny.glm, skinny.predict(train).to_numpy(),
 )
 
+skinny_dispersion = pearson_dispersion(
+    actual, expected, n_params=len(skinny.glm.coef) + 1,
+)
 factor_search = residual_factor_search(
     train,
     ["BonusMalus", "Density", "Area", "Region", "VehPower", "VehBrand", "VehGas"],
@@ -157,7 +345,7 @@ factor_search = residual_factor_search(
 print(factor_search)
 ```
 
-Cell 6 calculates `skinny_dispersion` from the training residuals. The first results are:
+`pearson_dispersion` estimates the dispersion from this fit. The first results are:
 
 | Variable | Residual signal |
 |---|---:|
@@ -170,7 +358,7 @@ Inspect A/E for the candidates you want to pursue. The score ranks residual patt
 
 ### Run the optional one-way screen
 
-Use the shadow-screen example in the [code reference](FRENCH_MOTOR_PYTHON_REFERENCE.md) when you want to test variables individually against noise:
+Run this optional block to test variables individually against noise. Later blocks do not depend on it:
 
 ```python
 from easy_glm.workflow.feature_selection import select_variables
@@ -186,6 +374,10 @@ screen = select_variables(
     repeats=5,
     seed=42,
 )
+print(pl.DataFrame(screen["rows"]).sort("margin", descending=True))
+print({key: screen[key] for key in [
+    "training_rows", "importance_rows", "fallback_reasons",
+]})
 ```
 
 This compares each variable with four shuffled copies and a random variable. It fits on all training rows and measures importance on a 30% sample, falling back to all training rows if the sample has insufficient support. It does not use the holdout.
@@ -194,7 +386,7 @@ Use this for one-way screening. Use the residual search above to assess what a f
 
 ## Change the main model and refit
 
-Run Cell 7. The example adds `BonusMalus` and `Density`:
+Add `BonusMalus` and `Density`, then refit:
 
 ```python
 reviewed_additions = ["BonusMalus", "Density"]
@@ -221,17 +413,75 @@ Keep `skinny` so you can compare it with `reviewed_main`. The training results a
 | DrivAge + VehAge | 0.482658 | 1.0000 |
 | Add BonusMalus + Density | 0.464219 | 0.9998 |
 
-Cell 7 reruns the searches and plots BonusMalus A/E. Area's residual score is now below zero; VehGas and Region still show residual signal. Use the new results when deciding what to investigate next.
+Recalculate the residuals from this model and search again:
 
-To change bands, edit the settings and refit under a new name. To test automatic bands, remove that variable's explicit cuts first. The code reference includes an executable comparison of eight versus ten default bins.
+```python
+reviewed_actual, reviewed_expected, reviewed_exposure = totals(
+    train, reviewed_main.glm, reviewed_main.predict(train).to_numpy(),
+)
+reviewed_dispersion = pearson_dispersion(
+    reviewed_actual, reviewed_expected, n_params=len(reviewed_main.glm.coef) + 1,
+)
+remaining_variables = ["Area", "Region", "VehPower", "VehBrand", "VehGas"]
+reviewed_factor_search = residual_factor_search(
+    train, remaining_variables,
+    reviewed_actual, reviewed_expected, reviewed_exposure,
+    n_bins=8, dispersion=reviewed_dispersion,
+)
+print(reviewed_factor_search)
+print(plot_ae_support(
+    train, "BonusMalus", reviewed_actual, reviewed_expected, reviewed_exposure,
+    title="Four-factor model: BonusMalus",
+))
+plt.show()
+```
+
+Area's residual score is now below zero; VehGas and Region still show residual signal.
+
+### Change the bands
+
+To test automatic bands, remove that variable's explicit cuts first. This optional comparison fits vehicle age with eight and ten requested bins. Driver age keeps its explicit cuts, and `reviewed_main` stays unchanged:
+
+```python
+default_8 = Project.from_dict(settings_roundtrip.to_dict())
+del default_8.design.variables["VehAge"]
+edited_json = default_8.to_dict()
+edited_json["design"]["defaults"]["n_bins"] = 10
+default_10 = Project.from_dict(edited_json)
+
+bin_challengers = {}
+for label, candidate_project in {
+    "default_8": default_8,
+    "default_10": default_10,
+}.items():
+    bin_challengers[label] = EasyGLM.fit(
+        train,
+        target="ClaimNb",
+        model_type="Poisson",
+        predictors=["DrivAge", "VehAge"],
+        weight_col="Exposure",
+        train_test_col="traintest",
+        divide_target_by_weight=True,
+        cv=5,
+        n_alphas=8,
+        base="modal",
+        **easyglm_design_kwargs(candidate_project, ["DrivAge", "VehAge"]),
+    )
+
+print({
+    name: list(model.spec["VehAge"].knots)
+    for name, model in bin_challengers.items()
+})
+```
 
 If you change a main effect after fitting interactions, refit the downstream interactions against the changed main model.
 
 ## Search for interactions
 
-Cell 7 also reruns the pair search using the refitted main model:
+Use the refitted main model for the pair search:
 
 ```python
+SEARCH_VARIABLES = ["DrivAge", "VehAge", "BonusMalus", "Density", "Area", "Region"]
 pair_search = residual_pair_search(
     train,
     SEARCH_VARIABLES,
@@ -243,6 +493,15 @@ pair_search = residual_pair_search(
     top=12,
     dispersion=reviewed_dispersion,
 )
+print(pair_search)
+
+# Inspect the pair before fitting it.
+print(ae_by_pair(
+    train, "DrivAge", "BonusMalus",
+    reviewed_actual, reviewed_expected, reviewed_exposure,
+    knots_a=DIAGNOSTIC_KNOTS["DrivAge"],
+    knots_b=DIAGNOSTIC_KNOTS["BonusMalus"],
+).filter(pl.col("exposure") > 0))
 ```
 
 `SEARCH_VARIABLES` includes both selected factors and unassigned candidates. The search adjusts for residual one-way margins before ranking pairs.
@@ -251,9 +510,41 @@ On this fit, `DrivAge × BonusMalus` is the leading pair. Inspect its cell A/E a
 
 ## Fit the first interaction
 
-Run Cell 8 first. It puts the main model's settings into a `Project` so the interaction fitter can rebuild that model inside each validation fold. It checks that the main predictions still match `reviewed_main`.
+Put the main model's settings into a `Project` so the interaction fitter can rebuild that model inside each validation fold. This fits the same main model and checks that its predictions match:
 
-Then run Cell 9. The main calls are:
+```python
+project = Project.from_dict(settings_roundtrip.to_dict())
+main_config = project.new_model(
+    "Reviewed main",
+    family="poisson",
+    divide_target_by_weight=True,
+    predictors=REVIEWED_PREDICTORS,
+)
+main_config.penalty = Penalty(cv=5, n_alphas=8, l1_ratio=1.0)
+main_config.base = "modal"
+prepared = prepare(project, raw)
+training_only = prepared.filter(pl.col(project.data.split.column) == 1)
+assert training_only.height == train.height
+
+main_effects_cache = {}
+pair_stages_cache = {}
+mains_run = run_model(
+    project,
+    training_only,
+    "Reviewed main",
+    main_effects_cache=main_effects_cache,
+    pair_stages_cache=pair_stages_cache,
+)
+assert mains_run.spec.to_dict() == reviewed_main.spec.to_dict()
+np.testing.assert_allclose(
+    mains_run.predict(training_only),
+    reviewed_main.predict(training_only).to_numpy(),
+    rtol=1e-8,
+    atol=1e-12,
+)
+```
+
+Copy those settings and add the first pair:
 
 ```python
 pair1_config = copy.deepcopy(main_config)
@@ -273,6 +564,7 @@ pair1_run = run_model(
     main_effects_cache=main_effects_cache,
     pair_stages_cache=pair_stages_cache,
 )
+print(pair1_run.pair_stages[0])
 ```
 
 This uses a small Optuna search. Increase the search budget if needed; two trials are the settings used for this example.
@@ -280,6 +572,53 @@ This uses a small Optuna search. Increase the search budget if needed; two trial
 CatBoost fits the two raw variables with the main prediction held fixed as an offset. Its fitted correction is then approximated by a two-way rate table on your chosen bands. That approximation can lose some accuracy. The resulting table, rather than the CatBoost predictions, is used for scoring and subsequent interactions.
 
 The correction can include remaining one-way effects. It is not constrained to be a pure interaction.
+
+Define the heatmap function, then plot the fitted table:
+
+```python
+def plot_pair_heatmap(pair_table, *, title: str):
+    """Relativity plus fitting exposure, with the table's real row labels."""
+    matrix = pair_table.cell_matrix
+    support = np.asarray([cell.fitting_weight for cell in pair_table.cells]).reshape(
+        matrix.shape
+    )
+    labels = [
+        [level_label(row, axis.other_label) for row in axis.table]
+        for axis in pair_table.axes
+    ]
+    figure, axis = plt.subplots(figsize=(11, 7))
+    maximum_delta = max(float(np.max(np.abs(matrix - 1.0))), 1e-6)
+    normalization = TwoSlopeNorm(
+        vmin=1.0 - maximum_delta, vcenter=1.0, vmax=1.0 + maximum_delta
+    )
+    image = axis.imshow(matrix, cmap="RdBu_r", norm=normalization, aspect="auto")
+    for row in range(matrix.shape[0]):
+        for column in range(matrix.shape[1]):
+            axis.text(
+                column,
+                row,
+                f"{matrix[row, column]:.3f}\n({support[row, column]:.0f})",
+                ha="center",
+                va="center",
+                fontsize=6,
+            )
+    axis.set_xticks(np.arange(matrix.shape[1]), labels[1], rotation=40, ha="right")
+    axis.set_yticks(np.arange(matrix.shape[0]), labels[0])
+    axis.set_xlabel(pair_table.parents[1])
+    axis.set_ylabel(pair_table.parents[0])
+    axis.set_title(title + "\ncell text: relativity (training exposure)")
+    figure.colorbar(image, ax=axis, label="Relativity")
+    figure.tight_layout()
+    return figure
+```
+
+```python
+figure = plot_pair_heatmap(
+    pair1_run.rate_model.pair_tables[0], title="DrivAge × BonusMalus",
+)
+figure.savefig(OUTPUT / "pair1_relativity_heatmap.png", dpi=130)
+plt.show()
+```
 
 ![DrivAge × BonusMalus relativities and exposure](examples/french_motor_outputs/pair1_relativity_heatmap.png)
 
@@ -291,7 +630,7 @@ Each cell shows its relativity, with training exposure underneath. Check the thi
 
 ## Search again using the model with the interaction
 
-Run Cell 10. Use `pair1_run.predict` to include the main model and the saved interaction table:
+Use `pair1_run.predict` to include the main model and the saved interaction table:
 
 ```python
 actual, expected, exposure = totals(
@@ -301,13 +640,39 @@ actual, expected, exposure = totals(
 )
 ```
 
-Pass these totals to the residual searches. Do not use the original GLM's predictions after adding interaction tables. Exclude pairs already in the model from the list of candidates for another interaction.
+Pass these totals to the residual searches. Exclude pairs already in the model, whichever way round their parents are listed:
 
-Cell 10 prints both one-way and pair results, plus A/E by cell.
+```python
+pair1_dispersion = pearson_dispersion(
+    actual, expected, n_params=len(pair1_run.fit.coef) + 1,
+)
+fitted_pairs = {frozenset(stage.parents) for stage in pair1_run.pair_stages}
+remaining_pairs = [
+    (a, b) for index, a in enumerate(SEARCH_VARIABLES)
+    for b in SEARCH_VARIABLES[index + 1:]
+    if frozenset((a, b)) not in fitted_pairs
+]
+print(residual_factor_search(
+    training_only, remaining_variables, actual, expected, exposure,
+    n_bins=8, dispersion=pair1_dispersion,
+))
+print(residual_pair_search(
+    training_only, SEARCH_VARIABLES, actual, expected, exposure,
+    knots=DIAGNOSTIC_KNOTS, pairs=remaining_pairs,
+    n_bins=8, top=12, dispersion=pair1_dispersion,
+))
+print(ae_by_pair(
+    training_only, "VehAge", "Density", actual, expected, exposure,
+    knots_a=DIAGNOSTIC_KNOTS["VehAge"],
+    knots_b=DIAGNOSTIC_KNOTS["Density"],
+).filter(pl.col("exposure") > 0))
+```
+
+These calls use predictions from the main model plus the first interaction table. `pair1_run.fit.predict` would omit the interaction table.
 
 ## Fit the next interaction
 
-Run Cell 11. Copy the first interaction model and append the next pair:
+Copy the first interaction model and append the next pair:
 
 ```python
 pair2_config = copy.deepcopy(pair1_config)
@@ -335,7 +700,37 @@ First interaction:   log(main rate)
 Second interaction:  log(main rate × first interaction's table factor)
 ```
 
-The main tables and first interaction table stay fixed when the second is added. Cell 11 checks that they have not changed.
+The main tables and first interaction table stay fixed when the second is added. Check them and print each policy's calculation:
+
+```python
+assert (pair2_run.rate_model.to_dict()["variables"]
+        == mains_run.rate_model.to_dict()["variables"])
+assert (pair2_run.rate_model.to_dict()["pair_tables"][0]
+        == pair1_run.rate_model.to_dict()["pair_tables"][0])
+assert pair2_run.rate_model.base_rate == mains_run.rate_model.base_rate
+
+main_rate = mains_run.predict(training_only)
+first_pair_rate = pair1_run.predict(training_only)
+final_rate = pair2_run.predict(training_only)
+print(training_only.select("IDpol").head(8).with_columns(
+    pl.Series("main_rate", main_rate[:8]),
+    pl.Series("first_table_factor", (first_pair_rate / main_rate)[:8]),
+    pl.Series("second_offset", np.log(first_pair_rate[:8])),
+    pl.Series("second_table_factor", (final_rate / first_pair_rate)[:8]),
+    pl.Series("final_rate", final_rate[:8]),
+))
+print(pair2_run.pair_stages[-1])
+actual2, expected2, exposure2 = totals(
+    training_only, pair2_run.config, final_rate,
+)
+print(ae_by_pair(
+    training_only, "VehAge", "Density", actual2, expected2, exposure2,
+    knots_a=DIAGNOSTIC_KNOTS["VehAge"],
+    knots_b=DIAGNOSTIC_KNOTS["Density"],
+).filter(pl.col("exposure") > 0))
+plot_pair_heatmap(pair2_run.rate_model.pair_tables[-1], title="VehAge × Density")
+plt.show()
+```
 
 For one policy, the calculation is:
 
@@ -353,7 +748,37 @@ Do not create an offset vector from the full training fit and pass it into pair 
 
 ### Use a variable only in an interaction
 
-The [code reference](FRENCH_MOTOR_PYTHON_REFERENCE.md) includes a `DrivAge × Area` fit with `Area` left unassigned. Name `Area` as a pair parent and leave it out of the main predictor list. The result has an Area axis in the pair table but no Area main-effect table.
+This optional alternative fits `DrivAge × Area` directly on top of the main model. `Area` remains unassigned and stays out of the main predictor list. It creates a separate model; later blocks still use `pair2_run`:
+
+```python
+assert "Area" not in main_config.predictors
+assert project.data.roles.get("Area") in (None, "unassigned")
+pair_only_config = copy.deepcopy(main_config)
+pair_only_config.pair_method = "sequential_catboost"
+pair_only_config.pair_stages = [
+    PairStageConfig(
+        stage_id="driver_area_optional",
+        a="DrivAge",
+        b="Area",
+        search=PairSearchConfig(trials=1, prefix_trials=1),
+    )
+]
+project.models["Optional pair-only parent"] = pair_only_config
+pair_only_run = run_model(
+    project,
+    training_only,
+    "Optional pair-only parent",
+    main_effects_cache=main_effects_cache,
+    pair_stages_cache=pair_stages_cache,
+)
+assert (
+    pair_only_run.rate_model.to_dict()["variables"]
+    == mains_run.rate_model.to_dict()["variables"]
+)
+assert pair_only_run.pair_stages[0].parents == ("DrivAge", "Area")
+assert "Area" not in pair_only_run.rate_model.variables
+print(pair_only_run.pair_stages[0])
+```
 
 Target, weight, exposure, offset, ID, time and split fields cannot be pair parents.
 
@@ -365,7 +790,7 @@ If the new interaction does not improve CV loss, the fitter can retain a neutral
 
 ## Select the model and check holdout
 
-At the end of Cell 11, choose the model to take forward:
+Choose the model to take forward:
 
 ```python
 accepted_run = pair2_run   # or pair1_run or mains_run
@@ -373,7 +798,63 @@ accepted_model_name = accepted_run.name
 accepted_config = accepted_run.config
 ```
 
-Then run Cell 12. The measured results for the example are:
+Calculate deviance, A/E and Gini for the same rows in each model. This function takes unit rates and converts them to counts for A/E and Gini:
+
+```python
+def checkpoint_metrics(
+    frame: pl.DataFrame,
+    config,
+    fit,
+    prediction_rate: np.ndarray,
+) -> dict[str, float]:
+    """Calculate A/E, Gini and mean deviance on the supplied rows."""
+    actual, expected, exposure = totals(frame, config, prediction_rate)
+    observed_rate, fitting_weight = unit_values(frame, config)
+    deviance = float(
+        fit.model.family_instance.deviance(
+            observed_rate,
+            prediction_rate,
+            sample_weight=fitting_weight,
+        )
+    )
+    return {
+        "ae": float(actual.sum() / expected.sum()),
+        "gini": float(gini(actual, expected, exposure)),
+        "mean_deviance": deviance / float(fitting_weight.sum()),
+    }
+```
+
+```python
+models_to_compare = {
+    "Two main effects": (skinny.glm, skinny.glm,
+                         lambda frame: skinny.predict(frame).to_numpy()),
+    "Four main effects": (mains_run.config, mains_run.fit, mains_run.predict),
+    "First interaction": (pair1_run.config, pair1_run.fit, pair1_run.predict),
+    "Second interaction": (pair2_run.config, pair2_run.fit, pair2_run.predict),
+}
+comparison_rows = []
+for name, (config, fit, predict) in models_to_compare.items():
+    for subset, frame in {"train": training_only, "holdout": locked_holdout}.items():
+        comparison_rows.append({
+            "model": name, "subset": subset,
+            **checkpoint_metrics(frame, config, fit, predict(frame)),
+        })
+comparison = pl.DataFrame(comparison_rows)
+print(comparison)
+
+frames = {"train": training_only, "holdout": locked_holdout}
+final_metrics = model_metrics(
+    accepted_run.fit,
+    {name: accepted_run.predict(frame) for name, frame in frames.items()},
+    frames,
+    accepted_config,
+    {name: null_model_predict(project, accepted_config, training_only, frame)
+     for name, frame in frames.items()},
+)
+print(final_metrics)
+```
+
+Measured results for the example:
 
 | Model | Train mean deviance | Holdout mean deviance | Holdout A/E | Holdout Gini |
 |---|---:|---:|---:|---:|
@@ -391,14 +872,23 @@ You can reject an addition and retain the existing model. Do not repeatedly alte
 To resume work on the main GLM, save its settings and fitted object:
 
 ```python
-settings_roundtrip.to_json(OUTPUT / "reviewed_main_project.json")
+project.to_json(OUTPUT / "reviewed_main_project.json")
 reviewed_main.save(OUTPUT / "reviewed_main_fit")
 resumed_main = EasyGLM.load(OUTPUT / "reviewed_main_fit")
 ```
 
-Load these fit files only from a trusted source: they include joblib objects. The save-and-resume example in the code reference checks that predictions are unchanged after loading.
+Check the loaded fit against the original:
 
-For the selected model, run Cells 14–15. They save:
+```python
+np.testing.assert_allclose(
+    resumed_main.predict(train).to_numpy(),
+    reviewed_main.predict(train).to_numpy(), rtol=1e-12,
+)
+```
+
+Load fit files only from a trusted source: they include joblib objects.
+
+For the selected model, export:
 
 | File | Use |
 |---|---|
@@ -409,18 +899,72 @@ For the selected model, run Cells 14–15. They save:
 | Python scorer | Applying the saved tables |
 | Results JSON | Model comparisons and output paths |
 
-The export uses `accepted_run`. The script reloads the saved model and runs the generated scorer to check their predictions against it. CatBoost is not needed to score the saved tables.
+```python
+artifact_paths = {
+    "project": OUTPUT / "french_motor_project.json",
+    "model": OUTPUT / "french_motor_accepted.easyglm",
+    "excel": OUTPUT / "french_motor_accepted_tables.xlsx",
+    "scores": OUTPUT / "french_motor_holdout_scores.csv",
+    "scorer": OUTPUT / "french_motor_frozen_scorer.py",
+}
+project.champion = accepted_model_name
+project.to_json(artifact_paths["project"])
+accepted_run.rate_model.to_json(artifact_paths["model"])
+accepted_run.rate_model.to_excel(artifact_paths["excel"])
 
-## Files and setup
+holdout_rate = accepted_run.predict(locked_holdout)
+holdout_scores = locked_holdout.select("IDpol", "Exposure").with_columns(
+    pl.Series("prediction_rate", holdout_rate),
+    pl.Series("expected_claims", holdout_rate * locked_holdout["Exposure"].to_numpy()),
+)
+holdout_scores.write_csv(artifact_paths["scores"])
+loaded_scores = pl.read_csv(artifact_paths["scores"])
 
-- [Python example](examples/french_motor_walkthrough.py): run the numbered cells individually.
-- [Code reference](FRENCH_MOTOR_PYTHON_REFERENCE.md): full code, automatic-bin comparisons, one-way screening, save/resume and pair-only variables.
-- [Recorded results](examples/french_motor_walkthrough_results.md): numbers, timings and verification notes.
+restored = RateModel.from_json(artifact_paths["model"])
+np.testing.assert_allclose(
+    restored.predict(locked_holdout, exposure_col=None), holdout_rate, rtol=1e-12
+)
+np.testing.assert_allclose(
+    loaded_scores["prediction_rate"].to_numpy(), holdout_rate, rtol=1e-12
+)
+scorer_source = to_scoring_script(accepted_run, output_prefix="frozen")
+artifact_paths["scorer"].write_text(scorer_source, encoding="utf-8")
+scorer_namespace = {"__name__": "french_motor_frozen_scorer"}
+exec(
+    compile(scorer_source, str(artifact_paths["scorer"]), "exec"),
+    scorer_namespace,
+)
+np.testing.assert_allclose(
+    scorer_namespace["predict"](locked_holdout, exposure_col=None),
+    holdout_rate,
+    rtol=1e-12,
+)
+print({name: str(path) for name, path in artifact_paths.items()})
 
-These examples use the development version on `codex/french-motor-python-walkthrough`, based on source revision `22bbd7d` or later. From that checkout:
-
-```bash
-python -m pip install -e ".[pairs]"
+replayed_project = Project.from_json(artifact_paths["project"])
+replayed_prepared = prepare(replayed_project)
+np.testing.assert_array_equal(
+    replayed_prepared.filter(pl.col("traintest") == 1)["IDpol"].to_numpy(),
+    training_only["IDpol"].to_numpy(),
+)
+np.testing.assert_array_equal(
+    replayed_prepared.filter(pl.col("traintest") == 0)["IDpol"].to_numpy(),
+    locked_holdout["IDpol"].to_numpy(),
+)
 ```
 
-When using an AI assistant, give it these files and your current model specification. Ask for the next change you want to make, inspect the output, then decide whether to keep it.
+```python
+results = {
+    "accepted_model": accepted_model_name,
+    "comparisons": comparison.to_dicts(),
+    "final_metrics": final_metrics,
+    "artifacts": {name: str(path) for name, path in artifact_paths.items()},
+}
+(OUTPUT / "lesson_results.json").write_text(
+    json.dumps(results, indent=2, default=str), encoding="utf-8",
+)
+```
+
+The export uses `accepted_run`. These checks reload the saved tables and run the generated scorer against the same policies. CatBoost is not needed to score the saved tables.
+
+The [recorded results](examples/french_motor_walkthrough_results.md) include timings and verification notes.

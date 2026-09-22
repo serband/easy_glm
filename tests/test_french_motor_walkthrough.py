@@ -7,10 +7,15 @@ from pathlib import Path
 
 import matplotlib
 import numpy as np
+import plotly.graph_objects as go
+
+from easy_glm import RateModel
 
 ROOT = Path(__file__).resolve().parents[1]
 LESSON = ROOT / "docs" / "examples" / "french_motor_walkthrough.py"
+GUIDE = ROOT / "docs" / "FRENCH_MOTOR_PYTHON_WALKTHROUGH.md"
 CELL_MARKER = re.compile(r"(?m)^# %% (\d+) — (.+)$")
+PYTHON_FENCE = re.compile(r"(?ms)^```python[^\n]*\n(.*?)^```[ \t]*$")
 
 
 def lesson_cells(source: str) -> list[tuple[int, str, str]]:
@@ -28,6 +33,11 @@ def lesson_cells(source: str) -> list[tuple[int, str, str]]:
         )
         for index, match in enumerate(matches)
     ]
+
+
+def markdown_python_blocks(source: str) -> list[str]:
+    """Extract the guide's executable Python without reading its companion."""
+    return [match.group(1) for match in PYTHON_FENCE.finditer(source)]
 
 
 def test_walkthrough_executes_as_reviewable_cells_on_full_fixture(
@@ -127,3 +137,83 @@ def test_walkthrough_executes_as_reviewable_cells_on_full_fixture(
         namespace,
     )
     assert namespace["accepted_pair_heatmap"] is None
+
+
+def test_markdown_walkthrough_executes_independently_on_full_fixture(
+    tmp_path, monkeypatch
+):
+    """The main guide alone must reproduce the complete staged workflow."""
+    matplotlib.use("Agg")
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setenv("EASY_GLM_LESSON_OUTPUT", str(tmp_path / "guide-outputs"))
+    monkeypatch.setattr(go.Figure, "show", lambda self, *args, **kwargs: None)
+
+    source = GUIDE.read_text(encoding="utf-8")
+    blocks = markdown_python_blocks(source)
+    assert blocks
+    assert all("french_motor_walkthrough" not in block for block in blocks)
+
+    namespace: dict[str, object] = {"__name__": "__main__"}
+    for index, block in enumerate(blocks, start=1):
+        exec(
+            compile(block, f"{GUIDE.name}:python-block-{index}", "exec"),
+            namespace,
+        )
+
+    skinny = namespace["skinny"]
+    reviewed_main = namespace["reviewed_main"]
+    mains_run = namespace["mains_run"]
+    pair1_run = namespace["pair1_run"]
+    pair2_run = namespace["pair2_run"]
+    training_only = namespace["training_only"]
+    accepted_run = namespace["accepted_run"]
+
+    assert skinny is not reviewed_main
+    assert mains_run.spec.to_dict() == reviewed_main.spec.to_dict()
+    np.testing.assert_allclose(
+        mains_run.predict(training_only),
+        reviewed_main.predict(training_only).to_numpy(),
+        rtol=1e-8,
+    )
+    for run in (mains_run, pair1_run, pair2_run):
+        assert set(run.metrics) == {"train"}
+        assert run.train_rows == training_only.height
+        assert run.holdout_rows == 0
+
+    assert len(mains_run.rate_model.pair_tables) == 0
+    assert len(pair1_run.rate_model.pair_tables) == 1
+    assert len(pair2_run.rate_model.pair_tables) == 2
+    assert (
+        mains_run.rate_model.to_dict()["variables"]
+        == pair1_run.rate_model.to_dict()["variables"]
+        == pair2_run.rate_model.to_dict()["variables"]
+    )
+    assert (
+        pair1_run.rate_model.to_dict()["pair_tables"][0]
+        == pair2_run.rate_model.to_dict()["pair_tables"][0]
+    )
+
+    artifact_paths = namespace["artifact_paths"]
+    assert artifact_paths
+    assert all(path.is_file() for path in artifact_paths.values())
+
+    locked_holdout = namespace["locked_holdout"]
+    accepted_prediction = accepted_run.predict(locked_holdout)
+    restored = RateModel.from_json(artifact_paths["model"])
+    np.testing.assert_allclose(
+        restored.predict(locked_holdout, exposure_col=None),
+        accepted_prediction,
+        rtol=1e-12,
+    )
+
+    scorer_source = artifact_paths["scorer"].read_text(encoding="utf-8")
+    scorer_namespace: dict[str, object] = {"__name__": "guide_frozen_scorer"}
+    exec(
+        compile(scorer_source, str(artifact_paths["scorer"]), "exec"),
+        scorer_namespace,
+    )
+    np.testing.assert_allclose(
+        scorer_namespace["predict"](locked_holdout, exposure_col=None),
+        accepted_prediction,
+        rtol=1e-12,
+    )
