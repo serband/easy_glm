@@ -88,7 +88,7 @@ the numbers are observed prototype results rather than an isolated speed claim.
 Poisson/log and Tweedie/log with `1 < power < 2` are the enabled pair families.
 Binomial/logit, Gaussian/identity, Gamma and other links remain on the legacy
 path until their own loss and deployed-table contracts are implemented.
-Training requires the optional `easy-glm[pairs]` extra; saved table scoring does
-not import CatBoost or Optuna. Manual pair-cell edits replay in CV by exact categorical
+CatBoost and Optuna are now included in the standard installation; saved table
+scoring does not import them. Manual pair-cell edits replay in CV by exact categorical
 identity and explicit fixed numeric cuts. A changed numeric cut refuses replay
 with an actionable error.

@@ -464,8 +464,8 @@ def _optuna_module() -> Any:
         import optuna
     except ImportError as exc:
         raise ImportError(
-            "Automatic pair tuning requires Optuna. Install it with "
-            "pip install 'easy-glm[pairs]'."
+            "Automatic pair tuning requires Optuna. Reinstall the standard "
+            "package with `pip install --upgrade easy-glm`."
         ) from exc
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     return optuna

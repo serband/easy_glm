@@ -15,7 +15,8 @@ easy-glm-workbench
 Your browser opens automatically. Keep the terminal open while you work.
 Restart the workbench after upgrading.
 
-Install as `easy-glm`; import in Python as `easy_glm`.
+Install as `easy-glm`; import in Python as `easy_glm`. The standard installation
+includes the workbench, GLM fitting, CatBoost interactions and Optuna tuning.
 
 ## Build a model
 

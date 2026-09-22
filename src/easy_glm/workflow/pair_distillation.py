@@ -273,8 +273,8 @@ def fit_catboost_pair_raw(
         from catboost import CatBoostRegressor, Pool
     except ImportError as exc:
         raise ImportError(
-            "CatBoost is required to train pair corrections. Install with "
-            "pip install 'easy-glm[pairs]'. Saved table-only scoring does not require CatBoost"
+            "CatBoost is required to train pair corrections. Reinstall the "
+            "standard package with `pip install --upgrade easy-glm`."
         ) from exc
     loss = "Poisson" if power == 1 else f"Tweedie:variance_power={power:.16g}"
     pool = Pool(

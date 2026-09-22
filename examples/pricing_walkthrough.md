@@ -7,7 +7,7 @@ Run the Python blocks on this page in order, in the same notebook or Python sess
 Use the development checkout on `codex/french-motor-python-walkthrough`, based on revision `22bbd7d`. These examples use additions that are not all available in PyPI v0.471. From the checkout, install:
 
 ```bash
-python -m pip install -e ".[pairs]"
+python -m pip install -e .
 ```
 
 Start your Python session in the checkout directory. The sample is `tests/fixtures/french_motor_50k.parquet`.

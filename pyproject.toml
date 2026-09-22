@@ -43,6 +43,8 @@ dependencies = [
     "plotly>=5.15.0",      # workbench charts
     "matplotlib>=3.7.0",   # rate-table plots
     "seaborn>=0.12.0",     # rate-table plots
+    "catboost>=1.2.10,<1.3", # sequential pair-table training
+    "optuna>=4,<5",          # automatic pair-stage tuning
 ]
 
 
@@ -69,7 +71,7 @@ Issues = "https://github.com/serband/easy_glm/issues"
 
 [project.optional-dependencies]
 desktop = []  # compatibility extra: the workbench is now included by default
-pairs = ["catboost>=1.2.10,<1.3", "optuna>=4,<5"]  # optional training only; frozen tables score without them
+pairs = []  # compatibility alias: pair training is included in the standard install
 
 dev = [
     "fastexcel>=0.12.0",   # read Excel back in tests (polars engine)
@@ -86,7 +88,6 @@ dev = [
 ]
 benchmark = [
     "statsmodels>=0.14.0",
-    "catboost>=1.2.0",
 ]
 
 [tool.setuptools.packages.find]

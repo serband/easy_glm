@@ -36,7 +36,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install ".[dev,pairs]"
+          pip install ".[dev]"
       - name: Lint (Ruff)
         run: ruff check .
       - name: Format check (Black)
@@ -72,7 +72,7 @@ jobs:
       - name: Install workbench and browser dependencies
         run: |
           python -m venv .venv
-          .venv/bin/pip install ".[dev,pairs]"
+          .venv/bin/pip install ".[dev]"
           cd frontend
           npm ci
           npx playwright install --with-deps chromium

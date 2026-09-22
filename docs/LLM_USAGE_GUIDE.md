@@ -1,10 +1,10 @@
 # EasyGLM: a practical usage guide for an LLM assistant
 
-**Verified package version: `easy-glm==0.471`. Guide date: 19 September 2026.**
+**API examples verified with v0.471. Installation instructions updated for the next release.**
 
 Give this whole file to the LLM helping you. It is a usage reference, not a request to modify the package. Install as `easy-glm`; import in Python as `easy_glm`. Examples use Polars DataFrames.
 
-This guide describes the released implementation. Earlier design discussions and some older source docstrings do not describe every detail of the current desktop workbench. In particular, distinguish legacy GLM interactions from the newer ordered CatBoost interaction tables.
+The API examples describe v0.471; the standard-installation change is unreleased. Earlier design discussions and some older source docstrings do not describe every detail of the current desktop workbench. In particular, distinguish legacy GLM interactions from the newer ordered CatBoost interaction tables.
 
 A runnable companion, [`examples/llm_workflow.py`](examples/llm_workflow.py), creates synthetic data and exercises fitting, screening, adjustments, exports and optional interaction training. It is useful when checking an unfamiliar work environment before using company data.
 
@@ -92,18 +92,12 @@ A bin is a numeric interval. A relativity is a multiplier relative to a selected
 Install into the Python environment that will actually run the notebook, script or workbench:
 
 ```bash
-python -m pip install "easy-glm==0.471"
-```
-
-For CatBoost interaction training with Optuna tuning:
-
-```bash
-python -m pip install "easy-glm[pairs]==0.471"
+python -m pip install --upgrade easy-glm
 ```
 
 Version 0.471 declares Python `>=3.10,<3.15`. Dependency and wheel availability still depend on the operating system and interpreter. The release CI covered Python 3.10–3.13 on Linux; this is not a claim that every Windows environment has been tested.
 
-The normal installation includes the browser workbench, Polars, GLM fitting, Excel export and plotting dependencies. The `pairs` extra adds CatBoost and Optuna for training; a frozen pair-table scorer does not need those optional libraries.
+The standard installation includes the workbench, GLM fitting, CatBoost, Optuna, Excel export and plotting. No separate interaction installation is needed. Saved tables score without calling CatBoost or Optuna.
 
 Check the active environment:
 
@@ -298,7 +292,7 @@ python llm_workflow.py --out guide-output
 python llm_workflow.py --out guide-output-pairs --with-pairs
 ```
 
-The second command needs the `pairs` extra. The script deliberately uses smaller tuning budgets than the UI defaults to keep the demonstration short.
+The second command also runs interaction training. Both use the standard installation. The example uses a smaller tuning budget than the workbench defaults.
 
 ## 8. The project workflow
 
@@ -1015,7 +1009,7 @@ Repeated comparable fits may reuse compatible main/pair prefixes in the workbenc
 | Many categoricals fall into Other | Compare source type and labels, especially numeric codes rendered as strings/floats |
 | Too few bins | Tied values, low variation and actual training range can reduce automatic cuts; inspect the preview |
 | Unsupported pair family/link | CatBoost stages currently require Poisson/log or Tweedie/log; do not silently change the actuarial target specification |
-| Missing CatBoost/Optuna | Install `easy-glm[pairs]` in the active training environment; frozen table scoring does not need it |
+| Missing CatBoost/Optuna | Reinstall `easy-glm` in the active environment; both are standard dependencies |
 | Pair stage says No improvement | The neutral correction may have won on table CV loss; inspect evidence rather than force an effect |
 | Pair stages need refitting after an edit | Earlier tables are downstream offsets; update downstream fits before accepting/exporting the changed pipeline |
 | Gini and A/E tell different stories | Gini assesses ranking; A/E assesses level/calibration. One does not replace the other |

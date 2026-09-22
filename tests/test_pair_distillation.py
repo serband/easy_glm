@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import builtins
+import re
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -13,6 +15,9 @@ from easy_glm.workflow.pair_distillation import (
     fit_catboost_pair_raw,
     teacher_mean_from_raw,
 )
+from easy_glm.workflow.pair_stages import _optuna_module
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize(
@@ -189,10 +194,35 @@ def test_missing_training_dependency_gives_install_command(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", blocked)
-    with pytest.raises(ImportError, match=r"pip install 'easy-glm\[pairs\]'"):
+    with pytest.raises(ImportError, match=r"pip install --upgrade easy-glm"):
         fit_catboost_pair_raw(
             np.array([[0.0, 1.0], [1.0, 0.0]]),
             np.array([0.0, 1.0]),
             np.ones(2),
             iterations=2,
         )
+
+
+def test_missing_tuning_dependency_gives_standard_install_command(monkeypatch):
+    real_import = builtins.__import__
+
+    def blocked(name, *args, **kwargs):
+        if name == "optuna":
+            raise ImportError("synthetic missing Optuna")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    with pytest.raises(ImportError, match=r"pip install --upgrade easy-glm"):
+        _optuna_module()
+
+
+def test_standard_install_declares_pair_training_dependencies():
+    """Pair training must work after the ordinary, extras-free installation."""
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    dependencies = pyproject.split("dependencies = [", 1)[1].split("]", 1)[0]
+    assert re.search(r'"catboost>=1\.2\.10,<1\.3"', dependencies)
+    assert re.search(r'"optuna>=4,<5"', dependencies)
+    assert re.search(r"(?m)^pairs = \[\]", pyproject)
+
+    benchmark = pyproject.split("benchmark = [", 1)[1].split("]", 1)[0]
+    assert "catboost" not in benchmark.lower()

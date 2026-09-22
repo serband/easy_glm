@@ -27,10 +27,10 @@ capped in this example.
 This walkthrough needs EasyGLM source revision `22bbd7d` or later, including
 features that were unreleased when the walkthrough was written. Do not describe
 the example as evidence about the older published package. For the same code
-path, clone the checkout and install it editable with the pair extra:
+path, clone the checkout and install it editable:
 
 ```bash
-python -m pip install -e ".[pairs]"
+python -m pip install -e .
 ```
 
 In an ordinary installed environment, print the package version, module path and
