@@ -10,6 +10,7 @@ test('pair selector groups unassigned source variables without promoting them', 
     });
     await page.goto('/');
     await page.getByRole('button', { name: 'Model', exact: true }).click();
+    await page.getByLabel('Model selection').selectOption('__new__');
     await page.getByLabel('New model name').fill(`Unassigned pair ${Date.now()}`);
     const first = page.getByLabel('New pair first predictor');
     await expect(first.locator('optgroup[label="Predictors"]')).toBeAttached();
@@ -38,6 +39,7 @@ test('fitted stages expose pair edits, suffix status, refit impact and narrow la
     });
     await page.goto('/');
     await page.getByRole('button', { name: 'Model', exact: true }).click();
+    await page.getByLabel('Model selection').selectOption('__new__');
     await page.getByLabel('New model name').fill('Pair acceptance');
     for (const name of ['A', 'B', 'C']) {
         await page.getByLabel(`Include ${name}`, { exact: true }).uncheck();
