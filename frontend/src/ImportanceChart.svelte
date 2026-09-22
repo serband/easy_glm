@@ -18,8 +18,13 @@
 
 <div class="importance-view">
     <p class="help-text importance-context">
-        Training · Original fit · {result.repeats || 5} shuffles per variable
+        Training · Original fit · {result.repeats || 5} shuffles per variable{#if result.importance_rows}
+            {' · '}{num(result.importance_rows)} of {num(result.full_training_rows)} rows ({num(
+                result.actual_pct,
+            )}%) · {num((result.weight_share ?? 1) * 100)}% of weight · seed {result.seed}{/if}
     </p>
+    {#each result.fallback_reasons || [] as reason}<p class="help-text">Full-data fallback: {reason}</p>{/each}
+    {#each result.support_warnings || [] as warning}<p class="help-text">Coverage warning: {warning}</p>{/each}
     {#if plot.rows.length}
         <p class="importance-axis">Mean deviance increase <span>· whiskers ±1 SD</span></p>
         <div class="importance-scroll">

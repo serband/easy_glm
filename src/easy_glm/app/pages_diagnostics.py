@@ -17,6 +17,7 @@ from easy_glm.workflow import (
     double_lift,
     gini,
     lift_table,
+    metric_definitions,
     null_model_predict,
     pearson_dispersion,
     predictions_effectively_equal,
@@ -53,32 +54,56 @@ def _subset(df: pl.DataFrame, which: str) -> pl.DataFrame:
 
 
 def _metrics(run: ModelRun, challenger: ModelRun | None) -> None:
+    definitions: list[dict] = []
+    definition_for_key: dict[str, int] = {}
+    for candidate in [run] + ([challenger] if challenger else []):
+        for metrics in candidate.metrics.values():
+            for definition in metric_definitions(
+                candidate.config.family,
+                candidate.config.tweedie_power,
+                metrics,
+            ):
+                key = definition["key"]
+                if key not in definition_for_key:
+                    definition_for_key[key] = len(definitions)
+                    definitions.append(definition)
+                elif (
+                    definitions[definition_for_key[key]]["label"] != definition["label"]
+                ):
+                    definitions[definition_for_key[key]] = {
+                        **definitions[definition_for_key[key]],
+                        "label": {
+                            "mean_deviance": "Mean deviance (family-specific)",
+                            "brier": "Squared probability / proportion error",
+                        }.get(key, definitions[definition_for_key[key]]["label"]),
+                    }
     rows = []
     for r in [run] + ([challenger] if challenger else []):
         for subset, m in r.metrics.items():
-            rows.append(
-                {
-                    "model": r.name,
-                    "subset": subset,
-                    "rows": int(m["rows"]),
-                    "exposure": m["exposure"],
-                    "A/E": m["ae"],
-                    "Gini": m["gini"],
-                    "deviance explained": m["deviance_explained"],
-                    "mean deviance": m["mean_deviance"],
-                }
+            row = {
+                "model": r.name,
+                "subset": subset,
+                "rows": int(m["rows"]),
+                "exposure": m["exposure"],
+            }
+            row.update({d["label"]: m.get(d["key"]) for d in definitions})
+            rows.append(row)
+    column_config = {
+        "exposure": st.column_config.NumberColumn(format="%.0f"),
+    }
+    for definition in definitions:
+        column_config[definition["label"]] = st.column_config.NumberColumn(
+            format=(
+                "percent"
+                if definition["key"] in ("r2", "deviance_explained")
+                else f"%.{definition['digits']}f"
             )
+        )
     st.dataframe(
         pl.DataFrame(rows),
         width="stretch",
         hide_index=True,
-        column_config={
-            "exposure": st.column_config.NumberColumn(format="%.0f"),
-            "A/E": st.column_config.NumberColumn(format="%.4f"),
-            "Gini": st.column_config.NumberColumn(format="%.4f"),
-            "deviance explained": st.column_config.NumberColumn(format="percent"),
-            "mean deviance": st.column_config.NumberColumn(format="%.5f"),
-        },
+        column_config=column_config,
     )
 
 
@@ -397,9 +422,9 @@ def render() -> None:
         lt = lift_table(actual, expected, w, n_bins=n)
         g = gini(actual, expected, w)
         st.caption(
-            f"Normalised Gini ({which}): **{g:.4f}**"
+            f"Normalised Gini ({which}): **{ui.fmt(g, digits=4)}**"
             + (
-                f" · challenger: **{gini(actual, exp_chal, w):.4f}**"
+                f" · challenger: **{ui.fmt(gini(actual, exp_chal, w), digits=4)}**"
                 if exp_chal is not None
                 else ""
             )

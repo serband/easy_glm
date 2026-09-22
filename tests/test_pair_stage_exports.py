@@ -96,6 +96,7 @@ def _staged_run(tmp_path: Path):
     run.pair_stages = [
         SimpleNamespace(
             stage_id="pair-1",
+            table=table,
             chosen_candidate=None,
             prefix_cv_loss=1.3,
             table_cv_loss=1.2,
@@ -421,7 +422,7 @@ def test_report_shows_own_pair_axes_support_and_complete_importance(tmp_path):
     assert "north" in report and "south" in report
     assert "teacher-to-table approximation loss" in report
     assert "CV deviance change: table minus CatBoost" in report
-    assert "Complete deployed scorer" in report
+    assert "Original fitted rate tables, including pair corrections" in report
     assert "Main-effects GLM coefficients" in report
 
 

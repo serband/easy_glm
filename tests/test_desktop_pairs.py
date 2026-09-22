@@ -22,6 +22,7 @@ from easy_glm.engine.rate_model import RateModel
 from easy_glm.workflow.diagnostics import rate_model_diff
 from easy_glm.workflow.project import (
     Adjustment,
+    Derived,
     ModelConfig,
     PairCandidateConfig,
     PairSearchConfig,
@@ -317,7 +318,7 @@ def test_main_stage_identity_is_reserved() -> None:
     assert any("reserved" in problem for problem in project.validate("Frequency"))
 
 
-def test_unassign_pair_only_predictor_cleans_stage_edits_and_snapshot() -> None:
+def test_unassign_pair_only_predictor_keeps_stage_edits_and_snapshot() -> None:
     project = _project()
     config = project.models["Frequency"]
     config.pair_stages = [PairStageConfig("first", "Age", "Region")]
@@ -342,10 +343,10 @@ def test_unassign_pair_only_predictor_cleans_stage_edits_and_snapshot() -> None:
         [{"column": "Region", "role": "unassigned", "rename to": "", "type": "auto"}],
     )
     assert changed
-    assert not config.pair_stages
-    assert not config.adjustments
-    assert not config.snapshots[0].adjustments
-    assert any("Pair stage(s) first removed" in message for _, message in notices)
+    assert config.pair_stages[0].stage_id == "first"
+    assert config.adjustments == [edit]
+    assert config.snapshots[0].adjustments == [edit]
+    assert not any("Pair stage(s) first removed" in message for _, message in notices)
     assert not project.validate("Frequency")
 
 
@@ -385,7 +386,7 @@ def test_rename_pair_only_parent_keeps_stage_id_and_cell_edit() -> None:
     assert config.adjustments[0].stage_id == "first"
 
 
-def test_variables_api_unassign_pair_only_parent_drops_stage_with_notice() -> None:
+def test_variables_api_unassign_pair_only_parent_keeps_stage() -> None:
     project = _project()
     project.models["Frequency"].pair_stages = [
         PairStageConfig("first", "Age", "Region")
@@ -410,15 +411,91 @@ def test_variables_api_unassign_pair_only_parent_drops_stage_with_notice() -> No
             "/api/variables/preview", json={**revision, "setup": setup}
         )
         assert preview.status_code == 200, preview.text
-        assert any(
+        assert not any(
             "Pair stage(s) first removed" in message
             for _, message in preview.json()["notices"]
         )
         applied = client.post("/api/variables/apply", json={**revision, "setup": setup})
         assert applied.status_code == 200, applied.text
         saved = client.get("/api/project").json()
-        assert not saved["models"]["Frequency"]["pair_stages"]
+        assert saved["models"]["Frequency"]["pair_stages"][0]["stage_id"] == "first"
         assert "Region" not in saved["data"]["roles"]
+
+
+def test_setup_groups_pair_candidates_by_source_role_after_rename() -> None:
+    project = _project()
+    project.data.renames["Region"] = "Area"
+    project.rename_column("Region", "Area")
+    project.data.roles.pop("Area")
+    project.data.derived.append(Derived("derived_only", "pl.lit(1)"))
+    project.data.split.mode = "random"
+    project.data.split.column = "generated_split"
+    raw = pl.DataFrame(
+        {
+            "Claims": [0, 1],
+            "Age": [20, 30],
+            "Region": ["N", "S"],
+            "unused": [1.0, 2.0],
+        }
+    )
+    setup = setup_info(project, raw)
+    assert setup["predictors"] == ["Age"]
+    assert setup["pair_candidates"] == {
+        "predictors": ["Age"],
+        "unassigned": ["Area", "unused"],
+    }
+
+
+def test_models_save_rejects_missing_and_derived_pair_parents() -> None:
+    project = _project()
+    project.data.derived.append(Derived("derived_only", "pl.lit(1)"))
+    project.models["Frequency"].pair_stages.clear()
+    raw = pl.DataFrame(
+        {
+            "Claims": [0, 1, 0, 2, 1, 0],
+            "Age": [20, 30, 40, 50, 60, 70],
+            "Region": ["N", "S", "N", "S", "N", "S"],
+        }
+    )
+    with TestClient(
+        create_app(project, raw, port=8787), base_url="http://127.0.0.1:8787"
+    ) as client:
+        client.headers["X-EasyGLM-Token"] = client.get("/api/session").json()["token"]
+        workbench = client.get("/api/workbench").json()
+        revision = {key: workbench[key] for key in ("session_id", "revision")}
+
+        def save(parent: str):
+            return client.post(
+                "/api/models/save",
+                json={
+                    **revision,
+                    "name": "Frequency",
+                    "fields": {
+                        "pair_method": "sequential_catboost",
+                        "pair_stages": [
+                            {
+                                "stage_id": "bad",
+                                "a": "Age",
+                                "b": parent,
+                                "candidates": [
+                                    {
+                                        "depth": 2,
+                                        "iterations": 10,
+                                        "learning_rate": 0.08,
+                                        "l2_leaf_reg": 3.0,
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                },
+            )
+
+        missing = save("does_not_exist")
+        assert missing.status_code == 422
+        derived = save("derived_only")
+        assert derived.status_code == 422
+        assert "raw source" in derived.text
 
 
 def test_stage_cards_mark_only_downstream_stage_stale_after_cell_edit() -> None:
@@ -516,9 +593,6 @@ def test_pair_only_design_change_refits_its_suffix_and_preserves_upstream_edit()
     project.data.roles = {
         "Claims": "target",
         "Main": "predictor",
-        "A": "predictor",
-        "B": "predictor",
-        "C": "predictor",
     }
     config = ModelConfig(
         target="Claims",

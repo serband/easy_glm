@@ -780,16 +780,25 @@ class Project:
                     f"Interaction(s) {', '.join(it.name for it in dropped)} removed from "
                     f"model {name}: {column} is no longer a predictor"
                 )
-            dropped_stages = [
-                stage for stage in cfg.pair_stages if column in (stage.a, stage.b)
-            ]
+            # A sequential pair parent may deliberately stay unassigned: it is
+            # learned only inside its pair table and must not be promoted to a
+            # GLM main effect.  Protected/ignored roles still invalidate the
+            # stage, just as they invalidate a legacy interaction.
+            dropped_stages = (
+                []
+                if role == "unassigned"
+                else [
+                    stage for stage in cfg.pair_stages if column in (stage.a, stage.b)
+                ]
+            )
             if dropped_stages:
                 cfg.pair_stages = [
                     stage for stage in cfg.pair_stages if stage not in dropped_stages
                 ]
                 notices.append(
                     f"Pair stage(s) {', '.join(s.stage_id for s in dropped_stages)} "
-                    f"removed from model {name}: {column} is no longer a predictor"
+                    f"removed from model {name}: {column} is not an eligible "
+                    "pair parent"
                 )
             cfg.drop_adjustments_for(column)
             for interaction in dropped:
@@ -839,6 +848,35 @@ class Project:
                             f"{name}: pair-stage parent {parent!r} is not in the data"
                         )
         return problems
+
+    def pair_parent_problem(self, cfg: ModelConfig, parent: str) -> str | None:
+        """Why ``parent`` cannot feed a sequential pair stage, if anything.
+
+        Pair stages accept source columns with either predictor or unassigned
+        roles.  This is intentionally broader than GLM main effects, while
+        still refusing outcome/control columns even when a hand-edited model
+        overrides their project role.
+        """
+        role = self.data.roles.get(parent)
+        if role not in (None, "predictor"):
+            return (
+                f"pair parent {parent!r} must be a predictor or unassigned "
+                "source column"
+            )
+        protected = {
+            value
+            for value in (cfg.target, cfg.weight, cfg.offset)
+            if isinstance(value, str)
+        }
+        protected.add(self.data.split.column)
+        premium = self.current_premium
+        if premium is not None:
+            protected.add(premium_offset_column(premium))
+        if parent in protected:
+            return f"pair parent {parent!r} is a protected model column"
+        if parent in {derived.name for derived in self.data.derived}:
+            return f"pair parent {parent!r} must be a raw source column"
+        return None
 
     # -- validation -----------------------------------------------------
     def validate(
@@ -957,7 +995,7 @@ class Project:
                     f"{name}: l1_ratio must be between 0 (ridge) and 1 (lasso), "
                     f"got {cfg.penalty.l1_ratio!r}"
                 )
-            if not cfg.predictors:
+            if not cfg.predictors and cfg.pair_method == "legacy_glm":
                 problems.append(f"{name}: no predictors")
             bad = [p for p in cfg.predictors if self.data.roles.get(p) != "predictor"]
             if bad:
@@ -1019,10 +1057,9 @@ class Project:
                     )
                 seen_pairs.add(pair)
                 for parent in (stage.a, stage.b):
-                    if self.data.roles.get(parent) != "predictor":
-                        problems.append(
-                            f"{name}: pair parent {parent!r} must have predictor role"
-                        )
+                    parent_problem = self.pair_parent_problem(cfg, parent)
+                    if parent_problem is not None:
+                        problems.append(f"{name}: {parent_problem}")
                 if not (
                     _is_finite_number(stage.min_weight_share)
                     and 0 <= stage.min_weight_share < 1

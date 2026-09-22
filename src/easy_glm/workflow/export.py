@@ -218,7 +218,14 @@ def _feature_selection_code(project: Project, prefix: str) -> list[str]:
             "Saved feature-selection recipe needs project and options objects"
         )
     snapshot = pprint.pformat(recipe["project"], width=88, sort_dicts=False)
-    options = recipe.get("options", {})
+    from easy_glm.workflow.selection_recipe import resolved_selection_options
+
+    saved_result = recipe.get("result")
+    options = resolved_selection_options(
+        recipe["options"],
+        saved_result if isinstance(saved_result, dict) else {},
+        legacy=True,
+    )
     options_text = pprint.pformat(options, width=88, sort_dicts=False)
     result_path = f"{prefix}_feature_selection.json"
     return [

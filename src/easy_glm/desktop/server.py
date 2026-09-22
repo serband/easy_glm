@@ -54,6 +54,7 @@ from easy_glm.desktop.modeling import (
     Revision,
     SplitEdit,
     edit_model,
+    pair_candidate_groups,
     setup_info,
 )
 from easy_glm.desktop.reviews import ReviewEdit, ReviewJobs
@@ -232,10 +233,12 @@ def create_app(
             screened_project["models"] = {}
             screened_project["champion"] = None
             screened_project["exploration"] = {}
+            from easy_glm.workflow.selection_recipe import resolved_selection_options
+
             current.exploration["feature_selection"] = {
                 "version": 1,
                 "project": screened_project,
-                "options": deepcopy(task["recipe_options"]),
+                "options": resolved_selection_options(task["recipe_options"], result),
                 "result": deepcopy(result),
             }
             task.update(
@@ -695,6 +698,23 @@ def create_app(
             check_revision(edit)
             try:
                 candidate_project = edit_model(current, edit)
+                if candidate_project.models[edit.name].pair_stages:
+                    prepared = apply_variables(raw, candidate_project.data)
+                    groups = pair_candidate_groups(
+                        candidate_project, raw, set(prepared.columns)
+                    )
+                    eligible = set(groups["predictors"] + groups["unassigned"])
+                    for stage in candidate_project.models[edit.name].pair_stages:
+                        if stage.a not in eligible or stage.b not in eligible:
+                            raise ValueError(
+                                "Interaction variables must be predictors or unassigned "
+                                "columns from the source data."
+                            )
+                    errors = candidate_project.validate(
+                        edit.name, columns=prepared.columns
+                    )
+                    if errors:
+                        raise ValueError("; ".join(errors))
             except (ValueError, TypeError, KeyError) as exc:
                 raise HTTPException(422, str(exc)) from exc
             if candidate_project.to_dict() != current.to_dict():
@@ -1177,7 +1197,13 @@ def create_app(
             saved, saved_raw = deepcopy(current), raw.clone()
         try:
             attachment = export_attachment(
-                saved, saved_raw, sources, name, edit.format, edit.challenger
+                saved,
+                saved_raw,
+                sources,
+                name,
+                edit.format,
+                edit.challenger,
+                importance_sample_pct=edit.importance_sample_pct,
             )
         except Exception as exc:  # Export errors are returned to the UI.
             raise HTTPException(422, f"Could not export this model: {exc}") from exc

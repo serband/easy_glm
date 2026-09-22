@@ -72,8 +72,17 @@ def _case() -> tuple[Project, pl.DataFrame]:
     return project, frame
 
 
-def test_next_teacher_receives_exact_deployed_prefix(monkeypatch):
+@pytest.mark.parametrize("with_main", [True, False])
+def test_unassigned_pair_parents_fit_score_and_roundtrip(
+    monkeypatch, tmp_path, with_main
+):
     project, frame = _case()
+    if not with_main:
+        project.models["pair"].predictors = []
+        project.models["pair"].pair_method = "sequential_catboost"
+    for parent in ("A", "B", "C"):
+        project.data.roles.pop(parent)
+    assert not project.validate("pair", columns=frame.columns)
     real_distill = pair_stages.distill_pair_cells
     captured: list[np.ndarray] = []
 
@@ -104,8 +113,44 @@ def test_next_teacher_receives_exact_deployed_prefix(monkeypatch):
         rate_model_for(project, run).predict(frame, exposure_col=None),
         rtol=1e-12,
     )
-    assert set(run.rate_model.variables) == {"main"}  # pair-only parents stay pair-only
+    scorer_path = tmp_path / "pairs.easyglm"
+    run.rate_model.to_json(scorer_path)
+    np.testing.assert_allclose(
+        run.predict(frame),
+        RateModel.from_json(scorer_path).predict(frame, exposure_col=None),
+        rtol=1e-12,
+    )
+    expected_mains = {"main"} if with_main else set()
+    assert set(run.rate_model.variables) == expected_mains
+    assert all(parent not in project.data.roles for parent in ("A", "B", "C"))
     assert run.pair_stages[1].baseline_stage_ids == ("ab",)
+    if not with_main:
+        data_path = tmp_path / "pair_only.parquet"
+        frame.write_parquet(data_path)
+        project.data.source.path = str(data_path)
+        script_path = tmp_path / "pair_only_training.py"
+        output_prefix = str(tmp_path / "pair_only_retrained")
+        script_path.write_text(
+            to_script(project, "pair", run=run, output_prefix=output_prefix)
+        )
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+        subprocess.run(
+            [sys.executable, str(script_path)],
+            cwd=tmp_path,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=90,
+        )
+        exported = RateModel.from_json(output_prefix + ".easyglm")
+        assert exported.variables == {}
+        np.testing.assert_allclose(
+            exported.predict(frame, exposure_col=None),
+            run.predict(frame),
+            rtol=1e-10,
+        )
 
 
 def test_append_and_holdout_poison_reuse_full_training_prefix():
@@ -198,6 +243,9 @@ def test_pair_edit_refit_requires_clear_or_explicit_recipe_replay():
 
 def test_training_export_replays_adjusted_prefix_before_downstream(tmp_path):
     project, frame = _case()
+    for parent in ("A", "B", "C"):
+        project.data.roles.pop(parent)
+    assert not project.validate("pair", columns=frame.columns)
     data_path = tmp_path / "book.parquet"
     frame.write_parquet(data_path)
     project.data.source.type = "parquet"

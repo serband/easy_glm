@@ -6,7 +6,12 @@ import polars as pl
 import streamlit as st
 
 from easy_glm.core.design import NUMERIC_DTYPES
-from easy_glm.workflow import alpha_path, solve_base_rate, train_holdout
+from easy_glm.workflow import (
+    alpha_path,
+    metric_definitions,
+    solve_base_rate,
+    train_holdout,
+)
 from easy_glm.workflow.project import FAMILIES
 
 from . import charts as C
@@ -673,6 +678,42 @@ def _fit_and_results(name: str) -> None:
 
     s = run.summary()
     two_stage = s["alpha_stage2"] is not None
+    holdout_metrics = run.metrics.get("holdout", {})
+    definitions = metric_definitions(
+        run.config.family,
+        run.config.tweedie_power,
+        holdout_metrics,
+    )
+    primary = [
+        definition for definition in definitions if definition["section"] == "primary"
+    ]
+    train_metrics = run.metrics.get("train", {})
+    displayed_metrics = []
+    if primary:
+        first = primary[0]
+        displayed_metrics.append(
+            (
+                f"train {first['label']}",
+                ui.fmt(
+                    train_metrics.get(first["key"]),
+                    pct=first["key"] == "r2",
+                    digits=first["digits"],
+                ),
+                None,
+            )
+        )
+    displayed_metrics.extend(
+        (
+            f"holdout {definition['label']}",
+            ui.fmt(
+                holdout_metrics.get(definition["key"]),
+                pct=definition["key"] in ("r2", "deviance_explained"),
+                digits=definition["digits"],
+            ),
+            ("secondary ordering measure" if definition["key"] == "gini" else None),
+        )
+        for definition in definitions
+    )
     ui.metric_row(
         [
             (
@@ -693,18 +734,7 @@ def _fit_and_results(name: str) -> None:
                 else []
             ),
             ("non-zero / features", f"{s['non_zero']} / {s['features']}", None),
-            ("train A/E", ui.fmt(s["train_ae"]), None),
-            ("holdout A/E", ui.fmt(s["holdout_ae"]), None),
-            (
-                "holdout Gini",
-                ui.fmt(s["holdout_gini"]),
-                "normalised, exposure-weighted",
-            ),
-            (
-                "holdout dev. explained",
-                ui.fmt(s["holdout_dev_explained"], pct=True),
-                "1 − deviance / null deviance",
-            ),
+            *displayed_metrics,
         ]
     )
     if two_stage:

@@ -36,6 +36,8 @@
         inspectedResidual = false;
     let bins = 10,
         tolerance = 0.01,
+        importanceSamplePct = 30,
+        importanceSeed = 42,
         kept = true,
         analysis = null,
         aeSets = [],
@@ -56,7 +58,14 @@
     }
     function runTab() {
         if (diagnosticTab === 'importance')
-            return run('importance', { subset: 'train', challenger: null });
+            return run('importance', {
+                subset: 'train',
+                challenger: null,
+                options: {
+                    importance_sample_pct: Number(importanceSamplePct),
+                    seed: Number(importanceSeed),
+                },
+            });
         if (diagnosticTab === 'variable' && diagnosticVariable)
             return run('variable', { variable: diagnosticVariable });
         // Pair diagnostics are scheduled from their complete selection/context key.
@@ -319,7 +328,13 @@
         challenger,
         comparisonFitIdentity,
     ]);
-    $: importanceContext = importanceCacheKey(state?.session_id, name, fitIdentity);
+    $: importanceContext = importanceCacheKey(
+        state?.session_id,
+        name,
+        fitIdentity,
+        importanceSamplePct,
+        importanceSeed,
+    );
     $: if (analysis?.chart_kind === 'importance' && analysis.fit_context !== importanceContext)
         analysis = null;
     $: desiredVariableKey = JSON.stringify([key, selectedVariable, bins, diagnosticTab]);
@@ -513,7 +528,11 @@
                 delete payload.challenger;
                 delete payload.variable;
                 payload.subset = 'train';
-                payload.options = {};
+                payload.options = {
+                    importance_sample_pct: Number(importanceSamplePct),
+                    seed: Number(importanceSeed),
+                    ...(payload.options || {}),
+                };
             }
             let response;
             // A previous view can still be cancelling its worker during navigation.
@@ -530,7 +549,7 @@
                         unsupportedImportanceAction(e)
                     ) {
                         payload.action = 'coefficients';
-                        payload.options = { view: 'importance' };
+                        payload.options = { ...payload.options, view: 'importance' };
                         continue;
                     }
                     if (!e.message.includes('A review is running') || attempt === 49) throw e;
@@ -905,6 +924,36 @@
             </div>{/if}
         {#if error && view !== 'tables'}<div class="message error" role="alert">{error}</div>{/if}
         {#if view === 'diagnostics'}
+            {#if diagnosticTab === 'importance'}<div
+                    class="results-toolbar diagnostic-controls"
+                >
+                    <label
+                        >Training rows to score (%)<input
+                            aria-label="Importance sample percentage"
+                            type="number"
+                            min="0.01"
+                            max="100"
+                            step="1"
+                            bind:value={importanceSamplePct}
+                        /></label
+                    ><label
+                        >Random seed<input
+                            aria-label="Importance sample seed"
+                            type="number"
+                            min="0"
+                            max="4294967295"
+                            step="1"
+                            bind:value={importanceSeed}
+                        /></label
+                    ><button
+                        disabled={busy ||
+                            !Number.isFinite(Number(importanceSamplePct)) ||
+                            Number(importanceSamplePct) <= 0 ||
+                            Number(importanceSamplePct) > 100 ||
+                            !Number.isInteger(Number(importanceSeed))}
+                        onclick={runTab}>Update importance</button
+                    >
+                </div>{/if}
             {#if ['lift', 'double_lift'].includes(diagnosticTab) || (diagnosticTab === 'variable' && temporaryBins)}<div
                     class="results-toolbar diagnostic-controls"
                 >

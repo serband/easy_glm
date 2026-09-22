@@ -36,6 +36,7 @@ class FeatureSelectionOptions(BaseModel):
     n_alphas: int = Field(default=20, ge=2, le=100)
     repeats: int = Field(default=5, ge=1, le=20)
     seed: int = Field(default=42, ge=0, le=2**32 - 1)
+    importance_sample_pct: float = Field(default=30.0, gt=0, le=100)
     include_unassigned: bool = True
 
     @model_validator(mode="after")

@@ -31,6 +31,8 @@ test('importance cache belongs to an immutable model fit within one session', ()
     assert.equal(cachedImportance(importanceCacheKey('session', 'model', 'fit2')), undefined);
     assert.equal(cachedImportance(importanceCacheKey('other', 'model', 'fit1')), undefined);
     assert.equal(cachedImportance(importanceCacheKey('session', 'other', 'fit1')), undefined);
+    assert.equal(cachedImportance(importanceCacheKey('session', 'model', 'fit1', 100, 42)), undefined);
+    assert.equal(cachedImportance(importanceCacheKey('session', 'model', 'fit1', 30, 7)), undefined);
 });
 
 import { unsupportedImportanceAction } from '../src/importanceApi.js';

@@ -668,6 +668,10 @@ def design_row_key(
             )
     if offset is not None:
         columns["o:"] = pl.Series("o:", np.asarray(offset, dtype=float))
+    if not columns:
+        # Preserve the row count for an intercept-only design. All rows share
+        # one design row; aggregate_rows may therefore collapse them exactly.
+        columns["i:"] = pl.Series("i:", np.zeros(data.height, dtype=np.int8))
     return pl.DataFrame(columns)
 
 
@@ -887,6 +891,10 @@ def fit_glm(
     if aggregate:
         fit_rows, y, sw, offset = aggregate_rows(spec, data, y, sw, offset)
     design = spec.build(fit_rows, sparse=sparse)
+    intercept_only = spec.n_features == 0
+    solver_design = (
+        np.zeros((fit_rows.height, 1), dtype=np.float64) if intercept_only else design
+    )
     if not isinstance(design, np.ndarray):
         # glum validates its input with a private function that only knows
         # tabmat's own block types; teach it about ours (see stepmatrix.py)
@@ -899,6 +907,12 @@ def fit_glm(
 
     lower = glum_kwargs.pop("lower_bounds", None)
     upper = glum_kwargs.pop("upper_bounds", None)
+    if intercept_only:
+        supplied_p1 = glum_kwargs.pop("P1", None)
+        if supplied_p1 is not None and np.asarray(supplied_p1).size:
+            raise ValueError("P1 must be empty for an intercept-only fit.")
+        lower = None
+        upper = None
     monotone = dict(monotone or {})
     if monotone:
         mlo, mup = monotone_bounds(spec, monotone)
@@ -949,7 +963,16 @@ def fit_glm(
         else f"Fitting {shape}"
     )
     with _ElapsedProgress(progress, label):
-        model.fit(design, y, sample_weight=sw, offset=offset)
+        model.fit(solver_design, y, sample_weight=sw, offset=offset)
+    if intercept_only:
+        # glum requires at least one input column. The all-zero solver column
+        # carries no information and always has coefficient zero; remove it
+        # from the public fit so DesignSpec remains the complete feature truth.
+        model.coef_ = np.empty(0, dtype=np.float64)
+        if hasattr(model, "coef_path_"):
+            model.coef_path_ = np.asarray(model.coef_path_)[..., :0]
+        if hasattr(model, "_refit_coef_path"):
+            model._refit_coef_path = np.asarray(model._refit_coef_path)[..., :0]
 
     return GLMFit(
         spec=spec,

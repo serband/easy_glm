@@ -21,6 +21,10 @@ from easy_glm.core.design import (
 from easy_glm.core.fit import _validate_target, fit_glm, resolve_family
 
 from .diagnostics import permutation_importance
+from .importance_sampling import (
+    importance_sample_indices,
+    validate_importance_sample_pct,
+)
 from .prep import prepare
 from .project import Project
 from .run import UnusableColumnError, build_design
@@ -79,6 +83,7 @@ def _validate_options(
     n_alphas: int,
     repeats: int,
     seed: int,
+    importance_sample_pct: float,
 ) -> tuple[str, str]:
     if not isinstance(family, str):
         raise ValueError("family must be a supported family name.")
@@ -119,6 +124,7 @@ def _validate_options(
         or not (0 <= seed <= 2**32 - 1)
     ):
         raise ValueError("seed must be an integer in [0, 2**32 - 1].")
+    validate_importance_sample_pct(importance_sample_pct)
     if family.strip().lower() != "tweedie" and tweedie_power != 1.5:
         raise ValueError("Tweedie power applies only to the Tweedie family.")
     power = tweedie_power if family.strip().lower() == "tweedie" else None
@@ -129,6 +135,8 @@ def _validate_options(
         not isinstance(link, str) or link not in allowed_links[family_name]
     ):
         raise ValueError(f"{link!r} link is not compatible with {family_name}.")
+    if link is None and family_name == "normal":
+        default_link = "identity"
     return family_name, link or default_link
 
 
@@ -178,6 +186,7 @@ def select_variables(
     n_alphas: int = 20,
     repeats: int = 5,
     seed: int = 42,
+    importance_sample_pct: float = 30.0,
     include_unassigned: bool = True,
     progress: Progress | None = None,
     cancelled: Cancelled | None = None,
@@ -192,7 +201,14 @@ def select_variables(
     not a significance test. Candidate errors remain visible in the rows.
     """
     family_name, selected_link = _validate_options(
-        family, link, tweedie_power, l1_ratio, n_alphas, repeats, seed
+        family,
+        link,
+        tweedie_power,
+        l1_ratio,
+        n_alphas,
+        repeats,
+        seed,
+        importance_sample_pct,
     )
     _check_cancelled(cancelled)
     prepared = prepare(project, raw)
@@ -222,6 +238,23 @@ def select_variables(
             )
         )
     ]
+    full_outcome = train[project.target or ""].cast(pl.Float64).to_numpy()
+    full_weights = (
+        train[project.weight].cast(pl.Float64).to_numpy()
+        if project.weight
+        else np.ones(train.height, dtype=np.float64)
+    )
+    if divide_target_by_weight:
+        full_outcome = full_outcome / full_weights
+    importance_indices, sample_metadata = importance_sample_indices(
+        train,
+        importance_sample_pct=importance_sample_pct,
+        seed=seed,
+        outcome=full_outcome,
+        weights=full_weights,
+        family=family_name,
+        variables=candidates,
+    )
     rows: list[dict[str, Any]] = []
     total = len(candidates)
 
@@ -322,10 +355,11 @@ def select_variables(
             report("importance", index, f"Measuring {variable}", variable)
             importance_rows = permutation_importance(
                 fit,
-                screen,
+                screen[importance_indices],
                 repeats=repeats,
                 seed=seed,
                 protected_columns=tuple(c for c in protected if c is not None),
+                importance_sample_pct=100.0,
             )
             _check_cancelled(cancelled)
             by_name = {item["variable"]: item for item in importance_rows.to_dicts()}
@@ -384,6 +418,7 @@ def select_variables(
         "n_alphas": n_alphas,
         "l1_ratio": l1_ratio,
         "seed": seed,
+        **sample_metadata,
         "repeats": repeats,
         "random_definition": "independent uniform[0,1) numeric noise, default step bins",
         "decision_rule": "importance > max(0, four shadows, random) + max(1e-12, 1e-9 * abs(threshold))",

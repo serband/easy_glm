@@ -332,7 +332,8 @@
             <span
                 >{num(result.rows)} of {num(result.training_rows)} training rows · {num(
                     result.predictor_count,
-                )} predictors</span
+                )} predictors · {num(result.association_checked_count ?? result.predictor_count)}
+                checked · {num(result.association_skipped_count ?? 0)} skipped</span
             >
             {#if result.target}<span
                     >Target: {result.target}{result.divide_target_by_weight && result.weight
@@ -482,6 +483,14 @@
                 >
                 {#if result.excluded_target_rows}<p>
                         {num(result.excluded_target_rows)} rows excluded from target association.
+                    </p>{/if}
+                {#if result.category_mixed_pairs_checked}<p>
+                        {num(result.category_mixed_pairs_checked)} category or mixed pairs passed
+                        through a {num(result.category_pilot_rows)}-row pilot; {num(
+                            result.category_mixed_pairs_confirmed,
+                        )} were checked on the full screening sample. Category limit: {num(
+                            result.category_level_limit,
+                        )} levels.
                     </p>{/if}
                 {#each result.notes || [] as item}<p>{item}</p>{/each}
                 {#if result.unsupported?.length}<div class="screening-unsupported">

@@ -370,3 +370,14 @@ def test_supported_family_real_fit_smoke(family: str) -> None:
     assert row["status"] in ("signal", "no_signal")
     assert row["importance"] is not None and np.isfinite(row["importance"])
     assert row["reason"] == ""
+    if family == "gaussian":
+        assert result["link"] == "identity"
+
+
+def test_gaussian_omitted_link_is_identity_but_explicit_log_is_preserved():
+    base = ("gaussian", None, 1.5, 1.0, 20, 5, 42, 30.0)
+    assert selection._validate_options(*base) == ("normal", "identity")
+    assert selection._validate_options(*(("gaussian", "log") + base[2:])) == (
+        "normal",
+        "log",
+    )

@@ -4,6 +4,34 @@ Purpose: Provide build/test commands, architecture guidance, and code style guid
 
 ---
 
+## Default Feature Workflow
+
+Use this process for substantive features and statistical changes; use a lightweight
+version for trivial documentation or copy edits.
+
+1. Respect the requested mode. Answer questions and planning-only requests without
+   implementing features. Do not treat proposed statistical changes as accepted
+   decisions.
+2. Inspect the current state, preserve unrelated work, and do implementation on a new
+   `codex/` branch.
+3. Have Astra draft the plan, an independent agent critique it, and, for statistical
+   work, a separate actuarial reviewer assess the methods and assumptions. The primary
+   agent synthesizes the reviews and owns the final plan.
+4. Give a Sol builder explicit ownership of the implementation. Keep parallel tasks
+   bounded and independent, with clear file or module ownership; the primary agent
+   integrates the result. Proceed within the user's authorized scope without blanket
+   or repeated permission requests.
+5. Have Astra validate the implementation, then use an independent adversarial agent
+   to try to break the feature and a separate actuarial reviewer to exercise realistic
+   use. Sol fixes the findings, Astra validates the fixes, and the loop repeats until
+   the relevant checks close cleanly.
+
+If Astra or Sol is unavailable, use the nearest available equivalent and report the
+relevant limitation. Do not edit the README unless expressly asked. Keep any requested
+changelog concise and human-readable, and release only with explicit authorization.
+
+---
+
 ## Build, Lint, and Tests
 
 - Single test: `pytest tests/test_engine.py -k test_clone --maxfail=1 -q`

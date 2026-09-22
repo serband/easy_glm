@@ -8,7 +8,12 @@ import test_desktop_models as fixtures
 from test_desktop_ae_cache import fixture
 
 from easy_glm.desktop.fit_worker import fit_result
-from easy_glm.desktop.importance_cache import build_packet, cache_path, read_packet
+from easy_glm.desktop.importance_cache import (
+    build_packet,
+    cache_path,
+    options_from_request,
+    read_packet,
+)
 from easy_glm.desktop.review_worker import review
 from easy_glm.desktop.reviews import ReviewJobs
 from easy_glm.workflow.prep import train_holdout
@@ -16,6 +21,22 @@ from easy_glm.workflow.project import Adjustment
 from easy_glm.workflow.run import rebuild_rate_model
 
 importance_session = fixtures.model_session
+
+
+def test_request_options_validate_and_identify_scoring_sample():
+    assert options_from_request({"options": {}}) == {
+        "importance_sample_pct": 30.0,
+        "seed": 42,
+    }
+    assert options_from_request(
+        {
+            "action": "coefficients",
+            "options": {"view": "importance", "importance_sample_pct": 25, "seed": 7},
+        }
+    ) == {"importance_sample_pct": 25.0, "seed": 7}
+    for value in (0, 101, True, float("nan")):
+        with pytest.raises(ValueError, match="importance_sample_pct"):
+            options_from_request({"options": {"importance_sample_pct": value}})
 
 
 def test_cache_is_training_original_and_survives_adjustments(tmp_path, monkeypatch):

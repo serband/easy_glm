@@ -243,6 +243,8 @@ def test_script_replays_saved_feature_screen_before_final_fit(tmp_path, monkeypa
     monkeypatch.chdir(tmp_path)
     namespace = runpy.run_path(str(path))
     report = json.loads((tmp_path / "screened_feature_selection.json").read_text())
+    assert namespace["selection_options"]["importance_sample_pct"] == 100.0
+    assert namespace["selection_options"]["link"] == "log"
     assert report["training_rows"] == 450
     assert report["tested_count"] == 2
     assert {row["variable"] for row in report["rows"]} == {"x", "region"}

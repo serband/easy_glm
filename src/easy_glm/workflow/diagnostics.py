@@ -27,6 +27,7 @@ from easy_glm.core.fit import GLMFit, TwoStageFit
 from easy_glm.engine.models import NULL_LABEL, FromToRow, level_label
 
 from .explore import band_expr
+from .importance_sampling import importance_sample_indices
 from .project import ModelConfig
 
 ScaleConfig = ModelConfig | GLMFit
@@ -109,13 +110,17 @@ def expected_claims(rm: Any, df: pl.DataFrame, cfg: ModelConfig) -> float:
 # --------------------------------------------------------------------------
 # deviance
 # --------------------------------------------------------------------------
+def _finite_or_none(value: float) -> float | None:
+    return float(value) if np.isfinite(value) else None
+
+
 def deviance_stats(
     family: Any,
     y_unit: np.ndarray,
     mu_unit: np.ndarray,
     weight: np.ndarray | None,
     mu0_unit: np.ndarray | None = None,
-) -> dict[str, float]:
+) -> dict[str, float | None]:
     """Deviance, null deviance and the share explained (``1 - D / D0``).
 
     ``mu0_unit`` should come from a null model fitted on training rows. This
@@ -133,12 +138,207 @@ def deviance_stats(
         raise ValueError("mu0_unit must have the same shape as y_unit")
     null = float(family.deviance(y_unit, mu0, sample_weight=w))
     n = float(len(y_unit)) if w is None else float(w.sum())
+    explained = 1.0 - dev / null if null > 0 else float("nan")
+    mean = dev / n if n > 0 else float("nan")
     return {
         "deviance": dev,
         "null_deviance": null,
-        "deviance_explained": (1.0 - dev / null) if null > 0 else float("nan"),
-        "mean_deviance": dev / n if n else float("nan"),
+        "deviance_explained": _finite_or_none(explained),
+        "mean_deviance": _finite_or_none(mean),
     }
+
+
+def _weighted_mean(values: np.ndarray, weight: np.ndarray) -> float | None:
+    denominator = float(weight.sum())
+    if denominator <= 0 or not np.isfinite(denominator):
+        return None
+    value = float(np.dot(values, weight) / denominator)
+    return _finite_or_none(value)
+
+
+def _weighted_roc_auc(
+    observed: np.ndarray, prediction: np.ndarray, weight: np.ndarray
+) -> float | None:
+    """Tie-aware weighted AUC for a genuinely binary observed response."""
+    supported = weight > 0
+    if not np.all((observed[supported] == 0.0) | (observed[supported] == 1.0)):
+        return None
+    positive = float(weight[observed == 1.0].sum())
+    negative = float(weight[observed == 0.0].sum())
+    if positive <= 0 or negative <= 0:
+        return None
+    order = np.argsort(prediction, kind="stable")
+    score = prediction[order]
+    truth = observed[order]
+    ordered_weight = weight[order]
+    concordant = 0.0
+    negative_before = 0.0
+    start = 0
+    while start < len(score):
+        stop = start + 1
+        while stop < len(score) and score[stop] == score[start]:
+            stop += 1
+        group_positive = float(ordered_weight[start:stop][truth[start:stop] == 1].sum())
+        group_negative = float(ordered_weight[start:stop][truth[start:stop] == 0].sum())
+        concordant += group_positive * (negative_before + 0.5 * group_negative)
+        negative_before += group_negative
+        start = stop
+    return _finite_or_none(concordant / (positive * negative))
+
+
+def family_metrics(
+    family: str,
+    observed_unit: np.ndarray,
+    predicted_unit: np.ndarray,
+    weight: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """Family-specific metrics on the unit response and deployed predictions.
+
+    Every numeric key is always present. Metrics that do not apply are ``None``;
+    ``metric_reasons`` explains the useful undefined cases for API clients.
+    Binomial log loss clips probabilities to machine epsilon, avoiding warnings
+    while retaining the correct very large loss for a wrong endpoint prediction.
+    """
+    observed = np.asarray(observed_unit, dtype=np.float64)
+    predicted = np.asarray(predicted_unit, dtype=np.float64)
+    weights = (
+        np.ones(observed.shape, dtype=np.float64)
+        if weight is None
+        else np.asarray(weight, dtype=np.float64)
+    )
+    if observed.shape != predicted.shape or observed.shape != weights.shape:
+        raise ValueError(
+            "Observed, predicted and weight arrays must have the same shape."
+        )
+    if (
+        not np.all(np.isfinite(observed))
+        or not np.all(np.isfinite(predicted))
+        or not np.all(np.isfinite(weights))
+        or np.any(weights < 0)
+    ):
+        raise ValueError("Family metrics need finite values and non-negative weights.")
+    family = "gaussian" if family == "normal" else family
+    result: dict[str, Any] = {
+        "rmse": None,
+        "mae": None,
+        "r2": None,
+        "log_loss": None,
+        "brier": None,
+        "roc_auc": None,
+        "response_kind": None,
+        "metric_reasons": {},
+    }
+    if family == "gaussian":
+        error = predicted - observed
+        mse = _weighted_mean(error * error, weights)
+        result["rmse"] = None if mse is None else float(np.sqrt(mse))
+        result["mae"] = _weighted_mean(np.abs(error), weights)
+        mean = _weighted_mean(observed, weights)
+        if mean is None:
+            result["metric_reasons"]["r2"] = "No positive evaluation weight."
+        else:
+            denominator = float(np.dot(weights, (observed - mean) ** 2))
+            numerator = float(np.dot(weights, error**2))
+            if denominator > 0 and np.isfinite(denominator):
+                result["r2"] = _finite_or_none(1.0 - numerator / denominator)
+            else:
+                result["metric_reasons"][
+                    "r2"
+                ] = "R-squared is undefined for a constant observed response."
+    elif family == "binomial":
+        if np.any((observed < 0) | (observed > 1)):
+            raise ValueError("Binomial metrics need observed values between 0 and 1.")
+        if np.any((predicted < 0) | (predicted > 1)):
+            raise ValueError("Binomial metrics need predictions between 0 and 1.")
+        epsilon = np.finfo(np.float64).eps
+        probability = np.clip(predicted, epsilon, 1.0 - epsilon)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            row_loss = -(
+                observed * np.log(probability)
+                + (1.0 - observed) * np.log1p(-probability)
+            )
+        result["log_loss"] = _weighted_mean(row_loss, weights)
+        result["brier"] = _weighted_mean((predicted - observed) ** 2, weights)
+        supported = weights > 0
+        binary = bool(
+            np.all((observed[supported] == 0.0) | (observed[supported] == 1.0))
+        )
+        result["response_kind"] = "binary" if binary else "fractional"
+        result["roc_auc"] = _weighted_roc_auc(observed, predicted, weights)
+        if result["roc_auc"] is None:
+            result["metric_reasons"][
+                "roc_auc"
+            ] = "ROC AUC needs a binary response with positive weight in both classes."
+    return result
+
+
+def metric_definitions(
+    family: str,
+    tweedie_power: float | None = None,
+    metrics: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """The family-aware metric labels and display order used by every UI."""
+    family = "gaussian" if family == "normal" else family
+    secondary = [
+        {
+            "key": "gini",
+            "label": "Normalised Gini",
+            "digits": 4,
+            "section": "secondary",
+        }
+    ]
+    if family == "gaussian":
+        primary = [
+            {"key": "rmse", "label": "RMSE", "digits": 5, "section": "primary"},
+            {"key": "mae", "label": "MAE", "digits": 5, "section": "primary"},
+            {"key": "r2", "label": "R-squared", "digits": 4, "section": "primary"},
+        ]
+    elif family == "binomial":
+        fractional = bool(metrics and metrics.get("response_kind") == "fractional")
+        primary = [
+            {
+                "key": "log_loss",
+                "label": "Log loss",
+                "digits": 5,
+                "section": "primary",
+            },
+            {
+                "key": "brier",
+                "label": (
+                    "Mean squared error (observed proportion)"
+                    if fractional
+                    else "Brier score"
+                ),
+                "digits": 5,
+                "section": "primary",
+            },
+            {
+                "key": "roc_auc",
+                "label": "ROC AUC",
+                "digits": 4,
+                "section": "primary",
+            },
+        ]
+    else:
+        deviance_label = f"{family.title()} mean deviance"
+        if family == "tweedie" and tweedie_power is not None:
+            deviance_label = f"Tweedie mean deviance (p={tweedie_power:g})"
+        primary = [
+            {"key": "ae", "label": "A/E", "digits": 4, "section": "primary"},
+            {
+                "key": "mean_deviance",
+                "label": deviance_label,
+                "digits": 5,
+                "section": "primary",
+            },
+            {
+                "key": "deviance_explained",
+                "label": "Deviance explained vs fitted null model",
+                "digits": 4,
+                "section": "secondary",
+            },
+        ]
+    return primary + secondary
 
 
 def permutation_importance(
@@ -150,6 +350,7 @@ def permutation_importance(
     protected_columns: tuple[str, ...] = (),
     scorer: Any | None = None,
     additional_variables: tuple[str, ...] = (),
+    importance_sample_pct: float = 30.0,
 ) -> pl.DataFrame:
     """Rank original predictors by the training mean-deviance increase on shuffle.
 
@@ -172,12 +373,23 @@ def permutation_importance(
     for variable in additional_variables:
         if variable not in fixed and variable not in variables:
             variables.append(variable)
-    y, weights = unit_values(train, fit)
+    full_y, full_weights = unit_values(train, fit)
+    indices, _metadata = importance_sample_indices(
+        train,
+        importance_sample_pct=importance_sample_pct,
+        seed=seed,
+        outcome=full_y,
+        weights=full_weights,
+        family=fit.family,
+        variables=variables,
+    )
+    score_frame = train[indices]
+    y, weights = unit_values(score_frame, fit)
     weight = weights if fit.weight_col else None
     denominator = float(weights.sum())
     if denominator <= 0 or not np.isfinite(denominator):
         raise ValueError("Variable importance needs positive finite total weight.")
-    offset = fit.scoring_offset(train)
+    offset = fit.scoring_offset(score_frame)
     if fit.offset_col and offset is None:
         raise ValueError(f"Offset column {fit.offset_col!r} is missing.")
     family = fit.model.family_instance
@@ -194,15 +406,15 @@ def permutation_importance(
             raise ValueError("Variable importance produced non-finite deviance.")
         return value
 
-    baseline = loss(train)
+    baseline = loss(score_frame)
     rows = []
     for variable in variables:
         rng = np.random.default_rng(seed)
         losses = np.empty(repeats, dtype=np.float64)
-        original = train[variable]
+        original = score_frame[variable]
         for repeat in range(repeats):
-            shuffled = original.gather(rng.permutation(train.height))
-            losses[repeat] = loss(train.with_columns(shuffled))
+            shuffled = original.gather(rng.permutation(score_frame.height))
+            losses[repeat] = loss(score_frame.with_columns(shuffled))
         changes = losses - baseline
         rows.append(
             {
@@ -223,6 +435,50 @@ def permutation_importance(
             "shuffled_deviance": pl.Float64,
         },
     ).sort(["importance", "variable"], descending=[True, False])
+
+
+def permutation_importance_with_metadata(
+    fit: GLMFit,
+    train: pl.DataFrame,
+    *,
+    repeats: int = 5,
+    seed: int = 42,
+    protected_columns: tuple[str, ...] = (),
+    scorer: Any | None = None,
+    additional_variables: tuple[str, ...] = (),
+    importance_sample_pct: float = 30.0,
+) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """Permutation importance plus the fixed scoring-sample provenance."""
+    fixed = {fit.target, fit.weight_col, fit.offset_col, *protected_columns}
+    variables = [name for name in fit.spec.main_effects if name not in fixed]
+    for interaction in fit.spec.interactions:
+        for encoder in (interaction.a, interaction.b):
+            if encoder.variable not in fixed and encoder.variable not in variables:
+                variables.append(encoder.variable)
+    for variable in additional_variables:
+        if variable not in fixed and variable not in variables:
+            variables.append(variable)
+    outcome, weights = unit_values(train, fit)
+    indices, metadata = importance_sample_indices(
+        train,
+        importance_sample_pct=importance_sample_pct,
+        seed=seed,
+        outcome=outcome,
+        weights=weights,
+        family=fit.family,
+        variables=variables,
+    )
+    rows = permutation_importance(
+        fit,
+        train[indices],
+        repeats=repeats,
+        seed=seed,
+        protected_columns=protected_columns,
+        scorer=scorer,
+        additional_variables=additional_variables,
+        importance_sample_pct=100.0,
+    )
+    return rows, metadata
 
 
 # --------------------------------------------------------------------------
@@ -303,7 +559,18 @@ def gini(
     a = np.asarray(actual_total, float)
     e = np.asarray(expected_total, float)
     w = np.ones_like(a) if weight is None else np.asarray(weight, float)
-    if a.sum() <= 0 or w.sum() <= 0:
+    if (
+        a.shape != e.shape
+        or a.shape != w.shape
+        or not np.all(np.isfinite(a))
+        or not np.all(np.isfinite(e))
+        or not np.all(np.isfinite(w))
+        or np.any(a < 0)
+        or np.any(e < 0)
+        or np.any(w < 0)
+        or a.sum() <= 0
+        or w.sum() <= 0
+    ):
         return float("nan")
 
     def _g(score: np.ndarray) -> float:
@@ -1119,9 +1386,9 @@ def model_metrics(
     frames: dict[str, pl.DataFrame],
     cfg: ModelConfig,
     null_pred_unit_by_subset: dict[str, np.ndarray] | None = None,
-) -> dict[str, dict[str, float]]:
-    """Per subset (e.g. ``train`` / ``holdout``): exposure, A/E, Gini, deviance."""
-    out: dict[str, dict[str, float]] = {}
+) -> dict[str, dict[str, Any]]:
+    """Metrics on each subset's unit response and current deployed predictions."""
+    out: dict[str, dict[str, Any]] = {}
     fam = fit.model.family_instance
     for name, frame in frames.items():
         if frame.is_empty():
@@ -1137,18 +1404,18 @@ def model_metrics(
         dev = deviance_stats(
             fam, y_unit, pred, w_unit if cfg.weight else None, mu0_unit=mu0
         )
+        gini_value = gini(actual, expected, w)
         out[name] = {
             "rows": float(frame.height),
             "exposure": float(w.sum()),
             "actual": float(actual.sum()),
             "expected": float(expected.sum()),
             "ae": (
-                float(actual.sum() / expected.sum())
-                if expected.sum() > 0
-                else float("nan")
+                float(actual.sum() / expected.sum()) if expected.sum() > 0 else None
             ),
-            "gini": gini(actual, expected, w),
+            "gini": _finite_or_none(gini_value),
             **dev,
+            **family_metrics(cfg.family, y_unit, pred, w_unit),
         }
     return out
 

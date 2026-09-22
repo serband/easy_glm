@@ -19,6 +19,7 @@ from easy_glm.workflow import (
     double_lift,
     gini,
     lift_table,
+    metric_definitions,
     predictions_effectively_equal,
     relativity_diff,
     totals,
@@ -34,10 +35,6 @@ _ROWS = [
     ("exposure", "exposure", "{:,.0f}"),
     ("actual", "actual", "{:,.1f}"),
     ("expected", "expected", "{:,.1f}"),
-    ("A/E", "ae", "{:.4f}"),
-    ("Gini (normalised)", "gini", "{:.4f}"),
-    ("deviance explained", "deviance_explained", "{:.4f}"),
-    ("mean deviance", "mean_deviance", "{:.5f}"),
 ]
 
 
@@ -81,6 +78,31 @@ def _metrics_table(a: ModelRun, b: ModelRun) -> pl.DataFrame:
     """One row per metric, one column per **model and subset** — the four
     numbers a reader compares are on one line."""
     columns = [(run, subset) for subset in ("train", "holdout") for run in (a, b)]
+    metric_rows = list(_ROWS)
+    row_for_key = {key: index for index, (_label, key, _spec) in enumerate(metric_rows)}
+    for run, subset in columns:
+        for definition in metric_definitions(
+            run.config.family,
+            run.config.tweedie_power,
+            run.metrics.get(subset),
+        ):
+            key = definition["key"]
+            if key not in row_for_key:
+                row_for_key[key] = len(metric_rows)
+                metric_rows.append(
+                    (
+                        definition["label"],
+                        definition["key"],
+                        f"{{:.{definition['digits']}f}}",
+                    )
+                )
+            elif metric_rows[row_for_key[key]][0] != definition["label"]:
+                generic = {
+                    "mean_deviance": "Mean deviance (family-specific)",
+                    "brier": "Squared probability / proportion error",
+                }.get(key, metric_rows[row_for_key[key]][0])
+                _label, metric_key, spec = metric_rows[row_for_key[key]]
+                metric_rows[row_for_key[key]] = (generic, metric_key, spec)
     rows = [
         {
             _LABEL_COLUMN: label,
@@ -91,7 +113,7 @@ def _metrics_table(a: ModelRun, b: ModelRun) -> pl.DataFrame:
                 for run, subset in columns
             },
         }
-        for label, key, spec in _ROWS
+        for label, key, spec in metric_rows
     ]
     return pl.DataFrame(rows)
 
@@ -204,10 +226,10 @@ def render() -> None:
 
     st.subheader("Metrics side by side")
     st.caption(
-        "The holdout rows are the ones to trust — neither model saw them. A/E "
-        "near 1.00 means the model charges what happened in total; a higher Gini "
-        "means the model orders the risks better; deviance explained is the share "
-        "of the null deviance it removes."
+        "The holdout rows are the ones to trust — neither model saw them. "
+        "Headline measures follow each model family. Normalised Gini is a secondary "
+        "ordering measure; deviance explained uses the fitted, offset-aware null "
+        "model and is distinct from Gaussian R-squared."
     )
     ui.polars_table(_metrics_table(run_a, run_b))
     st.caption("What the two models **are**:")
@@ -292,8 +314,8 @@ def render() -> None:
         g_a = gini(actual, expected_a, w)
         g_b = gini(actual, expected_b, w)
         st.caption(
-            f"Normalised Gini ({which}) — **{name_a}: {g_a:.4f}** · "
-            f"**{name_b}: {g_b:.4f}**"
+            f"Normalised Gini ({which}) — **{name_a}: {_fmt(g_a, '{:.4f}')}** · "
+            f"**{name_b}: {_fmt(g_b, '{:.4f}')}**"
         )
         for name, exp in ((name_a, expected_a), (name_b, expected_b)):
             st.plotly_chart(

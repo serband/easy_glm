@@ -72,7 +72,8 @@
         <p>
             Each candidate was screened separately against its controls. The orange marker is the
             strongest control benchmark (four shuffled copies and random noise, floored at zero). No
-            signal detected is not proof of no effect.
+            signal detected is not proof of no effect. Every candidate and control uses the same
+            scoring rows and matched shuffle schedule.
         </p>
         <p class="chart-counts">
             {signalCount} signal detected · {noSignalCount} no signal detected{#if unplottedCount}

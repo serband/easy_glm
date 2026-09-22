@@ -10,8 +10,9 @@ import polars as pl
 
 from ._diagnostic_svg import coefficient_path_chart, permutation_importance_chart
 from .diagnostics import coefficient_path, permutation_importance
+from .importance_sampling import importance_sample_indices
 from .project import Project
-from .run import ModelRun
+from .run import ModelRun, rate_model_for
 
 
 def _number(value: Any) -> str:
@@ -45,6 +46,9 @@ def _importance_section(
     run: ModelRun,
     train: pl.DataFrame,
     importance: pl.DataFrame | None,
+    importance_metadata: dict[str, Any] | None,
+    importance_sample_pct: float,
+    importance_seed: int,
 ) -> str:
     pair_tables = getattr(run.rate_model, "pair_tables", ())
     whole_model = bool(pair_tables)
@@ -52,7 +56,11 @@ def _importance_section(
         '<section id="variable-importance" class="report-diagnostic">',
         "<h3>Variable importance</h3>",
         '<p class="muted">'
-        + ("Complete deployed scorer" if whole_model else "Original fit")
+        + (
+            "Original fitted rate tables, including pair corrections"
+            if whole_model
+            else "Original fit"
+        )
         + " · training data · five shuffles per predictor. "
         "Larger increases in mean deviance indicate greater importance.</p>",
     ]
@@ -73,19 +81,76 @@ def _importance_section(
                 "split",
             }
         ) + (project.data.split.column,)
-        # Older desktop caches describe only the GLM. Until a cache carries
-        # scorer provenance, a pair report must compute its own complete score.
-        if importance is None or whole_model:
+        # Older desktop caches describe only the GLM. A pair report therefore
+        # recomputes unless current scorer provenance is supplied separately.
+        cached_complete_scorer = bool(
+            importance_metadata
+            and importance_metadata.get("scoring_basis")
+            == "complete frozen rate tables"
+        )
+        if importance is None or (whole_model and not cached_complete_scorer):
+            variables = list(run.fit.spec.main_effects)
+            variables.extend(
+                parent for table in pair_tables for parent in table.parents
+            )
+            outcome = train[run.fit.target].cast(pl.Float64).to_numpy()
+            weights = (
+                train[run.fit.weight_col].cast(pl.Float64).to_numpy()
+                if run.fit.weight_col
+                else None
+            )
+            if weights is not None and run.fit.divide_target_by_weight:
+                outcome = outcome / weights
+            indices, importance_metadata = importance_sample_indices(
+                train,
+                importance_sample_pct=importance_sample_pct,
+                seed=importance_seed,
+                outcome=outcome,
+                weights=weights,
+                family=run.fit.family,
+                variables=variables,
+            )
+            frozen = rate_model_for(project, run, [], base_rate_override=None)
+            score_frame = train if len(indices) == train.height else train[indices]
             importance = permutation_importance(
                 run.fit,
-                train,
+                score_frame,
                 repeats=5,
-                seed=42,
+                seed=importance_seed,
                 protected_columns=protected,
-                scorer=run.predict if whole_model else None,
+                scorer=(
+                    (lambda frame: frozen.predict(frame, exposure_col=None))
+                    if whole_model
+                    else None
+                ),
                 additional_variables=tuple(
                     parent for table in pair_tables for parent in table.parents
                 ),
+                importance_sample_pct=100.0,
+            )
+        if importance_metadata:
+            out.append(
+                '<p class="muted diagnostic-caption">Scored '
+                f'{int(importance_metadata["importance_rows"]):,} of '
+                f'{int(importance_metadata["full_training_rows"]):,} training rows '
+                f'({_number(importance_metadata["actual_pct"])}% of rows; '
+                f'{_number(100 * importance_metadata["weight_share"])}% of weight; '
+                f'seed {int(importance_metadata["seed"])}).</p>'
+            )
+            for reason in importance_metadata.get("fallback_reasons", []):
+                out.append(
+                    '<p class="muted diagnostic-caption">Full-data fallback: '
+                    f"{escape(str(reason))}</p>"
+                )
+            for warning in importance_metadata.get("support_warnings", []):
+                out.append(
+                    '<p class="muted diagnostic-caption">Coverage warning: '
+                    f"{escape(str(warning))}</p>"
+                )
+        elif importance is not None:
+            out.append(
+                '<p class="muted diagnostic-caption">Cached importance supplied; '
+                "its scoring-sample provenance was not recorded.</p>"
             )
         rows = (
             importance.sort(
@@ -99,7 +164,7 @@ def _importance_section(
                 permutation_importance_chart(
                     rows[:30],
                     title=(
-                        "Training permutation importance — complete deployed scorer"
+                        "Training permutation importance — original fitted rate tables, including pair corrections"
                         if whole_model
                         else "Training permutation importance — original fit"
                     ),
@@ -198,11 +263,20 @@ def fitted_diagnostics_section(
     train: pl.DataFrame,
     *,
     importance: pl.DataFrame | None = None,
+    importance_metadata: dict[str, Any] | None = None,
+    importance_sample_pct: float = 30.0,
+    importance_seed: int = 42,
 ) -> str:
     """Render original-fit importance and stored paths without modifying the run."""
-    return _importance_section(project, run, train, importance) + _coefficient_section(
-        run
-    )
+    return _importance_section(
+        project,
+        run,
+        train,
+        importance,
+        importance_metadata,
+        importance_sample_pct,
+        importance_seed,
+    ) + _coefficient_section(run)
 
 
 DIAGNOSTIC_CSS = """

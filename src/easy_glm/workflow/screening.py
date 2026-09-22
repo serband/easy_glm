@@ -532,6 +532,7 @@ def screen_variables(
         categorical
     ) * len(numeric)
     done = 0
+    category_confirmations = 0
     for i, a in enumerate(categorical):
         assert a.codes is not None
         for b in categorical[i + 1 :] + numeric:
@@ -553,6 +554,7 @@ def screen_variables(
             # sample always confirms a displayed flag; the pilot is not evidence.
             if score is None or score < max(0, correlation_threshold - 0.15):
                 continue
+            category_confirmations += 1
             if b.codes is not None:
                 score, count = _cramers_v(a.codes, b.codes, weights)
             else:
@@ -562,6 +564,13 @@ def screen_variables(
                 record(a.name, b.name, score, method, count)
     result["correlated"] = [item[2] for item in sorted(pairs, reverse=True)]
     result["correlated_count"] = pair_count
+    skipped_names = {row["variable"] for row in result["unsupported"]}
+    result["association_checked_count"] = len(names) - len(skipped_names)
+    result["association_skipped_count"] = len(skipped_names)
+    result["category_mixed_pairs_checked"] = category_pairs
+    result["category_mixed_pairs_confirmed"] = category_confirmations
+    result["category_level_limit"] = MAX_LEVELS
+    result["category_pilot_rows"] = len(pilot)
     result["leakage"].sort(key=lambda row: (-row["association"], row["variable"]))
     result["missing"].sort(key=lambda row: (-row["missing_share"], row["variable"]))
     if pair_count > PAIR_LIMIT:

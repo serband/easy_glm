@@ -2,6 +2,14 @@
 
 This is the user-facing record of useful new features and fixes.
 
+## Unreleased
+
+- Show metrics suited to each model family. Gini is a separate ranking measure, not a measure of prediction accuracy.
+- Estimate variable importance on 30% of training rows by default, with a choice of percentage. Small or sparse samples use all training rows; model fitting stays unchanged.
+- Fix Gaussian variable screening for targets that include negative values.
+- Include categorical and mixed-variable associations in reports, and make skipped checks clearer.
+- Use unassigned variables in interactions without adding them to the GLM main effects. Keep their bin settings and interaction tables when their role changes to unassigned.
+
 ## 0.471 — 18 September 2026
 
 - Fixed access-denied errors in feature selection by removing its temporary files.

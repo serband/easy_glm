@@ -17,6 +17,7 @@ def main() -> None:
     a = rng.choice(["low", "mid", "high"], size=size)
     b = rng.choice(["red", "blue", "green"], size=size)
     c = rng.choice(["urban", "rural", "coastal"], size=size)
+    d = rng.normal(size=size)
     mean = np.exp(
         0.1
         + 0.2 * x
@@ -29,6 +30,7 @@ def main() -> None:
             "A": a,
             "B": b,
             "C": c,
+            "D": d,
             "y": rng.poisson(mean).astype(float),
             "split": [1] * 180 + [0] * 40,
         }

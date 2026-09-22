@@ -196,3 +196,42 @@ def test_categorical_null_and_other_values_keep_their_type():
         assert row["importance"] == pytest.approx((losses - baseline).mean(), abs=1e-13)
     assert frame["noise"].to_list() == labels
     assert frame["noise"].dtype == pl.Utf8
+
+
+def test_sampling_changes_only_scoring_rows_and_reuses_them_for_every_variable():
+    rng = np.random.default_rng(81)
+    n = 4_000
+    x = rng.normal(size=n)
+    noise = rng.normal(size=n)
+    frame = pl.DataFrame({"x": x, "noise": noise, "y": 2 * x + rng.normal(size=n)})
+    fit = fit_glm(
+        frame,
+        DesignSpec(
+            {
+                "x": StepEncoder("x", [-0.5, 0.5]),
+                "noise": StepEncoder("noise", [-0.5, 0.5]),
+            }
+        ),
+        "y",
+        family="normal",
+        link="identity",
+        alpha=0.001,
+    )
+    before = pickle.dumps(fit)
+    row_counts = []
+
+    def scorer(sample):
+        row_counts.append(sample.height)
+        return fit.predict(sample)
+
+    permutation_importance(
+        fit,
+        frame,
+        repeats=3,
+        importance_sample_pct=30,
+        scorer=scorer,
+    )
+    # One baseline plus three shuffles for each of two variables.
+    assert row_counts == [1_200] * 7
+    assert fit.n_train_rows == n
+    assert pickle.dumps(fit) == before

@@ -1,5 +1,28 @@
 import { test, expect } from '@playwright/test';
 
+test('pair selector groups unassigned source variables without promoting them', async ({
+    page,
+}) => {
+    const saves = [];
+    page.on('request', (request) => {
+        if (request.method() === 'POST' && request.url().endsWith('/api/models/save'))
+            saves.push(request.postDataJSON());
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Model', exact: true }).click();
+    await page.getByLabel('New model name').fill(`Unassigned pair ${Date.now()}`);
+    const first = page.getByLabel('New pair first predictor');
+    await expect(first.locator('optgroup[label="Predictors"]')).toBeAttached();
+    await expect(first.locator('optgroup[label="Unassigned"] option[value="D"]')).toBeAttached();
+    await first.selectOption('A');
+    await page.getByLabel('New pair second predictor').selectOption('D');
+    await page.getByRole('button', { name: 'Add interaction' }).click();
+    await page.getByRole('button', { name: 'Create model' }).click();
+    const fields = saves.at(-1).fields;
+    expect(fields.predictors).not.toContain('D');
+    expect(fields.pair_stages[0]).toMatchObject({ a: 'A', b: 'D' });
+});
+
 test('fitted stages expose pair edits, suffix status, refit impact and narrow layout', async ({
     page,
 }) => {

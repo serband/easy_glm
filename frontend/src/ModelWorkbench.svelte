@@ -165,8 +165,11 @@
     }
     async function includePairDraft({ a, b }) {
         if (pairMethod !== 'sequential') return false;
-        if (a === b || !wb.predictors.includes(a) || !wb.predictors.includes(b)) {
-            throw new Error('Choose two distinct predictors available on Variables.');
+        const eligible = wb.pair_candidates
+            ? [...wb.pair_candidates.predictors, ...wb.pair_candidates.unassigned]
+            : wb.predictors;
+        if (a === b || !eligible.includes(a) || !eligible.includes(b)) {
+            throw new Error('Choose two distinct predictors or unassigned variables.');
         }
         const pairs = cfg.pair_stages || [];
         const exists = pairs.some(
@@ -965,6 +968,7 @@
                                 stages={cfg.pair_stages || []}
                                 onchange={(stages) => (cfg = { ...cfg, pair_stages: stages })}
                                 eligible={wb.predictors}
+                                groups={wb.pair_candidates}
                                 defaults={wb.pair_stage_defaults}
                                 statuses={wb.stage_statuses?.[selected] || []}
                                 {job}
@@ -1282,12 +1286,19 @@
                         >
                     </div>
                     <div class="metrics-grid">
-                        {#each [['ae', 'Actual / expected'], ['gini', 'Normalised Gini'], ['deviance_explained', 'Deviance explained'], ['mean_deviance', 'Mean deviance']] as [key, label]}<div
+                        {#each (result.diagnostic_info?.metric_definitions?.[subset] || []).filter((definition) => definition.section === 'primary') as definition}<div
                             >
-                                <span>{label}</span><strong
-                                    >{num(result.metrics[subset]?.[key])}</strong
+                                <span>{definition.label}</span><strong
+                                    >{num(result.metrics[subset]?.[definition.key])}</strong
                                 >
                             </div>{/each}
+                    </div>
+                    <div class="result-totals">
+                        {#each (result.diagnostic_info?.metric_definitions?.[subset] || []).filter((definition) => definition.section === 'secondary') as definition}<span
+                                >{definition.label}: <b
+                                    >{num(result.metrics[subset]?.[definition.key])}</b
+                                ></span
+                            >{/each}
                     </div>
                     <div class="result-totals">
                         {#each ['rows', 'exposure', 'actual', 'expected'] as key}<span
@@ -1295,6 +1306,10 @@
                             >{/each}
                     </div>
                     <p class="help-text">{result.diagnostic_info?.gini_note || ''}</p>
+                    {#if Object.keys(result.metrics[subset]?.metric_reasons || {}).length}<p
+                            class="help-text"
+                            >{Object.values(result.metrics[subset].metric_reasons).join(' ')}</p
+                        >{/if}
                 {/if}
                 <div class="workflow-tabs" role="tablist" aria-label="Diagnostics views">
                     {#each [['variable', 'A/E by variable'], ['time', 'Time stability'], ['pair', 'A/E by pair'], ['lift', 'Lift'], ['residual', 'Residual factors'], ['importance', 'Variable importance'], ['path', 'Regularisation path'], ['coefficients', 'Coefficients']] as [key, label]}<button

@@ -22,6 +22,7 @@
         pathLength = 20,
         repeats = 5,
         seed = 42,
+        importanceSamplePct = 30,
         includeUnassigned = true,
         divideTarget = false,
         divideTouched = false;
@@ -54,6 +55,7 @@
         n_alphas: Number(pathLength),
         repeats: Number(repeats),
         seed: Number(seed),
+        importance_sample_pct: Number(importanceSamplePct),
         include_unassigned: includeUnassigned,
     };
     $: scope = JSON.stringify([context, options]);
@@ -86,7 +88,10 @@
         options.repeats <= 20 &&
         Number.isInteger(options.seed) &&
         options.seed >= 0 &&
-        options.seed <= 4294967295;
+        options.seed <= 4294967295 &&
+        Number.isFinite(options.importance_sample_pct) &&
+        options.importance_sample_pct > 0 &&
+        options.importance_sample_pct <= 100;
     $: filtered = (result?.rows || []).filter(
         (row) =>
             (!query ||
@@ -353,7 +358,8 @@
             <p>
                 For each variable, we fit a GLM with four shuffled copies and a random column.
                 Five-fold cross-validation chooses the penalty from {num(pathLength)} values. We then
-                compare permutation importance using all training rows.
+                compare permutation importance on one shared, deterministic scoring sample. Fitting,
+                cross-validation, encoders and control construction still use all training rows.
             </p>
             <p>
                 “Signal detected” means the variable scores above every control and zero. This isn't
@@ -463,6 +469,17 @@
                     /></label
                 >
                 <label
+                    >Training rows to score (%)<input
+                        aria-label="Feature selection importance sample percentage"
+                        type="number"
+                        min="0.01"
+                        max="100"
+                        step="1"
+                        bind:value={importanceSamplePct}
+                        disabled={disabled || pending}
+                    /></label
+                >
+                <label
                     >Random seed<input
                         aria-label="Feature selection seed"
                         type="number"
@@ -477,7 +494,8 @@
         </details>
         {#if !validOptions}<p role="alert" class="selection-error">
                 Check the family/link, Tweedie power (1–2), L1 ratio (above 0 through 1), path
-                length (2–100), repeats (1–20) and whole seed (0–4,294,967,295).
+                length (2–100), repeats (1–20), scoring percentage (above 0 through 100) and whole
+                seed (0–4,294,967,295).
             </p>{/if}
         <div class="selection-actions">
             <button
@@ -521,9 +539,18 @@
                         >{num(result.tested_count)} of {num(result.candidate_count)} variables tested</b
                     ><span
                         >{num(result.training_rows)} training rows · {num(result.cv_folds || 5)} CV folds
-                        · {num(result.repeats ?? repeats)} importance repeats</span
+                        · {num(result.importance_rows)} rows scored ({num(result.actual_pct)}%) ·
+                        {num((result.weight_share ?? 1) * 100)}% of weight · {num(
+                            result.repeats ?? repeats,
+                        )} importance repeats · resolved link {result.link}</span
                     >
                 </div>
+                {#each result.fallback_reasons || [] as reason}<p class="selection-method">
+                        Full-data fallback: {reason}
+                    </p>{/each}
+                {#each result.support_warnings || [] as warning}<p class="selection-method">
+                        Coverage warning: {warning}
+                    </p>{/each}
                 {#if result.random_definition}<p class="selection-method">
                         Random control: {result.random_definition}.
                     </p>{/if}

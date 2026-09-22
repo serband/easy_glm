@@ -11,6 +11,7 @@ from typing import Literal
 from urllib.parse import quote
 
 import polars as pl
+from pydantic import field_validator
 
 from easy_glm.desktop.diagnostic_views import compatible
 from easy_glm.desktop.modeling import Revision
@@ -26,6 +27,14 @@ ExportFormat = Literal["xlsx", "easyglm", "python", "python_score", "html"]
 class ExportRequest(Revision):
     format: ExportFormat
     challenger: str | None = None
+    importance_sample_pct: float = 30.0
+
+    @field_validator("importance_sample_pct", mode="before")
+    @classmethod
+    def validate_sample(cls, value: float) -> float:
+        from easy_glm.workflow.importance_sampling import validate_importance_sample_pct
+
+        return validate_importance_sample_pct(value)
 
 
 @dataclass(frozen=True)
@@ -77,6 +86,8 @@ def export_attachment(
     name: str,
     format: ExportFormat,
     challenger: str | None = None,
+    *,
+    importance_sample_pct: float = 30.0,
 ) -> ExportAttachment:
     """Render a captured project/fit snapshot; never fit or change source artifacts.
 
@@ -111,7 +122,7 @@ def export_attachment(
     if format == "html":
         from easy_glm.desktop.importance_cache import read_packet
 
-        packet = read_packet(sources[name])
+        packet = read_packet(sources[name], importance_sample_pct=importance_sample_pct)
         importance = _report_importance(
             packet, run.train_rows, pair_stages=bool(run.config.pair_stages)
         )
@@ -123,6 +134,8 @@ def export_attachment(
                 champion=name,
                 challenger=challenger,
                 importance=importance,
+                importance_sample_pct=importance_sample_pct,
+                importance_metadata=packet if importance is not None else None,
             ).encode("utf-8"),
             prefix + "_report.html",
             "text/html",

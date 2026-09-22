@@ -79,10 +79,13 @@ class ReviewJobs:
 
             if is_importance(request):
                 from easy_glm.desktop.importance_cache import (
+                    options_from_request,
+                )
+                from easy_glm.desktop.importance_cache import (
                     read_packet as read_importance,
                 )
 
-                packet = read_importance(source)
+                packet = read_importance(source, **options_from_request(request))
                 data = packet
             else:
                 packet = read_packet(project, source, request)

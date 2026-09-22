@@ -14,6 +14,7 @@ from easy_glm.workflow.diagnostics import (
     double_lift,
     gini,
     lift_table,
+    metric_definitions,
     predictions_effectively_equal,
     relativity_diff,
     totals,
@@ -33,15 +34,18 @@ def compatible(a: ModelRun, b: ModelRun) -> None:
 
 
 def safe_gini(actual: Any, expected: Any, weight: Any) -> float | None:
-    if np.any(np.asarray(actual) < 0) or np.any(np.asarray(expected) < 0):
-        return None
     value = gini(actual, expected, weight)
     return value if np.isfinite(value) else None
 
 
 def metadata(run: ModelRun, frame: pl.DataFrame) -> dict[str, Any]:
     actual, expected, weight = totals(frame, run.config, run.predict(frame))
-    nonnegative = bool(np.all(actual >= 0) and np.all(expected >= 0))
+    nonnegative = bool(
+        np.all(np.isfinite(actual))
+        and np.all(np.isfinite(expected))
+        and np.all(actual >= 0)
+        and np.all(expected >= 0)
+    )
     note = (
         "Exposure-weighted normalised Gini measures ordering by predicted rate; it is not ROC AUC."
         if nonnegative
@@ -63,6 +67,14 @@ def metadata(run: ModelRun, frame: pl.DataFrame) -> dict[str, Any]:
             if isinstance(metrics, dict)
         ],
         "gini_note": note,
+        "metric_definitions": {
+            subset: metric_definitions(
+                run.config.family,
+                run.config.tweedie_power,
+                metrics,
+            )
+            for subset, metrics in run.metrics.items()
+        },
         "ratio_suitable": nonnegative,
         "variables": [
             {

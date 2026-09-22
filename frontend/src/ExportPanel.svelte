@@ -7,6 +7,7 @@
         downloadProject,
         saveDownload;
     let selected = '',
+        importanceSamplePct = 30,
         challenger = '',
         pending = '',
         error = '',
@@ -45,6 +46,7 @@
                         revision: current.revision,
                         format,
                         challenger: format === 'html' ? reportChallenger || null : null,
+                        importance_sample_pct: format === 'html' ? Number(importanceSamplePct) : 30,
                     },
                     true,
                 );
@@ -109,6 +111,20 @@
                 <div>
                     <h3>HTML report</h3>
                     <p>Diagnostics, rate tables and model comparison.</p>
+                    <label class="report-comparison">
+                        Training rows for report importance (%)
+                        <input
+                            type="number"
+                            min="0.01"
+                            max="100"
+                            step="any"
+                            bind:value={importanceSamplePct}
+                            disabled={!!pending}
+                        />
+                    </label>
+                    <p class="help-text">
+                        Small or sparse samples use all training rows. Fitting is unchanged.
+                    </p>
                     {#if names.length > 1}<label class="report-comparison"
                             >Compare with<select
                                 aria-label="Report comparison model"
@@ -122,7 +138,13 @@
                             </select></label
                         >{/if}
                 </div>
-                <button onclick={() => download('html')} disabled={!!pending}>
+                <button
+                    onclick={() => download('html')}
+                    disabled={!!pending ||
+                        !Number.isFinite(Number(importanceSamplePct)) ||
+                        Number(importanceSamplePct) <= 0 ||
+                        Number(importanceSamplePct) > 100}
+                >
                     {pending === 'html' ? 'Preparing report…' : 'Download report (.html)'}
                 </button>
             </div>

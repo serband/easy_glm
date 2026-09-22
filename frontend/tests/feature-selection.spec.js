@@ -59,6 +59,7 @@ test('one-way screen uses training rows and stages reviewed role changes', async
         n_alphas: 20,
         repeats: 5,
         seed: 42,
+        importance_sample_pct: 30,
         include_unassigned: true,
     });
     expect(submitted.setup.binning.default_bins).toBe(6);

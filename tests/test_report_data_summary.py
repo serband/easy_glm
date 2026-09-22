@@ -9,6 +9,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
+from easy_glm.workflow._report_data import _predictor_associations
 from easy_glm.workflow.data_summary import data_summary
 
 
@@ -73,6 +74,26 @@ def test_numeric_categorical_override_preserves_levels_and_excludes_correlation(
     assert label["histogram"][0] == {"label": "<risk>", "count": 2}
     assert result["correlations"]["names"] == ["x"]
     assert result["correlations"]["excluded_names"] == ["code", "label"]
+
+
+def test_report_checks_real_string_categories_and_mixed_pairs_separately():
+    category = ["low", "high"] * 60
+    frame = pl.DataFrame(
+        {
+            "category": category,
+            "duplicate": ["A" if value == "low" else "B" for value in category],
+            "numeric": [0.0 if value == "low" else 10.0 for value in category],
+        }
+    )
+    html = _predictor_associations(
+        frame,
+        ["category", "duplicate", "numeric"],
+        {"category", "duplicate"},
+    )
+    assert "Bias-corrected Cramér’s V" in html
+    assert "Cross-validated group association" in html
+    assert "Checked 3 of 3 eligible pairs; skipped 0" in html
+    assert "not Pearson correlations" in html
 
 
 def test_categorical_histogram_bounds_levels_without_losing_observations():

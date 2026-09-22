@@ -37,8 +37,10 @@ test('training importance is automatic, cached by original fit and compatible wi
         page.getByRole('heading', { name: 'Permutation importance', exact: true }),
     ).toBeVisible();
     await expect(
-        page.getByText('Training · Original fit · 5 shuffles per variable', { exact: true }),
+        page.getByText(/Training · Original fit · 5 shuffles per variable · .* rows/),
     ).toBeVisible();
+    await expect(page.getByLabel('Importance sample percentage')).toHaveValue('30');
+    await expect(page.getByLabel('Importance sample seed')).toHaveValue('42');
     await expect(
         page.locator('.model-workbench .metrics-grid,.model-workbench .result-totals'),
     ).toHaveCount(0);
@@ -46,6 +48,7 @@ test('training importance is automatic, cached by original fit and compatible wi
     expect(starts).toHaveLength(1);
     expect(starts[0].subset).toBe('train');
     expect(starts[0]).not.toHaveProperty('challenger');
+    expect(starts[0].options).toEqual({ importance_sample_pct: 30, seed: 42 });
     const rank = await chart.locator('.importance-row').evaluateAll((rows) =>
         rows.map((row) => ({
             variable: row.getAttribute('data-variable'),
@@ -116,6 +119,8 @@ test('training importance is automatic, cached by original fit and compatible wi
     await expect(chart).toBeVisible();
     expect(starts.at(-1).action).toBe('coefficients');
     expect(starts.at(-1).options.view).toBe('importance');
+    expect(starts.at(-1).options.importance_sample_pct).toBe(30);
+    expect(starts.at(-1).options.seed).toBe(42);
     expect(starts.at(-1)).not.toHaveProperty('challenger');
     expect(await chart.innerHTML()).toBe(initialChart);
     await page.unroute('**/api/review/Frequency');

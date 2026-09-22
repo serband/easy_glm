@@ -236,7 +236,7 @@ class ModelRun:
     fit: GLMFit
     rate_model: RateModel
     tables: dict[str, pl.DataFrame]
-    metrics: dict[str, dict[str, float]]
+    metrics: dict[str, dict[str, Any]]
     project_snapshot: dict[str, Any]
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -387,7 +387,7 @@ def stage2_alpha(cfg: ModelConfig) -> float | None:
 
 def snapshot_metrics(
     fit: GLMFit,
-    metrics: dict[str, dict[str, float]],
+    metrics: dict[str, dict[str, Any]],
     *,
     cv_seed: int | None = None,
 ) -> dict[str, Any]:

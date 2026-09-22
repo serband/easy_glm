@@ -159,7 +159,8 @@ def test_draft_rename_and_options_fingerprint_do_not_apply(client, monkeypatch):
     assert recipe["project"]["models"] == {}
     assert recipe["project"]["champion"] is None
     assert recipe["project"]["exploration"] == {}
-    assert recipe["options"] == workers[0].options
+    expected_options = {**workers[0].options, "link": "log"}
+    assert recipe["options"] == expected_options
     assert recipe["result"] == packet["result"]
     assert saved == before
     assert client.get("/api/jobs").json() == {}
@@ -188,6 +189,9 @@ def test_draft_rename_and_options_fingerprint_do_not_apply(client, monkeypatch):
         {"repeats": 21},
         {"seed": -1},
         {"seed": True},
+        {"importance_sample_pct": 0},
+        {"importance_sample_pct": True},
+        {"importance_sample_pct": 101},
         {"include_unassigned": "yes"},
         {"unknown": 1},
     ],

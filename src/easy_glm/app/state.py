@@ -120,7 +120,8 @@ _SAMPLE_KEYS = ("sample_rows", "sample_seed")
 #: reason above applies to a run pickled before this number.
 #: 10 — pair-stage configs and artifacts gained automatic search state. Old
 #: staged pickles lack those fields, so persisted runs need a format miss.
-PERSIST_FORMAT = 10
+#: 11 — fitted metrics include family-specific losses and shared validity rules.
+PERSIST_FORMAT = 11
 #: A marker left by *another* session is only removed once it is this old:
 #: younger than this it may belong to a fit that is still running in another
 #: tab, and taking its marker away would cost that tab its own warning.

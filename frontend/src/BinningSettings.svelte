@@ -56,11 +56,7 @@
                 };
             else if (setting.method === 'cuts') {
                 const points = cuts(cutsText[name] ?? setting.cuts.join(', '));
-                if (
-                    !points.length &&
-                    factorKind(name) === 'step' &&
-                    (setup.roles.predictor || []).includes(name)
-                )
+                if (!points.length && factorKind(name) === 'step' && eligibleRoles.includes(name))
                     throw new Error(`${name}: enter at least one cut for an active step factor.`);
                 overrides[name] = { method: 'cuts', cuts: points };
             } else if (setting.method === 'integer') {
@@ -232,11 +228,12 @@
         const clamp = state?.binning_columns?.[name]?.clamp;
         return Array.isArray(clamp) && clamp.length === 2 ? `${clamp[0]} to ${clamp[1]}` : '';
     }
+    $: eligibleRoles = [...(setup.roles.predictor || []), ...(setup.roles.unassigned || [])];
     $: numericNames =
         state?.columns
             .filter(
                 (column) =>
-                    (setup.roles.predictor || []).includes(column.name) &&
+                    eligibleRoles.includes(column.name) &&
                     (setup.types.categorical || []).includes(column.name) === false &&
                     (numericColumn(column) || (setup.types.numeric || []).includes(column.name)),
             )
@@ -334,7 +331,7 @@
                     </div>
                 </div>
                 <p class="help-text">
-                    {filtered.length} of {names.length} numeric predictors and saved settings
+                    {filtered.length} of {names.length} numeric variables and saved settings
                 </p>
             </div>
             {#if selected}<div class="binning-editor">
@@ -407,7 +404,7 @@
                     {/if}
                 </div>{/if}
         </div>
-    {:else}<p class="help-text">Assign a numeric predictor above to configure its bins.</p>{/if}
+    {:else}<p class="help-text">No numeric predictor or unassigned variable is available.</p>{/if}
     {#if validation}<p role="alert" class="binning-error">{validation}</p>{/if}
     {#if previewBusy}<p class="help-text">Calculating intervals from training rows…</p>{/if}
     {#if previewError}<p role="alert" class="binning-error">{previewError}</p>{/if}

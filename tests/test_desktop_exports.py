@@ -140,6 +140,36 @@ def test_report_reuses_original_fit_importance_cache(export_session, monkeypatch
     assert "Training permutation importance — original fit" in response.text
 
 
+def test_report_sample_setting_reaches_renderer_without_changing_project(
+    export_session, monkeypatch
+):
+    client, _, _, _ = export_session
+    before = client.get("/api/project").json()
+    captured = {}
+
+    def render(*args, **kwargs):
+        captured.update(kwargs)
+        return "<html>sample setting checked</html>"
+
+    monkeypatch.setattr("easy_glm.desktop.exports.to_report_html", render)
+    response = download(client, "html", importance_sample_pct=55)
+    assert response.status_code == 200, response.text
+    assert captured["importance_sample_pct"] == 55
+    assert client.get("/api/project").json() == before
+
+
+@pytest.mark.parametrize("percentage", [0, -1, 101, True, "30"])
+def test_report_rejects_invalid_sample_setting(percentage):
+    from pydantic import ValidationError
+
+    from easy_glm.desktop.exports import ExportRequest
+
+    with pytest.raises(ValidationError):
+        ExportRequest(
+            session_id="s", revision=0, format="html", importance_sample_pct=percentage
+        )
+
+
 @pytest.mark.parametrize(
     "row",
     [

@@ -43,6 +43,7 @@ from .diagnostics import (
     double_lift,
     gini,
     lift_table,
+    metric_definitions,
     relativity_diff,
     totals,
     unit_values,
@@ -57,15 +58,11 @@ from .run import ModelRun
 DEFAULT_DIFF_TOL = 0.01
 
 #: metrics shown side by side, as ``(row label, key in ModelRun.metrics, digits)``
-_METRIC_ROWS = [
+_TOTAL_ROWS = [
     ("rows", "rows", 0),
     ("exposure", "exposure", 0),
     ("actual", "actual", 1),
     ("expected", "expected", 1),
-    ("A/E", "ae", 4),
-    ("Gini (normalised)", "gini", 4),
-    ("deviance explained", "deviance_explained", 4),
-    ("mean deviance", "mean_deviance", 5),
 ]
 
 
@@ -199,7 +196,33 @@ def _metrics_table(runs: dict[str, ModelRun], names: list[str]) -> str:
     ]
     head = "".join(f'<th class="num">{_esc(n)} · {s}</th>' for n, s in cols)
     body: list[str] = []
-    for label, key, digits in _METRIC_ROWS:
+    rows = list(_TOTAL_ROWS)
+    row_for_key = {key: index for index, (_label, key, _digits) in enumerate(rows)}
+    for name, subset in cols:
+        run = runs[name]
+        for definition in metric_definitions(
+            run.config.family,
+            run.config.tweedie_power,
+            run.metrics[subset],
+        ):
+            key = definition["key"]
+            if key not in row_for_key:
+                row_for_key[key] = len(rows)
+                rows.append(
+                    (
+                        definition["label"],
+                        definition["key"],
+                        definition["digits"],
+                    )
+                )
+            elif rows[row_for_key[key]][0] != definition["label"]:
+                generic = {
+                    "mean_deviance": "Mean deviance (family-specific)",
+                    "brier": "Squared probability / proportion error",
+                }.get(key, rows[row_for_key[key]][0])
+                _label, metric_key, digits = rows[row_for_key[key]]
+                rows[row_for_key[key]] = (generic, metric_key, digits)
+    for label, key, digits in rows:
         row = "".join(
             f'<td class="num">{_esc(_num(runs[n].metrics[s].get(key), digits))}</td>'
             for n, s in cols
@@ -306,11 +329,12 @@ def _summary_section(
         "</div>"
         f"{note}"
         "<h3>Metrics</h3>"
-        '<p class="muted">A/E is actual over expected on totals — 1.00 means the '
-        "model charges exactly what happened. Gini is normalised (1.00 = the best "
-        "possible ordering of these rows). Deviance explained is the share of the "
-        "null deviance the model removes. The holdout column is the one to trust: "
-        "those rows were not used to fit.</p>"
+        '<p class="muted">The headline measures follow each model family and are '
+        "computed from the unit response and the currently deployed table predictions. "
+        "Normalised Gini is a secondary ordering measure and is blank when its signed "
+        "or constant-response denominator is not meaningful. Deviance explained uses "
+        "the separate offset-aware null model fitted on training rows; it is distinct "
+        "from Gaussian R-squared. The holdout rows were not used to fit.</p>"
         f"{_metrics_table(runs, names)}"
         f"{_snapshot_note(runs, names)}"
         "</section>"
@@ -965,6 +989,9 @@ def to_report_html(
     champion: str,
     challenger: str | None = None,
     importance: pl.DataFrame | None = None,
+    importance_sample_pct: float = 30.0,
+    importance_seed: int = 42,
+    importance_metadata: dict[str, Any] | None = None,
 ) -> str:
     """One self-contained HTML page describing ``runs[champion]``.
 
@@ -1024,7 +1051,15 @@ def to_report_html(
             subsets,
             challenger_pred or None,
             challenger or "",
-            fitted_diagnostics_section(project, run, train, importance=importance),
+            fitted_diagnostics_section(
+                project,
+                run,
+                train,
+                importance=importance,
+                importance_sample_pct=importance_sample_pct,
+                importance_seed=importance_seed,
+                importance_metadata=importance_metadata,
+            ),
         ),
         inter,
         pair_sections,

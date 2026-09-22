@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 from html import escape
 from typing import Any
 
+import numpy as np
 import polars as pl
 
 from easy_glm.core.design import CategoricalEncoder
@@ -13,6 +15,7 @@ from easy_glm.core.design import CategoricalEncoder
 from ._profile_svg import correlation_matrix, mini_histogram
 from .data_summary import data_summary
 from .run import ModelRun
+from .screening import MAX_LEVELS, _cramers_v, _group_association
 
 
 def _number(value: Any) -> str:
@@ -160,6 +163,138 @@ def _correlations(result: dict[str, Any]) -> str:
     return "".join(out)
 
 
+def _predictor_associations(
+    train: pl.DataFrame, predictors: list[str], categorical: set[str]
+) -> str:
+    """Report category/category and category/numeric associations separately."""
+    available = [name for name in predictors if name in train.columns]
+    categorical = categorical.intersection(available)
+    candidate_pairs = [
+        (left, right)
+        for index, left in enumerate(available)
+        for right in available[index + 1 :]
+        if left in categorical or right in categorical
+    ]
+    if not candidate_pairs:
+        return ""
+    rng = np.random.default_rng(42)
+    sample_size = min(train.height, 10_000)
+    indices = (
+        np.arange(train.height)
+        if sample_size == train.height
+        else np.sort(rng.choice(train.height, sample_size, replace=False))
+    )
+    frame = train[indices]
+    weights = np.ones(sample_size, dtype=np.float64)
+    folds = np.arange(sample_size, dtype=np.int64) % 2
+    rng.shuffle(folds)
+    codes: dict[str, np.ndarray | None] = {}
+    numeric: dict[str, np.ndarray] = {}
+    invalid: dict[str, str] = {}
+    for name in available:
+        series = frame[name]
+        if name in categorical:
+            encoded = (
+                series.cast(pl.String)
+                .cast(pl.Categorical)
+                .to_physical()
+                .cast(pl.Int64)
+                .fill_null(-1)
+                .to_numpy()
+            )
+            present = encoded >= 0
+            compact = np.full(sample_size, -1, dtype=np.int64)
+            if present.any():
+                _, compact[present] = np.unique(encoded[present], return_inverse=True)
+            levels = int(np.unique(compact[present]).size)
+            if levels < 2:
+                invalid[name] = "constant or fewer than two observed categories"
+                codes[name] = None
+            elif levels > MAX_LEVELS or int(present.sum()) < 5 * levels:
+                invalid[name] = (
+                    f"too many or too sparse categories (limit {MAX_LEVELS} levels)"
+                )
+                codes[name] = None
+            else:
+                codes[name] = compact
+        elif series.dtype.is_numeric():
+            numeric[name] = series.cast(pl.Float64, strict=False).to_numpy()
+        else:
+            invalid[name] = "not numeric and not represented as a fitted category"
+
+    rows: list[dict[str, Any]] = []
+    skipped: Counter[str] = Counter()
+    for left, right in candidate_pairs:
+        if left in invalid or right in invalid:
+            skipped[invalid.get(left, invalid.get(right, "unsupported"))] += 1
+            continue
+        if left in categorical and right in categorical:
+            left_codes, right_codes = codes[left], codes[right]
+            assert left_codes is not None and right_codes is not None
+            score, count = _cramers_v(left_codes, right_codes, weights)
+            method = "Bias-corrected Cramér’s V"
+        else:
+            category = left if left in categorical else right
+            number = right if category == left else left
+            category_codes = codes[category]
+            if category_codes is None or number not in numeric:
+                skipped[invalid.get(number, "unsupported numeric predictor")] += 1
+                continue
+            score, count = _group_association(
+                category_codes, numeric[number], weights, folds
+            )
+            method = "Cross-validated group association"
+        if score is None:
+            skipped["too little shared data, variation or category support"] += 1
+            continue
+        rows.append(
+            {
+                "left": left,
+                "right": right,
+                "association": score,
+                "method": method,
+                "rows": count,
+            }
+        )
+    rows.sort(key=lambda row: (-row["association"], row["left"], row["right"]))
+    out = [
+        "<h3>Category and mixed predictor associations</h3>",
+        '<p class="muted">Category/category pairs use bias-corrected Cramér’s V. '
+        "Category/numeric pairs use out-of-fold group means. These nonnegative scores "
+        "are not Pearson correlations and are shown separately. Each training row has "
+        "equal weight; these are not exposure-weighted associations.</p>",
+        f'<p class="muted">Checked {len(rows):,} of {len(candidate_pairs):,} eligible pairs; '
+        f"skipped {sum(skipped.values()):,}. Categories are capped at {MAX_LEVELS} levels. "
+        f"The deterministic calculation uses {sample_size:,} of {train.height:,} training rows "
+        "(seed 42).</p>",
+    ]
+    if rows:
+        body = "".join(
+            f'<tr><th scope="row">{escape(row["left"])}</th>'
+            f'<td>{escape(row["right"])}</td><td>{escape(row["method"])}</td>'
+            f'<td class="num">{_number(row["association"])}</td>'
+            f'<td class="num">{row["rows"]:,}</td></tr>'
+            for row in rows[:100]
+        )
+        out.append(
+            '<div class="scroll"><table><thead><tr><th>First predictor</th>'
+            '<th>Second predictor</th><th>Method</th><th class="num">Association</th>'
+            f'<th class="num">Rows</th></tr></thead><tbody>{body}</tbody></table></div>'
+        )
+        if len(rows) > 100:
+            out.append(
+                f'<p class="muted">Showing the strongest 100 of {len(rows):,} checked pairs.</p>'
+            )
+    else:
+        out.append('<p class="muted">No category or mixed pair could be checked.</p>')
+    if skipped:
+        reasons = "; ".join(
+            f"{count:,} {reason}" for reason, count in sorted(skipped.items())
+        )
+        out.append(f'<p class="muted">Skipped: {escape(reasons)}.</p>')
+    return "".join(out)
+
+
 def data_summary_section(run: ModelRun, train: pl.DataFrame, holdout_rows: int) -> str:
     """Describe the champion's chosen columns without touching the fitted model."""
     predictors = list(dict.fromkeys(run.config.predictors + run.spec.required_columns))
@@ -224,6 +359,7 @@ def data_summary_section(run: ModelRun, train: pl.DataFrame, holdout_rows: int) 
         "Category charts show up to eight levels, with the rest grouped together.</p>"
         + _shape_table(rows)
         + _correlations(profile["correlations"])
+        + _predictor_associations(train, predictors, categorical)
         + "</section>"
     )
 

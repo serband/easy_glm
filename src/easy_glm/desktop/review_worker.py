@@ -255,16 +255,23 @@ def review(
     from easy_glm.desktop.importance_cache import is_importance
 
     if is_importance(request):
-        from easy_glm.desktop.importance_cache import build_packet, read_packet
+        from easy_glm.desktop.importance_cache import (
+            build_packet,
+            options_from_request,
+            read_packet,
+        )
 
+        importance_options = options_from_request(request)
         if source is not None:
-            cached = read_packet(source)
+            cached = read_packet(source, **importance_options)
             if cached is not None:
                 return cached
             original_project = source / "project.json"
             if original_project.exists():
                 project = Project.from_json(original_project)
-        return build_packet(project, run, prepare(project, raw), source)
+        return build_packet(
+            project, run, prepare(project, raw), source, **importance_options
+        )
     frame = prepare(project, raw)
     rebuild_rate_model(project, run, frame)
     if challenger is not None:

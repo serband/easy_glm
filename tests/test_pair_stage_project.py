@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from easy_glm.workflow.project import (
     Adjustment,
+    Derived,
     Interaction,
     PairStageConfig,
     Project,
@@ -48,14 +49,14 @@ def test_pair_validation_rejects_reversed_duplicate_mixing_and_role() -> None:
     errors = p.validate("m")
     assert any("listed twice" in e for e in errors)
     assert any("cannot be mixed" in e for e in errors)
-    assert any("must have predictor role" in e for e in errors)
+    assert any("must be a predictor or unassigned" in e for e in errors)
     cfg.interactions.clear()
     cfg.pair_stages.pop()
     cfg.family = "gaussian"
     assert any("Poisson/log and Tweedie/log" in e for e in p.validate("m"))
 
 
-def test_rename_and_role_removal_update_stages_and_adjustments() -> None:
+def test_rename_then_ignore_removes_stages_and_pair_adjustments() -> None:
     p = project()
     cfg = p.models["m"]
     cfg.adjustments.append(
@@ -67,6 +68,45 @@ def test_rename_and_role_removal_update_stages_and_adjustments() -> None:
     p.apply_role_change("A_new", "ignore")
     assert cfg.pair_stages == []
     assert cfg.adjustments == []
+
+
+def test_unassigned_pair_parents_are_valid_without_becoming_main_effects() -> None:
+    p = project()
+    cfg = p.models["m"]
+    cfg.predictors = []
+    cfg.pair_method = "sequential_catboost"
+    p.apply_role_change("A", "unassigned")
+    p.apply_role_change("B", "unassigned")
+    assert [(stage.a, stage.b) for stage in cfg.pair_stages] == [("A", "B")]
+    assert cfg.predictors == []
+    assert not p.validate("m")
+    saved = p.to_dict()
+    assert "A" not in saved["data"]["roles"]
+    assert "B" not in saved["data"]["roles"]
+    assert not Project.from_dict(saved).validate("m")
+
+    cfg.pair_method = "legacy_glm"
+    cfg.pair_stages.clear()
+    assert any("no predictors" in problem for problem in p.validate("m"))
+
+
+def test_pair_parent_validation_rejects_model_overrides_and_generated_columns() -> None:
+    p = project()
+    cfg = p.models["m"]
+    p.data.roles.pop("A")
+    p.data.roles.pop("B")
+    cfg.target = "A"
+    cfg.pair_stages = [PairStageConfig("s1", "A", "B")]
+    assert any("protected model column" in problem for problem in p.validate("m"))
+
+    cfg.target = "target"
+    p.data.split.mode = "random"
+    p.data.split.column = "B"
+    assert any("protected model column" in problem for problem in p.validate("m"))
+
+    p.data.split.column = "generated_split"
+    p.data.derived.append(Derived("B", "pl.lit(1)"))
+    assert any("raw source column" in problem for problem in p.validate("m"))
 
 
 def test_invalid_pair_adjustment_and_search_settings_report_errors() -> None:

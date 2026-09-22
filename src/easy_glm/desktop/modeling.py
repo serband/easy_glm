@@ -19,6 +19,7 @@ from easy_glm.workflow.project import (
     PairStageConfig,
     Project,
     VariableDesign,
+    premium_offset_column,
     validate_model_name,
 )
 
@@ -55,13 +56,44 @@ class SplitEdit(Revision):
     seed: int = Field(default=42, ge=0, le=2**32 - 1)
 
 
+def pair_candidate_groups(
+    project: Project, raw: pl.DataFrame, prepared_columns: set[str]
+) -> dict[str, list[str]]:
+    """Eligible sequential-pair parents, grouped without changing main roles.
+
+    Candidate identity starts from the source schema and follows the saved
+    rename.  Derived columns and generated split/offset columns therefore do
+    not become pair inputs merely because they happen to exist after prep.
+    """
+    groups: dict[str, list[str]] = {"predictors": [], "unassigned": []}
+    split_column = project.data.split.column
+    premium = project.current_premium
+    premium_offset = premium_offset_column(premium) if premium is not None else None
+    for source in raw.columns:
+        name = project.data.renames.get(source, source)
+        if (
+            name not in prepared_columns
+            or name == split_column
+            or name == premium_offset
+        ):
+            continue
+        role = project.data.roles.get(name)
+        if role == "predictor":
+            groups["predictors"].append(name)
+        elif role is None:
+            groups["unassigned"].append(name)
+    return groups
+
+
 def setup_info(project: Project, raw: pl.DataFrame) -> dict[str, Any]:
     """Readiness uses prepared data, including a generated random split."""
     problems: list[str] = []
     columns: list[dict[str, Any]] = []
+    prepared_columns: set[str] = set()
     counts = {"train": 0, "holdout": 0}
     try:
         prepared = apply_variables(raw, project.data)
+        prepared_columns = set(prepared.columns)
         columns = [
             {
                 "name": name,
@@ -83,7 +115,9 @@ def setup_info(project: Project, raw: pl.DataFrame) -> dict[str, Any]:
         problems.append(str(exc))
     if not project.target:
         problems.append("Assign a target role on Variables and apply it.")
-    if not project.predictors:
+    if not project.predictors and not any(
+        config.pair_stages for config in project.models.values()
+    ):
         problems.append("Assign at least one predictor role on Variables and apply it.")
     pair_search_preflight = {
         name: [
@@ -112,6 +146,7 @@ def setup_info(project: Project, raw: pl.DataFrame) -> dict[str, Any]:
         "problems": problems,
         "models": project.to_dict()["models"],
         "predictors": project.predictors,
+        "pair_candidates": pair_candidate_groups(project, raw, prepared_columns),
         "target": project.target,
         "weight": project.weight,
         "offset": project.offset_column,

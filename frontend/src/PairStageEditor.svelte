@@ -3,6 +3,7 @@
 
     export let stages = [];
     export let eligible = [];
+    export let groups = null;
     export let defaults = null;
     export let statuses = [];
     export let job = null;
@@ -28,6 +29,7 @@
     const integer = (value, low, high) => Number.isInteger(value) && value >= low && value <= high;
     const positive = (value) => Number.isFinite(value) && value > 0;
     const automatic = (stage) => stage.search?.method === 'optuna';
+    const groupLabel = (name) => (name === 'predictors' ? 'Predictors' : 'Unassigned');
     const compact = (value) =>
         Number(value)
             .toPrecision(4)
@@ -39,8 +41,8 @@
     };
     const stageValid = (stage) =>
         stage.a !== stage.b &&
-        eligible.includes(stage.a) &&
-        eligible.includes(stage.b) &&
+        eligibleNames.includes(stage.a) &&
+        eligibleNames.includes(stage.b) &&
         (automatic(stage)
             ? integer(stage.search.trials, 1, 16) &&
               integer(stage.search.prefix_trials, 1, 8) &&
@@ -64,6 +66,10 @@
         integer(stage.seed, 0, 2147483647) &&
         stage.cv_folds === 5;
 
+    $: candidateGroups = groups
+        ? Object.entries(groups).filter(([, names]) => Array.isArray(names) && names.length)
+        : [['predictors', eligible]];
+    $: eligibleNames = [...new Set(candidateGroups.flatMap(([, names]) => names))];
     $: statusById = new Map(statuses.map((stage) => [stage.stage_id, stage]));
     $: changedAt = mainChanged
         ? 0
@@ -76,8 +82,8 @@
     $: canAdd =
         defaults?.search?.method === 'optuna' &&
         stages.length < 8 &&
-        eligible.includes(first) &&
-        eligible.includes(second) &&
+        eligibleNames.includes(first) &&
+        eligibleNames.includes(second) &&
         first !== second &&
         !duplicate;
     $: valid =
@@ -277,7 +283,11 @@
                             value={stage.a}
                             onchange={(event) => update(index, 'a', event.currentTarget.value)}
                         >
-                            {#each eligible as name}<option value={name}>{name}</option>{/each}
+                            {#each candidateGroups as [group, names]}
+                                <optgroup label={groupLabel(group)}>
+                                    {#each names as name}<option value={name}>{name}</option>{/each}
+                                </optgroup>
+                            {/each}
                         </select></label
                     >
                     <label
@@ -286,7 +296,11 @@
                             value={stage.b}
                             onchange={(event) => update(index, 'b', event.currentTarget.value)}
                         >
-                            {#each eligible as name}<option value={name}>{name}</option>{/each}
+                            {#each candidateGroups as [group, names]}
+                                <optgroup label={groupLabel(group)}>
+                                    {#each names as name}<option value={name}>{name}</option>{/each}
+                                </optgroup>
+                            {/each}
                         </select></label
                     >
                     <label
@@ -397,17 +411,22 @@
     <div class="add-stage">
         <label
             >First predictor<select aria-label="New pair first predictor" bind:value={first}
-                ><option value="">Select predictor</option>{#each eligible as name}<option
-                        value={name}>{name}</option
-                    >{/each}</select
+                ><option value="">Select variable</option>{#each candidateGroups as [group, names]}
+                    <optgroup label={groupLabel(group)}>
+                        {#each names as name}<option value={name}>{name}</option>{/each}
+                    </optgroup>
+                {/each}</select
             ></label
         >
         <label
             >Second predictor<select aria-label="New pair second predictor" bind:value={second}
-                ><option value="">Select predictor</option
-                >{#each eligible.filter((name) => name !== first) as name}<option value={name}
-                        >{name}</option
-                    >{/each}</select
+                ><option value="">Select predictor</option>{#each candidateGroups as [group, names]}
+                    <optgroup label={groupLabel(group)}>
+                        {#each names.filter((name) => name !== first) as name}<option value={name}
+                                >{name}</option
+                            >{/each}
+                    </optgroup>
+                {/each}</select
             ></label
         >
         <button type="button" disabled={!canAdd} onclick={add}>Add interaction</button>
