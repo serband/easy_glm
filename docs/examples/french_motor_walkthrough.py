@@ -60,16 +60,15 @@ required = {
 missing = [name for name, present in required.items() if not present]
 if missing:
     raise RuntimeError(
-        "This lesson needs easy_glm source revision 22bbd7d or later. "
-        f"Missing: {', '.join(missing)}. Installed version: "
-        f"{easy_glm.__version__}."
+        "This lesson uses APIs included in easy-glm 0.472. Install the standard "
+        "package with `python -m pip install easy-glm==0.472`. "
+        f"Missing: {', '.join(missing)}. Installed version: {easy_glm.__version__}."
     )
 
-REPOSITORY = Path.cwd()
 DATA_PATH = Path(
     os.environ.get(
         "EASY_GLM_FRENCH_MOTOR_DATA",
-        str(REPOSITORY / "tests" / "fixtures" / "french_motor_50k.parquet"),
+        str(Path.cwd() / "french_motor_50k.parquet"),
     )
 )
 OUTPUT = Path(
@@ -81,9 +80,10 @@ OUTPUT = Path(
 OUTPUT.mkdir(parents=True, exist_ok=True)
 if not DATA_PATH.is_file():
     raise FileNotFoundError(
-        f"French motor data not found at {DATA_PATH}. Set "
-        "EASY_GLM_FRENCH_MOTOR_DATA to your local Parquet file. This lesson "
-        "does not silently download data."
+        f"French motor data not found at {DATA_PATH}. Download "
+        "https://raw.githubusercontent.com/serband/easy_glm/v0.472/tests/fixtures/"
+        "french_motor_50k.parquet and save it as french_motor_50k.parquet, or "
+        "set EASY_GLM_FRENCH_MOTOR_DATA to its local path."
     )
 
 # Fixed, reviewed cuts are known before any fold is made. This prevents a

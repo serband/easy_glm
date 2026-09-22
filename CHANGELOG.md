@@ -2,10 +2,10 @@
 
 This is the user-facing record of useful new features and fixes.
 
-## Unreleased
+## 0.472 — 22 September 2026
 
+- Add a complete pricing walkthrough, from choosing bands and fitting a GLM to checking residuals, adding interactions and exporting tables.
 - Include CatBoost and Optuna in the standard installation. No separate interaction extras to install.
-
 - Show metrics suited to each model family. Gini is a separate ranking measure, not a measure of prediction accuracy.
 - Estimate variable importance on 30% of training rows by default, with a choice of percentage. Small or sparse samples use all training rows; model fitting stays unchanged.
 - Fix Gaussian variable screening for targets that include negative values.
@@ -25,7 +25,7 @@ This is the user-facing record of useful new features and fixes.
 - **Reproduce variable screening in Python.** Exported workflows include the saved search settings, original candidates and your reviewed selections.
 - **Fixes and clearer navigation.** Missing-interaction searches exclude pairs already in the model. “Add and review model” opens the interaction draft, and fit-status labels and variable counts are clearer.
 
-CatBoost interactions were introduced with separate training dependencies. These are included in the standard installation from the next release.
+CatBoost interactions were introduced with separate training dependencies. These are included in the standard installation from v0.472.
 
 ## 0.464 — 18 September 2026
 

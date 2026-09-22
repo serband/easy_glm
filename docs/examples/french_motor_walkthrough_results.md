@@ -5,9 +5,10 @@ and its [numbered Python cells](french_motor_walkthrough.py). It records a devel
 replay of the illustrative decisions. In an actual modelling session, stop at the
 review points and record your own choices.
 
-The source baseline is `22bbd7d`, followed by the documentation changes on
-`codex/french-motor-python-walkthrough`. This is checkout evidence, not a claim
-that the example has been released to PyPI.
+Release check: all 35 walkthrough blocks ran against the built v0.472 wheel in a
+fresh environment, outside the repository and with no `PYTHONPATH` override.
+The standard install supplied CatBoost and Optuna. Saved tables, Excel export,
+CSV predictions and the generated scorer passed their checks.
 
 The verification uses the complete checked-in French motor fixture: 50,000
 policies, 1,971 observed claims and 26,273.658314 exposure units. The fixed split

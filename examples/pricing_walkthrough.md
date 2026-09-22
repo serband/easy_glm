@@ -4,13 +4,13 @@ Run the Python blocks on this page in order, in the same notebook or Python sess
 
 ## Install and import
 
-Use the development checkout on `codex/french-motor-python-walkthrough`, based on revision `22bbd7d`. These examples use additions that are not all available in PyPI v0.471. From the checkout, install:
+Install the complete release into the Python environment that will run the lesson:
 
 ```bash
-python -m pip install -e .
+python -m pip install easy-glm==0.472
 ```
 
-Start your Python session in the checkout directory. The sample is `tests/fixtures/french_motor_50k.parquet`.
+Download [the 50,000-row French motor sample](https://raw.githubusercontent.com/serband/easy_glm/v0.472/tests/fixtures/french_motor_50k.parquet) and save it as `french_motor_50k.parquet` beside your notebook or script.
 
 ```python
 import copy
@@ -34,7 +34,7 @@ from easy_glm.workflow import (
 )
 from easy_glm.workflow.project import PairSearchConfig, PairStageConfig
 
-DATA_PATH = Path("tests/fixtures/french_motor_50k.parquet").resolve()
+DATA_PATH = Path("french_motor_50k.parquet").resolve()
 OUTPUT = Path(os.environ.get(
     "EASY_GLM_LESSON_OUTPUT", "french_motor_lesson_output"
 )).resolve()

@@ -4,8 +4,8 @@ Start with the [practical lesson](../examples/pricing_walkthrough.md) for the
 explanations and results. This reference preserves the complete code blocks,
 additional examples and technical checks for looking things up as you work.
 
-This is a worked Python modelling session for the checked-in 50,000-row French
-motor fixture. It is written primarily as context for an LLM helping an actuary
+This is a worked Python modelling session for a 50,000-row French motor sample.
+It is written primarily as context for an LLM helping an actuary
 interactively. The companion script is
 [`examples/french_motor_walkthrough.py`](examples/french_motor_walkthrough.py).
 Run one numbered cell at a time, inspect what it prints or plots, discuss the
@@ -24,19 +24,17 @@ The fixture has 50,000 rows, 1,971 claims and 26,273.658314 units of exposure.
 Its maximum exposure is 2.01. That value is part of the source data and is not
 capped in this example.
 
-This walkthrough needs EasyGLM source revision `22bbd7d` or later, including
-features that were unreleased when the walkthrough was written. Do not describe
-the example as evidence about the older published package. For the same code
-path, clone the checkout and install it editable:
+Install the complete release into the Python environment that will run the lesson:
 
 ```bash
-python -m pip install -e .
+python -m pip install easy-glm==0.472
 ```
 
-In an ordinary installed environment, print the package version, module path and
-the signatures used below before trusting this guide. A useful LLM instruction
-is: “Use my installed EasyGLM source and signatures; do not substitute an older
-released API.”
+Download [the 50,000-row French motor sample](https://raw.githubusercontent.com/serband/easy_glm/v0.472/tests/fixtures/french_motor_50k.parquet)
+and save it as `french_motor_50k.parquet` beside the notebook or script. Print
+the package version, module path and signatures used below before trusting this
+guide. A useful LLM instruction is: “Use my installed EasyGLM 0.472 API and
+signatures; do not invent methods or arguments.”
 
 The runnable cells are the source of truth. Recorded output from a completed
 run belongs in
@@ -118,16 +116,15 @@ required = {
 missing = [name for name, present in required.items() if not present]
 if missing:
     raise RuntimeError(
-        "This lesson needs easy_glm source revision 22bbd7d or later. "
-        f"Missing: {', '.join(missing)}. Installed version: "
-        f"{easy_glm.__version__}."
+        "This lesson uses APIs included in easy-glm 0.472. Install the standard "
+        "package with `python -m pip install easy-glm==0.472`. "
+        f"Missing: {', '.join(missing)}. Installed version: {easy_glm.__version__}."
     )
 
-REPOSITORY = Path.cwd()
 DATA_PATH = Path(
     os.environ.get(
         "EASY_GLM_FRENCH_MOTOR_DATA",
-        str(REPOSITORY / "tests" / "fixtures" / "french_motor_50k.parquet"),
+        str(Path.cwd() / "french_motor_50k.parquet"),
     )
 )
 OUTPUT = Path(
@@ -139,9 +136,10 @@ OUTPUT = Path(
 OUTPUT.mkdir(parents=True, exist_ok=True)
 if not DATA_PATH.is_file():
     raise FileNotFoundError(
-        f"French motor data not found at {DATA_PATH}. Set "
-        "EASY_GLM_FRENCH_MOTOR_DATA to your local Parquet file. This lesson "
-        "does not silently download data."
+        f"French motor data not found at {DATA_PATH}. Download "
+        "https://raw.githubusercontent.com/serband/easy_glm/v0.472/tests/fixtures/"
+        "french_motor_50k.parquet and save it as french_motor_50k.parquet, or "
+        "set EASY_GLM_FRENCH_MOTOR_DATA to its local path."
     )
 
 # Fixed, reviewed cuts are known before any fold is made. This prevents a
@@ -1580,4 +1578,3 @@ A useful handover separates facts from judgement:
 - Multiplying exposure twice.
 - Treating rounded display tables as the exact scorer.
 - Saving coefficients without their design, base choices and table meanings.
-- Presenting checkout behaviour as a published package release.

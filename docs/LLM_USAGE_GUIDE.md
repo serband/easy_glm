@@ -1,10 +1,10 @@
 # EasyGLM: a practical usage guide for an LLM assistant
 
-**API examples verified with v0.471. Installation instructions updated for the next release.**
+**API examples verified with v0.472.**
 
 Give this whole file to the LLM helping you. It is a usage reference, not a request to modify the package. Install as `easy-glm`; import in Python as `easy_glm`. Examples use Polars DataFrames.
 
-The API examples describe v0.471; the standard-installation change is unreleased. Earlier design discussions and some older source docstrings do not describe every detail of the current desktop workbench. In particular, distinguish legacy GLM interactions from the newer ordered CatBoost interaction tables.
+Earlier design discussions and some older source docstrings do not describe every detail of the current desktop workbench. In particular, distinguish legacy GLM interactions from the newer ordered CatBoost interaction tables.
 
 A runnable companion, [`examples/llm_workflow.py`](examples/llm_workflow.py), creates synthetic data and exercises fitting, screening, adjustments, exports and optional interaction training. It is useful when checking an unfamiliar work environment before using company data.
 
@@ -41,7 +41,7 @@ A runnable companion, [`examples/llm_workflow.py`](examples/llm_workflow.py), cr
 
 The following is a suitable starting instruction for a work assistant:
 
-> Help me use EasyGLM for actuarial modelling. Treat the attached guide as the reference for version 0.471. Check my installed version before relying on version-specific features. Use the actual package API; do not invent methods or arguments. Explain choices in plain language and give runnable Python using my column names. Establish what the target, weight, exposure and offset mean before fitting. Preserve my training/holdout split and binning decisions. Use training data for fitting and searches, and reserve holdout data for validation. Keep the main GLM and ordered interaction tables distinct. Use the complete deployed table model when scoring or calculating residual diagnostics. Explain any change to my assumptions or final predictor list. Show the smallest useful next step and verify that it worked.
+> Help me use EasyGLM for actuarial modelling. Treat the attached guide as the reference for version 0.472. Check my installed version before relying on version-specific features. Use the actual package API; do not invent methods or arguments. Explain choices in plain language and give runnable Python using my column names. Establish what the target, weight, exposure and offset mean before fitting. Preserve my training/holdout split and binning decisions. Use training data for fitting and searches, and reserve holdout data for validation. Keep the main GLM and ordered interaction tables distinct. Use the complete deployed table model when scoring or calculating residual diagnostics. Explain any change to my assumptions or final predictor list. Show the smallest useful next step and verify that it worked.
 
 When responding:
 
@@ -92,10 +92,10 @@ A bin is a numeric interval. A relativity is a multiplier relative to a selected
 Install into the Python environment that will actually run the notebook, script or workbench:
 
 ```bash
-python -m pip install --upgrade easy-glm
+python -m pip install easy-glm==0.472
 ```
 
-Version 0.471 declares Python `>=3.10,<3.15`. Dependency and wheel availability still depend on the operating system and interpreter. The release CI covered Python 3.10–3.13 on Linux; this is not a claim that every Windows environment has been tested.
+Version 0.472 declares Python `>=3.10,<3.15`. Dependency and wheel availability still depend on the operating system and interpreter. CI runs Python 3.10–3.13 on Linux; this is not a claim that every Windows environment has been tested.
 
 The standard installation includes the workbench, GLM fitting, CatBoost, Optuna, Excel export and plotting. No separate interaction installation is needed. Saved tables score without calling CatBoost or Optuna.
 
@@ -581,7 +581,7 @@ This is a version-specific recipe schema, not a separate public fit method. Call
 
 The generated workflow includes `RUN_FEATURE_SELECTION = True`, an editable switch, and writes a deliberate screening report to its output directory. It reruns the original candidate list and settings; it does not silently replace the final reviewed model predictors with a new automatic selection.
 
-As of 0.471, the desktop screening worker exchanges data, progress and results through memory pipes. It no longer needs the temporary job files that caused access-denied errors on some machines. The plain Python `select_variables` function works in memory. Deliberately saving a report is a separate file operation.
+As of 0.472, the desktop screening worker exchanges data, progress and results through memory pipes. It no longer needs the temporary job files that caused access-denied errors on some machines. The plain Python `select_variables` function works in memory. Deliberately saving a report is a separate file operation.
 
 ## 13. Fitting the main effects
 
@@ -671,7 +671,7 @@ Use unique stable stage IDs; `main` is reserved. Reversed duplicates such as A×
 
 ### Tuning and runtime
 
-Optuna searches shallow CPU CatBoost settings. In 0.471 its automatic space is depth 2–5, iterations 40–160 in steps of 20, learning rate 0.03–0.15, and L2 leaf regularisation 0.1–20. Search defaults are eight trials and four prefix trials. The accepted ranges are 1–16 trials and 1–8 prefix trials, with prefix trials no greater than trials.
+Optuna searches shallow CPU CatBoost settings. In 0.472 its automatic space is depth 2–5, iterations 40–160 in steps of 20, learning rate 0.03–0.15, and L2 leaf regularisation 0.1–20. Search defaults are eight trials and four prefix trials. The accepted ranges are 1–16 trials and 1–8 prefix trials, with prefix trials no greater than trials.
 
 Five outer folds assess the current stage. Earlier prefixes use fold-local training and inner selection where required, rather than giving a validation row predictions from a model trained on that row. The bounded search also considers leaving the correction neutral. Selection evaluates the resulting table's validation loss, not just the original CatBoost teacher's loss.
 
@@ -996,8 +996,8 @@ Repeated comparable fits may reuse compatible main/pair prefixes in the workbenc
 | Symptom | Check and response |
 |---|---|
 | Upgrade appears not to work | Inspect `sys.executable`, installed version and `easy_glm.__file__`; restart the kernel/workbench process after upgrading |
-| Feature selection writes `easyglm_selection_.../progress.tmp` | That is the old file transport; verify the running process really uses 0.471 or later, not only that a different environment was upgraded |
-| Other access-denied errors remain | Identify the exact operation and path. Launch logs, in-memory-frame handoff, other background workers, caches and deliberate exports may still use files; 0.471 changed feature selection specifically |
+| Feature selection writes `easyglm_selection_.../progress.tmp` | That is the old file transport; verify the running process really uses 0.472 or later, not only that a different environment was upgraded |
+| Other access-denied errors remain | Identify the exact operation and path. Launch logs, in-memory-frame handoff, other background workers, caches and deliberate exports may still use files; 0.472 changed feature selection specifically |
 | Permission error on a report or export | Choose a writable, approved output folder. Explicit exports are intended file writes |
 | Workbench port is occupied | Stop the intended old process or choose another `--port`; do not terminate unrelated processes blindly |
 | Predictors are missing on Model | Check applied versus draft roles, the selected model's main-effect list, search filters and dropped constant/all-null columns |
@@ -1113,7 +1113,7 @@ Export parity check performed:
 
 ## 26. Verification and source references
 
-This guide was checked against release `v0.471`, commit `f82c8e456118af5c02f5742c796bcae26545469a`. The companion uses synthetic data; it is not a validation of any work dataset or business assumption.
+This guide was checked against release `v0.472`. The companion uses synthetic data; it is not a validation of any work dataset or business assumption.
 
 The companion checks:
 
@@ -1129,20 +1129,20 @@ During preparation of this guide, both generated training scripts (ordinary GLM 
 
 Use these version-pinned source references when verifying a detail. Source signatures and the relevant implementation take precedence over historical planning documents:
 
-- [Installation metadata](https://github.com/serband/easy_glm/blob/v0.471/pyproject.toml)
-- [EasyGLM public wrapper](https://github.com/serband/easy_glm/blob/v0.471/src/easy_glm/core/easyglm.py)
-- [Project configuration and validation](https://github.com/serband/easy_glm/blob/v0.471/src/easy_glm/workflow/project.py)
-- [Preparation and splitting](https://github.com/serband/easy_glm/blob/v0.471/src/easy_glm/workflow/prep.py)
-- [Desktop bin settings](https://github.com/serband/easy_glm/blob/v0.471/src/easy_glm/desktop/binning.py)
-- [One-way screening](https://github.com/serband/easy_glm/blob/v0.471/src/easy_glm/workflow/feature_selection.py)
-- [Model runs and current scoring](https://github.com/serband/easy_glm/blob/v0.471/src/easy_glm/workflow/run.py)
-- [Ordered pair fitting and tuning](https://github.com/serband/easy_glm/blob/v0.471/src/easy_glm/workflow/pair_stages.py)
-- [Loss-based table conversion](https://github.com/serband/easy_glm/blob/v0.471/src/easy_glm/workflow/pair_distillation.py)
-- [Diagnostic helpers](https://github.com/serband/easy_glm/blob/v0.471/src/easy_glm/workflow/diagnostics.py)
-- [Desktop full-model residual searches](https://github.com/serband/easy_glm/blob/v0.471/src/easy_glm/desktop/review_worker.py)
-- [Training and scoring exports](https://github.com/serband/easy_glm/blob/v0.471/src/easy_glm/workflow/export.py)
-- [Portable scorer](https://github.com/serband/easy_glm/blob/v0.471/src/easy_glm/engine/rate_model.py)
-- [Desktop launcher and session behaviour](https://github.com/serband/easy_glm/blob/v0.471/src/easy_glm/desktop/__init__.py)
-- [Command-line implementation](https://github.com/serband/easy_glm/blob/v0.471/src/easy_glm/cli.py)
+- [Installation metadata](https://github.com/serband/easy_glm/blob/v0.472/pyproject.toml)
+- [EasyGLM public wrapper](https://github.com/serband/easy_glm/blob/v0.472/src/easy_glm/core/easyglm.py)
+- [Project configuration and validation](https://github.com/serband/easy_glm/blob/v0.472/src/easy_glm/workflow/project.py)
+- [Preparation and splitting](https://github.com/serband/easy_glm/blob/v0.472/src/easy_glm/workflow/prep.py)
+- [Desktop bin settings](https://github.com/serband/easy_glm/blob/v0.472/src/easy_glm/desktop/binning.py)
+- [One-way screening](https://github.com/serband/easy_glm/blob/v0.472/src/easy_glm/workflow/feature_selection.py)
+- [Model runs and current scoring](https://github.com/serband/easy_glm/blob/v0.472/src/easy_glm/workflow/run.py)
+- [Ordered pair fitting and tuning](https://github.com/serband/easy_glm/blob/v0.472/src/easy_glm/workflow/pair_stages.py)
+- [Loss-based table conversion](https://github.com/serband/easy_glm/blob/v0.472/src/easy_glm/workflow/pair_distillation.py)
+- [Diagnostic helpers](https://github.com/serband/easy_glm/blob/v0.472/src/easy_glm/workflow/diagnostics.py)
+- [Desktop full-model residual searches](https://github.com/serband/easy_glm/blob/v0.472/src/easy_glm/desktop/review_worker.py)
+- [Training and scoring exports](https://github.com/serband/easy_glm/blob/v0.472/src/easy_glm/workflow/export.py)
+- [Portable scorer](https://github.com/serband/easy_glm/blob/v0.472/src/easy_glm/engine/rate_model.py)
+- [Desktop launcher and session behaviour](https://github.com/serband/easy_glm/blob/v0.472/src/easy_glm/desktop/__init__.py)
+- [Command-line implementation](https://github.com/serband/easy_glm/blob/v0.472/src/easy_glm/cli.py)
 
 When using a later version, recheck these contracts before extending the guide with new claims.

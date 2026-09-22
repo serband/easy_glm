@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 import matplotlib
@@ -44,8 +45,15 @@ def test_walkthrough_executes_as_reviewable_cells_on_full_fixture(
     tmp_path, monkeypatch
 ):
     matplotlib.use("Agg")
-    monkeypatch.chdir(ROOT)
-    monkeypatch.setenv("EASY_GLM_LESSON_OUTPUT", str(tmp_path / "outputs"))
+    lesson_directory = tmp_path / "installed-package-lesson"
+    lesson_directory.mkdir()
+    shutil.copy2(
+        ROOT / "tests" / "fixtures" / "french_motor_50k.parquet",
+        lesson_directory / "french_motor_50k.parquet",
+    )
+    monkeypatch.chdir(lesson_directory)
+    monkeypatch.delenv("EASY_GLM_FRENCH_MOTOR_DATA", raising=False)
+    monkeypatch.setenv("EASY_GLM_LESSON_OUTPUT", str(lesson_directory / "outputs"))
     source = LESSON.read_text(encoding="utf-8")
     cells = lesson_cells(source)
 
@@ -126,9 +134,9 @@ def test_walkthrough_executes_as_reviewable_cells_on_full_fixture(
 
     artifact_paths = namespace["artifact_paths"]
     assert all(path.is_file() for path in artifact_paths.values())
-    assert (tmp_path / "outputs" / "skinny_train_ae_DrivAge.png").is_file()
-    assert (tmp_path / "outputs" / "pair1_relativity_heatmap.png").is_file()
-    assert (tmp_path / "outputs" / "lesson_results.json").is_file()
+    assert (lesson_directory / "outputs" / "skinny_train_ae_DrivAge.png").is_file()
+    assert (lesson_directory / "outputs" / "pair1_relativity_heatmap.png").is_file()
+    assert (lesson_directory / "outputs" / "lesson_results.json").is_file()
 
     # A reviewer may accept the main-effects model without presentation failing.
     namespace["accepted_run"] = mains_run
@@ -144,8 +152,17 @@ def test_markdown_walkthrough_executes_independently_on_full_fixture(
 ):
     """The main guide alone must reproduce the complete staged workflow."""
     matplotlib.use("Agg")
-    monkeypatch.chdir(ROOT)
-    monkeypatch.setenv("EASY_GLM_LESSON_OUTPUT", str(tmp_path / "guide-outputs"))
+    lesson_directory = tmp_path / "installed-package-guide"
+    lesson_directory.mkdir()
+    shutil.copy2(
+        ROOT / "tests" / "fixtures" / "french_motor_50k.parquet",
+        lesson_directory / "french_motor_50k.parquet",
+    )
+    monkeypatch.chdir(lesson_directory)
+    monkeypatch.delenv("EASY_GLM_FRENCH_MOTOR_DATA", raising=False)
+    monkeypatch.setenv(
+        "EASY_GLM_LESSON_OUTPUT", str(lesson_directory / "guide-outputs")
+    )
     monkeypatch.setattr(go.Figure, "show", lambda self, *args, **kwargs: None)
 
     source = GUIDE.read_text(encoding="utf-8")
