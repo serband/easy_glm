@@ -18,7 +18,8 @@ an exhaustive search.
 
 ## How the replay is checked
 
-- Execute the same fifteen cells that appear in the guide.
+- Execute the fifteen cells included in the Python script and
+  [complete code reference](../FRENCH_MOTOR_PYTHON_REFERENCE.md).
 - Keep holdout predictions out of the fitting and search checkpoints.
 - Match the core GLM's design and predictions to the headless workflow bridge.
 - Compare the main tables and first pair table before and after appending a stage.
@@ -32,8 +33,9 @@ requires an interaction to improve holdout performance.
 
 The focused test passed. An independent replay also passed all six optional
 Python blocks and the branch that accepts and exports only the main-effects
-model. All 21 Python blocks compile, and the fifteen numbered blocks in the
-guide exactly match the companion script. Black and Ruff checks passed.
+model. All 21 Python blocks in the complete code reference compile, and its
+fifteen numbered blocks exactly match the companion script. Black and Ruff
+checks passed. The practical lesson uses shorter excerpts to explain those cells.
 
 Some replays emitted glum line-search convergence warnings. The tutorial leaves
 these visible: passing scoring-parity checks does not establish that every
