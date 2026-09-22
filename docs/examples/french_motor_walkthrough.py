@@ -1,0 +1,886 @@
+"""Interactive French motor modelling lesson for VS Code or Jupyter.
+
+Open this file in an editor that understands ``# %%`` cells and run one numbered
+cell at a time.  Stop at the review cells and discuss the printed evidence with
+your LLM assistant before accepting the literal choices shown in the next cell.
+
+Running the whole file would run the full illustrative path. The intended use is
+one cell at a time, because the review pauses are part of the modelling workflow.
+"""
+
+# %% 1 — Setup, feature check, and small reusable display helpers
+from __future__ import annotations
+
+import copy
+import inspect
+import json
+import os
+import sys
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import polars as pl
+from matplotlib.colors import TwoSlopeNorm
+
+import easy_glm
+from easy_glm import EasyGLM, RateModel, add_train_test_split
+from easy_glm.engine.models import level_label
+from easy_glm.workflow import (
+    DataSource,
+    Penalty,
+    Project,
+    Split,
+    VariableDesign,
+    ae_by_pair,
+    ae_by_variable,
+    build_design,
+    gini,
+    model_metrics,
+    null_model_predict,
+    pearson_dispersion,
+    permutation_importance,
+    prepare,
+    residual_factor_search,
+    residual_pair_search,
+    run_model,
+    to_scoring_script,
+    totals,
+    unit_values,
+)
+from easy_glm.workflow.project import PairSearchConfig, PairStageConfig
+
+required = {
+    "run_model pair cache": "pair_stages_cache"
+    in inspect.signature(run_model).parameters,
+    "sampled importance API": "importance_sample_pct"
+    in inspect.signature(permutation_importance).parameters,
+    "automatic pair search": hasattr(PairSearchConfig(), "prefix_trials"),
+}
+missing = [name for name, present in required.items() if not present]
+if missing:
+    raise RuntimeError(
+        "This lesson needs easy_glm source revision 22bbd7d or later. "
+        f"Missing: {', '.join(missing)}. Installed version: "
+        f"{easy_glm.__version__}."
+    )
+
+REPOSITORY = Path.cwd()
+DATA_PATH = Path(
+    os.environ.get(
+        "EASY_GLM_FRENCH_MOTOR_DATA",
+        str(REPOSITORY / "tests" / "fixtures" / "french_motor_50k.parquet"),
+    )
+)
+OUTPUT = Path(
+    os.environ.get(
+        "EASY_GLM_LESSON_OUTPUT",
+        str(Path.cwd() / "french_motor_lesson_output"),
+    )
+)
+OUTPUT.mkdir(parents=True, exist_ok=True)
+if not DATA_PATH.is_file():
+    raise FileNotFoundError(
+        f"French motor data not found at {DATA_PATH}. Set "
+        "EASY_GLM_FRENCH_MOTOR_DATA to your local Parquet file. This lesson "
+        "does not silently download data."
+    )
+
+# Fixed, reviewed cuts are known before any fold is made. This prevents a
+# validation fold from influencing its own bands.
+CUSTOM_KNOTS = {
+    "DrivAge": [25.0, 35.0, 45.0, 55.0, 65.0, 75.0],
+    "VehAge": [1.0, 3.0, 6.0, 10.0, 15.0],
+    "BonusMalus": [50.0, 60.0, 75.0, 100.0, 125.0],
+    "Density": [50.0, 200.0, 1_000.0, 5_000.0, 10_000.0],
+}
+SKINNY_PREDICTORS = ["DrivAge", "VehAge"]
+REVIEWED_PREDICTORS = ["DrivAge", "VehAge", "BonusMalus", "Density"]
+SEARCH_VARIABLES = [
+    "DrivAge",
+    "VehAge",
+    "BonusMalus",
+    "Density",
+    "Area",
+    "Region",
+]
+
+
+def fitted_totals(model: EasyGLM, frame: pl.DataFrame):
+    """Observed counts, expected counts, and exposure for one frame."""
+    prediction_rate = model.predict(frame).to_numpy()
+    return totals(frame, model.glm, prediction_rate)
+
+
+def easyglm_design_kwargs(project: Project, predictors: list[str]) -> dict[str, object]:
+    """Translate this lesson's numeric step settings to the short core API."""
+    defaults = project.design.defaults
+    knots: dict[str, list[float]] = {}
+    categorical: list[str] = []
+    for variable in predictors:
+        design = project.design.variables.get(variable, VariableDesign())
+        unsupported = (
+            design.kind not in (None, "step", "categorical")
+            or design.clamp is not None
+            or design.monotone is not None
+            or design.penalty_weight != 1.0
+            or design.levels is not None
+        )
+        if unsupported:
+            raise ValueError(
+                f"{variable} has settings outside this lesson's small "
+                "EasyGLM bridge; use Project/run_model directly."
+            )
+        if design.kind == "categorical":
+            categorical.append(variable)
+        if isinstance(design.knots, list):
+            knots[variable] = [float(value) for value in design.knots]
+        elif design.n_bins not in (None, defaults.n_bins):
+            raise ValueError(
+                f"{variable} uses per-variable automatic n_bins={design.n_bins}. "
+                "Use Project/run_model to preserve per-variable automatic bin "
+                "settings."
+            )
+    return {
+        "n_bins": defaults.n_bins,
+        "min_level_share": defaults.min_level_share,
+        "null_indicator": defaults.null_indicator,
+        "knots": knots,
+        "categorical": categorical,
+    }
+
+
+def plot_ae_support(
+    frame: pl.DataFrame,
+    variable: str,
+    actual: np.ndarray,
+    expected: np.ndarray,
+    exposure: np.ndarray,
+    *,
+    title: str,
+) -> pl.DataFrame:
+    """Plot training A/E with the exposure supporting every fixed band."""
+    table = ae_by_variable(
+        frame,
+        variable,
+        actual,
+        expected,
+        exposure,
+        knots=DIAGNOSTIC_KNOTS.get(variable),
+    )
+    labels = table["label"].to_list()
+    positions = np.arange(len(labels))
+    figure, ae_axis = plt.subplots(figsize=(9, 4))
+    exposure_axis = ae_axis.twinx()
+    exposure_axis.bar(
+        positions,
+        table["exposure"].to_numpy(),
+        color="#d8e6f3",
+        label="Exposure",
+    )
+    ae_axis.set_zorder(exposure_axis.get_zorder() + 1)
+    ae_axis.patch.set_visible(False)
+    ae_axis.plot(
+        positions,
+        table["ae"].to_numpy(),
+        color="#b23a48",
+        marker="o",
+        label="A/E",
+    )
+    ae_axis.axhline(1.0, color="black", linewidth=1, linestyle="--")
+    ae_axis.set_xticks(positions, labels, rotation=35, ha="right")
+    ae_axis.set_ylabel("Actual / expected")
+    exposure_axis.set_ylabel("Exposure")
+    ae_axis.set_title(title)
+    figure.tight_layout()
+    return table
+
+
+def checkpoint_metrics(
+    frame: pl.DataFrame,
+    config,
+    fit,
+    prediction_rate: np.ndarray,
+) -> dict[str, float]:
+    """Comparable count-model metrics from one checkpoint on one locked frame."""
+    actual, expected, exposure = totals(frame, config, prediction_rate)
+    observed_rate, fitting_weight = unit_values(frame, config)
+    deviance = float(
+        fit.model.family_instance.deviance(
+            observed_rate,
+            prediction_rate,
+            sample_weight=fitting_weight,
+        )
+    )
+    return {
+        "ae": float(actual.sum() / expected.sum()),
+        "gini": float(gini(actual, expected, exposure)),
+        "mean_deviance": deviance / float(fitting_weight.sum()),
+    }
+
+
+def plot_pair_heatmap(pair_table, *, title: str):
+    """Relativity plus fitting exposure, with the table's real row labels."""
+    matrix = pair_table.cell_matrix
+    support = np.asarray([cell.fitting_weight for cell in pair_table.cells]).reshape(
+        matrix.shape
+    )
+    labels = [
+        [level_label(row, axis.other_label) for row in axis.table]
+        for axis in pair_table.axes
+    ]
+    figure, axis = plt.subplots(figsize=(11, 7))
+    maximum_delta = max(float(np.max(np.abs(matrix - 1.0))), 1e-6)
+    normalization = TwoSlopeNorm(
+        vmin=1.0 - maximum_delta, vcenter=1.0, vmax=1.0 + maximum_delta
+    )
+    image = axis.imshow(matrix, cmap="RdBu_r", norm=normalization, aspect="auto")
+    for row in range(matrix.shape[0]):
+        for column in range(matrix.shape[1]):
+            axis.text(
+                column,
+                row,
+                f"{matrix[row, column]:.3f}\n({support[row, column]:.0f})",
+                ha="center",
+                va="center",
+                fontsize=6,
+            )
+    axis.set_xticks(np.arange(matrix.shape[1]), labels[1], rotation=40, ha="right")
+    axis.set_yticks(np.arange(matrix.shape[0]), labels[0])
+    axis.set_xlabel(pair_table.parents[1])
+    axis.set_ylabel(pair_table.parents[0])
+    axis.set_title(title + "\ncell text: relativity (training exposure)")
+    figure.colorbar(image, ax=axis, label="Relativity")
+    figure.tight_layout()
+    return figure
+
+
+print(f"Python executable: {sys.executable}")
+print(f"easy_glm module: {easy_glm.__file__}")
+print(f"EasyGLM.fit{inspect.signature(EasyGLM.fit)}")
+print(f"run_model{inspect.signature(run_model)}")
+print(f"easy_glm {easy_glm.__version__}; output folder: {OUTPUT}")
+
+# %% 2 — Load all 50,000 policies, define units, and lock the split
+raw_without_split = pl.read_parquet(DATA_PATH).sort("IDpol")
+raw = add_train_test_split(
+    raw_without_split,
+    train_fraction=0.70,
+    seed=42,
+    column="traintest",
+)
+SPLIT_DATA_PATH = OUTPUT / "french_motor_50k_fixed_split.parquet"
+raw.write_parquet(SPLIT_DATA_PATH)
+train = raw.filter(pl.col("traintest") == 1)
+locked_holdout = raw.filter(pl.col("traintest") == 0)
+
+assert raw.height == 50_000
+assert raw["ClaimNb"].sum() == 1_971
+assert np.isclose(raw["Exposure"].sum(), 26_273.658314)
+assert np.isclose(raw["Exposure"].max(), 2.01)
+assert train.height + locked_holdout.height == raw.height
+assert raw["Exposure"].min() > 0
+split_counts = {"train": train.height, "holdout": locked_holdout.height}
+print(split_counts)
+print(
+    "Target units: ClaimNb is a count; ClaimNb / Exposure is the unit claim "
+    "frequency fitted by the Poisson GLM. Predictions below are unit rates "
+    "until multiplied by Exposure."
+)
+
+# %% 3 — Canonical Variables settings JSON, including fixed custom cuts
+settings_project = Project(name="French motor interactive lesson")
+settings_project.data.source = DataSource(type="parquet", path=str(SPLIT_DATA_PATH))
+settings_project.data.roles = {
+    "IDpol": "id",
+    "ClaimNb": "target",
+    "Exposure": "weight",
+    "traintest": "split",
+    **dict.fromkeys(REVIEWED_PREDICTORS, "predictor"),
+}
+settings_project.data.split = Split(
+    mode="column",
+    column="traintest",
+    train_value=1,
+    holdout_value=0,
+)
+settings_project.design.defaults.n_bins = 8
+settings_project.design.defaults.min_level_share = 0.0025
+for variable, knots in CUSTOM_KNOTS.items():
+    settings_project.design.variables[variable] = VariableDesign(
+        kind="step", knots=knots, n_bins=8
+    )
+# If VehPower is later promoted, it would use six training-derived quantile
+# bins. The main variables above instead use pinned business cuts; explicit
+# knots take precedence over n_bins.
+settings_project.design.variables["VehPower"] = VariableDesign(
+    kind="step", knots="quantile", n_bins=6
+)
+settings_project.design.variables["Area"] = VariableDesign(
+    kind="categorical", max_levels=6
+)
+
+# Unassigned candidates such as Area and Region are represented by absence
+# from data.roles. They remain available for training-only residual search.
+assert "Area" not in settings_project.data.roles
+assert "Region" not in settings_project.data.roles
+settings_json = json.dumps(settings_project.to_dict(), indent=2, sort_keys=True)
+settings_roundtrip = Project.from_dict(json.loads(settings_json))
+assert settings_roundtrip.to_dict() == settings_project.to_dict()
+assert not settings_roundtrip.validate(columns=train.columns)
+DIAGNOSTIC_KNOTS = {
+    variable: [float(value) for value in design.knots]
+    for variable, design in settings_roundtrip.design.variables.items()
+    if isinstance(design.knots, list)
+}
+(OUTPUT / "variables_project.json").write_text(settings_json, encoding="utf-8")
+print(settings_json)
+
+# Three numeric binning cases, inspected on training rows only:
+# inherited default (VehAge), per-variable automatic count (VehPower), and
+# literal custom cuts (DrivAge). The final reviewed model pins VehAge too; this
+# temporary copy exists only to make the difference concrete.
+binning_demo = Project.from_dict(settings_roundtrip.to_dict())
+del binning_demo.design.variables["VehAge"]
+binning_spec = build_design(
+    binning_demo,
+    train,
+    ["VehAge", "VehPower", "DrivAge"],
+    weight_col="Exposure",
+)
+binning_examples = {
+    "inherited_default_VehAge": list(binning_spec["VehAge"].knots),
+    "per_variable_6_bins_VehPower": list(binning_spec["VehPower"].knots),
+    "literal_custom_DrivAge": list(binning_spec["DrivAge"].knots),
+}
+print(binning_examples)
+
+# A safe JSON edit round-trip: modify the actual canonical shape, reconstruct,
+# validate against real columns, and keep the original settings unchanged.
+edited_settings = json.loads(settings_json)
+edited_settings["design"]["defaults"]["n_bins"] = 10
+edited_project = Project.from_dict(edited_settings)
+assert edited_project.design.defaults.n_bins == 10
+assert not edited_project.validate(columns=train.columns)
+
+# %% 4 — Fit a deliberately skinny two-factor core model
+skinny = EasyGLM.fit(
+    train,
+    target="ClaimNb",
+    model_type="Poisson",
+    predictors=SKINNY_PREDICTORS,
+    weight_col="Exposure",
+    train_test_col="traintest",
+    divide_target_by_weight=True,
+    cv=5,
+    n_alphas=8,
+    **easyglm_design_kwargs(settings_roundtrip, SKINNY_PREDICTORS),
+    base="modal",
+)
+assert skinny.predict(train).len() == train.height
+np.testing.assert_allclose(
+    skinny.predict(train).to_numpy(),
+    skinny.rate_model.predict(train, exposure_col=None),
+    rtol=1e-12,
+)
+print(skinny)
+
+# %% 5 — Inspect training A/E and exposure support; do not open holdout outcomes
+skinny_train_actual, skinny_train_expected, skinny_train_exposure = fitted_totals(
+    skinny, train
+)
+skinny_train_ae = float(skinny_train_actual.sum() / skinny_train_expected.sum())
+skinny_train_gini = gini(
+    skinny_train_actual, skinny_train_expected, skinny_train_exposure
+)
+skinny_ae_tables = {}
+for variable in SKINNY_PREDICTORS:
+    skinny_ae_tables[variable] = plot_ae_support(
+        train,
+        variable,
+        skinny_train_actual,
+        skinny_train_expected,
+        skinny_train_exposure,
+        title=f"Skinny model training A/E and support — {variable}",
+    )
+    plt.savefig(OUTPUT / f"skinny_train_ae_{variable}.png", dpi=130)
+    plt.show()
+print({"train_ae": skinny_train_ae, "train_gini": skinny_train_gini})
+skinny_checkpoint_metrics = checkpoint_metrics(
+    train, skinny.glm, skinny.glm, skinny.predict(train).to_numpy()
+)
+print(skinny_checkpoint_metrics)
+# REVIEW PAUSE: ask your LLM to explain weakly supported bands and whether
+# a visible A/E pattern is signal, noise, or a reason to revisit the cuts.
+
+# %% 6 — Search training residuals for missing factors and pair structure
+missing_variables = [
+    "BonusMalus",
+    "Density",
+    "Area",
+    "Region",
+    "VehPower",
+    "VehBrand",
+    "VehGas",
+]
+skinny_dispersion = pearson_dispersion(
+    skinny_train_actual,
+    skinny_train_expected,
+    n_params=len(skinny.glm.coef) + 1,
+)
+skinny_factor_search = residual_factor_search(
+    train,
+    missing_variables,
+    skinny_train_actual,
+    skinny_train_expected,
+    skinny_train_exposure,
+    n_bins=8,
+    dispersion=skinny_dispersion,
+)
+skinny_pair_search = residual_pair_search(
+    train,
+    SEARCH_VARIABLES,
+    skinny_train_actual,
+    skinny_train_expected,
+    skinny_train_exposure,
+    knots=DIAGNOSTIC_KNOTS,
+    n_bins=8,
+    top=12,
+    dispersion=skinny_dispersion,
+)
+print(skinny_factor_search)
+print(skinny_pair_search)
+# REVIEW PAUSE: these are prompts for investigation, not an automatic
+# predictor selector. Discuss causality, stability, support, and leakage.
+
+# %% 7 — Apply literal reviewed additions, then refit the main GLM
+# Reviewed choice for this fixture: add BonusMalus and Density. Area is
+# interesting too, but its relationship with Density deserves a separate
+# business discussion. We do not take `head(2)` from the search table.
+reviewed_additions = ["BonusMalus", "Density"]
+assert REVIEWED_PREDICTORS == SKINNY_PREDICTORS + reviewed_additions
+reviewed_main = EasyGLM.fit(
+    train,
+    target="ClaimNb",
+    model_type="Poisson",
+    predictors=REVIEWED_PREDICTORS,
+    weight_col="Exposure",
+    train_test_col="traintest",
+    divide_target_by_weight=True,
+    cv=5,
+    n_alphas=8,
+    **easyglm_design_kwargs(settings_roundtrip, REVIEWED_PREDICTORS),
+    base="modal",
+)
+reviewed_actual, reviewed_expected, reviewed_exposure = fitted_totals(
+    reviewed_main, train
+)
+reviewed_dispersion = pearson_dispersion(
+    reviewed_actual,
+    reviewed_expected,
+    n_params=len(reviewed_main.glm.coef) + 1,
+)
+reviewed_factor_search = residual_factor_search(
+    train,
+    ["Area", "Region", "VehPower", "VehBrand", "VehGas"],
+    reviewed_actual,
+    reviewed_expected,
+    reviewed_exposure,
+    n_bins=8,
+    dispersion=reviewed_dispersion,
+)
+reviewed_pair_search = residual_pair_search(
+    train,
+    SEARCH_VARIABLES,
+    reviewed_actual,
+    reviewed_expected,
+    reviewed_exposure,
+    knots=DIAGNOSTIC_KNOTS,
+    n_bins=8,
+    top=12,
+    dispersion=reviewed_dispersion,
+)
+reviewed_checkpoint_metrics = checkpoint_metrics(
+    train,
+    reviewed_main.glm,
+    reviewed_main.glm,
+    reviewed_main.predict(train).to_numpy(),
+)
+reviewed_ae_table = plot_ae_support(
+    train,
+    "BonusMalus",
+    reviewed_actual,
+    reviewed_expected,
+    reviewed_exposure,
+    title="Reviewed main training A/E and support — BonusMalus",
+)
+plt.savefig(OUTPUT / "reviewed_main_train_ae_BonusMalus.png", dpi=130)
+plt.show()
+print(
+    {
+        "reviewed_predictors": REVIEWED_PREDICTORS,
+        "train_ae": float(reviewed_actual.sum() / reviewed_expected.sum()),
+        "train_gini": gini(reviewed_actual, reviewed_expected, reviewed_exposure),
+    }
+)
+print(reviewed_factor_search)
+print(reviewed_pair_search)
+print(reviewed_checkpoint_metrics)
+
+# %% 8 — Bridge the reviewed core fit into canonical Project/run_model settings
+project = Project.from_dict(settings_roundtrip.to_dict())
+main_config = project.new_model(
+    "Reviewed main",
+    family="poisson",
+    divide_target_by_weight=True,
+    predictors=REVIEWED_PREDICTORS,
+)
+main_config.penalty = Penalty(cv=5, n_alphas=8, l1_ratio=1.0)
+main_config.base = "modal"
+prepared = prepare(project, raw)
+training_only = prepared.filter(pl.col(project.data.split.column) == 1)
+assert training_only.height == train.height
+
+main_effects_cache = {}
+pair_stages_cache = {}
+mains_run = run_model(
+    project,
+    training_only,
+    "Reviewed main",
+    main_effects_cache=main_effects_cache,
+    pair_stages_cache=pair_stages_cache,
+)
+assert mains_run.spec.to_dict() == reviewed_main.spec.to_dict()
+np.testing.assert_allclose(
+    mains_run.predict(training_only),
+    reviewed_main.predict(training_only).to_numpy(),
+    rtol=1e-8,
+    atol=1e-12,
+)
+print(
+    "The Project bridge refits the same reviewed design. Its predictions "
+    "match the core fit; the Project is Python settings, not a GUI dependency."
+)
+
+# %% 9 — Add the first reviewed pair stage with a two-trial automatic search
+# Literal reviewed pair: the post-refit search highlighted DrivAge × BonusMalus.
+first_pair = ("DrivAge", "BonusMalus")
+pair1_config = copy.deepcopy(main_config)
+pair1_config.pair_method = "sequential_catboost"
+pair1_config.pair_stages = [
+    PairStageConfig(
+        stage_id="driver_bonus",
+        a=first_pair[0],
+        b=first_pair[1],
+        search=PairSearchConfig(trials=2, prefix_trials=2),
+    )
+]
+project.models["Pair 1"] = pair1_config
+pair1_run = run_model(
+    project,
+    training_only,
+    "Pair 1",
+    main_effects_cache=main_effects_cache,
+    pair_stages_cache=pair_stages_cache,
+)
+assert len(pair1_run.rate_model.pair_tables) == 1
+assert pair1_run.pair_stages[0].parents == first_pair
+print(pair1_run.pair_stages[0])
+# A neutral table is a legitimate CV result. Never promise improvement.
+
+# %% 10 — Re-search from the complete pair-1 deployed scorer
+pair1_prediction = pair1_run.predict(training_only)
+pair1_actual, pair1_expected, pair1_exposure = totals(
+    training_only, pair1_run.config, pair1_prediction
+)
+pair1_dispersion = pearson_dispersion(
+    pair1_actual,
+    pair1_expected,
+    n_params=len(pair1_run.fit.coef) + 1,
+)
+remaining_pairs = [
+    (a, b)
+    for index, a in enumerate(SEARCH_VARIABLES)
+    for b in SEARCH_VARIABLES[index + 1 :]
+    if (a, b) != first_pair
+]
+pair1_residual_search = residual_pair_search(
+    training_only,
+    SEARCH_VARIABLES,
+    pair1_actual,
+    pair1_expected,
+    pair1_exposure,
+    knots=DIAGNOSTIC_KNOTS,
+    pairs=remaining_pairs,
+    n_bins=8,
+    top=12,
+    dispersion=pair1_dispersion,
+)
+pair1_factor_search = residual_factor_search(
+    training_only,
+    ["Area", "Region", "VehPower", "VehBrand", "VehGas"],
+    pair1_actual,
+    pair1_expected,
+    pair1_exposure,
+    n_bins=8,
+    dispersion=pair1_dispersion,
+)
+pair1_checkpoint_metrics = checkpoint_metrics(
+    training_only, pair1_run.config, pair1_run.fit, pair1_prediction
+)
+pair1_cell_ae = ae_by_pair(
+    training_only,
+    *first_pair,
+    pair1_actual,
+    pair1_expected,
+    pair1_exposure,
+    knots_a=DIAGNOSTIC_KNOTS[first_pair[0]],
+    knots_b=DIAGNOSTIC_KNOTS[first_pair[1]],
+)
+pair1_heatmap = plot_pair_heatmap(
+    pair1_run.rate_model.pair_tables[0],
+    title="Pair 1 deployed relativities",
+)
+pair1_heatmap.savefig(OUTPUT / "pair1_relativity_heatmap.png", dpi=130)
+plt.show()
+print(pair1_factor_search)
+print(pair1_residual_search)
+print(pair1_checkpoint_metrics)
+print(pair1_cell_ae.filter(pl.col("exposure") > 0))
+# REVIEW PAUSE: this search uses the complete returned RateModel, including
+# pair 1. Ask whether a second table is supported and operationally useful.
+
+# %% 11 — Append pair 2 canonically and prove the deployed prefix stayed frozen
+# Literal teaching choice after reviewing cell 10. It is not selected by
+# indexing the search result, and neutral CV remains an acceptable outcome.
+second_pair = ("VehAge", "Density")
+first_table_before = copy.deepcopy(pair1_run.rate_model.to_dict()["pair_tables"][0])
+pair2_config = copy.deepcopy(pair1_config)
+pair2_config.pair_stages.append(
+    PairStageConfig(
+        stage_id="vehicle_density",
+        a=second_pair[0],
+        b=second_pair[1],
+        search=PairSearchConfig(trials=2, prefix_trials=2),
+    )
+)
+project.models["Pair 2"] = pair2_config
+pair2_run = run_model(
+    project,
+    training_only,
+    "Pair 2",
+    main_effects_cache=main_effects_cache,
+    pair_stages_cache=pair_stages_cache,
+)
+assert len(pair2_run.rate_model.pair_tables) == 2
+assert pair2_run.rate_model.to_dict()["pair_tables"][0] == first_table_before
+assert (
+    pair2_run.rate_model.to_dict()["variables"]
+    == mains_run.rate_model.to_dict()["variables"]
+)
+assert pair2_run.rate_model.base_rate == mains_run.rate_model.base_rate
+pair2_prefix = pair2_run.rate_model.clone()
+pair2_prefix.pair_tables = pair2_prefix.pair_tables[:1]
+np.testing.assert_allclose(
+    pair2_prefix.predict(training_only, exposure_col=None),
+    pair1_run.predict(training_only),
+    rtol=1e-12,
+)
+main_unit_prediction = mains_run.predict(training_only)
+pair1_unit_prediction = pair1_run.predict(training_only)
+final_unit_prediction = pair2_run.predict(training_only)
+pair1_factor = pair1_unit_prediction / main_unit_prediction
+pair2_factor = final_unit_prediction / pair1_unit_prediction
+np.testing.assert_allclose(
+    final_unit_prediction,
+    main_unit_prediction * pair1_factor * pair2_factor,
+    rtol=1e-12,
+)
+offset_audit = (
+    training_only.select("IDpol")
+    .head(8)
+    .with_columns(
+        pl.Series("main_unit_prediction", main_unit_prediction[:8]),
+        pl.Series("pair1_factor", pair1_factor[:8]),
+        pl.Series("prefix_unit_prediction", pair1_unit_prediction[:8]),
+        pl.Series("log_prefix_offset", np.log(pair1_unit_prediction[:8])),
+        pl.Series("pair2_factor", pair2_factor[:8]),
+        pl.Series("final_unit_prediction", final_unit_prediction[:8]),
+    )
+)
+print(offset_audit)
+print(
+    "The stage-2 offset is log(prefix unit rate), not a residual target and not "
+    "an expected claim count. Pair CV constructs fold-local offsets internally."
+)
+print([artifact.status for artifact in pair2_run.pair_stages])
+
+pair2_actual, pair2_expected, pair2_exposure = totals(
+    training_only, pair2_run.config, final_unit_prediction
+)
+pair2_checkpoint_metrics = checkpoint_metrics(
+    training_only, pair2_run.config, pair2_run.fit, final_unit_prediction
+)
+pair2_cell_ae = ae_by_pair(
+    training_only,
+    *second_pair,
+    pair2_actual,
+    pair2_expected,
+    pair2_exposure,
+    knots_a=DIAGNOSTIC_KNOTS[second_pair[0]],
+    knots_b=DIAGNOSTIC_KNOTS[second_pair[1]],
+)
+print(pair2_checkpoint_metrics)
+print(pair2_cell_ae.filter(pl.col("exposure") > 0))
+
+# This is an explicit human decision after reviewing all training evidence.
+# Change this literal to mains_run or pair1_run if that is the accepted model.
+accepted_run = pair2_run
+accepted_model_name = accepted_run.name
+accepted_config = accepted_run.config
+
+# %% 12 — Unlock holdout once: report metrics from the final deployed tables
+checkpoint_runs = {
+    "skinny": (skinny.glm, skinny.glm),
+    "reviewed_main": (mains_run.config, mains_run.fit),
+    "pair1": (pair1_run.config, pair1_run.fit),
+    "pair2": (pair2_run.config, pair2_run.fit),
+}
+holdout_checkpoint_metrics = {
+    "skinny": checkpoint_metrics(
+        locked_holdout,
+        skinny.glm,
+        skinny.glm,
+        skinny.predict(locked_holdout).to_numpy(),
+    ),
+    **{
+        name: checkpoint_metrics(
+            locked_holdout,
+            config,
+            fit,
+            run.predict(locked_holdout),
+        )
+        for name, run, (config, fit) in (
+            ("reviewed_main", mains_run, checkpoint_runs["reviewed_main"]),
+            ("pair1", pair1_run, checkpoint_runs["pair1"]),
+            ("pair2", pair2_run, checkpoint_runs["pair2"]),
+        )
+    },
+}
+final_predictions = {
+    "train": accepted_run.predict(training_only),
+    "holdout": accepted_run.predict(locked_holdout),
+}
+final_frames = {"train": training_only, "holdout": locked_holdout}
+final_null_predictions = {
+    name: null_model_predict(project, accepted_config, training_only, frame)
+    for name, frame in final_frames.items()
+}
+final_metrics = model_metrics(
+    accepted_run.fit,
+    final_predictions,
+    final_frames,
+    accepted_config,
+    final_null_predictions,
+)
+print(final_metrics)
+print(holdout_checkpoint_metrics)
+print(
+    "Holdout was excluded from fitting, residual search, pair choice, and CV. "
+    "A worse or neutral holdout result is evidence, not a workflow failure."
+)
+
+# %% 13 — Inspect a pair relativity heatmap, labelled to at most three decimals
+accepted_pair_heatmap = None
+if accepted_run.rate_model.pair_tables:
+    accepted_pair_heatmap = plot_pair_heatmap(
+        accepted_run.rate_model.pair_tables[0],
+        title="Accepted model pair 1 (training-defined fixed cuts)",
+    )
+    accepted_pair_heatmap.savefig(
+        OUTPUT / "accepted_pair1_relativity_heatmap.png", dpi=130
+    )
+    plt.show()
+else:
+    print("The accepted main-effects model has no pair heatmap.")
+
+# %% 14 — Freeze JSON, Excel, CSV scores, and a scoring script; verify parity
+artifact_paths = {
+    "project": OUTPUT / "french_motor_project.json",
+    "model": OUTPUT / "french_motor_accepted.easyglm",
+    "excel": OUTPUT / "french_motor_accepted_tables.xlsx",
+    "scores": OUTPUT / "french_motor_holdout_scores.csv",
+    "scorer": OUTPUT / "french_motor_frozen_scorer.py",
+}
+project.champion = accepted_model_name
+project.to_json(artifact_paths["project"])
+accepted_run.rate_model.to_json(artifact_paths["model"])
+accepted_run.rate_model.to_excel(artifact_paths["excel"])
+
+holdout_rate = accepted_run.predict(locked_holdout)
+holdout_scores = locked_holdout.select("IDpol", "Exposure").with_columns(
+    pl.Series("prediction_rate", holdout_rate),
+    pl.Series("expected_claims", holdout_rate * locked_holdout["Exposure"].to_numpy()),
+)
+holdout_scores.write_csv(artifact_paths["scores"])
+loaded_scores = pl.read_csv(artifact_paths["scores"])
+
+restored = RateModel.from_json(artifact_paths["model"])
+np.testing.assert_allclose(
+    restored.predict(locked_holdout, exposure_col=None), holdout_rate, rtol=1e-12
+)
+np.testing.assert_allclose(
+    loaded_scores["prediction_rate"].to_numpy(), holdout_rate, rtol=1e-12
+)
+scorer_source = to_scoring_script(accepted_run, output_prefix="frozen")
+artifact_paths["scorer"].write_text(scorer_source, encoding="utf-8")
+scorer_namespace = {"__name__": "french_motor_frozen_scorer"}
+exec(
+    compile(scorer_source, str(artifact_paths["scorer"]), "exec"),
+    scorer_namespace,
+)
+np.testing.assert_allclose(
+    scorer_namespace["predict"](locked_holdout, exposure_col=None),
+    holdout_rate,
+    rtol=1e-12,
+)
+print({name: str(path) for name, path in artifact_paths.items()})
+
+replayed_project = Project.from_json(artifact_paths["project"])
+replayed_prepared = prepare(replayed_project)
+np.testing.assert_array_equal(
+    replayed_prepared.filter(pl.col("traintest") == 1)["IDpol"].to_numpy(),
+    training_only["IDpol"].to_numpy(),
+)
+np.testing.assert_array_equal(
+    replayed_prepared.filter(pl.col("traintest") == 0)["IDpol"].to_numpy(),
+    locked_holdout["IDpol"].to_numpy(),
+)
+
+# %% 15 — End the lesson with review questions, not an automatic winner
+lesson_results = {
+    "split_counts": split_counts,
+    "skinny_train_ae": skinny_train_ae,
+    "skinny_train_gini": skinny_train_gini,
+    "reviewed_predictors": REVIEWED_PREDICTORS,
+    "accepted_model": accepted_model_name,
+    "pair_stages": [artifact.stage_id for artifact in accepted_run.pair_stages],
+    "training_checkpoints": {
+        "skinny": skinny_checkpoint_metrics,
+        "reviewed_main": reviewed_checkpoint_metrics,
+        "pair1": pair1_checkpoint_metrics,
+        "pair2": pair2_checkpoint_metrics,
+    },
+    "holdout_checkpoints": holdout_checkpoint_metrics,
+    "final_metrics": final_metrics,
+    "artifacts": {name: str(path) for name, path in artifact_paths.items()},
+}
+(OUTPUT / "lesson_results.json").write_text(
+    json.dumps(lesson_results, indent=2, default=str), encoding="utf-8"
+)
+print(json.dumps(lesson_results, indent=2, default=str))
+print(
+    "Discuss with your LLM: Which conclusions are stable across train and "
+    "holdout? Which cuts need business review? Did either pair table win CV, "
+    "or was neutral preferred? What monitoring would you require before use?"
+)
