@@ -2,9 +2,20 @@
 
 > Review copy for the new interactive workflow. Release is paused.
 
-Run these blocks in order in the same notebook or Python session. Inspect each result before choosing the next change. All the code to run is on this page.
+This walkthrough demonstrates an interactive modelling workflow for a pricing actuary using EasyGLM. We use French motor data to build a claim-frequency model, starting with two main effects and adding to the model as we review the results.
 
-## Load the policies
+We will cover:
+
+- **Data and model setup:** specify claims, exposure and the training/test split; choose automatic numeric bins or supply your own cut points.
+- **Main effects:** fit a GLM using cross-validation, inspect its relativities and plot actual versus expected (A/E).
+- **Missing variables:** search for rating factors the model may be missing, inspect them and refit with the factors we choose to add.
+- **Interactions:** fit a CatBoost correction for two variables, convert it to a rating table, then fit another interaction using the GLM and the first table as its offset.
+- **Rate amendments:** edit main-effect or interaction relativities, preview their effect on expected claims, and choose whether to keep later interaction tables fixed or refit them.
+- **Validation and export:** compare models on holdout data, export the chosen rating tables to Excel, and save and reopen the model for scoring.
+
+Each step leaves the earlier models available for comparison. Run the blocks in order in the same notebook or Python session, inspecting the results before choosing the next change. All the code to run is on this page.
+
+## Load the data
 
 The complete package is installed with:
 
@@ -12,10 +23,10 @@ The complete package is installed with:
 python -m pip install easy-glm
 ```
 
-`PricingSession` keeps the data, column choices and bands together. `load_external_dataframe` loads the French motor policies and caches the download. We take 50,000 policies for this example.
+`load_external_dataframe` loads the French motor claims data and caches the download. We take 50,000 rows for this example.
 
 ```python
-from easy_glm import PricingSession, load_external_dataframe
+from easy_glm import load_external_dataframe
 
 data = (
     load_external_dataframe()
@@ -25,33 +36,42 @@ data = (
 )
 ```
 
-For your own policies, replace that loading block with your usual import:
+## Define the project
+
+`PricingSession` is how we set up a modelling project in EasyGLM. It holds the data and the settings we will use to build models: the target, exposure or weight, model family, training/holdout split and binning rules.
+
+We create a session once, then use it to fit and compare different models using the same data and split. Each fitted model keeps its own results. We will set the binning rules in the next section.
+
+For this project, we choose a Poisson model for claim frequency. `ClaimNb` contains claim counts and `Exposure` contains policy-years. EasyGLM fits frequency with exposure weights and calculates expected claim counts for A/E checks.
+
+Use `ignored` for columns you want to exclude from modelling. They stay in the data, but EasyGLM excludes them from main effects, interactions and the searches for missing variables and interactions. Here, we exclude `VehGas` (fuel type). Use `ignored=[]` if you have no exclusions.
+
+We call our session `work`. The code below sets up the project; we will choose the main effects and fit the first GLM later.
 
 ```python
-# import polars as pl
-# data = pl.read_parquet("motor_policies.parquet")
-```
+from easy_glm import PricingSession
 
-## Set the response and split
-
-`ClaimNb` contains claim counts and `Exposure` contains policy-years. The package fits frequency with exposure weights and calculates expected claim counts for A/E checks.
-
-`work` is our modelling session. Creating it does not fit a model.
-
-```python
 work = PricingSession(
     data,
     family="poisson",
     claims="ClaimNb",
     exposure="Exposure",
     id="IDpol",
+    ignored=["VehGas"],
     train_fraction=0.70,
     seed=42,
 )
 work.summary()
 ```
 
-This splits by policy ID: 70% go into training and the rest into holdout. Rows sharing an ID stay together, and reordering the policies does not change their split. Every model from the session uses it. If your data already has a split column, use that instead:
+This splits by policy ID: 70% go into training and the rest into holdout. Rows sharing an ID stay together, and reordering the policies does not change their split. Every model from the session uses it.
+
+If your data already has a split column, pass its name with `split`. `PricingSession` uses these fixed values:
+
+- **`1` = training:** these rows are used for fitting and searching for variables and interactions.
+- **`0` = holdout (test):** these rows are reserved for validation when you request it.
+
+For example, `split="traintest"` reads the `traintest` column and keeps its existing assignments. It does not create a new random split. Convert labels such as `"Train"` and `"Test"` to `1` and `0` first; missing or other values are rejected.
 
 ```python
 # work = PricingSession(
@@ -60,23 +80,36 @@ This splits by policy ID: 70% go into training and the rest into holdout. Rows s
 #     claims="ClaimNb",
 #     exposure="Exposure",
 #     id="IDpol",
+#     ignored=["VehGas"],
 #     split="traintest",  # Existing column: 1 = training, 0 = holdout.
 # )
 ```
 
-Claims, exposure, ID and split are excluded from factor searches. Other columns remain available to investigate; they enter the main GLM only when we name them in a fit.
+Claims, exposure, ID and split are excluded from factor searches automatically.
 
-We will start with `DrivAge` and `VehAge`. We leave `BonusMalus`, `Density`, `Area`, `Region`, `VehPower`, `VehBrand` and `VehGas` out of the first GLM, then investigate them.
+We will start with `DrivAge` and `VehAge`. We leave `BonusMalus`, `Density`, `Area`, `Region`, `VehPower` and `VehBrand` out of the first GLM, but keep them available for searches and later models. For example, we will use `Region` in an interaction later. `VehGas`, which we explicitly ignored, is excluded from all of these steps.
 
-## Choose the bands
+## Set how numeric variables are binned
 
-Set eight bands as the default for numeric variables:
+EasyGLM groups numeric values into ranges, called bins or bands. The GLM fits a relativity for each band. For example, grouping driver ages 25–34 together gives those ages the same driver-age relativity.
+
+You control the binning with `work.bands`. You can:
+
+- Set a **default number of bins** for numeric variables.
+- Give a **specific variable its own bin count**.
+- Supply **exact cut points** for a variable to define the bands yourself.
+
+When you specify a count, EasyGLM chooses the boundaries using **training data only**. When you supply cut points, it uses those boundaries instead.
+
+Start with eight bins as the default:
 
 ```python
 work.bands(default=8)
 ```
 
-Automatic boundaries use training values. Repeated values may produce fewer distinct bands. To give vehicle age its own count:
+Each numeric variable uses this count unless you give it its own settings. Repeated values may produce fewer distinct bins than requested.
+
+To use six automatic bins for vehicle age while keeping the default for other variables:
 
 ```python
 work.bands("VehAge", number=6).show()

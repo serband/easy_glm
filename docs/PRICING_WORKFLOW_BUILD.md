@@ -48,6 +48,11 @@ do not satisfy a step.
 
 ## Completion evidence
 
+- Latest check, 23 September 2026: all 31 current Markdown Python blocks passed
+  in a clean Python 3.13 notebook installation, with the real loader and displays.
+  Saved-model predictions matched exactly; a scorer rebuilt from Excel matched
+  to 3.33e-16. See [the verification record](PRICING_WALKTHROUGH_VERIFICATION.md)
+  for the environment, checks and retained outputs.
 - The complete Markdown ran on 50,000 French motor policies: main fits, searches,
   two ordered interactions, both amendment choices, holdout, Excel and saved-model
   scoring. No tutorial helper functions or workbench session were needed.
