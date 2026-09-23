@@ -1,13 +1,10 @@
-"""Persona run — the actuary doing a rate review.
+"""Persona run for an actuary completing a rate review.
 
-Steps mirror docs/RELEASE_0.4_PLAN.md §"Persona runs": roles/recode/derived/
-filter/split come from the project file (the data grids are canvas widgets
-Playwright cannot type into), then in the browser: check the variables and the
-embedded split, add an interaction and a linear term on the Model page, choose the
-offset on the Model page, fit, review A/E by every rating factor and by pair,
-open the interaction table, download Excel + scorer + script, reload and check
-the fit survived, and finally run the exported script and compare it with the
-downloaded scorer.
+Roles, recodes, derived columns, filters and the split come from the project
+file because Playwright cannot type into the canvas data grids. In the browser
+the test checks variables and split, configures terms and offset, fits, reviews
+A/E, opens the interaction table, exports every format, reloads the project and
+executes the exported script to compare it with the downloaded scorer.
 """
 
 from __future__ import annotations

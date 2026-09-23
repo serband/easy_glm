@@ -1,13 +1,12 @@
-"""Piecewise-linear (L-dummy) terms — pieces B and B2.
+"""Piecewise-linear term contract and regression tests.
 
-Contract (docs/RELEASE_0.4_PLAN.md §R2 as revised by R10/Q3): ``LinearEncoder``
-clips ``x`` to ``[lo, hi]`` and has one column per band, ``clip(x - k_j, 0,
-width_j)``, so each coefficient is the *slope inside that band* and the lasso
-zeroes slopes (flat sections). The term is exactly flat outside the clamp,
-treats nulls as the value at ``lo`` times a null factor, and its rate table is
-log-linear inside each band with relativity 1.00 at ``x_base``. Monotone
-constraints are sign bounds on the band slopes and are available for linear
-terms. ``kind="continuous"`` is the same encoder with no interior knots.
+``LinearEncoder`` clips ``x`` to ``[lo, hi]`` and has one column per band,
+``clip(x - k_j, 0, width_j)``, so each coefficient is the *slope inside that
+band* and the lasso zeroes slopes (flat sections). The term is exactly flat
+outside the clamp, treats nulls as the value at ``lo`` times a null factor, and
+its rate table is log-linear inside each band with relativity 1.00 at
+``x_base``. Monotone constraints are sign bounds on band slopes.
+``kind="continuous"`` is the same encoder with no interior knots.
 """
 
 from __future__ import annotations

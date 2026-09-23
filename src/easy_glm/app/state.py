@@ -32,8 +32,7 @@ re-applied from the *current* project when it is loaded, so the project file
 stays the truth.
 
 The folder is **shared mutable state**: every browser tab with the project open
-writes into it. Three rules keep one tab from throwing away another's work
-(``docs/checks/w4-runs-folder.md``):
+writes into it. Three rules keep one tab from throwing away another's work:
 
 * while the conflict notice is up, this tab may fit but may not write to or
   delete from the folder (:func:`runs_write_paused`);
@@ -1034,8 +1033,8 @@ def interrupted_fits() -> list[str]:
     was reloaded, or the app was stopped, part-way through.
 
     A fit *running right now* in another tab looks exactly the same from here,
-    so such a fit may be reported as interrupted (said in
-    ``docs/checks/w4-runs-folder.md``; the notice is drawn once per session).
+    so such a fit may be reported as interrupted. The notice is drawn once per
+    session.
     That is why a marker is only *removed* when it is safe to remove: when its
     result is on disk, when this session wrote it, or when it is older than
     :data:`MARKER_GRACE_SECONDS` — a younger one from another session may

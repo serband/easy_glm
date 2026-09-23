@@ -1,20 +1,7 @@
 # Sequential pair implementation contracts
 
-Status: implementation contract; resource defaults are conservative preflight ceilings,
-not measured claims that all workloads meet the runtime budget. README is untouched.
-
-## Ownership
-
-- Sol numerics/fitter lead: `workflow/pair_distillation.py`, `workflow/pair_stages.py`,
-  `workflow/run.py`, numerical/fitting tests and Phase 0 spike.
-- Sol engine: `engine/models.py`, `engine/rate_model.py`, `workflow/project.py`,
-  `core/excel.py`, pair engine/project tests.
-- Sol desktop: `desktop/`, `app/state.py`, focused desktop pair tests.
-- Sol frontend: `frontend/` and focused UI tests.
-- Sol outputs (when assigned): `workflow/export.py`, `workflow/report.py`,
-  `workflow/_svg.py` and focused output tests.
-- Astra architecture: this document, independent validation and review. Root
-  handles cross-module integration review. Builders coordinate APIs before edits.
+Resource defaults are conservative preflight ceilings, not measured guarantees
+that every workload will meet the runtime budget.
 
 ## Project and scorer
 
@@ -115,20 +102,21 @@ Proposed initial hard ceilings to confirm against Phase 0 measurements:
   data-independent enumeration/subsampling, with an all-neutral configuration.
 - CPU only, one training thread by default; two maximum for this implementation.
 - Tree depth at most six and iterations at most 200 per teacher candidate.
-- A cooperative 900-second total pair-fit deadline, checked between fits and
-  recorded as a failed fit without publishing partial results; desktop process
-  termination provides cancellation during a native fit, target at most 5 seconds.
+- A configurable CatBoost tuning allowance for each interaction (15 minutes by
+  default), counting only CatBoost fitting during tuning. GLM fits, table
+  construction and the final refit are excluded. Exhaustion fails the fit without
+  publishing partial results. Checks occur between native fits; desktop process
+  termination provides cancellation during a running fit.
 - Preflight enumerates expected teacher/main fit counts, main n_alphas/CV cost,
   cells and estimated table bytes before any fit. A conservative 5,000 teacher-fit
   cap rejects an oversized search with an actionable explanation. This cap is not
   a claim of acceptable runtime; Phase 0 must calibrate it downward if necessary.
 
 No silent row subsampling, bin merging, candidate dropping or partial publication.
-The initial default search is neutral plus two fixed teachers: depth 2, 60 trees,
+The fixed-candidate default search is neutral plus two teachers: depth 2, 60 trees,
 learning rate 0.08, L2 3; and depth 3, 120 trees, learning rate 0.06, L2 5. The
-lead reported a three-stage 2,800-row/70-tree CPU-two prototype at 0.25 seconds
-and 263 MB including imports; this is NOT a nested-CV benchmark. Resource budgets
-must be shown as limits and measured evidence separately.
+resource budgets must be shown as limits, separately from the measured evidence
+in [the benchmark results](../spikes/sequential-pairs/RESULTS.md).
 
 Cache main fits independently of complete-prefix configuration: identical exact
 inner-training rows/main settings must not repeat the same user-requested main

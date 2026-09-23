@@ -204,24 +204,7 @@ model's on the holdout.
 * `workflow/export.py` — `to_script`, `to_json`, `to_report` (HTML).
 * `core` additions: `DesignSpec.with_overrides`, integer-knot strategy helper.
 
-## 10. Delivery phases and acceptance
-
-**Phase 1 — workflow engine (this session).** Project spec; prep steps; leakage
-report; diagnostics; script exporter; tests including the script round-trip.
-*Accept when*: `pytest` green; exported script reproduces a French-motor model.
-
-**Phase 2 — Workbench v1 (this session, continues next).** `python -m
-easy_glm.app` launches the multipage app; all nine pages functional on French
-motor data; autosave/reopen works; existing editor embedded as the Rate tables
-page. *Accept when*: a model can be built end to end without code and the
-downloaded script runs.
-
-**Phase 3 — polish.** Theming and layout, champion/challenger overlays, HTML
-report, CLI (`easy_glm gui`, `easy_glm run project.json`), performance pass on
-1M+ rows, drag-to-edit prototype, two-way interactions once the core supports
-them.
-
-## 11. Testing strategy
+## 10. Testing strategy
 
 * Engine: unit tests per function on synthetic data; property: prep is
   idempotent given the same spec; leakage report flags a planted proxy and an
@@ -231,7 +214,7 @@ them.
   exceptions on a small project); Playwright screenshot run in CI as an
   artefact, not an assertion.
 
-## 12. Risks and mitigations
+## 11. Risks and mitigations
 
 * *Streamlit rerun cost with big frames* → keep frames in session state, cache on
   spec hashes, fragments for widgets that only touch one panel.

@@ -80,10 +80,11 @@ the numbers are observed prototype results rather than an isolated speed claim.
   the main design's dense/compact byte estimate and 128 bytes per pair cell.
   It is a rejection gate,
   not a measured peak guarantee; no rows or bins are silently discarded.
-- A 900-second cooperative deadline starts before the main GLM fit and is
-  checked between fits. Native CatBoost/GLM calls need desktop process
-  termination for prompt cancellation. Cancellation latency still needs a
-  measured desktop process test.
+- From v0.472, each interaction has a configurable CatBoost tuning allowance
+  (15 minutes by default). Only CatBoost fitting during tuning counts against
+  it; GLM fitting, table construction and the final refit are not timed. The
+  allowance is checked between native fits, so it does not interrupt a running
+  CatBoost call. Desktop cancellation can terminate the worker process.
 
 Poisson/log and Tweedie/log with `1 < power < 2` are the enabled pair families.
 Binomial/logit, Gaussian/identity, Gamma and other links remain on the legacy

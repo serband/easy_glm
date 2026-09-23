@@ -5,7 +5,7 @@ function (0.3 behaviour), as a piecewise-linear term (B2 basis: one penalised
 slope per band, so flat sections come out exactly flat), as a piecewise-linear
 term with a monotone constraint, and as a single straight line
 (``kind="continuous"``) — and prints (or, with ``--write``, regenerates
-``docs/checks/b-linear.md``) what an actuary needs to judge the feature: the
+``.internal/checks/b-linear.md``) what an actuary needs to judge the feature: the
 curves side by side at round values, the clamp points, holdout deviance / Gini
 for each, and the exactness of the rate tables at and beyond the clamp.
 
@@ -29,7 +29,7 @@ from easy_glm.workflow import ModelConfig, gini, totals
 from easy_glm.workflow.diagnostics import deviance_stats, unit_values
 
 ROOT = Path(__file__).resolve().parents[2]
-DOC = ROOT / "docs" / "checks" / "b-linear.md"
+DOC = ROOT / ".internal" / "checks" / "b-linear.md"
 FIXTURE = ROOT / "tests" / "fixtures" / "french_motor_50k.parquet"
 PREDICTORS = [
     "DrivAge",
@@ -240,7 +240,7 @@ def main(write: bool) -> None:
         "runs instead of flat ones.) The curve is still continuous everywhere: the bands",
         "join up by construction.",
         "",
-        "Three conventions, all from the plan review (questions Q1–Q3):",
+        "Three modelling conventions exercised by these checks:",
         "",
         f"1. **Flat outside the data.** The curve is clamped at the training range — for "
         f"`{LINEAR_VAR}` here `{lo:g}` to `{hi:g}` — and stays level beyond it, so a value "
@@ -445,6 +445,7 @@ def main(write: bool) -> None:
     text = "\n".join(lines)
     print(text, end="")  # stdout is byte-identical to the written document
     if write:
+        DOC.parent.mkdir(parents=True, exist_ok=True)
         DOC.write_text(text)
         print(f"\nwritten: {DOC}")
 
@@ -452,6 +453,6 @@ def main(write: bool) -> None:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument(
-        "--write", action="store_true", help="regenerate the docs/checks document"
+        "--write", action="store_true", help="regenerate the .internal/checks document"
     )
     main(ap.parse_args().write)

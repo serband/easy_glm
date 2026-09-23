@@ -4,8 +4,8 @@ Run:  .venv/bin/python scripts/checks/c1_foundations.py [--write]
 
 Fits the French motor frequency model (cached parquet), asserts the product
 promises that C1 made true and prints the plain-language report. With
-``--write`` it also (re)writes docs/checks/c1-foundations.md; by default the
-committed document is left untouched so a reviewer's re-run never dirties it.
+``--write`` it also writes ``.internal/checks/c1-foundations.md``; by default it
+only prints the report. The output directory is ignored by Git.
 Exactness residuals are reported as a bound (they are floating-point noise
 below 1e-12, not golden numbers); the raw values go to stdout only.
 """
@@ -25,7 +25,7 @@ import polars as pl
 warnings.simplefilter("ignore")
 
 ROOT = Path(__file__).resolve().parents[2]
-OUT = ROOT / "docs" / "checks" / "c1-foundations.md"
+OUT = ROOT / ".internal" / "checks" / "c1-foundations.md"
 
 
 def french_motor() -> pl.DataFrame | None:
@@ -40,9 +40,10 @@ def french_motor() -> pl.DataFrame | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    OUT.parent.mkdir(parents=True, exist_ok=True)
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "--write", action="store_true", help="rewrite the committed document"
+        "--write", action="store_true", help="write the ignored local check report"
     )
     opts = parser.parse_args(argv)
 
@@ -114,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     rm2 = rm.clone()
     row = rm2.variables["VehGas"].table[1]
     rm2.update_relativity("VehGas", row.from_, row.to_, 3.0)
-    xlsx = ROOT / "docs" / "checks" / "_c1_check.xlsx"
+    xlsx = ROOT / ".internal" / "checks" / "_c1_check.xlsx"
     rm2.to_excel(xlsx)
     sheet = pl.read_excel(xlsx, sheet_name="VehGas")
     excel_value = float(sheet["relativity"][1])
@@ -122,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     assert abs(excel_value - 3.0) < 1e-9, excel_value
 
     # 4. JSON round trip and version
-    tmp = ROOT / "docs" / "checks" / "_c1_check.easyglm"
+    tmp = ROOT / ".internal" / "checks" / "_c1_check.easyglm"
     rm.to_json(tmp)
     back = RateModel.from_json(tmp)
     tmp.unlink()
@@ -191,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
         "",
         "## Questions for you",
         "",
-        "None for this piece. The domain questions from the plan review are in the questions document in this folder.",
+        "None. This report contains only executable checks.",
         "",
     ]
     print("\n".join(lines))

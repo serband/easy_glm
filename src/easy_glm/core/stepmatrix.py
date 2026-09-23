@@ -377,12 +377,12 @@ def install_glum_shim() -> None:
     module makes the blocks go through the wrapper too.
 
     This is deliberately the smallest possible change and is pinned to
-    ``glum 3.4.*`` by ``pyproject.toml``. The upstream fix is a one-line
-    ``isinstance(mat, tabmat.MatrixBase)`` pass-through in that function; an
-    issue/PR against glum is tracked in ``docs/checks/g-scale.md``. If a future
-    glum removes or renames the function this raises immediately rather than
-    silently densifying a 5M-row design, and the fallback is
-    ``DesignSpec.build(..., sparse=False)``.
+    ``glum 3.4.*`` by ``pyproject.toml``. The proposed upstream fix is a
+    one-line ``isinstance(mat, tabmat.MatrixBase)`` pass-through in that
+    function. If a future glum removes or renames the function this raises
+    immediately rather than silently densifying a 5M-row design, and the
+    fallback is ``DesignSpec.build(..., sparse=False)``. The measured scale
+    behavior is recorded in ``docs/spikes/g-scale/SPIKE_REPORT.md``.
 
     Idempotent and safe to call on every fit.
     """

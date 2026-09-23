@@ -3,7 +3,7 @@
 Fits the French-motor frequency model, then does on the fitted tables exactly
 what the Tools panel does in the workbench — smooth the DrivAge curve (moving
 average and isotonic), cap a tail, round to a step — and prints (or, with
-``--write``, regenerates ``docs/checks/d5-tooling.md``) what an actuary needs to
+``--write``, regenerates ``.internal/checks/d5-tooling.md``) what an actuary needs to
 judge it: the before/after tables with the exposure behind each band, the
 true change in total expected claims each operation makes to the book (and
 what *Rebalance base rate* does about it), what the undo stack and the
@@ -35,7 +35,7 @@ from easy_glm.workflow import (
 from easy_glm.workflow.diagnostics import deviance_stats, gini, unit_values
 
 ROOT = Path(__file__).resolve().parents[2]
-DOC = ROOT / "docs" / "checks" / "d5-tooling.md"
+DOC = ROOT / ".internal" / "checks" / "d5-tooling.md"
 FIXTURE = ROOT / "tests" / "fixtures" / "french_motor_50k.parquet"
 PREDICTORS = [
     "DrivAge",
@@ -549,6 +549,7 @@ def main(write: bool) -> None:
     text = "\n".join(lines)
     print(text, end="")  # stdout is byte-identical to the written document
     if write:
+        DOC.parent.mkdir(parents=True, exist_ok=True)
         DOC.write_text(text)
         print(f"\nwritten: {DOC}")
 
@@ -556,6 +557,6 @@ def main(write: bool) -> None:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument(
-        "--write", action="store_true", help="regenerate the docs/checks document"
+        "--write", action="store_true", help="regenerate the .internal/checks document"
     )
     main(ap.parse_args().write)

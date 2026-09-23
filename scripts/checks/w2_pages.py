@@ -7,7 +7,7 @@ screens with Playwright, and writes a plain-language page describing what each
 screen shows and what to look at.
 
 Usage: python scripts/checks/w2_pages.py [--write]
-  --write regenerates docs/checks/w2-pages.md and docs/checks/img/w2_*.png;
+  --write regenerates .internal/checks/w2-pages.md and .internal/checks/img/w2_*.png;
   otherwise the document is printed. Screenshots need Playwright: either
   importable here, or an interpreter with it in EASY_GLM_PLAYWRIGHT_PYTHON.
 """
@@ -28,8 +28,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests" / "fixtures" / "french_motor_50k.parquet"
-DOC = ROOT / "docs" / "checks" / "w2-pages.md"
-IMG = ROOT / "docs" / "checks" / "img"
+DOC = ROOT / ".internal" / "checks" / "w2-pages.md"
+IMG = ROOT / ".internal" / "checks" / "img"
 DRIVER = ROOT / "scripts" / "checks" / "_w2_screens.py"
 PREDICTORS = ["DrivAge", "VehAge", "BonusMalus", "Density", "VehPower", "Region"]
 

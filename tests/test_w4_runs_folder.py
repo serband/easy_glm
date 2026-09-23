@@ -1,12 +1,8 @@
-"""W4 — the persisted-run folder and the second breaker session's findings.
+"""Persisted-run folder concurrency, recovery and cache-hardening tests.
 
-One test per finding of ``docs/reviews/w3-breakage-2.md``. The two blocking
-findings (1 and 2) are about the runs folder next to the project file: it is
-shared by every browser tab, and before W4 a tab that was not in step with the
-project on disk could delete the fit that belonged to it. Tests named
-``test_breakage2_NN_...`` where ``NN`` is the finding's number in that report
-(items 10, 24, 28, 30, 31, 32, 33 and 38 are the old numbers of
-``docs/reviews/w2-breakage.md``, as the report uses them).
+The runs folder next to a project file is shared by every browser tab. These
+tests cover conflicts, interrupted fits, invalid caches and error recovery so
+one tab cannot overwrite or delete another tab's fitted model.
 """
 
 from __future__ import annotations

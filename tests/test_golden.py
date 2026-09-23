@@ -8,7 +8,7 @@ seed=20260902).sort("IDpol")`` with the id and categorical columns cast to text 
 see ``tests/fixtures/make_french_motor_50k.py``, which regenerates or checks it.
 
 **Any change to a number in ``GOLDEN`` is a blocking review item** and needs a
-written reason in the pull request (see docs/RELEASE_0.4_PLAN.md, §R7).
+written statistical reason in the pull request.
 
 Tolerances: ``gini`` pools tied scores, so it is independent of row order and
 of ``e / w`` rounding noise (before that fix it moved at the 1e-5 level between

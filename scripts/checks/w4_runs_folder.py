@@ -1,5 +1,4 @@
-"""Actuarial check for piece W4 — the persisted-run folder, and the rest of
-the second breaker session (docs/reviews/w3-breakage-2.md).
+"""Actuarial check for persisted-run concurrency and recovery behavior.
 
 Replays the findings against the current workbench with Streamlit's test
 harness on a small synthetic motor book — two "browser tabs" are two AppTest
@@ -8,7 +7,7 @@ tester did, what used to happen, what the tool says now, and the three rules
 that decide what may be written to or deleted from the runs folder.
 
 Usage: python scripts/checks/w4_runs_folder.py [--write]
-  --write regenerates docs/checks/w4-runs-folder.md; otherwise it is printed.
+  --write regenerates .internal/checks/w4-runs-folder.md; otherwise it is printed.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DOC = ROOT / "docs" / "checks" / "w4-runs-folder.md"
+DOC = ROOT / ".internal" / "checks" / "w4-runs-folder.md"
 N = 2000
 
 
@@ -538,12 +537,13 @@ def main(write: bool) -> int:
         "data file by size and modification time, so restoring that file from a backup "
         "makes every fit look stale and everything has to be refitted; matching on the "
         "contents instead means reading the whole book (which can be several GB) every "
-        "time a page is drawn, so it needs its own piece of work. Both are recorded in "
-        "`docs/reviews/w3-breakage-2.md`. Nothing else in that report is left open.",
+        "time a page is drawn, so it needs its own performance-focused change. The "
+        "checks above cover the remaining persisted-run correctness cases.",
         "",
     ]
     text = "\n".join(lines)
     if write:
+        DOC.parent.mkdir(parents=True, exist_ok=True)
         DOC.write_text(text)
         print(f"wrote {DOC}")
     else:
