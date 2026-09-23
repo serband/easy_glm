@@ -6,7 +6,6 @@ import copy
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +15,7 @@ import pytest
 from easy_glm.engine.models import ModelMetadata
 from easy_glm.engine.rate_model import RateModel
 from easy_glm.workflow import pair_stages
+from easy_glm.workflow import run as workflow_run
 from easy_glm.workflow.export import to_script
 from easy_glm.workflow.pair_distillation import distill_pair_cells
 from easy_glm.workflow.project import (
@@ -70,6 +70,50 @@ def _case() -> tuple[Project, pl.DataFrame]:
     ]
     assert not project.validate("pair")
     return project, frame
+
+
+class _FakeClock:
+    current = 0.0
+
+    @classmethod
+    def monotonic(cls) -> float:
+        return cls.current
+
+    @classmethod
+    def perf_counter(cls) -> float:
+        return cls.current
+
+
+class _FakeTeacher:
+    target_scale = 1.0
+
+    def __init__(self, clock: type[_FakeClock], prediction_delay: float = 0.0):
+        self._clock = clock
+        self._prediction_delay = prediction_delay
+
+    def predict_mean(self, raw, baseline):
+        self._clock.current += self._prediction_delay
+        return np.asarray(baseline, dtype=float)
+
+
+def _timed_fake_teacher(
+    monkeypatch,
+    *,
+    tuning_seconds: float,
+    final_seconds: float = 0.0,
+    prediction_seconds: float = 0.0,
+):
+    calls: list[int] = []
+
+    def fit(raw, target, baseline, **kwargs):
+        rows = len(target)
+        calls.append(rows)
+        _FakeClock.current += final_seconds if rows == 130 else tuning_seconds
+        return _FakeTeacher(_FakeClock, prediction_seconds)
+
+    monkeypatch.setattr(pair_stages, "time", _FakeClock)
+    monkeypatch.setattr(pair_stages, "fit_catboost_pair_raw", fit)
+    return calls
 
 
 @pytest.mark.parametrize("with_main", [True, False])
@@ -133,6 +177,7 @@ def test_unassigned_pair_parents_fit_score_and_roundtrip(
         script_path.write_text(
             to_script(project, "pair", run=run, output_prefix=output_prefix)
         )
+        assert "'pair_time_limit_minutes': 15.0" in script_path.read_text()
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
         subprocess.run(
@@ -167,11 +212,37 @@ def test_append_and_holdout_poison_reuse_full_training_prefix():
     poisoned = frame.with_columns(
         pl.when(pl.col("split") == 0).then(1e6).otherwise(pl.col("y")).alias("y")
     )
+    cfg.pair_time_limit_minutes = 0.000001
     repeated = run_model(project, poisoned, "pair", pair_stages_cache=cache)
     assert all(artifact.reused for artifact in repeated.pair_stages)
     np.testing.assert_allclose(
         combined.predict(frame), repeated.predict(frame), rtol=1e-12
     )
+
+
+def test_explicit_cap_skips_frozen_stage_and_names_active_interaction(
+    monkeypatch,
+) -> None:
+    project, frame = _case()
+    cfg = project.models["pair"]
+    second = cfg.pair_stages.pop()
+    first = run_model(project, frame, "pair")
+    cfg.pair_stages.append(second)
+    main = first.rate_model.clone()
+    main.pair_tables = []
+
+    _FakeClock.current = 10.0
+    _timed_fake_teacher(monkeypatch, tuning_seconds=1.0)
+    with pytest.raises(TimeoutError, match=r"B × C.*caller's shared time cap"):
+        pair_stages.fit_pair_stages(
+            project,
+            frame[:130],
+            cfg,
+            main,
+            deadline_monotonic=10.0,
+            frozen_prefix_artifacts=first.pair_stages,
+            frozen_prefix_rate_model=first.rate_model,
+        )
 
 
 def test_uniform_twenty_by_twenty_cells_clear_default_support_threshold():
@@ -185,6 +256,158 @@ def test_uniform_twenty_by_twenty_cells_clear_default_support_threshold():
     )
     assert result.fallback_reason == (None,) * 400
     assert np.all(result.relativities == 1)
+
+
+def test_each_interaction_gets_fresh_accumulated_catboost_budget(monkeypatch):
+    project, frame = _case()
+    cfg = project.models["pair"]
+    cfg.pair_time_limit_minutes = 0.55
+    estimate = pair_stages.preflight_pair_stages(
+        cfg.pair_stages,
+        project,
+        frame[:130],
+        cfg,
+    )
+    assert estimate["deadline_seconds"] == 33.0
+    assert estimate["deadline_scope"] == "catboost_tuning_per_interaction"
+    settings = pair_stages._main_settings(cfg)
+    cfg.pair_time_limit_minutes = 0.7
+    assert pair_stages._main_settings(cfg) == settings
+    cfg.pair_time_limit_minutes = 0.55
+
+    _FakeClock.current = 0.0
+    _timed_fake_teacher(monkeypatch, tuning_seconds=1.0)
+    before_debit: list[tuple[tuple[str, str], float]] = []
+    original_debit = pair_stages._TuningBudget.debit
+
+    def record_debit(self, seconds):
+        before_debit.append((self.active_pair, self.consumed))
+        return original_debit(self, seconds)
+
+    monkeypatch.setattr(pair_stages._TuningBudget, "debit", record_debit)
+    run_model(project, frame, "pair")
+
+    consumed = {
+        pair: max(
+            before + 1.0 for seen_pair, before in before_debit if seen_pair == pair
+        )
+        for pair in (("A", "B"), ("B", "C"))
+    }
+    first_consumed = {
+        pair: next(before for seen_pair, before in before_debit if seen_pair == pair)
+        for pair in (("A", "B"), ("B", "C"))
+    }
+    assert first_consumed == {("A", "B"): 0.0, ("B", "C"): 0.0}
+    assert all(seconds < 33.0 for seconds in consumed.values())
+    assert sum(consumed.values()) > 33.0
+
+
+def test_only_catboost_tuning_time_is_charged_and_timeout_is_not_cached(monkeypatch):
+    project, frame = _case()
+    cfg = project.models["pair"]
+    cfg.pair_stages = cfg.pair_stages[:1]
+    cfg.pair_time_limit_minutes = 0.05
+    cache: dict = {}
+    _FakeClock.current = 0.0
+    calls = _timed_fake_teacher(monkeypatch, tuning_seconds=2.0)
+    real_initial_main = workflow_run._fit_main_effects
+    real_fold_main = pair_stages._fit_main_effects
+
+    def slow_initial_main(*args, **kwargs):
+        fitted = real_initial_main(*args, **kwargs)
+        _FakeClock.current += 10_000.0
+        return fitted
+
+    def slow_fold_main(*args, **kwargs):
+        fitted = real_fold_main(*args, **kwargs)
+        _FakeClock.current += 10_000.0
+        return fitted
+
+    monkeypatch.setattr(workflow_run, "_fit_main_effects", slow_initial_main)
+    monkeypatch.setattr(pair_stages, "_fit_main_effects", slow_fold_main)
+    with pytest.raises(
+        TimeoutError,
+        match=(
+            r"CatBoost tuning for A × B reached its 0\.05-minute limit\. Increase "
+            r"CatBoost tuning limit per interaction in Model > Fit settings, save, "
+            r"and retry\."
+        ),
+    ):
+        run_model(project, frame, "pair", pair_stages_cache=cache)
+    assert len(calls) == 2
+    assert cache["full_prefix"] == {}
+
+
+def test_predictions_table_conversion_and_final_refit_are_free(monkeypatch):
+    project, frame = _case()
+    cfg = project.models["pair"]
+    cfg.pair_stages = cfg.pair_stages[:1]
+    cfg.pair_time_limit_minutes = 0.1
+    cache: dict = {}
+    _FakeClock.current = 0.0
+    calls = _timed_fake_teacher(
+        monkeypatch,
+        tuning_seconds=1.0,
+        final_seconds=10_000.0,
+        prediction_seconds=10_000.0,
+    )
+    monkeypatch.setattr(
+        pair_stages,
+        "_candidate_options",
+        lambda stage: list(stage.candidates),
+    )
+    real_distill = pair_stages.distill_pair_cells
+
+    def slow_distill(*args, **kwargs):
+        result = real_distill(*args, **kwargs)
+        _FakeClock.current += 10_000.0
+        return result
+
+    monkeypatch.setattr(pair_stages, "distill_pair_cells", slow_distill)
+    run = run_model(project, frame, "pair", pair_stages_cache=cache)
+    assert run.pair_stages[0].chosen_candidate is not None
+    assert 130 in calls  # the final full-training CatBoost refit was uncharged
+    assert len(cache["full_prefix"]) == 1
+
+
+def test_direct_staged_fit_respects_an_explicit_zero_deadline() -> None:
+    project, frame = _case()
+    cfg = project.models["pair"]
+    with pytest.raises(TimeoutError, match=r"A × B.*caller's shared time cap"):
+        pair_stages.fit_pair_stages(
+            project,
+            frame[:130],
+            cfg,
+            RateModel(1.0, {}),
+            deadline_monotonic=0.0,
+        )
+
+
+def test_neutral_only_stage_does_not_consume_expired_legacy_cap() -> None:
+    project, frame = _case()
+    cfg = project.models["pair"]
+    cfg.pair_stages = [copy.deepcopy(cfg.pair_stages[0])]
+    cfg.pair_stages[0].candidates = []
+    scorer, artifacts = pair_stages.fit_pair_stages(
+        project,
+        frame[:130],
+        cfg,
+        RateModel(1.0, {}),
+        deadline_monotonic=0.0,
+    )
+    assert len(artifacts) == 1
+    assert artifacts[0].chosen_candidate is None
+    assert len(scorer.pair_tables) == 1
+
+
+def test_sequential_mode_without_pair_stages_has_no_pair_deadline() -> None:
+    project, frame = _case()
+    cfg = project.models["pair"]
+    cfg.pair_stages = []
+    cfg.pair_method = "sequential_catboost"
+    cfg.pair_time_limit_minutes = 0.000001
+    run = run_model(project, frame, "pair")
+    assert run.pair_stages == []
 
 
 def test_rejects_invalid_numeric_teacher_baseline():
@@ -201,7 +424,6 @@ def test_rejects_invalid_numeric_teacher_baseline():
             cfg.pair_stages[0].candidates[0],
             broken[:130],
             prefix,
-            deadline=time.monotonic() + 10,
         )
 
 

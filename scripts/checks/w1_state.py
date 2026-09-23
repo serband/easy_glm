@@ -10,7 +10,7 @@ French-motor fixture and prints, in plain language, what an actuary can rely on:
 (c) changing the data file invalidates the persisted fit.
 
 Usage: python scripts/checks/w1_state.py [--write]
-  --write regenerates docs/checks/w1-state.md; otherwise the document is printed.
+  --write regenerates .internal/checks/w1-state.md; otherwise the document is printed.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests" / "fixtures" / "french_motor_50k.parquet"
-DOC = ROOT / "docs" / "checks" / "w1-state.md"
+DOC = ROOT / ".internal" / "checks" / "w1-state.md"
 SAMPLE = 10_000
 PREDICTORS = ["DrivAge", "VehAge", "BonusMalus", "Density", "VehPower", "Region"]
 
@@ -193,6 +193,7 @@ out["files"] = [f.name for f in sorted(S.runs_dir().glob("*.pkl"))] if S.runs_di
         and len(c["files"]) == 1
     )
     if write:
+        DOC.parent.mkdir(parents=True, exist_ok=True)
         DOC.write_text(text)
         print(f"wrote {DOC}")
     else:

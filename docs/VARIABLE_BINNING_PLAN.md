@@ -1,7 +1,5 @@
 # Variables-page binning controls
 
-Status: implemented on `codex/variable-binning`, based on released v0.463 (`ef3b432`). Plan critiqued by GPT-5.6-luna, built by GPT-5.6-sol, independently reviewed by GPT-6-astra. No release or README changes.
-
 ## User workflow
 
 Add **Numeric binning** below the Variables table. Rename **Role JSON** to
@@ -91,49 +89,17 @@ bands; do not carry incompatible values onto new boundaries or silently delete
 saved work. Confirm this lifecycle against the existing refit handling before
 coding it.
 
-## Delivery and checks
+## Validation requirements
 
-1. Plan and critique: parent agent drafts; lower-tier GPT-5.6-luna critiques.
-2. After user review, GPT-5.6-sol implements in an isolated branch.
-3. GPT-6-astra independently checks the diff, statistical semantics and failure
-   cases. Parent reconciles the reviewer findings with the builder.
-4. Browser review: edit defaults and custom cuts, switch table/JSON, Apply,
-   reload, fit, inspect rate-table boundaries and export/reopen the project.
-5. Tests cover legacy JSON, rename/type changes, numeric strings, custom
-   boundaries including zero/negatives, missing values, tied quantiles, linear
-   clamps, stale fits, adjustments, and a wide dataset without eager previews.
-   Existing projects must fit identically until settings are explicitly changed.
-6. Show the user the working preview. No release or README changes in this task.
-
-## Independent critique incorporated
-
-GPT-5.6-luna supported the bounded proposal and emphasised explicit JSON methods,
-legacy round-trip safety, atomic renames, training-only previews using fitting
-logic, linear clamp validation, and stale-fit/adjustment handling. These are
-acceptance requirements above. The new UI targets the desktop workbench; shared
-schema changes also need Streamlit regression coverage. Do not promise a precise
-refit list until the actual cache keys used by each frontend have been checked.
-
-## Implementation and validation record
-
-- Uses the existing canonical design fields; no core encoder or fitting semantics
-  changed. Newly entered linear cuts are checked against clamps at Apply. Existing
-  imported designs retain their prior behavior until edited.
-- Empty cuts remain valid for linear single-slope and inactive settings; newly
-  entered empty cuts for active step factors are rejected.
-- Invalid text and method choices stay together in the local draft. Correcting
-  a field commits the complete valid draft. Late previews and unchanged model
-  polling cannot erase or replace a newer Variables review.
-- Searchable list is virtualized. A 2,000-predictor browser check confirms no
-  eager bin-preview requests while editing; existing wide-table timings passed.
-- Dedicated browser acceptance passes: cut boundaries, row counts, JSON/table
-  sync, invalid-draft recovery, reload, fit, rate tables, stale results, export
-  and reopen, late response rejection, and a 799-pixel viewport.
-- Existing Variables and model browser suites pass, plus 14 JavaScript unit tests,
-  Svelte checks, production build, Python formatting/lint and core/workflow types.
-- Full Python run: 1,336 passed, one skipped and one deselected; it exposed one
-  split-validation regression. Restoring the original mandatory split check was
-  then verified by all 56 affected split/binning/desktop API/model tests. The
-  separate Variables/refit/review/export regression selection passed 56 tests.
-- Final independent review reports no remaining blockers, including snapshot
-  restoration safety and all-missing custom-cut intervals.
+- Validate custom cuts, including zero, negatives, missing values and tied
+  quantiles. Linear cuts must respect the configured clamps. Empty cuts remain
+  valid for a continuous/linear single-slope term or inactive settings; an active
+  step factor requires at least one cut.
+- Keep invalid text and method choices together in the draft until corrected.
+  Late previews and model polling must not erase newer changes.
+- Preserve JSON round trips, renames and type changes. Cover both desktop and
+  legacy Streamlit configuration paths.
+- Exercise Apply, reload, fit, table boundaries, stale fits, adjustments,
+  snapshots, export and reopen. Existing projects must retain their fitted
+  behaviour until settings are explicitly changed.
+- Large predictor lists must not trigger a preview for every variable at once.

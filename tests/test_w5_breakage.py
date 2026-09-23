@@ -1,8 +1,8 @@
-"""W5 / breaker session 3 — one test per finding of
-``docs/reviews/w5-breakage-3.md``, on the surfaces added since W4: Compare,
-the HTML report, the Rate tables Tools/Undo/Redo/Snapshots/Rebalance panel,
-the rate-change flow, penalty weights, Tweedie power/binomial, cells alpha,
-the CLI and the compact-matrix path (>200k rows).
+"""Hardening tests for comparison, reporting and rate-table workflows.
+
+Coverage includes the HTML report, table tools and history, rate change,
+penalty weights, Tweedie and binomial models, cell penalties, the CLI and the
+compact-matrix path (>200k rows).
 
 Most findings are a hand-edited project file putting the wrong type in a
 numeric field (``"alpha": "abc"``): ``Project.validate`` and several page

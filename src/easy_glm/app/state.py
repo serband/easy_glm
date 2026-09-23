@@ -32,8 +32,7 @@ re-applied from the *current* project when it is loaded, so the project file
 stays the truth.
 
 The folder is **shared mutable state**: every browser tab with the project open
-writes into it. Three rules keep one tab from throwing away another's work
-(``docs/checks/w4-runs-folder.md``):
+writes into it. Three rules keep one tab from throwing away another's work:
 
 * while the conflict notice is up, this tab may fit but may not write to or
   delete from the folder (:func:`runs_write_paused`);
@@ -121,7 +120,7 @@ _SAMPLE_KEYS = ("sample_rows", "sample_seed")
 #: 10 — pair-stage configs and artifacts gained automatic search state. Old
 #: staged pickles lack those fields, so persisted runs need a format miss.
 #: 11 — fitted metrics include family-specific losses and shared validity rules.
-PERSIST_FORMAT = 11
+PERSIST_FORMAT = 12
 #: A marker left by *another* session is only removed once it is this old:
 #: younger than this it may belong to a fit that is still running in another
 #: tab, and taking its marker away would cost that tab its own warning.
@@ -193,6 +192,7 @@ def model_hash(project: Project, model: str) -> str:
     post-fit (adjustments, base-rate override, notes)."""
     d = project.to_dict()
     cfg = dict(d["models"][model])
+    cfg.pop("pair_time_limit_minutes", None)
     staged = bool(cfg.get("pair_stages"))
     if not staged:
         cfg.pop("adjustments", None)  # legacy edits are post-fit
@@ -1033,8 +1033,8 @@ def interrupted_fits() -> list[str]:
     was reloaded, or the app was stopped, part-way through.
 
     A fit *running right now* in another tab looks exactly the same from here,
-    so such a fit may be reported as interrupted (said in
-    ``docs/checks/w4-runs-folder.md``; the notice is drawn once per session).
+    so such a fit may be reported as interrupted. The notice is drawn once per
+    session.
     That is why a marker is only *removed* when it is safe to remove: when its
     result is on disk, when this session wrote it, or when it is older than
     :data:`MARKER_GRACE_SECONDS` — a younger one from another session may

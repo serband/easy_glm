@@ -46,7 +46,7 @@ from easy_glm.core.design import (  # noqa: E402
 )
 from easy_glm.core.fit import aggregate_rows  # noqa: E402
 
-DOC = ROOT / "docs" / "checks" / "g-scale.md"
+DOC = ROOT / ".internal" / "checks" / "g-scale.md"
 BENCH = ROOT / "scripts" / "bench_scale.py"
 FIXTURE = ROOT / "tests" / "fixtures" / "french_motor_50k.parquet"
 PREDICTORS = [
@@ -406,6 +406,7 @@ def main(write: bool, sizes: str, results: Path | None) -> None:
     text = "\n".join(lines)
     print(text, end="")
     if write:
+        DOC.parent.mkdir(parents=True, exist_ok=True)
         DOC.write_text(text)
         print(f"\nwritten: {DOC}")
 
@@ -413,7 +414,7 @@ def main(write: bool, sizes: str, results: Path | None) -> None:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument(
-        "--write", action="store_true", help="regenerate the docs/checks document"
+        "--write", action="store_true", help="regenerate the .internal/checks document"
     )
     ap.add_argument("--sizes", default="200000,1000000,5000000")
     ap.add_argument(

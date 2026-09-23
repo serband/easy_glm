@@ -1,7 +1,7 @@
 """Actuarial check for pieces A / A2 — two-way interactions, fitted in two stages.
 
 Fits the French-motor frequency model with and without ``DrivAge × BonusMalus``
-and prints (or, with ``--write``, regenerates ``docs/checks/a-interactions.md``)
+and prints (or, with ``--write``, regenerates ``.internal/checks/a-interactions.md``)
 what an actuary needs to judge the feature: the DrivAge main table with and
 without the interaction (identical, since A2 freezes the mains), the adjustment
 matrix with its training exposure, holdout metrics with and without the
@@ -30,7 +30,7 @@ from easy_glm.workflow import ModelConfig, ae_by_pair, gini, totals
 from easy_glm.workflow.diagnostics import deviance_stats, unit_values
 
 ROOT = Path(__file__).resolve().parents[2]
-DOC = ROOT / "docs" / "checks" / "a-interactions.md"
+DOC = ROOT / ".internal" / "checks" / "a-interactions.md"
 FIXTURE = ROOT / "tests" / "fixtures" / "french_motor_50k.parquet"
 PREDICTORS = [
     "DrivAge",
@@ -534,6 +534,7 @@ def main(write: bool) -> None:
     text = "\n".join(lines)
     print(text)
     if write:
+        DOC.parent.mkdir(parents=True, exist_ok=True)
         DOC.write_text(text)
         print(f"\nwritten {DOC.relative_to(ROOT)}", file=sys.stderr)
 
@@ -541,6 +542,6 @@ def main(write: bool) -> None:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument(
-        "--write", action="store_true", help="regenerate the docs/checks document"
+        "--write", action="store_true", help="regenerate the .internal/checks document"
     )
     main(ap.parse_args().write)

@@ -1,8 +1,5 @@
 # GLM feature selection
 
-Status: implemented and independently reviewed; local verification below.
-Branch: `codex/glm-feature-selection`, based on v0.464.
-
 ## User workflow
 
 An optional **Feature selection** panel on Variables, after roles, binning and
@@ -19,15 +16,14 @@ regularisation settings must be explicit. Target, weight and offset come from
 the role assignments. Existing custom cuts and default/per-variable bin counts
 apply to the screening GLM.
 
-## Approved fit topology
+## Fit topology
 
 Fit **one candidate at a time**: each GLM contains one real candidate, its four
-shuffled copies and one independent random variable. The user explicitly chose
-this to screen for a lack of one-way effect. Correlated candidates may all pass;
+shuffled copies and one independent random variable. This screens for a lack of
+one-way effect. Correlated candidates may all pass;
 conditional importance and a minimal deployable model remain later steps.
 
-Separate planning and statistical critique are complete. The initial topology
-question is resolved. This is a marginal screening module, not joint Boruta.
+This is marginal screening, not joint Boruta.
 
 ## Statistical contract
 
@@ -77,7 +73,6 @@ question is resolved. This is a marginal screening module, not joint Boruta.
   definitions or fitted runs.
 - Preflight the expanded design cost. No silent candidate truncation or row
   sampling. Any sampling option must be explicit and training-only.
-- No README edits, version bump, push or publication in this feature task.
 
 ## Acceptance checks
 
@@ -95,25 +90,4 @@ question is resolved. This is a marginal screening module, not joint Boruta.
    synchronised, and existing model invalidation/cleanup handles role changes.
 7. Cancellation terminates work; changed drafts/projects suppress late results;
    errors and excessive designs produce actionable messages.
-8. Separate implementation and independent review agents, followed by focused
-   Python/API/browser checks and a real preview of the complete workflow.
-
-## Review record
-
-Separate agents planned and critiqued the design, implemented the algorithm,
-desktop jobs and UI, and reviewed the implementation. Review fixes cover source
-column identity, cancellation, input validation and unsuccessful fits. Failed
-or unconverged fits never produce a no-signal recommendation. The final
-independent review found no remaining correctness blocker.
-
-Focused workflow/API checks cover actual fits across all five supported
-families, training-only decisions, custom cuts, encoder cloning, renames,
-cancelled jobs, stale results and unchanged project settings.
-
-Verification: 44 focused workflow/API tests, 18 browser tests covering feature
-selection and existing Variables/binning/screening, and 14 JavaScript unit tests
-passed. The broader Python run had 1,369 passes and nine socket-permission
-failures; all nine passed when the launcher tests were rerun with local-server
-access. The subsequently added four family smoke tests also passed. Black,
-Ruff, mypy, Svelte check and the frontend build passed. A synthetic-data
-preview is available on port 8826; no release was created.
+8. Failed or unconverged fits never produce a no-signal recommendation.

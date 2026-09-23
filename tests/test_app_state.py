@@ -135,6 +135,13 @@ class TestHashes:
         p.models["freq"].penalty.alpha = 0.01
         assert S.model_hash(p, "freq") != h0
 
+    def test_model_hash_ignores_pair_time_limit(self, workspace):
+        p = Project.from_json(workspace["project"])
+        before = S.model_hash(p, "freq")
+        p.models["freq"].pair_time_limit_minutes = 0.25
+        assert S.model_hash(p, "freq") == before
+        assert S.PERSIST_FORMAT == 12
+
     def test_run_key_includes_data_identity_and_versions(self, workspace, monkeypatch):
         p = Project.from_json(workspace["project"])
         k0 = S.run_key(p, "freq")

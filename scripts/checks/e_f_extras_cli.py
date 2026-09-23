@@ -4,7 +4,7 @@ Builds a rate review on the French-motor fixture: a synthetic *current premium*
 that is deliberately an incomplete tariff (it knows the driver's age and the
 fuel type, and nothing else), a loss amount to price against, and a model fitted
 with ``log(current premium)`` as its offset. It then prints, or with ``--write``
-regenerates ``docs/checks/e-f-extras-cli.md``:
+regenerates ``.internal/checks/e-f-extras-cli.md``:
 
 * what the multiplier table means when the offset is the premium charged today
   (the base rate is the overall rate change; each relativity is a differential
@@ -34,7 +34,7 @@ import polars as pl
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src"
-DOC = ROOT / "docs" / "checks" / "e-f-extras-cli.md"
+DOC = ROOT / ".internal" / "checks" / "e-f-extras-cli.md"
 FIXTURE = ROOT / "tests" / "fixtures" / "french_motor_50k.parquet"
 
 PREDICTORS = ["DrivAge", "VehAge", "BonusMalus", "Region", "VehGas"]

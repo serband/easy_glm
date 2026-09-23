@@ -1,10 +1,9 @@
-"""Break-it run — a hostile tester on a real workbench server (W3).
+"""Hostile end-to-end checks against a real workbench server.
 
-The blocking findings of docs/reviews/w2-breakage.md that need a real browser
-(file upload, two tabs on one project file) are driven end to end here; the
-rest are AppTest cases in tests/test_w3_hardening.py. Every step must end
-with a message on the page, never a traceback, and the project file on disk
-must only ever hold what the user meant to keep.
+File upload and two-tab project conflicts need a real browser; related state
+and error-recovery cases live in tests/test_w3_hardening.py. Every step must
+end with a message on the page, never a traceback, and the project file on
+disk must only ever hold what the user meant to keep.
 """
 
 from __future__ import annotations
@@ -90,8 +89,8 @@ def test_breakit(breakit_server, browser, e2e_dir):
 
     # -- 4. the roles grid in a real browser: renaming a column carries the
     #       role and the model reference *and* rewrites the row filter that
-    #       names it (docs/reviews/w3-hardening.md S2), so the data steps keep
-    #       working instead of "unable to find column Exposure"
+    #       names it, so the data steps keep working instead of failing to find
+    #       the renamed Exposure column
     goto_page(pg, "Variables")
     assert_clean(pg, "variables before the rename")
     edit_grid_cell(

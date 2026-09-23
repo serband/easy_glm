@@ -32,7 +32,7 @@ results and fold-prefix parameters are plain records; scoring artefacts need
 neither Optuna nor CatBoost. Python workflow exports retain the search request.
 
 Search settings, search-space version, seeds and Optuna version participate in
-fit/cache identity. No changes to the README or release are part of this work.
+fit/cache identity.
 
 Two raw inputs keep individual teacher fits small, but five-fold validation and
 earlier-stage tuning multiply the workload. Keep bounded trial budgets, resource

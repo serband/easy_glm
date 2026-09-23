@@ -2,15 +2,17 @@
 
 This is the user-facing record of useful new features and fixes.
 
-## 0.472 — 22 September 2026
+## 0.472 — 23 September 2026
 
-- Add a complete pricing walkthrough, from choosing bands and fitting a GLM to checking residuals, adding interactions and exporting tables.
+- Add an interactive pricing workflow and worked example: fit GLMs, check A/E, find missing factors, add interactions, amend rates and export to Excel.
 - Include CatBoost and Optuna in the standard installation. No separate interaction extras to install.
 - Show metrics suited to each model family. Gini is a separate ranking measure, not a measure of prediction accuracy.
 - Estimate variable importance on 30% of training rows by default, with a choice of percentage. Small or sparse samples use all training rows; model fitting stays unchanged.
 - Fix Gaussian variable screening for targets that include negative values.
 - Include categorical and mixed-variable associations in reports, and make skipped checks clearer.
 - Use unassigned variables in interactions without adding them to the GLM main effects. Keep their bin settings and interaction tables when their role changes to unassigned.
+- Set a CatBoost tuning limit for each interaction. GLM fitting and the final refit are not timed.
+- Fix Windows access-denied errors caused by fit progress updates.
 
 ## 0.471 — 18 September 2026
 

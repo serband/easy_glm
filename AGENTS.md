@@ -30,6 +30,33 @@ If Astra or Sol is unavailable, use the nearest available equivalent and report 
 relevant limitation. Do not edit the README unless expressly asked. Keep any requested
 changelog concise and human-readable, and release only with explicit authorization.
 
+## Pricing actuary workflow
+
+The primary user is a pricing actuary working interactively. Use
+`examples/pricing_walkthrough.md` as the public acceptance scenario.
+
+Keep conversation excerpts, agent handoffs, build checklists, verification logs
+and temporary review notes out of Git. Use the ignored `.internal/` directory or
+an external local folder. Commit user documentation, maintainer guidance and
+reproducible tests, not session history or local evidence.
+
+- Start from the user's next modelling decision: fit main effects, inspect A/E,
+  investigate missing factors, add an interaction, compare, amend, or export.
+- Show one short public call for each action. Put prediction arrays, offsets,
+  configuration conversion, caches and plotting machinery inside the package.
+- Explain a public concept before its first use. Use concrete rating factors and
+  explicit edits; avoid loops over modelling choices and tutorial helper functions.
+- Preserve named fitted models. Band changes and new fits must not mutate earlier
+  models. Table edits require a preview and explicit application.
+- Searches and A/E use the complete current table scorer. Each subsequent
+  interaction offsets the main model and all earlier accepted tables.
+- Keep discovery on training data. Label in-sample, tuning and independently
+  evaluated results accurately. Do not display holdout results until requested.
+- Execute the markdown examples exactly as written. Require a separate actuarial
+  usability review as well as statistical and software checks before completion.
+- Keep reviewable examples in the normal project's `examples/` directory. Avoid
+  development-checkout installation instructions in the public walkthrough.
+
 ---
 
 ## Build, Lint, and Tests
@@ -43,13 +70,13 @@ changelog concise and human-readable, and release only with explicit authorizati
 - Command line: `easy-glm run|export|validate|workbench project.json` (module form for a
   source checkout: `PYTHONPATH=src python -m easy_glm.cli run project.json --out out/`)
 - Lint: `ruff check .`
-- Types: `mypy src/easy_glm/core src/easy_glm/workflow --ignore-missing-imports` (a CI step;
-  `core` and `workflow` are kept clean, the app and engine are not checked yet).
-  Only `core` and `workflow` are type-checked; `[tool.mypy]` in `pyproject.toml`
+- Types: `mypy src/easy_glm/core src/easy_glm/workflow src/easy_glm/pricing --ignore-missing-imports` (a CI step;
+  `core`, `workflow` and `pricing` are kept clean, the app and engine are not checked yet).
+  Only these three packages are type-checked; `[tool.mypy]` in `pyproject.toml`
   sets `follow_imports = "silent"` so errors in the modules they import
   (`engine`, `ui`) don't fail the CI step.
 - Format: `black .`
-- Run all quality steps: `black . && ruff check . && mypy src/easy_glm/core src/easy_glm/workflow --ignore-missing-imports && pytest -q`
+- Run all quality steps: `black . && ruff check . && mypy src/easy_glm/core src/easy_glm/workflow src/easy_glm/pricing --ignore-missing-imports && pytest -q`
 
 ## Releasing
 
@@ -101,6 +128,11 @@ print('OK')
 ---
 
 ## Public API (layers)
+
+For the interactive pricing workflow, use `PricingSession` to set data and bands,
+then named `PricingModel` results to fit, inspect, compare, amend and export.
+`examples/pricing_walkthrough.md` exercises that public workflow. Its implementation
+reuses the layers below; tutorial users should not need to assemble them manually.
 
 1. **Recommended:** `EasyGLM.fit()` — full pipeline.
 2. **Building blocks:** `DesignSpec.from_data` → `fit_glm` (returns `GLMFit`) →
@@ -540,7 +572,7 @@ User edits relativity in table
   size and a sha1 of the bytes — mtime alone is too coarse on NFS/SMB/FAT) with the one
   this session last read/wrote; a mismatch sets `conflict`, pauses autosave and shows
   `ui.conflict_notice()` (reload = `set_project` from disk, overwrite = forced save).
-- Runs-folder rule (W4; plain-language page: `docs/checks/w4-runs-folder.md`): the
+- Runs-folder rule (covered by `tests/test_w4_runs_folder.py`): the
   folder is shared by every tab, so `persist_run` refuses to write while
   `runs_write_paused()` (the conflict notice is up) and nothing is deleted while
   `runs_delete_paused()` (that, or the project file changed on disk under this tab).
@@ -569,11 +601,9 @@ User edits relativity in table
 - `state.set_project` bumps `project_token` and drops every session-state key that is
   not app state (`_APP_STATE_KEYS`) or `_`-prefixed, so widgets never carry the previous
   project's values; project-page text boxes use `state.widget_key(name)`.
-- Break-it findings left open after W4 (cosmetic): 15, 23, 35 in
-  `docs/reviews/w2-breakage.md`; 6 and 8 in `docs/reviews/w3-breakage-2.md`
-  (offset plausibility needs an actuary's rule; keying a fit on the data file's
-  contents instead of its mtime means reading the whole book on every page).
-  Everything else in both reports is fixed.
+- When reviewing workbench validation and caching, check offset plausibility and
+  data-file identity explicitly. A file's modification time alone cannot detect
+  every content change; content hashing has a cost on large datasets.
 - Widget rule: Streamlit refuses to set a widget's session-state key once the widget
   exists in that run, so a page that has to change a box's value (Create selecting the
   new model, `ui.number_in_range` putting a refused number back, the divide box after
@@ -609,7 +639,7 @@ User edits relativity in table
 | `test_scoring.py` | Isolated scoring: score_numeric (searchsorted), score_categorical (dict lookup), edge cases, fallbacks |
 | `test_workflow.py` | Project JSON/validation, prep steps, univariate, leakage report on planted leaks, build_design overrides, run_model (metrics, exactness, adjustments, CV, the two stages and `Interaction.alpha`), diagnostics, exported script executed in a subprocess and compared |
 | `test_e_f_extras_cli.py` | Pieces E/F: the `current_premium` role and its derived offset (error message, filter order), the "multiplier on current premium" labels through Excel and JSON, the **offset identity** of plan §R6/S1 (Poisson, `scale_predictors=False`, alpha x sum(P)/n, 1e-8) with Gamma recorded as *not* matching, per-variable penalty weights (`P1` aligned with `spec.features`, an unpenalised categorical keeping every level), Tweedie power, binomial (probabilities, odds labels, three refusals of exposure), `solve_base_rate` (rate change, rebalance, weights, an existing override, idempotence), and the `easy-glm` CLI through `subprocess` |
-| `test_w4_runs_folder.py` | W4: the shared runs folder (two AppTest sessions per two-tab case) and every finding of `docs/reviews/w3-breakage-2.md` |
+| `test_w4_runs_folder.py` | Shared runs-folder safety, concurrent sessions, stale fits, interrupted writes and cleanup |
 | `test_d3_d4_compare_report.py` | D3/D4: `relativity_diff` (identical runs, one known adjustment, a moved knot on the common grid, step-vs-linear, symmetry, the base rate, the tolerance boundary, two zeros), `to_report_html` (self-contained, **no `<script>` at all**, one section per predictor, an accessible name per chart, compare section only with a challenger — and an explanation when the challenger cannot be scored, size), `_svg` (ticks, degenerate charts, escaping), the Compare page / sidebar challenger / Export report button through AppTest. **D4's "opens in a browser with no console error"**: the static half (no script, no external `src`/`href`) is proved here on every run; the browser half is `test_it_opens_in_a_headless_browser_without_console_errors`, which *skips* where Playwright is absent (the default venv) and runs in the Playwright venv and in `tests/e2e/test_persona_data_scientist.py` — CI must run one of those two for the criterion to be covered |
 | `test_d5_tooling.py` | D5: `engine.tooling` per tool (weighted log mean preserved to 1e-12, isotonic monotone, cap/round idempotent, the null row untouched, linear nodes and continuity, a categorical refused without a confirmed order), exposure from the fit through the tables / JSON / Excel, exactness after a tool, and the Rate tables page's apply / undo / redo / snapshot / snapshot-diff through AppTest |
 | `test_w2_pages.py` | W2 pages: interaction section, linear editor, kind selector, A/E-by-pair, pair search, cell/band edits via `app.grids`, break-it (empty project, missing file, removed predictor) |

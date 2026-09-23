@@ -269,7 +269,7 @@ def test_nan_old_relativity_for_new_rows(fit_and_rm):
 
 
 # --------------------------------------------------------------------------
-# review follow-ups (docs/reviews/c1-foundations.md §3 and §5)
+# Additional serialization, plotting and editor boundary regressions
 # --------------------------------------------------------------------------
 FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
 

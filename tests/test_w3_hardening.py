@@ -1,4 +1,4 @@
-"""W3 — workbench hardening: one test per breaker finding (docs/reviews/w2-breakage.md).
+"""Workbench state-preservation and error-recovery hardening tests.
 
 Each blocking finding (1–13) reproduces the original breakage on the pre-W3
 tree (a traceback or silently wrong project state) and passes only with the
@@ -698,7 +698,7 @@ def test_cell_text_rules():
 
 
 # --------------------------------------------------------------------------
-# W3 review follow-ups (docs/reviews/w3-hardening.md, S1–S5 and item 32)
+# Follow-up regressions for autosave, fitting and diagnostics state
 # --------------------------------------------------------------------------
 def test_s1_autosave_error_clears_once_saving_works_again(workspace):
     """S1: the red banner must go when autosave recovers, or the tool lies."""

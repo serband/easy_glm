@@ -45,6 +45,8 @@ from .project import (
     PairStageConfig,
     Project,
     VariableDesign,
+    pair_time_limit_seconds,
+    pair_timeout_message,
 )
 
 MAX_STAGES = 8
@@ -52,13 +54,39 @@ MAX_CELLS = 10_000
 MAX_CANDIDATES = 3
 MAX_PREFIX_CONFIGS = 8
 MAX_TEACHER_FITS = 5_000
-MAX_SECONDS = 900
 MAX_ESTIMATED_PEAK_BYTES = 3 * 1024**3
 CV_TIE_TOLERANCE = 1e-8
 ALGORITHM_VERSION = "pair-stages-2-optuna"
 SEARCH_SPACE_VERSION = "shallow-v1"
 MAIN_TPE_STARTUP_TRIALS = 3
 PREFIX_TPE_STARTUP_TRIALS = 2
+
+
+@dataclass
+class _TuningBudget:
+    """Accumulated CatBoost fit time for one active interaction search."""
+
+    limit_seconds: float
+    active_pair: tuple[str, str]
+    configured_minutes: float | None
+    consumed: float = 0.0
+
+    def check(self) -> None:
+        if self.consumed >= self.limit_seconds:
+            if self.configured_minutes is None:
+                raise TimeoutError(
+                    f"CatBoost tuning for {self.active_pair[0]} × "
+                    f"{self.active_pair[1]} reached the caller's shared time cap."
+                )
+            raise TimeoutError(
+                pair_timeout_message(
+                    self.configured_minutes, self.active_pair[0], self.active_pair[1]
+                )
+            )
+
+    def debit(self, seconds: float) -> None:
+        self.consumed += max(0.0, float(seconds))
+        self.check()
 
 
 @dataclass(frozen=True)
@@ -317,10 +345,8 @@ def _fit_table(
     prefix: RateModel,
     *,
     axes: tuple[VariableConfig, VariableConfig] | None = None,
-    deadline: float,
+    tuning_budget: _TuningBudget | None = None,
 ) -> tuple[PairTableConfig, Any | None]:
-    if time.monotonic() > deadline:
-        raise TimeoutError("Pair fitting exceeded the 900-second budget")
     parents = (stage.a, stage.b)
     axes = axes or (
         _axis(project, train, stage.a, cfg.weight),
@@ -348,6 +374,9 @@ def _fit_table(
             if cfg.family == "tweedie" and positive_target.size
             else 1.0
         )
+        if tuning_budget is not None:
+            tuning_budget.check()
+        started = time.monotonic() if tuning_budget is not None else None
         teacher = fit_catboost_pair_raw(
             raw,
             y,
@@ -364,6 +393,9 @@ def _fit_table(
             seed=stage.seed,
             cat_features=categorical,
         )
+        if tuning_budget is not None:
+            assert started is not None
+            tuning_budget.debit(time.monotonic() - started)
         teacher_mean = teacher.predict_mean(raw, baseline)
     result = distill_pair_cells(
         _cell_ids(train, parents, axes),
@@ -382,6 +414,26 @@ def _append_table(prefix: RateModel, table: PairTableConfig) -> RateModel:
     scorer = copy.deepcopy(prefix)
     scorer.add_pair_table(copy.deepcopy(table))
     return scorer
+
+
+def _pair_table_grid(table: PairTableConfig) -> tuple[Any, ...]:
+    """Comparable deployed axes and cell values, excluding evidence metadata."""
+    axes = tuple(
+        tuple((row.from_, row.to_) for row in axis.table) for axis in table.axes
+    )
+    values = [[1.0 for _ in table.axes[1].table] for _ in table.axes[0].table]
+    for cell in table.cells:
+        values[cell.axis_a_row][cell.axis_b_row] = float(cell.relativity)
+    return table.parents, axes, tuple(tuple(row) for row in values)
+
+
+def _mark_pricing_adjustment(artifact: PairStageArtifact) -> None:
+    artifact.status = "pricing_adjustment"
+    artifact.table.provenance = {
+        **artifact.table.provenance,
+        "pricing_adjustment": True,
+        "cv_evidence": "historical_pre_edit",
+    }
 
 
 def _apply_stage_edits(
@@ -404,6 +456,11 @@ def _apply_stage_edits(
                 raise ValueError(
                     f"Pair edit on {stage.stage_id!r} cannot replay across CV folds: "
                     f"{parent!r} has data-derived cuts. Specify fixed cuts or reset the edit"
+                )
+            if axis.type == "categorical" and not design.levels:
+                raise ValueError(
+                    f"Pair edit on {stage.stage_id!r} cannot replay across CV folds: "
+                    f"{parent!r} has data-derived levels. Specify fixed levels or reset the edit"
                 )
     from .run import apply_adjustments
 
@@ -523,6 +580,8 @@ def preflight_pair_stages(
     project: Project,
     train: pl.DataFrame,
     cfg: ModelConfig,
+    *,
+    deadline_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Bound the nested search and pair grids before starting any model fit."""
     if len(stages) > MAX_STAGES:
@@ -609,7 +668,12 @@ def preflight_pair_stages(
         "estimated_table_bytes": 128 * sum(grid_cells),
         "estimated_main_design_bytes": estimated_design_bytes,
         "estimated_peak_bytes": estimated_peak_bytes,
-        "deadline_seconds": MAX_SECONDS,
+        "deadline_seconds": (
+            pair_time_limit_seconds(cfg.pair_time_limit_minutes)
+            if deadline_seconds is None
+            else deadline_seconds
+        ),
+        "deadline_scope": "catboost_tuning_per_interaction",
     }
 
 
@@ -663,7 +727,12 @@ def _scorer_signature(scorer: RateModel) -> dict[str, Any]:
 
 def _main_settings(cfg: ModelConfig) -> dict[str, Any]:
     settings = asdict(cfg)
-    for irrelevant in ("pair_stages", "pair_method", "snapshots"):
+    for irrelevant in (
+        "pair_stages",
+        "pair_method",
+        "pair_time_limit_minutes",
+        "snapshots",
+    ):
         settings.pop(irrelevant, None)
     settings["adjustments"] = [
         asdict(adj) for adj in cfg.adjustments if adj.stage_id is None
@@ -733,6 +802,8 @@ def fit_pair_stages(
     progress: Callable[[str], None] | None = None,
     deadline_monotonic: float | None = None,
     replay_pair_adjustments: bool = False,
+    frozen_prefix_artifacts: list[PairStageArtifact] | None = None,
+    frozen_prefix_rate_model: RateModel | None = None,
 ) -> tuple[RateModel, list[PairStageArtifact]]:
     """Fit the ordered pair chain, selecting each deployed table by nested CV.
 
@@ -740,10 +811,37 @@ def fit_pair_stages(
     previous teacher tables and candidate table from its training partition.
     Inner selection evaluates complete, fixed prefix configurations.  A cache
     can reuse full-training prefix artifacts; it never supplies fold artefacts.
+    ``frozen_prefix_artifacts`` keeps the evidence for a reviewed contiguous
+    prefix while later stages are fitted again. ``frozen_prefix_rate_model`` is
+    the exact current full-training scorer and supplies those deployed tables,
+    including deliberate edits. Validation still rebuilds the prefix on each
+    fold and replays its edits against fixed axes; a full-training table is
+    never used as a fold offset.
+
+    Each uncached interaction search receives a fresh configured allowance for
+    CatBoost tuning fits only; GLMs, predictions, table conversion and the final
+    full-training teacher refit consume none. Frozen and full-cache stages also
+    consume none. For call compatibility, ``deadline_monotonic`` is converted
+    once on entry into an additional shared CatBoost-tuning allowance.
     """
     stages = model_config.pair_stages
     if not stages:
         return copy.deepcopy(main_rate_model), []
+    frozen_prefix = list(frozen_prefix_artifacts or [])
+    if frozen_prefix_rate_model is not None and frozen_prefix_artifacts is None:
+        raise ValueError("A frozen pair rate model needs frozen prefix artifacts")
+    if len(frozen_prefix) > len(stages):
+        raise ValueError("Frozen pair prefix is longer than the configured stages")
+    for index, artifact in enumerate(frozen_prefix):
+        stage = stages[index]
+        if artifact.stage_id != stage.stage_id or tuple(artifact.parents) != (
+            stage.a,
+            stage.b,
+        ):
+            raise ValueError(
+                "Frozen pair stages must be a contiguous prefix matching the "
+                "configured stage IDs and parent order"
+            )
     # Inner and outer folds retain multiple frames.  Keep only fitting and
     # scoring columns so unrelated prepared columns do not multiply in memory.
     from .run import exposure_for
@@ -761,7 +859,20 @@ def fit_pair_stages(
         model_config.link and model_config.link != "log"
     ):
         raise ValueError("Pair stages support only Poisson/log or Tweedie/log")
-    estimate = preflight_pair_stages(stages, project, train, model_config)
+    configured_seconds = pair_time_limit_seconds(model_config.pair_time_limit_minutes)
+    legacy_limit_seconds = (
+        max(0.0, deadline_monotonic - time.monotonic())
+        if deadline_monotonic is not None
+        else None
+    )
+    legacy_consumed = 0.0
+    estimate = preflight_pair_stages(
+        stages,
+        project,
+        train,
+        model_config,
+        deadline_seconds=configured_seconds,
+    )
     if progress:
         progress(
             f"Pair preflight: up to {estimate['teacher_fits_upper_bound']:,} teacher fits, "
@@ -771,11 +882,6 @@ def fit_pair_stages(
             f"{estimate['estimated_table_bytes'] / 1024**2:.1f} MiB tables, "
             f"{estimate['estimated_main_design_bytes'] / 1024**2:.1f} MiB main design; "
             f"five outer and five inner folds"
-        )
-    deadline = deadline_monotonic or time.monotonic() + MAX_SECONDS
-    if time.monotonic() > deadline:
-        raise TimeoutError(
-            "Pair fitting exceeded the 900-second budget before teacher training"
         )
     cache = cache if cache is not None else {}
     full_cache: dict[str, PairStageArtifact] = cache.setdefault("full_prefix", {})
@@ -791,8 +897,6 @@ def fit_pair_stages(
     ] = cache.setdefault("prefix_selection", {})
 
     def main_for(partition: pl.DataFrame) -> RateModel:
-        if time.monotonic() > deadline:
-            raise TimeoutError("Pair fitting exceeded the 900-second budget")
         main_columns = {
             name
             for name in (
@@ -879,6 +983,7 @@ def fit_pair_stages(
         partition: pl.DataFrame,
         parameters: tuple[PairCandidateConfig | None, ...],
         base: RateModel,
+        tuning_budget: _TuningBudget,
     ) -> RateModel:
         prior = stages[: len(parameters)]
         columns = {
@@ -930,7 +1035,7 @@ def fit_pair_stages(
                 candidate,
                 partition,
                 scorer,
-                deadline=deadline,
+                tuning_budget=tuning_budget,
             )
             scorer = _append_table(scorer, table)
             _apply_stage_edits(project, model_config, previous, scorer, fold_local=True)
@@ -938,7 +1043,10 @@ def fit_pair_stages(
         return scorer
 
     def select_prefix(
-        outer_train: pl.DataFrame, previous: list[PairStageConfig], outer_fold: int
+        outer_train: pl.DataFrame,
+        previous: list[PairStageConfig],
+        outer_fold: int,
+        tuning_budget: _TuningBudget,
     ) -> tuple[
         tuple[PairCandidateConfig | None, ...],
         tuple[int, ...],
@@ -1042,7 +1150,7 @@ def fit_pair_stages(
             for inner_fold, (fit_frame, val_frame, base, y, weight) in enumerate(
                 contexts
             ):
-                scorer = fixed_prefix(fit_frame, params, base)
+                scorer = fixed_prefix(fit_frame, params, base, tuning_budget)
                 loss = _deviance_sum(
                     y, scorer.predict(val_frame, exposure_col=None), weight, power
                 )
@@ -1161,6 +1269,47 @@ def fit_pair_stages(
     power = model_config.tweedie_power if model_config.family == "tweedie" else 1.0
     for stage_index, stage in enumerate(stages):
         started = time.perf_counter()
+        if stage_index < len(frozen_prefix):
+            artifact = copy.deepcopy(frozen_prefix[stage_index])
+            original_grid = _pair_table_grid(artifact.table)
+            if frozen_prefix_rate_model is not None:
+                try:
+                    exact_table = frozen_prefix_rate_model.get_pair_table(
+                        stage.stage_id
+                    )
+                except KeyError as exc:
+                    raise ValueError(
+                        f"The frozen scorer has no table for {stage.stage_id!r}"
+                    ) from exc
+                if exact_table.parents != (stage.a, stage.b):
+                    raise ValueError(
+                        f"The frozen scorer table {stage.stage_id!r} does not match "
+                        "the configured parent order"
+                    )
+                artifact.table = copy.deepcopy(exact_table)
+            artifact.reused = True
+            has_stage_edit = any(
+                adjustment.stage_id == stage.stage_id
+                for adjustment in model_config.adjustments
+            )
+            table_changed = _pair_table_grid(artifact.table) != original_grid
+            already_adjusted = bool(artifact.table.provenance.get("pricing_adjustment"))
+            if has_stage_edit or table_changed or already_adjusted:
+                _mark_pricing_adjustment(artifact)
+            scorer = _append_table(scorer, artifact.table)
+            if frozen_prefix_rate_model is None:
+                _apply_stage_edits(
+                    project, model_config, stage, scorer, fold_local=False
+                )
+            artifacts.append(artifact)
+            if progress:
+                description = (
+                    "kept reviewed pricing table"
+                    if artifact.status == "pricing_adjustment"
+                    else "reused unchanged table"
+                )
+                progress(f"Pair stage {stage_index + 1}/{len(stages)}: {description}")
+            continue
         fingerprint = _fingerprint(
             project, model_config, train, scorer, stage, stages[:stage_index]
         )
@@ -1169,6 +1318,14 @@ def fit_pair_stages(
             artifact.reused = True
             scorer = _append_table(scorer, artifact.table)
             _apply_stage_edits(project, model_config, stage, scorer, fold_local=False)
+            if any(
+                adjustment.stage_id == stage.stage_id
+                for adjustment in model_config.adjustments
+            ):
+                artifact.table = copy.deepcopy(scorer.get_pair_table(stage.stage_id))
+                _mark_pricing_adjustment(artifact)
+                scorer_table = scorer.get_pair_table(stage.stage_id)
+                scorer_table.provenance = copy.deepcopy(artifact.table.provenance)
             artifacts.append(artifact)
             if progress:
                 progress(
@@ -1183,6 +1340,25 @@ def fit_pair_stages(
                 "Clear those edits after reviewing them, then refit; edits on earlier "
                 "frozen stages remain in the baseline"
             )
+        legacy_remaining = (
+            max(0.0, legacy_limit_seconds - legacy_consumed)
+            if legacy_limit_seconds is not None
+            else None
+        )
+        budget_seconds = (
+            min(configured_seconds, legacy_remaining)
+            if legacy_remaining is not None
+            else configured_seconds
+        )
+        tuning_budget = _TuningBudget(
+            limit_seconds=budget_seconds,
+            active_pair=(stage.a, stage.b),
+            configured_minutes=(
+                model_config.pair_time_limit_minutes
+                if legacy_remaining is None or configured_seconds < legacy_remaining
+                else None
+            ),
+        )
         chosen_prefix_configs: list[tuple[int, ...]] = []
         chosen_prefix_parameters: list[tuple[PairCandidateConfig | None, ...]] = []
         prefix_trials: list[SearchTrial] = []
@@ -1205,13 +1381,13 @@ def fit_pair_stages(
             fit_frame = train[train_idx]
             val_frame = train[val_idx]
             params, choices, trial_records = select_prefix(
-                fit_frame, stages[:stage_index], fold_index
+                fit_frame, stages[:stage_index], fold_index, tuning_budget
             )
             chosen_prefix_configs.append(choices)
             chosen_prefix_parameters.append(params)
             prefix_trials.extend(trial_records)
             fold_base = main_for(fit_frame)
-            fold_prefix = fixed_prefix(fit_frame, params, fold_base)
+            fold_prefix = fixed_prefix(fit_frame, params, fold_base, tuning_budget)
             y_val, w_val = _response(model_config, val_frame)
             prefix_pred = fold_prefix.predict(val_frame, exposure_col=None)
             prefix_sum = _deviance_sum(y_val, prefix_pred, w_val, power)
@@ -1241,6 +1417,7 @@ def fit_pair_stages(
             stage_spec: PairStageConfig = stage,
             contexts: tuple[Any, ...] = stage_contexts,
             current_stage_index: int = stage_index,
+            current_tuning_budget: _TuningBudget = tuning_budget,
         ) -> CandidateCV:
             records: list[FoldLoss] = []
             for fold_index, (
@@ -1261,7 +1438,7 @@ def fit_pair_stages(
                     fit_frame,
                     fold_prefix,
                     axes=axes,
-                    deadline=deadline,
+                    tuning_budget=current_tuning_budget,
                 )
                 deployed = _append_table(fold_prefix, table)
                 table_pred = deployed.predict(val_frame, exposure_col=None)
@@ -1362,7 +1539,7 @@ def fit_pair_stages(
             selected.candidate,
             train,
             scorer,
-            deadline=deadline,
+            tuning_budget=None,
         )
         table.provenance = {
             "input_prefix_fingerprint": fingerprint,
@@ -1419,8 +1596,17 @@ def fit_pair_stages(
             search_trials=tuple(search_records),
             prefix_search_trials=tuple(prefix_trials),
         )
+        legacy_consumed += tuning_budget.consumed
         full_cache[fingerprint] = copy.deepcopy(artifact)
         scorer = next_scorer
         _apply_stage_edits(project, model_config, stage, scorer, fold_local=False)
+        if any(
+            adjustment.stage_id == stage.stage_id
+            for adjustment in model_config.adjustments
+        ):
+            artifact.table = copy.deepcopy(scorer.get_pair_table(stage.stage_id))
+            _mark_pricing_adjustment(artifact)
+            scorer_table = scorer.get_pair_table(stage.stage_id)
+            scorer_table.provenance = copy.deepcopy(artifact.table.provenance)
         artifacts.append(artifact)
     return scorer, artifacts

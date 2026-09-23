@@ -3,7 +3,7 @@
 Runs exactly what ``tests/test_readme.py`` runs — every ```python block on
 ``README.md``, in order, in one namespace, plus every ``examples/*.py`` as a
 subprocess — and times it, so the actuary-facing document in
-``docs/checks/readme-gate.md`` is a real result, not a claim: "every block
+``.internal/checks/readme-gate.md`` is a real result, not a claim: "every block
 ran, on this date, on this Python, in this many seconds" is generated from an
 actual run, never typed by hand.
 
@@ -25,7 +25,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 README = ROOT / "README.md"
-DOC = ROOT / "docs" / "checks" / "readme-gate.md"
+DOC = ROOT / ".internal" / "checks" / "readme-gate.md"
 EXAMPLES = sorted((ROOT / "examples").glob("*.py"))
 
 _BLOCK_RE = re.compile(r"```python( skip-test)?\n(.*?)```", re.DOTALL)
@@ -156,6 +156,7 @@ def main(write: bool) -> None:
     text = "\n".join(lines)
     print(text, end="")
     if write:
+        DOC.parent.mkdir(parents=True, exist_ok=True)
         DOC.write_text(text)
         print(f"\nwritten: {DOC}")
 
@@ -166,6 +167,6 @@ def main(write: bool) -> None:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument(
-        "--write", action="store_true", help="regenerate the docs/checks document"
+        "--write", action="store_true", help="regenerate the .internal/checks document"
     )
     main(ap.parse_args().write)

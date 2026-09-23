@@ -3,7 +3,7 @@
 Prints the golden French-motor numbers computed by the current code (they must
 equal the numbers recorded in ``tests/test_golden.py``) and the size of a base
 install before (v0.3.0 tag) and after this piece. Pass ``--write`` to regenerate
-``docs/checks/c2-legacy-removal.md``; by default nothing on disk is touched.
+``.internal/checks/c2-legacy-removal.md``; by default nothing on disk is touched.
 
 Run from the repository root::
 
@@ -189,7 +189,7 @@ def main() -> None:
     parser.add_argument(
         "--write",
         action="store_true",
-        help="regenerate docs/checks/c2-legacy-removal.md",
+        help="regenerate .internal/checks/c2-legacy-removal.md",
     )
     args = parser.parse_args()
     numbers = compute()
@@ -206,7 +206,8 @@ def main() -> None:
         print(f"\nGOLDEN MISMATCH: {mismatches}", file=sys.stderr)
         sys.exit(1)
     if args.write:
-        out = ROOT / "docs" / "checks" / "c2-legacy-removal.md"
+        out = ROOT / ".internal" / "checks" / "c2-legacy-removal.md"
+        out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(text)
         print(f"\nwritten {out}")
 

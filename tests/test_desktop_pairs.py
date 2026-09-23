@@ -9,7 +9,7 @@ import numpy as np
 import polars as pl
 from fastapi.testclient import TestClient
 
-from easy_glm.desktop.jobs import FitJobs, _first_pair_refit, model_key
+from easy_glm.desktop.jobs import FitJobs, _first_pair_refit, _main_key, model_key
 from easy_glm.desktop.modeling import ModelEdit, edit_model, setup_info
 from easy_glm.desktop.server import create_app
 from easy_glm.engine.models import (
@@ -137,6 +137,37 @@ def test_empty_sequential_model_keeps_method_after_roundtrip() -> None:
     reloaded = Project.from_dict(saved)
     assert reloaded.models["Frequency"].pair_method == "sequential_catboost"
     assert not reloaded.models["Frequency"].pair_stages
+
+
+def test_time_limit_edit_persists_without_invalidating_fit_keys(monkeypatch) -> None:
+    project = _project()
+    project.models["Frequency"].pair_stages.pop()
+    before = (model_key(project, "Frequency"), _main_key(project, "Frequency"))
+    edited = edit_model(
+        project,
+        ModelEdit(
+            session_id="s",
+            revision=0,
+            name="Frequency",
+            fields={"pair_time_limit_minutes": 2.5},
+        ),
+    )
+    assert edited.models["Frequency"].pair_time_limit_minutes == 2.5
+    assert (
+        Project.from_dict(edited.to_dict()).models["Frequency"].pair_time_limit_minutes
+        == 2.5
+    )
+    assert (model_key(edited, "Frequency"), _main_key(edited, "Frequency")) == before
+    monkeypatch.setattr("threading.Thread.start", lambda self: None)
+    jobs = FitJobs()
+    jobs.start(
+        edited,
+        pl.DataFrame({"Claims": [0.0, 1.0], "Age": [20.0, 30.0], "Region": ["N", "S"]}),
+        "Frequency",
+    )
+    assert jobs.active["project"].models["Frequency"].pair_time_limit_minutes == 2.5
+    monkeypatch.setattr("threading.Thread.join", lambda self, timeout=None: None)
+    jobs.close()
 
 
 def test_auto_pair_search_roundtrips_and_validates_budget() -> None:

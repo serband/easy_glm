@@ -317,6 +317,7 @@ def edit_model(project: Project, edit: ModelEdit) -> Project:
         "predictors",
         "interactions",
         "pair_method",
+        "pair_time_limit_minutes",
         "pair_stages",
         "penalty",
         "tweedie_power",

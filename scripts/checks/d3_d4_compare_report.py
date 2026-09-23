@@ -7,8 +7,8 @@ Compare page and the downloaded HTML report with Playwright, and writes a
 plain-language page explaining what to look at when comparing two models.
 
 Usage: python scripts/checks/d3_d4_compare_report.py [--write]
-  --write regenerates docs/checks/d3-d4-compare-report.md and
-  docs/checks/img/d3_*.png / d4_*.png; otherwise the document is printed.
+  --write regenerates .internal/checks/d3-d4-compare-report.md and
+  .internal/checks/img/d3_*.png / d4_*.png; otherwise the document is printed.
   Screenshots need Playwright: either importable here, or an interpreter with
   it in EASY_GLM_PLAYWRIGHT_PYTHON.
 """
@@ -29,11 +29,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests" / "fixtures" / "french_motor_50k.parquet"
-DOC = ROOT / "docs" / "checks" / "d3-d4-compare-report.md"
-IMG = ROOT / "docs" / "checks" / "img"
+DOC = ROOT / ".internal" / "checks" / "d3-d4-compare-report.md"
+IMG = ROOT / ".internal" / "checks" / "img"
 DRIVER = ROOT / "scripts" / "checks" / "_d3_screens.py"
 PREDICTORS = ["DrivAge", "VehAge", "BonusMalus", "Density", "VehPower", "Region"]
-#: pictures must stay small enough to live in the repository
+#: keep local screenshots compact enough for quick inspection
 MAX_IMAGE_KB = 300
 
 

@@ -34,10 +34,36 @@ def _is_finite_number(value: Any) -> bool:
     call unguarded — so a bad value crashed the tool instead of being one more
     line in the problem list. Checking this first turns it into that line.
     """
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def pair_time_limit_seconds(minutes: Any) -> float:
+    """Validate a configured pair-workflow limit and return finite seconds."""
+    if not _is_finite_number(minutes) or minutes <= 0:
+        raise ValueError("pair_time_limit_minutes must be a positive finite number")
+    try:
+        seconds = float(minutes) * 60.0
+    except OverflowError:
+        seconds = float("inf")
+    if not math.isfinite(seconds):
+        raise ValueError(
+            "pair_time_limit_minutes is too large to convert to finite seconds"
+        )
+    return seconds
+
+
+def pair_timeout_message(minutes: Any, a: str, b: str) -> str:
+    """The one user-facing message for the CatBoost tuning allowance."""
+    value = f"{float(minutes):g}"
     return (
-        isinstance(value, int | float)
-        and not isinstance(value, bool)
-        and math.isfinite(value)
+        f"CatBoost tuning for {a} × {b} reached its {value}-minute limit. Increase "
+        "CatBoost tuning limit per interaction in Model > Fit settings, save, and "
+        "retry."
     )
 
 
@@ -410,6 +436,7 @@ class ModelConfig:
     monotone: dict[str, str] = field(default_factory=dict)
     interactions: list[Interaction] = field(default_factory=list)
     pair_method: str = "legacy_glm"
+    pair_time_limit_minutes: float = 15.0
     pair_stages: list[PairStageConfig] = field(default_factory=list)
     base: str = "modal"
     base_rate_override: float | None = None
@@ -1014,6 +1041,10 @@ class Project:
             seen_pairs: set[frozenset[str]] = set()
             if cfg.pair_method not in ("legacy_glm", "sequential_catboost"):
                 problems.append(f"{name}: unknown pair method {cfg.pair_method!r}")
+            try:
+                pair_time_limit_seconds(cfg.pair_time_limit_minutes)
+            except ValueError as exc:
+                problems.append(f"{name}: {exc}")
             if cfg.interactions and cfg.pair_method == "sequential_catboost":
                 problems.append(
                     f"{name}: sequential CatBoost models cannot use legacy interactions"

@@ -271,6 +271,7 @@
                   interactions: cfg.interactions,
                   pair_stages: cfg.pair_stages || [],
                   pair_method: pairMethod === 'sequential' ? 'sequential_catboost' : 'legacy_glm',
+                  pair_time_limit_minutes: cfg.pair_time_limit_minutes ?? 15,
                   tweedie_power: cfg.tweedie_power,
                   base: cfg.base,
                   penalty: {
@@ -300,11 +301,8 @@
     $: mainChanged =
         selected === '__new__' ||
         (payload && baseline
-            ? JSON.stringify({ ...payload, fields: { ...payload.fields, pair_stages: [] } }) !==
-              JSON.stringify({
-                  ...JSON.parse(baseline),
-                  fields: { ...JSON.parse(baseline).fields, pair_stages: [] },
-              })
+            ? JSON.stringify(mainFitIdentity(payload)) !==
+              JSON.stringify(mainFitIdentity(JSON.parse(baseline)))
             : false);
     $: active = Object.values(jobs).some((j) => ['queued', 'running'].includes(j.status));
     $: job = jobs[selected];
@@ -345,12 +343,19 @@
         interactions: [],
         pair_stages: [],
         pair_method: 'sequential_catboost',
+        pair_time_limit_minutes: 15,
         tweedie_power: 1.5,
         base: 'modal',
         penalty: { alpha: 0.001, cv: null, n_alphas: 20, l1_ratio: 1 },
     };
     function rev() {
         return { session_id: state.session_id, revision: state.revision };
+    }
+    function mainFitIdentity(value) {
+        const copy = structuredClone(value);
+        copy.fields.pair_stages = [];
+        delete copy.fields.pair_time_limit_minutes;
+        return copy;
     }
     async function chooseModel() {
         pickModel();
@@ -398,6 +403,7 @@
                 interactions: cfg.interactions,
                 pair_stages: cfg.pair_stages || [],
                 pair_method: pairMethod === 'sequential' ? 'sequential_catboost' : 'legacy_glm',
+                pair_time_limit_minutes: cfg.pair_time_limit_minutes ?? 15,
                 tweedie_power: cfg.tweedie_power,
                 base: cfg.base,
                 penalty: {
@@ -1076,10 +1082,29 @@
                                 ></select
                             ></label
                         >
+                        {#if pairMethod === 'sequential'}<label
+                                >CatBoost tuning limit per interaction (minutes)<input
+                                    aria-label="CatBoost tuning limit per interaction (minutes)"
+                                    type="number"
+                                    min="0.000001"
+                                    step="any"
+                                    value={cfg.pair_time_limit_minutes ?? 15}
+                                    oninput={(event) =>
+                                        setModelField(
+                                            'pair_time_limit_minutes',
+                                            event.currentTarget.valueAsNumber,
+                                        )}
+                                /></label
+                            >{/if}
                     </div>
                     <p class="help-text">
                         L1 ratio 1 is lasso; 0 is ridge. Save changes before fitting.
                     </p>
+                    {#if pairMethod === 'sequential'}<p class="help-text">
+                            Counts only time spent fitting CatBoost during tuning. GLM fits,
+                            predictions, the final refit and table conversion do not count. Checked
+                            between CatBoost fits.
+                        </p>{/if}
                     <div class="model-actions">
                         <button
                             class="primary"

@@ -1,7 +1,7 @@
 # Sequential CatBoost pair corrections — build and test plan
 
-Status: proposed implementation plan, not implemented or released.
-Baseline: review branch `codex/glm-feature-selection`, commit `81075ac`.
+Historical design for the sequential pair fitting introduced in v0.470.
+For implementation interfaces, see [pair stage contracts](PAIR_STAGE_CONTRACTS.md).
 
 ## What the user will get
 
@@ -18,7 +18,7 @@ CatBoost is a training tool. The deployed model is the GLM plus the tables.
 Diagnostics, saved scorers, Excel and Python must agree on that deployed model.
 Additional one-way effects inside a pair correction are explicitly allowed.
 
-## Decisions already agreed
+## Modelling rules
 
 - Stage 1 is the existing main-effects GLM, with its existing external offset.
 - Each subsequent stage has exactly two distinct raw source variables as features.
@@ -33,7 +33,6 @@ Additional one-way effects inside a pair correction are explicitly allowed.
   training data only. Holdout results are for assessment, never automatic tuning.
 - The table approximation can lose performance. Show and test that loss.
 - Order matters. Reordering changes the fitting problem and invalidates a suffix.
-- Preserve the README. This plan does not authorise a release, tag or push.
 
 ## Architecture
 
@@ -402,24 +401,3 @@ cells/stages/candidates and cancellation latency are written down. Preflight
 pair-grid size (including missing/tail levels); no unbounded dense matrix/Excel
 expansion from a high-cardinality pair. Fail with an actionable size estimate
 rather than silently changing the user's bins.
-
-## Review checkpoints and remaining choices
-
-Before the main build, review Phase 0 evidence and lock: the search/resource
-budget, CatBoost packaging, the initial family capability matrix, minimum-support
-policy and the precise manual-adjustment/CV mapping. The recommendations above
-are defaults to review, not additional instructions already agreed by the user.
-
-Plan reviews completed: architecture planner, actuarial critic, builder
-assessment, independent technical critic and independent build/test critic.
-Their findings are incorporated above: explicit pair-table identity/axes,
-response-unit adapter, correct Tweedie conversion, a bounded nested-CV protocol,
-manual-edit lineage, cache isolation and enforceable resource gates. The actuary
-found no statistical blocker to Phase 0. Phase-0 product/feasibility gates remain
-explicit; this is not a claim that the implementation exists or has passed tests.
-
-After implementation, an agent that did not build the code reviews the actual
-diff; the actuary reviews executed numerical/calibration evidence; a separate
-test critic inspects coverage and independently exercises exported artefacts.
-Fix and re-review blockers before showing the complete preview. Planning review
-is not implementation sign-off.

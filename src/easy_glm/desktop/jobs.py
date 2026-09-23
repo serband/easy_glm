@@ -18,6 +18,7 @@ from typing import Any
 import polars as pl
 
 from easy_glm.app import _launcher_env
+from easy_glm.desktop.fit_progress import drain_progress
 from easy_glm.workflow.project import Project
 
 
@@ -27,9 +28,11 @@ def model_key(project: Project, name: str) -> str:
     data = dict(spec["data"])
     data.pop("sample_rows", None)
     data.pop("sample_seed", None)
+    model = dict(spec["models"].get(name) or {})
+    model.pop("pair_time_limit_minutes", None)
     return hashlib.sha256(
         json.dumps(
-            {"data": data, "design": spec["design"], "model": spec["models"].get(name)},
+            {"data": data, "design": spec["design"], "model": model},
             sort_keys=True,
         ).encode()
     ).hexdigest()
@@ -45,6 +48,7 @@ def _main_key(project: Project, name: str) -> str:
     for field in (
         "pair_stages",
         "pair_method",
+        "pair_time_limit_minutes",
         "adjustments",
         "base_rate_override",
         "snapshots",
@@ -439,6 +443,8 @@ class FitJobs:
         started = time.monotonic()
         folder = Path(self.folder.name) / job["id"]
         folder.mkdir()
+        process: subprocess.Popen[bytes] | None = None
+        reader: threading.Thread | None = None
         try:
             # Keep the supplied applied state for private recovery. An explicit
             # new fit starts from its coefficients, never inherited table edits.
@@ -492,28 +498,53 @@ class FitJobs:
                             **_launcher_env(),
                             "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
                         },
-                        stdout=log,
-                        stderr=subprocess.STDOUT,
+                        stdout=subprocess.PIPE,
+                        stderr=log,
                     )
                 job.update(
                     process=process, status="running", message="Worker starting…"
                 )
+            assert process.stdout is not None
+
+            def receive_progress(packet: dict[str, Any]) -> None:
+                with self.lock:
+                    if job["cancel"] or job["status"] != "running":
+                        return
+                    message = packet.get("message")
+                    if isinstance(message, str):
+                        job["message"] = message
+                    if "stage_number" in packet:
+                        job["progress"] = packet
+
+            reader = threading.Thread(
+                target=drain_progress,
+                args=(process.stdout, receive_progress),
+                name=f"easyglm-fit-progress-{job['id']}",
+                daemon=True,
+            )
+            reader.start()
             while process.poll() is None:
                 with self.lock:
                     job["elapsed"] = time.monotonic() - started
                     if job["cancel"]:
                         process.terminate()
-                    try:
-                        packet = json.loads((folder / "progress.json").read_text())
-                        job["message"] = packet.get("message", job["message"])
-                        if "stage_number" in packet:
-                            job["progress"] = packet
-                    except (OSError, json.JSONDecodeError):
-                        pass
                 time.sleep(0.1)
+            # The worker's reserved progress descriptor is non-inheritable, so
+            # process exit normally gives the reader EOF immediately. Keep the
+            # join bounded in case an unexpected native dependency retains it.
+            reader.join(timeout=5)
             with self.lock:
                 job["elapsed"] = time.monotonic() - started
                 if job["cancel"]:
+                    return
+                if process.returncode != 0:
+                    job.update(
+                        status="failed",
+                        message=(
+                            f"Fit worker exited with code {process.returncode}. "
+                            "See worker.log for details."
+                        ),
+                    )
                     return
                 result = json.loads((folder / "result.json").read_text())
                 if "error" in result:
@@ -539,6 +570,15 @@ class FitJobs:
                 if not job["cancel"]:
                     job.update(status="failed", message=f"Fit could not finish: {exc}")
         finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            if reader is not None and reader.is_alive():
+                reader.join(timeout=5)
             with self.lock:
                 job["process"] = None
 

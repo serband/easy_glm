@@ -59,9 +59,12 @@ from .core import (
     validate_train_test_column,
     write_rate_tables_xlsx,
 )
+from .pricing import PricingModel, PricingSession
 
 __all__ = [
     # High-level pipeline (start here)
+    "PricingSession",
+    "PricingModel",
     "EasyGLM",
     "RateModel",
     "load_external_dataframe",

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import copy
 import math
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -44,6 +43,7 @@ from .project import (
     ModelConfig,
     Project,
     VariableDesign,
+    pair_time_limit_seconds,
     premium_offset_column,
 )
 
@@ -414,6 +414,8 @@ def run_model(
     main_effects_cache: dict[str, Any] | None = None,
     pair_stages_cache: dict[str, Any] | None = None,
     replay_pair_adjustments: bool = False,
+    frozen_pair_prefix: list[Any] | None = None,
+    frozen_pair_rate_model: RateModel | None = None,
 ) -> ModelRun:
     """Fit ``project.models[model_name]`` on the training rows of the prepared
     frame ``df`` (must contain the split column) and return a :class:`ModelRun`.
@@ -439,19 +441,26 @@ def run_model(
     if problems:
         raise ValueError("Project is not valid:\n- " + "\n- ".join(problems))
     cfg = project.models[model_name]
+    if frozen_pair_prefix and not cfg.pair_stages:
+        raise ValueError("A frozen pair prefix needs configured pair stages")
+    if frozen_pair_rate_model is not None and frozen_pair_prefix is None:
+        raise ValueError("A frozen pair rate model needs a frozen pair prefix")
     if not cfg.target:  # validate() already said so; this keeps the type honest
         raise ValueError(f"{model_name}: no target column")
     train, holdout = train_holdout(df, project.data.split)
     if train.is_empty():
         raise ValueError("No training rows after the split")
     if cfg.pair_stages:
-        from .pair_stages import MAX_SECONDS, preflight_pair_stages
+        from .pair_stages import preflight_pair_stages
 
         # Refuse an oversized pair grid/search before fitting even the main GLM.
-        preflight_pair_stages(cfg.pair_stages, project, train, cfg)
-        pair_deadline = time.monotonic() + MAX_SECONDS
-    else:
-        pair_deadline = None
+        preflight_pair_stages(
+            cfg.pair_stages,
+            project,
+            train,
+            cfg,
+            deadline_seconds=pair_time_limit_seconds(cfg.pair_time_limit_minutes),
+        )
 
     dropped: list[str] = []
     spec = build_design(
@@ -515,13 +524,20 @@ def run_model(
     if cfg.pair_stages:
         from .pair_stages import fit_pair_stages
 
-        # Main/base edits are part of every pair-stage baseline. Pair-cell edits
-        # are applied as their own tables are attached by the staged fitter.
-        main_cfg = replace(
-            cfg,
-            adjustments=[adj for adj in cfg.adjustments if adj.stage_id is None],
-        )
-        apply_adjustments(rm, main_cfg)
+        if frozen_pair_rate_model is not None:
+            # Keep the exact reviewed full-training mains and base rate. Fold
+            # validation below still fits its own mains from each fold, so this
+            # scorer is never used as validation data or a fold offset.
+            rm = frozen_pair_rate_model.clone()
+            rm.pair_tables = []
+        else:
+            # Main/base edits are part of every pair-stage baseline. Pair-cell edits
+            # are applied as their own tables are attached by the staged fitter.
+            main_cfg = replace(
+                cfg,
+                adjustments=[adj for adj in cfg.adjustments if adj.stage_id is None],
+            )
+            apply_adjustments(rm, main_cfg)
         rm, pair_artifacts = fit_pair_stages(
             project,
             train,
@@ -529,8 +545,9 @@ def run_model(
             rm,
             cache=pair_stages_cache,
             progress=progress,
-            deadline_monotonic=pair_deadline,
             replay_pair_adjustments=replay_pair_adjustments,
+            frozen_prefix_artifacts=frozen_pair_prefix,
+            frozen_prefix_rate_model=frozen_pair_rate_model,
         )
     else:
         apply_adjustments(rm, cfg)
