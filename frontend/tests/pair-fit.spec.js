@@ -24,7 +24,7 @@ test('pair selector groups unassigned source variables without promoting them', 
     expect(fields.pair_stages[0]).toMatchObject({ a: 'A', b: 'D' });
 });
 
-test('per-interaction time limit validates, persists, times out and retries without staling tables', async ({
+test('CatBoost tuning limit validates, persists, times out and retries without staling tables', async ({
     page,
 }) => {
     const saves = [];
@@ -38,11 +38,11 @@ test('per-interaction time limit validates, persists, times out and retries with
     const modelName = `Pair timeout ${Date.now()}`;
     await page.getByLabel('New model name').fill(modelName);
 
-    const limit = page.getByLabel('Time limit per interaction (minutes)');
+    const limit = page.getByLabel('CatBoost tuning limit per interaction (minutes)');
     await expect(limit).toHaveValue('15');
     await expect(
         page.getByText(
-            'Each interaction gets its own allowance for validation, tuning and its final table fit. The initial GLM is excluded. Checked between fitting steps.',
+            'Counts only time spent fitting CatBoost during tuning. GLM fits, predictions, the final refit and table conversion do not count. Checked between CatBoost fits.',
             { exact: true },
         ),
     ).toBeVisible();
@@ -76,7 +76,7 @@ test('per-interaction time limit validates, persists, times out and retries with
     await expect(page.getByText('Fit failed', { exact: true })).toBeVisible({ timeout: 30000 });
     await expect(
         page.getByText(
-            'Interaction A × B reached its 1e-06-minute time limit. Increase Time limit per interaction in Model > Fit settings, save, and retry.',
+            'CatBoost tuning for A × B reached its 1e-06-minute limit. Increase CatBoost tuning limit per interaction in Model > Fit settings, save, and retry.',
             { exact: true },
         ),
     ).toBeVisible();
@@ -99,7 +99,9 @@ test('per-interaction time limit validates, persists, times out and retries with
     await page.reload();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await page.getByLabel('Model selection').selectOption(modelName);
-    await expect(page.getByLabel('Time limit per interaction (minutes)')).toHaveValue('3.5');
+    await expect(page.getByLabel('CatBoost tuning limit per interaction (minutes)')).toHaveValue(
+        '3.5',
+    );
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible();
     await expect(page.getByLabel('Stage 2 A × B')).toContainText(/Up to date|No improvement/);
 });

@@ -58,11 +58,12 @@ def pair_time_limit_seconds(minutes: Any) -> float:
 
 
 def pair_timeout_message(minutes: Any, a: str, b: str) -> str:
-    """The one user-facing message for the configured sequential-fit deadline."""
+    """The one user-facing message for the CatBoost tuning allowance."""
     value = f"{float(minutes):g}"
     return (
-        f"Interaction {a} × {b} reached its {value}-minute time limit. Increase "
-        "Time limit per interaction in Model > Fit settings, save, and retry."
+        f"CatBoost tuning for {a} × {b} reached its {value}-minute limit. Increase "
+        "CatBoost tuning limit per interaction in Model > Fit settings, save, and "
+        "retry."
     )
 
 

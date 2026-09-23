@@ -62,15 +62,31 @@ MAIN_TPE_STARTUP_TRIALS = 3
 PREFIX_TPE_STARTUP_TRIALS = 2
 
 
-def _check_deadline(
-    deadline: float, cfg: ModelConfig, active_stage: PairStageConfig
-) -> None:
-    if time.monotonic() > deadline:
-        raise TimeoutError(
-            pair_timeout_message(
-                cfg.pair_time_limit_minutes, active_stage.a, active_stage.b
+@dataclass
+class _TuningBudget:
+    """Accumulated CatBoost fit time for one active interaction search."""
+
+    limit_seconds: float
+    active_pair: tuple[str, str]
+    configured_minutes: float | None
+    consumed: float = 0.0
+
+    def check(self) -> None:
+        if self.consumed >= self.limit_seconds:
+            if self.configured_minutes is None:
+                raise TimeoutError(
+                    f"CatBoost tuning for {self.active_pair[0]} × "
+                    f"{self.active_pair[1]} reached the caller's shared time cap."
+                )
+            raise TimeoutError(
+                pair_timeout_message(
+                    self.configured_minutes, self.active_pair[0], self.active_pair[1]
+                )
             )
-        )
+
+    def debit(self, seconds: float) -> None:
+        self.consumed += max(0.0, float(seconds))
+        self.check()
 
 
 @dataclass(frozen=True)
@@ -329,11 +345,8 @@ def _fit_table(
     prefix: RateModel,
     *,
     axes: tuple[VariableConfig, VariableConfig] | None = None,
-    deadline: float,
-    active_stage: PairStageConfig | None = None,
+    tuning_budget: _TuningBudget | None = None,
 ) -> tuple[PairTableConfig, Any | None]:
-    deadline_stage = active_stage or stage
-    _check_deadline(deadline, cfg, deadline_stage)
     parents = (stage.a, stage.b)
     axes = axes or (
         _axis(project, train, stage.a, cfg.weight),
@@ -361,6 +374,9 @@ def _fit_table(
             if cfg.family == "tweedie" and positive_target.size
             else 1.0
         )
+        if tuning_budget is not None:
+            tuning_budget.check()
+        started = time.monotonic() if tuning_budget is not None else None
         teacher = fit_catboost_pair_raw(
             raw,
             y,
@@ -377,7 +393,9 @@ def _fit_table(
             seed=stage.seed,
             cat_features=categorical,
         )
-        _check_deadline(deadline, cfg, deadline_stage)
+        if tuning_budget is not None:
+            assert started is not None
+            tuning_budget.debit(time.monotonic() - started)
         teacher_mean = teacher.predict_mean(raw, baseline)
     result = distill_pair_cells(
         _cell_ids(train, parents, axes),
@@ -389,7 +407,6 @@ def _fit_table(
         n_cells=n_cells,
         min_weight_share=stage.min_weight_share,
     )
-    _check_deadline(deadline, cfg, deadline_stage)
     return _table(stage, axes, result), teacher
 
 
@@ -656,7 +673,7 @@ def preflight_pair_stages(
             if deadline_seconds is None
             else deadline_seconds
         ),
-        "deadline_scope": "per_interaction",
+        "deadline_scope": "catboost_tuning_per_interaction",
     }
 
 
@@ -801,10 +818,11 @@ def fit_pair_stages(
     fold and replays its edits against fixed axes; a full-training table is
     never used as a fold offset.
 
-    Each uncached interaction search receives a fresh configured allowance;
-    frozen and full-cache stages consume none. ``deadline_monotonic`` is an
-    optional additional absolute cap, so the earlier of it and the current
-    interaction's deadline applies without resetting inside that search.
+    Each uncached interaction search receives a fresh configured allowance for
+    CatBoost tuning fits only; GLMs, predictions, table conversion and the final
+    full-training teacher refit consume none. Frozen and full-cache stages also
+    consume none. For call compatibility, ``deadline_monotonic`` is converted
+    once on entry into an additional shared CatBoost-tuning allowance.
     """
     stages = model_config.pair_stages
     if not stages:
@@ -842,6 +860,12 @@ def fit_pair_stages(
     ):
         raise ValueError("Pair stages support only Poisson/log or Tweedie/log")
     configured_seconds = pair_time_limit_seconds(model_config.pair_time_limit_minutes)
+    legacy_limit_seconds = (
+        max(0.0, deadline_monotonic - time.monotonic())
+        if deadline_monotonic is not None
+        else None
+    )
+    legacy_consumed = 0.0
     estimate = preflight_pair_stages(
         stages,
         project,
@@ -872,10 +896,7 @@ def fit_pair_stages(
         ],
     ] = cache.setdefault("prefix_selection", {})
 
-    deadline = float("inf")
-
-    def main_for(partition: pl.DataFrame, active_stage: PairStageConfig) -> RateModel:
-        _check_deadline(deadline, model_config, active_stage)
+    def main_for(partition: pl.DataFrame) -> RateModel:
         main_columns = {
             name
             for name in (
@@ -937,7 +958,6 @@ def fit_pair_stages(
         if model_config.link:
             fit_kwargs["link"] = model_config.link
         fit = _fit_main_effects(partition, spec, model_config.target, **fit_kwargs)
-        _check_deadline(deadline, model_config, active_stage)
         rm = to_rate_model(
             fit,
             base=model_config.base,  # type: ignore[arg-type]
@@ -963,7 +983,7 @@ def fit_pair_stages(
         partition: pl.DataFrame,
         parameters: tuple[PairCandidateConfig | None, ...],
         base: RateModel,
-        active_stage: PairStageConfig,
+        tuning_budget: _TuningBudget,
     ) -> RateModel:
         prior = stages[: len(parameters)]
         columns = {
@@ -1015,8 +1035,7 @@ def fit_pair_stages(
                 candidate,
                 partition,
                 scorer,
-                deadline=deadline,
-                active_stage=active_stage,
+                tuning_budget=tuning_budget,
             )
             scorer = _append_table(scorer, table)
             _apply_stage_edits(project, model_config, previous, scorer, fold_local=True)
@@ -1024,7 +1043,10 @@ def fit_pair_stages(
         return scorer
 
     def select_prefix(
-        outer_train: pl.DataFrame, previous: list[PairStageConfig], outer_fold: int
+        outer_train: pl.DataFrame,
+        previous: list[PairStageConfig],
+        outer_fold: int,
+        tuning_budget: _TuningBudget,
     ) -> tuple[
         tuple[PairCandidateConfig | None, ...],
         tuple[int, ...],
@@ -1116,9 +1138,7 @@ def fit_pair_stages(
             fit_frame = outer_train[train_idx]
             val_frame = outer_train[val_idx]
             y, weight = _response(model_config, val_frame)
-            contexts.append(
-                (fit_frame, val_frame, main_for(fit_frame, current), y, weight)
-            )
+            contexts.append((fit_frame, val_frame, main_for(fit_frame), y, weight))
         power = model_config.tweedie_power if model_config.family == "tweedie" else 1.0
 
         def evaluate_prefix(
@@ -1130,14 +1150,13 @@ def fit_pair_stages(
             for inner_fold, (fit_frame, val_frame, base, y, weight) in enumerate(
                 contexts
             ):
-                scorer = fixed_prefix(fit_frame, params, base, current)
+                scorer = fixed_prefix(fit_frame, params, base, tuning_budget)
                 loss = _deviance_sum(
                     y, scorer.predict(val_frame, exposure_col=None), weight, power
                 )
                 folds.append(
                     FoldLoss(inner_fold, loss, float(weight.sum()), loss, None)
                 )
-                _check_deadline(deadline, model_config, current)
                 if progress:
                     label = (
                         "no-correction check"
@@ -1321,13 +1340,25 @@ def fit_pair_stages(
                 "Clear those edits after reviewing them, then refit; edits on earlier "
                 "frozen stages remain in the baseline"
             )
-        stage_deadline = time.monotonic() + configured_seconds
-        deadline = (
-            min(stage_deadline, deadline_monotonic)
-            if deadline_monotonic is not None
-            else stage_deadline
+        legacy_remaining = (
+            max(0.0, legacy_limit_seconds - legacy_consumed)
+            if legacy_limit_seconds is not None
+            else None
         )
-        _check_deadline(deadline, model_config, stage)
+        budget_seconds = (
+            min(configured_seconds, legacy_remaining)
+            if legacy_remaining is not None
+            else configured_seconds
+        )
+        tuning_budget = _TuningBudget(
+            limit_seconds=budget_seconds,
+            active_pair=(stage.a, stage.b),
+            configured_minutes=(
+                model_config.pair_time_limit_minutes
+                if legacy_remaining is None or configured_seconds < legacy_remaining
+                else None
+            ),
+        )
         chosen_prefix_configs: list[tuple[int, ...]] = []
         chosen_prefix_parameters: list[tuple[PairCandidateConfig | None, ...]] = []
         prefix_trials: list[SearchTrial] = []
@@ -1350,13 +1381,13 @@ def fit_pair_stages(
             fit_frame = train[train_idx]
             val_frame = train[val_idx]
             params, choices, trial_records = select_prefix(
-                fit_frame, stages[:stage_index], fold_index
+                fit_frame, stages[:stage_index], fold_index, tuning_budget
             )
             chosen_prefix_configs.append(choices)
             chosen_prefix_parameters.append(params)
             prefix_trials.extend(trial_records)
-            fold_base = main_for(fit_frame, stage)
-            fold_prefix = fixed_prefix(fit_frame, params, fold_base, stage)
+            fold_base = main_for(fit_frame)
+            fold_prefix = fixed_prefix(fit_frame, params, fold_base, tuning_budget)
             y_val, w_val = _response(model_config, val_frame)
             prefix_pred = fold_prefix.predict(val_frame, exposure_col=None)
             prefix_sum = _deviance_sum(y_val, prefix_pred, w_val, power)
@@ -1386,7 +1417,7 @@ def fit_pair_stages(
             stage_spec: PairStageConfig = stage,
             contexts: tuple[Any, ...] = stage_contexts,
             current_stage_index: int = stage_index,
-            current_deadline: float = deadline,
+            current_tuning_budget: _TuningBudget = tuning_budget,
         ) -> CandidateCV:
             records: list[FoldLoss] = []
             for fold_index, (
@@ -1407,8 +1438,7 @@ def fit_pair_stages(
                     fit_frame,
                     fold_prefix,
                     axes=axes,
-                    deadline=current_deadline,
-                    active_stage=stage_spec,
+                    tuning_budget=current_tuning_budget,
                 )
                 deployed = _append_table(fold_prefix, table)
                 table_pred = deployed.predict(val_frame, exposure_col=None)
@@ -1434,7 +1464,6 @@ def fit_pair_stages(
                         approximation_sum,
                     )
                 )
-                _check_deadline(current_deadline, model_config, stage_spec)
                 if progress:
                     label = (
                         "no-correction check"
@@ -1510,8 +1539,7 @@ def fit_pair_stages(
             selected.candidate,
             train,
             scorer,
-            deadline=deadline,
-            active_stage=stage,
+            tuning_budget=None,
         )
         table.provenance = {
             "input_prefix_fingerprint": fingerprint,
@@ -1539,7 +1567,6 @@ def fit_pair_stages(
         table_train_loss = _deviance_sum(
             y_train, next_scorer.predict(train, exposure_col=None), w_train, power
         ) / float(w_train.sum())
-        _check_deadline(deadline, model_config, stage)
         artifact = PairStageArtifact(
             stage_id=stage.stage_id,
             parents=(stage.a, stage.b),
@@ -1569,6 +1596,7 @@ def fit_pair_stages(
             search_trials=tuple(search_records),
             prefix_search_trials=tuple(prefix_trials),
         )
+        legacy_consumed += tuning_budget.consumed
         full_cache[fingerprint] = copy.deepcopy(artifact)
         scorer = next_scorer
         _apply_stage_edits(project, model_config, stage, scorer, fold_local=False)
