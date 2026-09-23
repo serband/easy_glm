@@ -57,12 +57,12 @@ def pair_time_limit_seconds(minutes: Any) -> float:
     return seconds
 
 
-def pair_timeout_message(minutes: Any) -> str:
+def pair_timeout_message(minutes: Any, a: str, b: str) -> str:
     """The one user-facing message for the configured sequential-fit deadline."""
     value = f"{float(minutes):g}"
     return (
-        f"The fit reached its {value}-minute time limit. Increase Fit time limit "
-        "in Model > Fit settings, save, and retry."
+        f"Interaction {a} × {b} reached its {value}-minute time limit. Increase "
+        "Time limit per interaction in Model > Fit settings, save, and retry."
     )
 
 

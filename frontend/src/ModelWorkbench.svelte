@@ -1083,8 +1083,8 @@
                             ></label
                         >
                         {#if pairMethod === 'sequential'}<label
-                                >Fit time limit (minutes)<input
-                                    aria-label="Fit time limit (minutes)"
+                                >Time limit per interaction (minutes)<input
+                                    aria-label="Time limit per interaction (minutes)"
                                     type="number"
                                     min="0.000001"
                                     step="any"
@@ -1101,8 +1101,8 @@
                         L1 ratio 1 is lasso; 0 is ridge. Save changes before fitting.
                     </p>
                     {#if pairMethod === 'sequential'}<p class="help-text">
-                            For models with interactions, the limit covers the main GLM and all
-                            interactions, including cross-validation. It is checked between fitting
+                            Each interaction gets its own allowance for validation, tuning and its
+                            final table fit. The initial GLM is excluded. Checked between fitting
                             steps.
                         </p>{/if}
                     <div class="model-actions">

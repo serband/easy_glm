@@ -169,11 +169,35 @@ def test_append_and_holdout_poison_reuse_full_training_prefix():
     poisoned = frame.with_columns(
         pl.when(pl.col("split") == 0).then(1e6).otherwise(pl.col("y")).alias("y")
     )
+    cfg.pair_time_limit_minutes = 0.000001
     repeated = run_model(project, poisoned, "pair", pair_stages_cache=cache)
     assert all(artifact.reused for artifact in repeated.pair_stages)
     np.testing.assert_allclose(
         combined.predict(frame), repeated.predict(frame), rtol=1e-12
     )
+
+
+def test_explicit_cap_skips_frozen_stage_and_names_active_interaction() -> None:
+    project, frame = _case()
+    cfg = project.models["pair"]
+    second = cfg.pair_stages.pop()
+    first = run_model(project, frame, "pair")
+    cfg.pair_stages.append(second)
+    main = first.rate_model.clone()
+    main.pair_tables = []
+
+    with pytest.raises(
+        TimeoutError, match=r"Interaction B × C reached its 15-minute time limit"
+    ):
+        pair_stages.fit_pair_stages(
+            project,
+            frame[:130],
+            cfg,
+            main,
+            deadline_monotonic=0.0,
+            frozen_prefix_artifacts=first.pair_stages,
+            frozen_prefix_rate_model=first.rate_model,
+        )
 
 
 def test_uniform_twenty_by_twenty_cells_clear_default_support_threshold():
@@ -189,7 +213,7 @@ def test_uniform_twenty_by_twenty_cells_clear_default_support_threshold():
     assert np.all(result.relativities == 1)
 
 
-def test_configured_deadline_is_absolute_and_forwarded_unchanged(monkeypatch):
+def test_each_interaction_gets_one_fresh_deadline_without_inner_resets(monkeypatch):
     project, frame = _case()
     project.models["pair"].pair_time_limit_minutes = 2.0
     estimate = pair_stages.preflight_pair_stages(
@@ -199,43 +223,53 @@ def test_configured_deadline_is_absolute_and_forwarded_unchanged(monkeypatch):
         project.models["pair"],
     )
     assert estimate["deadline_seconds"] == 120.0
+    assert estimate["deadline_scope"] == "per_interaction"
     settings = pair_stages._main_settings(project.models["pair"])
     project.models["pair"].pair_time_limit_minutes = 3.0
     assert pair_stages._main_settings(project.models["pair"]) == settings
     project.models["pair"].pair_time_limit_minutes = 2.0
-
-    class RunClock:
-        @staticmethod
-        def monotonic():
-            return 100.0
 
     class PairClock:
         current = 101.0
 
         @classmethod
         def monotonic(cls):
-            cls.current += 0.001
             return cls.current
 
         @classmethod
         def perf_counter(cls):
-            cls.current += 0.001
+            cls.current += 80.0
             return cls.current
 
-    monkeypatch.setattr(workflow_run, "time", RunClock)
     monkeypatch.setattr(pair_stages, "time", PairClock)
-    seen: list[float] = []
+    real_main = workflow_run._fit_main_effects
+
+    def slow_initial_main(*args, **kwargs):
+        fitted = real_main(*args, **kwargs)
+        PairClock.current += 500.0
+        return fitted
+
+    monkeypatch.setattr(workflow_run, "_fit_main_effects", slow_initial_main)
+    seen: list[tuple[str, float]] = []
     original_check = pair_stages._check_deadline
 
-    def record(deadline, cfg):
-        seen.append(deadline)
-        return original_check(deadline, cfg)
+    def record(deadline, cfg, active_stage):
+        seen.append((active_stage.stage_id, deadline))
+        return original_check(deadline, cfg, active_stage)
 
     monkeypatch.setattr(pair_stages, "_check_deadline", record)
     run_model(project, frame, "pair")
 
     assert len(seen) > 20  # fold-local mains, candidates and both full stage fits
-    assert set(seen) == {220.0}
+    deadlines = {
+        stage_id: {deadline for seen_stage, deadline in seen if seen_stage == stage_id}
+        for stage_id in ("ab", "bc")
+    }
+    assert all(len(values) == 1 for values in deadlines.values())
+    first = deadlines["ab"].pop()
+    second = deadlines["bc"].pop()
+    assert second - first > 120.0  # combined elapsed exceeds one allowance
+    assert first > 500.0  # the deliberately slow initial GLM was not charged
 
 
 def test_tiny_configured_limit_fails_with_retry_message_before_teacher(monkeypatch):
@@ -248,25 +282,61 @@ def test_tiny_configured_limit_fails_with_retry_message_before_teacher(monkeypat
         nonlocal called
         called = True
         raise AssertionError(
-            "teacher should not start after the main fit used the limit"
+            "teacher should not start after interaction validation used the limit"
         )
 
     monkeypatch.setattr(pair_stages, "fit_catboost_pair_raw", teacher)
     with pytest.raises(
         TimeoutError,
         match=(
-            r"The fit reached its 1e-06-minute time limit\. Increase Fit time limit "
-            r"in Model > Fit settings, save, and retry\."
+            r"Interaction A × B reached its 1e-06-minute time limit\. Increase Time "
+            r"limit per interaction in Model > Fit settings, save, and retry\."
         ),
     ):
         run_model(project, frame, "pair")
     assert called is False
 
 
+def test_final_training_metrics_overrun_is_not_cached(monkeypatch):
+    project, frame = _case()
+    cfg = project.models["pair"]
+    cfg.pair_stages = cfg.pair_stages[:1]
+    cfg.pair_time_limit_minutes = 1.0
+    cache: dict = {}
+
+    class PairClock:
+        current = 0.0
+
+        @classmethod
+        def monotonic(cls):
+            return cls.current
+
+        @classmethod
+        def perf_counter(cls):
+            return cls.current
+
+    real_deviance = pair_stages._deviance_sum
+
+    def overrun_on_full_training(actual, expected, weight, power):
+        value = real_deviance(actual, expected, weight, power)
+        if len(actual) == 130:
+            PairClock.current = 61.0
+        return value
+
+    monkeypatch.setattr(pair_stages, "time", PairClock)
+    monkeypatch.setattr(pair_stages, "_deviance_sum", overrun_on_full_training)
+    with pytest.raises(
+        TimeoutError, match=r"Interaction A × B reached its 1-minute time limit"
+    ):
+        run_model(project, frame, "pair", pair_stages_cache=cache)
+
+    assert cache["full_prefix"] == {}
+
+
 def test_direct_staged_fit_respects_an_explicit_zero_deadline() -> None:
     project, frame = _case()
     cfg = project.models["pair"]
-    with pytest.raises(TimeoutError, match="15-minute time limit"):
+    with pytest.raises(TimeoutError, match=r"Interaction A × B reached its 15-minute"):
         pair_stages.fit_pair_stages(
             project,
             frame[:130],

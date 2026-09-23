@@ -163,8 +163,9 @@ class PricingModel:
     ) -> PricingModel:
         """Append one CatBoost pair on this checkpoint's frozen table scorer.
 
-        ``time_limit_minutes`` covers the shared main fit and all interaction
-        validation/tuning work; when omitted, the checkpoint's limit is inherited.
+        ``time_limit_minutes`` gives this interaction its own allowance for
+        validation, tuning and the final table fit. The initial GLM is excluded;
+        when omitted, the checkpoint's per-interaction limit is inherited.
         """
         if a == b:
             raise ValueError("An interaction needs two different variables")

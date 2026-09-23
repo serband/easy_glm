@@ -24,7 +24,7 @@ test('pair selector groups unassigned source variables without promoting them', 
     expect(fields.pair_stages[0]).toMatchObject({ a: 'A', b: 'D' });
 });
 
-test('pair fit time limit validates, persists, times out and retries without staling tables', async ({
+test('per-interaction time limit validates, persists, times out and retries without staling tables', async ({
     page,
 }) => {
     const saves = [];
@@ -38,8 +38,14 @@ test('pair fit time limit validates, persists, times out and retries without sta
     const modelName = `Pair timeout ${Date.now()}`;
     await page.getByLabel('New model name').fill(modelName);
 
-    const limit = page.getByLabel('Fit time limit (minutes)');
+    const limit = page.getByLabel('Time limit per interaction (minutes)');
     await expect(limit).toHaveValue('15');
+    await expect(
+        page.getByText(
+            'Each interaction gets its own allowance for validation, tuning and its final table fit. The initial GLM is excluded. Checked between fitting steps.',
+            { exact: true },
+        ),
+    ).toBeVisible();
     await page.getByRole('button', { name: 'Legacy GLM interactions' }).click();
     await expect(limit).toBeHidden();
     await page.getByRole('button', { name: 'Sequential CatBoost pairs' }).click();
@@ -70,7 +76,7 @@ test('pair fit time limit validates, persists, times out and retries without sta
     await expect(page.getByText('Fit failed', { exact: true })).toBeVisible({ timeout: 30000 });
     await expect(
         page.getByText(
-            'The fit reached its 1e-06-minute time limit. Increase Fit time limit in Model > Fit settings, save, and retry.',
+            'Interaction A × B reached its 1e-06-minute time limit. Increase Time limit per interaction in Model > Fit settings, save, and retry.',
             { exact: true },
         ),
     ).toBeVisible();
@@ -93,7 +99,7 @@ test('pair fit time limit validates, persists, times out and retries without sta
     await page.reload();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await page.getByLabel('Model selection').selectOption(modelName);
-    await expect(page.getByLabel('Fit time limit (minutes)')).toHaveValue('3.5');
+    await expect(page.getByLabel('Time limit per interaction (minutes)')).toHaveValue('3.5');
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible();
     await expect(page.getByLabel('Stage 2 A × B')).toContainText(/Up to date|No improvement/);
 });

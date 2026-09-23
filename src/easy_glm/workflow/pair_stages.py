@@ -62,9 +62,15 @@ MAIN_TPE_STARTUP_TRIALS = 3
 PREFIX_TPE_STARTUP_TRIALS = 2
 
 
-def _check_deadline(deadline: float, cfg: ModelConfig) -> None:
+def _check_deadline(
+    deadline: float, cfg: ModelConfig, active_stage: PairStageConfig
+) -> None:
     if time.monotonic() > deadline:
-        raise TimeoutError(pair_timeout_message(cfg.pair_time_limit_minutes))
+        raise TimeoutError(
+            pair_timeout_message(
+                cfg.pair_time_limit_minutes, active_stage.a, active_stage.b
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -324,8 +330,10 @@ def _fit_table(
     *,
     axes: tuple[VariableConfig, VariableConfig] | None = None,
     deadline: float,
+    active_stage: PairStageConfig | None = None,
 ) -> tuple[PairTableConfig, Any | None]:
-    _check_deadline(deadline, cfg)
+    deadline_stage = active_stage or stage
+    _check_deadline(deadline, cfg, deadline_stage)
     parents = (stage.a, stage.b)
     axes = axes or (
         _axis(project, train, stage.a, cfg.weight),
@@ -369,7 +377,7 @@ def _fit_table(
             seed=stage.seed,
             cat_features=categorical,
         )
-        _check_deadline(deadline, cfg)
+        _check_deadline(deadline, cfg, deadline_stage)
         teacher_mean = teacher.predict_mean(raw, baseline)
     result = distill_pair_cells(
         _cell_ids(train, parents, axes),
@@ -381,7 +389,7 @@ def _fit_table(
         n_cells=n_cells,
         min_weight_share=stage.min_weight_share,
     )
-    _check_deadline(deadline, cfg)
+    _check_deadline(deadline, cfg, deadline_stage)
     return _table(stage, axes, result), teacher
 
 
@@ -648,6 +656,7 @@ def preflight_pair_stages(
             if deadline_seconds is None
             else deadline_seconds
         ),
+        "deadline_scope": "per_interaction",
     }
 
 
@@ -791,6 +800,11 @@ def fit_pair_stages(
     including deliberate edits. Validation still rebuilds the prefix on each
     fold and replays its edits against fixed axes; a full-training table is
     never used as a fold offset.
+
+    Each uncached interaction search receives a fresh configured allowance;
+    frozen and full-cache stages consume none. ``deadline_monotonic`` is an
+    optional additional absolute cap, so the earlier of it and the current
+    interaction's deadline applies without resetting inside that search.
     """
     stages = model_config.pair_stages
     if not stages:
@@ -845,12 +859,6 @@ def fit_pair_stages(
             f"{estimate['estimated_main_design_bytes'] / 1024**2:.1f} MiB main design; "
             f"five outer and five inner folds"
         )
-    deadline = (
-        deadline_monotonic
-        if deadline_monotonic is not None
-        else time.monotonic() + configured_seconds
-    )
-    _check_deadline(deadline, model_config)
     cache = cache if cache is not None else {}
     full_cache: dict[str, PairStageArtifact] = cache.setdefault("full_prefix", {})
     inner_main_cache: dict[bytes, RateModel] = cache.setdefault("fold_main", {})
@@ -864,8 +872,10 @@ def fit_pair_stages(
         ],
     ] = cache.setdefault("prefix_selection", {})
 
-    def main_for(partition: pl.DataFrame) -> RateModel:
-        _check_deadline(deadline, model_config)
+    deadline = float("inf")
+
+    def main_for(partition: pl.DataFrame, active_stage: PairStageConfig) -> RateModel:
+        _check_deadline(deadline, model_config, active_stage)
         main_columns = {
             name
             for name in (
@@ -927,7 +937,7 @@ def fit_pair_stages(
         if model_config.link:
             fit_kwargs["link"] = model_config.link
         fit = _fit_main_effects(partition, spec, model_config.target, **fit_kwargs)
-        _check_deadline(deadline, model_config)
+        _check_deadline(deadline, model_config, active_stage)
         rm = to_rate_model(
             fit,
             base=model_config.base,  # type: ignore[arg-type]
@@ -953,6 +963,7 @@ def fit_pair_stages(
         partition: pl.DataFrame,
         parameters: tuple[PairCandidateConfig | None, ...],
         base: RateModel,
+        active_stage: PairStageConfig,
     ) -> RateModel:
         prior = stages[: len(parameters)]
         columns = {
@@ -1005,6 +1016,7 @@ def fit_pair_stages(
                 partition,
                 scorer,
                 deadline=deadline,
+                active_stage=active_stage,
             )
             scorer = _append_table(scorer, table)
             _apply_stage_edits(project, model_config, previous, scorer, fold_local=True)
@@ -1104,7 +1116,9 @@ def fit_pair_stages(
             fit_frame = outer_train[train_idx]
             val_frame = outer_train[val_idx]
             y, weight = _response(model_config, val_frame)
-            contexts.append((fit_frame, val_frame, main_for(fit_frame), y, weight))
+            contexts.append(
+                (fit_frame, val_frame, main_for(fit_frame, current), y, weight)
+            )
         power = model_config.tweedie_power if model_config.family == "tweedie" else 1.0
 
         def evaluate_prefix(
@@ -1116,13 +1130,14 @@ def fit_pair_stages(
             for inner_fold, (fit_frame, val_frame, base, y, weight) in enumerate(
                 contexts
             ):
-                scorer = fixed_prefix(fit_frame, params, base)
+                scorer = fixed_prefix(fit_frame, params, base, current)
                 loss = _deviance_sum(
                     y, scorer.predict(val_frame, exposure_col=None), weight, power
                 )
                 folds.append(
                     FoldLoss(inner_fold, loss, float(weight.sum()), loss, None)
                 )
+                _check_deadline(deadline, model_config, current)
                 if progress:
                     label = (
                         "no-correction check"
@@ -1306,6 +1321,13 @@ def fit_pair_stages(
                 "Clear those edits after reviewing them, then refit; edits on earlier "
                 "frozen stages remain in the baseline"
             )
+        stage_deadline = time.monotonic() + configured_seconds
+        deadline = (
+            min(stage_deadline, deadline_monotonic)
+            if deadline_monotonic is not None
+            else stage_deadline
+        )
+        _check_deadline(deadline, model_config, stage)
         chosen_prefix_configs: list[tuple[int, ...]] = []
         chosen_prefix_parameters: list[tuple[PairCandidateConfig | None, ...]] = []
         prefix_trials: list[SearchTrial] = []
@@ -1333,8 +1355,8 @@ def fit_pair_stages(
             chosen_prefix_configs.append(choices)
             chosen_prefix_parameters.append(params)
             prefix_trials.extend(trial_records)
-            fold_base = main_for(fit_frame)
-            fold_prefix = fixed_prefix(fit_frame, params, fold_base)
+            fold_base = main_for(fit_frame, stage)
+            fold_prefix = fixed_prefix(fit_frame, params, fold_base, stage)
             y_val, w_val = _response(model_config, val_frame)
             prefix_pred = fold_prefix.predict(val_frame, exposure_col=None)
             prefix_sum = _deviance_sum(y_val, prefix_pred, w_val, power)
@@ -1364,6 +1386,7 @@ def fit_pair_stages(
             stage_spec: PairStageConfig = stage,
             contexts: tuple[Any, ...] = stage_contexts,
             current_stage_index: int = stage_index,
+            current_deadline: float = deadline,
         ) -> CandidateCV:
             records: list[FoldLoss] = []
             for fold_index, (
@@ -1384,7 +1407,8 @@ def fit_pair_stages(
                     fit_frame,
                     fold_prefix,
                     axes=axes,
-                    deadline=deadline,
+                    deadline=current_deadline,
+                    active_stage=stage_spec,
                 )
                 deployed = _append_table(fold_prefix, table)
                 table_pred = deployed.predict(val_frame, exposure_col=None)
@@ -1410,6 +1434,7 @@ def fit_pair_stages(
                         approximation_sum,
                     )
                 )
+                _check_deadline(current_deadline, model_config, stage_spec)
                 if progress:
                     label = (
                         "no-correction check"
@@ -1486,6 +1511,7 @@ def fit_pair_stages(
             train,
             scorer,
             deadline=deadline,
+            active_stage=stage,
         )
         table.provenance = {
             "input_prefix_fingerprint": fingerprint,
@@ -1513,6 +1539,7 @@ def fit_pair_stages(
         table_train_loss = _deviance_sum(
             y_train, next_scorer.predict(train, exposure_col=None), w_train, power
         ) / float(w_train.sum())
+        _check_deadline(deadline, model_config, stage)
         artifact = PairStageArtifact(
             stage_id=stage.stage_id,
             parents=(stage.a, stage.b),

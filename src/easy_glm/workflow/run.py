@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import copy
 import math
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -45,7 +44,6 @@ from .project import (
     Project,
     VariableDesign,
     pair_time_limit_seconds,
-    pair_timeout_message,
     premium_offset_column,
 )
 
@@ -452,11 +450,6 @@ def run_model(
     train, holdout = train_holdout(df, project.data.split)
     if train.is_empty():
         raise ValueError("No training rows after the split")
-    pair_deadline = None
-    if cfg.pair_stages:
-        pair_deadline = time.monotonic() + pair_time_limit_seconds(
-            cfg.pair_time_limit_minutes
-        )
     if cfg.pair_stages:
         from .pair_stages import preflight_pair_stages
 
@@ -501,8 +494,6 @@ def run_model(
         progress=progress,
         **kwargs,
     )
-    if pair_deadline is not None and time.monotonic() > pair_deadline:
-        raise TimeoutError(pair_timeout_message(cfg.pair_time_limit_minutes))
     fit: GLMFit
     if spec.interactions:
         # two stages (the actuary's answer to Q5): the mains are fitted exactly
@@ -520,8 +511,6 @@ def run_model(
         fit = _fit_main_effects(
             train, spec, cfg.target, cache=main_effects_cache, **fit_kwargs
         )
-    if pair_deadline is not None and time.monotonic() > pair_deadline:
-        raise TimeoutError(pair_timeout_message(cfg.pair_time_limit_minutes))
     exposure = exposure_for(project, cfg)
     rm = to_rate_model(
         fit,
@@ -556,7 +545,6 @@ def run_model(
             rm,
             cache=pair_stages_cache,
             progress=progress,
-            deadline_monotonic=pair_deadline,
             replay_pair_adjustments=replay_pair_adjustments,
             frozen_prefix_artifacts=frozen_pair_prefix,
             frozen_prefix_rate_model=frozen_pair_rate_model,
