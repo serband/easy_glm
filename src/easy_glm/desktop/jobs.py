@@ -27,9 +27,11 @@ def model_key(project: Project, name: str) -> str:
     data = dict(spec["data"])
     data.pop("sample_rows", None)
     data.pop("sample_seed", None)
+    model = dict(spec["models"].get(name) or {})
+    model.pop("pair_time_limit_minutes", None)
     return hashlib.sha256(
         json.dumps(
-            {"data": data, "design": spec["design"], "model": spec["models"].get(name)},
+            {"data": data, "design": spec["design"], "model": model},
             sort_keys=True,
         ).encode()
     ).hexdigest()
@@ -45,6 +47,7 @@ def _main_key(project: Project, name: str) -> str:
     for field in (
         "pair_stages",
         "pair_method",
+        "pair_time_limit_minutes",
         "adjustments",
         "base_rate_override",
         "snapshots",

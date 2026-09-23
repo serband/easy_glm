@@ -16,6 +16,7 @@ import pytest
 from easy_glm.engine.models import ModelMetadata
 from easy_glm.engine.rate_model import RateModel
 from easy_glm.workflow import pair_stages
+from easy_glm.workflow import run as workflow_run
 from easy_glm.workflow.export import to_script
 from easy_glm.workflow.pair_distillation import distill_pair_cells
 from easy_glm.workflow.project import (
@@ -133,6 +134,7 @@ def test_unassigned_pair_parents_fit_score_and_roundtrip(
         script_path.write_text(
             to_script(project, "pair", run=run, output_prefix=output_prefix)
         )
+        assert "'pair_time_limit_minutes': 15.0" in script_path.read_text()
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
         subprocess.run(
@@ -185,6 +187,103 @@ def test_uniform_twenty_by_twenty_cells_clear_default_support_threshold():
     )
     assert result.fallback_reason == (None,) * 400
     assert np.all(result.relativities == 1)
+
+
+def test_configured_deadline_is_absolute_and_forwarded_unchanged(monkeypatch):
+    project, frame = _case()
+    project.models["pair"].pair_time_limit_minutes = 2.0
+    estimate = pair_stages.preflight_pair_stages(
+        project.models["pair"].pair_stages,
+        project,
+        frame[:130],
+        project.models["pair"],
+    )
+    assert estimate["deadline_seconds"] == 120.0
+    settings = pair_stages._main_settings(project.models["pair"])
+    project.models["pair"].pair_time_limit_minutes = 3.0
+    assert pair_stages._main_settings(project.models["pair"]) == settings
+    project.models["pair"].pair_time_limit_minutes = 2.0
+
+    class RunClock:
+        @staticmethod
+        def monotonic():
+            return 100.0
+
+    class PairClock:
+        current = 101.0
+
+        @classmethod
+        def monotonic(cls):
+            cls.current += 0.001
+            return cls.current
+
+        @classmethod
+        def perf_counter(cls):
+            cls.current += 0.001
+            return cls.current
+
+    monkeypatch.setattr(workflow_run, "time", RunClock)
+    monkeypatch.setattr(pair_stages, "time", PairClock)
+    seen: list[float] = []
+    original_check = pair_stages._check_deadline
+
+    def record(deadline, cfg):
+        seen.append(deadline)
+        return original_check(deadline, cfg)
+
+    monkeypatch.setattr(pair_stages, "_check_deadline", record)
+    run_model(project, frame, "pair")
+
+    assert len(seen) > 20  # fold-local mains, candidates and both full stage fits
+    assert set(seen) == {220.0}
+
+
+def test_tiny_configured_limit_fails_with_retry_message_before_teacher(monkeypatch):
+    project, frame = _case()
+    cfg = project.models["pair"]
+    cfg.pair_time_limit_minutes = 0.000001
+    called = False
+
+    def teacher(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError(
+            "teacher should not start after the main fit used the limit"
+        )
+
+    monkeypatch.setattr(pair_stages, "fit_catboost_pair_raw", teacher)
+    with pytest.raises(
+        TimeoutError,
+        match=(
+            r"The fit reached its 1e-06-minute time limit\. Increase Fit time limit "
+            r"in Model > Fit settings, save, and retry\."
+        ),
+    ):
+        run_model(project, frame, "pair")
+    assert called is False
+
+
+def test_direct_staged_fit_respects_an_explicit_zero_deadline() -> None:
+    project, frame = _case()
+    cfg = project.models["pair"]
+    with pytest.raises(TimeoutError, match="15-minute time limit"):
+        pair_stages.fit_pair_stages(
+            project,
+            frame[:130],
+            cfg,
+            RateModel(1.0, {}),
+            deadline_monotonic=0.0,
+        )
+
+
+def test_sequential_mode_without_pair_stages_has_no_pair_deadline() -> None:
+    project, frame = _case()
+    cfg = project.models["pair"]
+    cfg.pair_stages = []
+    cfg.pair_method = "sequential_catboost"
+    cfg.pair_time_limit_minutes = 0.000001
+    run = run_model(project, frame, "pair")
+    assert run.pair_stages == []
 
 
 def test_rejects_invalid_numeric_teacher_baseline():

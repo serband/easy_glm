@@ -159,8 +159,13 @@ class PricingModel:
         prefix_trials: int = 4,
         min_weight_share: float = 0.001,
         seed: int | None = None,
+        time_limit_minutes: float | None = None,
     ) -> PricingModel:
-        """Append one CatBoost pair on this checkpoint's frozen table scorer."""
+        """Append one CatBoost pair on this checkpoint's frozen table scorer.
+
+        ``time_limit_minutes`` covers the shared main fit and all interaction
+        validation/tuning work; when omitted, the checkpoint's limit is inherited.
+        """
         if a == b:
             raise ValueError("An interaction needs two different variables")
         if trials < 1 or prefix_trials < 1:
@@ -172,6 +177,8 @@ class PricingModel:
         if problem:
             raise ValueError(problem)
         parent_config = copy.deepcopy(self._run.config)
+        if time_limit_minutes is not None:
+            parent_config.pair_time_limit_minutes = time_limit_minutes
         # Validate against the copied parent config before registering the new name.
         data = self._frame("all")
         project.models[name] = parent_config

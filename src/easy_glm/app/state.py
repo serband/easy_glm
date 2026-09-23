@@ -121,7 +121,7 @@ _SAMPLE_KEYS = ("sample_rows", "sample_seed")
 #: 10 — pair-stage configs and artifacts gained automatic search state. Old
 #: staged pickles lack those fields, so persisted runs need a format miss.
 #: 11 — fitted metrics include family-specific losses and shared validity rules.
-PERSIST_FORMAT = 11
+PERSIST_FORMAT = 12
 #: A marker left by *another* session is only removed once it is this old:
 #: younger than this it may belong to a fit that is still running in another
 #: tab, and taking its marker away would cost that tab its own warning.
@@ -193,6 +193,7 @@ def model_hash(project: Project, model: str) -> str:
     post-fit (adjustments, base-rate override, notes)."""
     d = project.to_dict()
     cfg = dict(d["models"][model])
+    cfg.pop("pair_time_limit_minutes", None)
     staged = bool(cfg.get("pair_stages"))
     if not staged:
         cfg.pop("adjustments", None)  # legacy edits are post-fit

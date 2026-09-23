@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import math
+
+import pytest
+
 from easy_glm.workflow.project import (
     Adjustment,
     Derived,
@@ -32,12 +36,43 @@ def test_pair_only_predictors_roundtrip_and_legacy_format() -> None:
     encoded = p.to_dict()
     assert encoded["version"] == 3
     reloaded = Project.from_dict(encoded)
+    assert reloaded.models["m"].pair_time_limit_minutes == 15.0
     assert reloaded.models["m"].pair_stages[0].a == "A"
     assert len(reloaded.models["m"].pair_stages[0].candidates) == 2
     reloaded.models["m"].pair_stages.clear()
     assert reloaded.to_dict()["version"] == 3
     assert reloaded.models["m"].pair_method == "sequential_catboost"
     assert Project().to_dict()["version"] == 2
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        True,
+        False,
+        0,
+        -1,
+        float("nan"),
+        float("inf"),
+        -float("inf"),
+        1e308,
+        10**400,
+    ],
+)
+def test_pair_time_limit_must_convert_to_positive_finite_seconds(value) -> None:
+    p = project()
+    p.models["m"].pair_time_limit_minutes = value
+    assert any("pair_time_limit_minutes" in problem for problem in p.validate("m"))
+
+
+def test_pair_time_limit_nondefault_roundtrips() -> None:
+    p = project()
+    p.models["m"].pair_time_limit_minutes = 2.75
+    loaded = Project.from_dict(p.to_dict())
+    assert math.isclose(loaded.models["m"].pair_time_limit_minutes, 2.75)
+    legacy = p.to_dict()
+    legacy["models"]["m"].pop("pair_time_limit_minutes")
+    assert Project.from_dict(legacy).models["m"].pair_time_limit_minutes == 15.0
 
 
 def test_pair_validation_rejects_reversed_duplicate_mixing_and_role() -> None:

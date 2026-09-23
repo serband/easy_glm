@@ -24,6 +24,80 @@ test('pair selector groups unassigned source variables without promoting them', 
     expect(fields.pair_stages[0]).toMatchObject({ a: 'A', b: 'D' });
 });
 
+test('pair fit time limit validates, persists, times out and retries without staling tables', async ({
+    page,
+}) => {
+    const saves = [];
+    page.on('request', (request) => {
+        if (request.method() === 'POST' && request.url().endsWith('/api/models/save'))
+            saves.push(request.postDataJSON());
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Model', exact: true }).click();
+    await page.getByLabel('Model selection').selectOption('__new__');
+    const modelName = `Pair timeout ${Date.now()}`;
+    await page.getByLabel('New model name').fill(modelName);
+
+    const limit = page.getByLabel('Fit time limit (minutes)');
+    await expect(limit).toHaveValue('15');
+    await page.getByRole('button', { name: 'Legacy GLM interactions' }).click();
+    await expect(limit).toBeHidden();
+    await page.getByRole('button', { name: 'Sequential CatBoost pairs' }).click();
+    await expect(limit).toHaveValue('15');
+
+    await page.getByLabel('New pair first predictor').selectOption('A');
+    await page.getByLabel('New pair second predictor').selectOption('B');
+    await page.getByRole('button', { name: 'Add interaction' }).click();
+    const stage = page.getByLabel('Stage 2 A × B');
+    await stage.getByText('Stage settings').click();
+    await stage.getByText('Tuning budget').click();
+    await stage.getByLabel('Tuning trials for stage 2', { exact: true }).fill('1');
+    await stage.getByLabel('Prefix tuning trials for stage 2', { exact: true }).fill('1');
+
+    await limit.fill('0');
+    await page.getByRole('button', { name: 'Create model' }).click();
+    await expect(page.getByRole('alert')).toContainText(
+        'pair_time_limit_minutes must be a positive finite number',
+    );
+
+    await limit.fill('0.000001');
+    await page.getByRole('button', { name: 'Create model' }).click();
+    await expect(page.getByText('Model settings saved. Fit when ready.')).toBeVisible();
+    expect(saves.at(-1).fields.pair_time_limit_minutes).toBe(0.000001);
+
+    const timeoutStarted = Date.now();
+    await page.getByRole('button', { name: 'Fit all stages' }).click();
+    await expect(page.getByText('Fit failed', { exact: true })).toBeVisible({ timeout: 30000 });
+    await expect(
+        page.getByText(
+            'The fit reached its 1e-06-minute time limit. Increase Fit time limit in Model > Fit settings, save, and retry.',
+            { exact: true },
+        ),
+    ).toBeVisible();
+    expect(Date.now() - timeoutStarted).toBeLessThan(30000);
+
+    await limit.fill('2.75');
+    await page.getByRole('button', { name: 'Save model settings' }).click();
+    await expect(page.getByText('Model settings saved. Fit when ready.')).toBeVisible();
+    expect(saves.at(-1).fields.pair_time_limit_minutes).toBe(2.75);
+    await page.getByRole('button', { name: 'Fit all stages' }).click();
+    await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 180000 });
+    await expect(stage).toContainText(/Up to date|No improvement/);
+
+    await limit.fill('3.5');
+    await page.getByRole('button', { name: 'Save model settings' }).click();
+    await expect(page.getByText('Model settings saved. Fit when ready.')).toBeVisible();
+    await expect(page.getByText('Fit complete', { exact: true })).toBeVisible();
+    await expect(stage).toContainText(/Up to date|No improvement/);
+
+    await page.reload();
+    await page.getByRole('button', { name: 'Model', exact: true }).click();
+    await page.getByLabel('Model selection').selectOption(modelName);
+    await expect(page.getByLabel('Fit time limit (minutes)')).toHaveValue('3.5');
+    await expect(page.getByText('Fit complete', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('Stage 2 A × B')).toContainText(/Up to date|No improvement/);
+});
+
 test('fitted stages expose pair edits, suffix status, refit impact and narrow layout', async ({
     page,
 }) => {

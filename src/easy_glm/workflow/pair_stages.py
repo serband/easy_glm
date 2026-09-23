@@ -45,6 +45,8 @@ from .project import (
     PairStageConfig,
     Project,
     VariableDesign,
+    pair_time_limit_seconds,
+    pair_timeout_message,
 )
 
 MAX_STAGES = 8
@@ -52,13 +54,17 @@ MAX_CELLS = 10_000
 MAX_CANDIDATES = 3
 MAX_PREFIX_CONFIGS = 8
 MAX_TEACHER_FITS = 5_000
-MAX_SECONDS = 900
 MAX_ESTIMATED_PEAK_BYTES = 3 * 1024**3
 CV_TIE_TOLERANCE = 1e-8
 ALGORITHM_VERSION = "pair-stages-2-optuna"
 SEARCH_SPACE_VERSION = "shallow-v1"
 MAIN_TPE_STARTUP_TRIALS = 3
 PREFIX_TPE_STARTUP_TRIALS = 2
+
+
+def _check_deadline(deadline: float, cfg: ModelConfig) -> None:
+    if time.monotonic() > deadline:
+        raise TimeoutError(pair_timeout_message(cfg.pair_time_limit_minutes))
 
 
 @dataclass(frozen=True)
@@ -319,8 +325,7 @@ def _fit_table(
     axes: tuple[VariableConfig, VariableConfig] | None = None,
     deadline: float,
 ) -> tuple[PairTableConfig, Any | None]:
-    if time.monotonic() > deadline:
-        raise TimeoutError("Pair fitting exceeded the 900-second budget")
+    _check_deadline(deadline, cfg)
     parents = (stage.a, stage.b)
     axes = axes or (
         _axis(project, train, stage.a, cfg.weight),
@@ -364,6 +369,7 @@ def _fit_table(
             seed=stage.seed,
             cat_features=categorical,
         )
+        _check_deadline(deadline, cfg)
         teacher_mean = teacher.predict_mean(raw, baseline)
     result = distill_pair_cells(
         _cell_ids(train, parents, axes),
@@ -375,6 +381,7 @@ def _fit_table(
         n_cells=n_cells,
         min_weight_share=stage.min_weight_share,
     )
+    _check_deadline(deadline, cfg)
     return _table(stage, axes, result), teacher
 
 
@@ -548,6 +555,8 @@ def preflight_pair_stages(
     project: Project,
     train: pl.DataFrame,
     cfg: ModelConfig,
+    *,
+    deadline_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Bound the nested search and pair grids before starting any model fit."""
     if len(stages) > MAX_STAGES:
@@ -634,7 +643,11 @@ def preflight_pair_stages(
         "estimated_table_bytes": 128 * sum(grid_cells),
         "estimated_main_design_bytes": estimated_design_bytes,
         "estimated_peak_bytes": estimated_peak_bytes,
-        "deadline_seconds": MAX_SECONDS,
+        "deadline_seconds": (
+            pair_time_limit_seconds(cfg.pair_time_limit_minutes)
+            if deadline_seconds is None
+            else deadline_seconds
+        ),
     }
 
 
@@ -688,7 +701,12 @@ def _scorer_signature(scorer: RateModel) -> dict[str, Any]:
 
 def _main_settings(cfg: ModelConfig) -> dict[str, Any]:
     settings = asdict(cfg)
-    for irrelevant in ("pair_stages", "pair_method", "snapshots"):
+    for irrelevant in (
+        "pair_stages",
+        "pair_method",
+        "pair_time_limit_minutes",
+        "snapshots",
+    ):
         settings.pop(irrelevant, None)
     settings["adjustments"] = [
         asdict(adj) for adj in cfg.adjustments if adj.stage_id is None
@@ -809,7 +827,14 @@ def fit_pair_stages(
         model_config.link and model_config.link != "log"
     ):
         raise ValueError("Pair stages support only Poisson/log or Tweedie/log")
-    estimate = preflight_pair_stages(stages, project, train, model_config)
+    configured_seconds = pair_time_limit_seconds(model_config.pair_time_limit_minutes)
+    estimate = preflight_pair_stages(
+        stages,
+        project,
+        train,
+        model_config,
+        deadline_seconds=configured_seconds,
+    )
     if progress:
         progress(
             f"Pair preflight: up to {estimate['teacher_fits_upper_bound']:,} teacher fits, "
@@ -820,11 +845,12 @@ def fit_pair_stages(
             f"{estimate['estimated_main_design_bytes'] / 1024**2:.1f} MiB main design; "
             f"five outer and five inner folds"
         )
-    deadline = deadline_monotonic or time.monotonic() + MAX_SECONDS
-    if time.monotonic() > deadline:
-        raise TimeoutError(
-            "Pair fitting exceeded the 900-second budget before teacher training"
-        )
+    deadline = (
+        deadline_monotonic
+        if deadline_monotonic is not None
+        else time.monotonic() + configured_seconds
+    )
+    _check_deadline(deadline, model_config)
     cache = cache if cache is not None else {}
     full_cache: dict[str, PairStageArtifact] = cache.setdefault("full_prefix", {})
     inner_main_cache: dict[bytes, RateModel] = cache.setdefault("fold_main", {})
@@ -839,8 +865,7 @@ def fit_pair_stages(
     ] = cache.setdefault("prefix_selection", {})
 
     def main_for(partition: pl.DataFrame) -> RateModel:
-        if time.monotonic() > deadline:
-            raise TimeoutError("Pair fitting exceeded the 900-second budget")
+        _check_deadline(deadline, model_config)
         main_columns = {
             name
             for name in (
@@ -902,6 +927,7 @@ def fit_pair_stages(
         if model_config.link:
             fit_kwargs["link"] = model_config.link
         fit = _fit_main_effects(partition, spec, model_config.target, **fit_kwargs)
+        _check_deadline(deadline, model_config)
         rm = to_rate_model(
             fit,
             base=model_config.base,  # type: ignore[arg-type]

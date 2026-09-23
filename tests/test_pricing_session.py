@@ -111,9 +111,18 @@ def test_interaction_uses_unassigned_parent_and_reports_validation_evidence() ->
     work.bands("z", cuts=[-1, 0, 1])
     work.bands("q", cuts=[-1, 0, 1])
     main = work.fit_glm("Main", factors=["x"], alpha=0.001)
-    pair = main.fit_interaction("x", "z", name="Pair", trials=1, prefix_trials=1)
+    pair = main.fit_interaction(
+        "x",
+        "z",
+        name="Pair",
+        trials=1,
+        prefix_trials=1,
+        time_limit_minutes=0.5,
+    )
 
     assert pair._run.config.predictors == ["x"]
+    assert pair._run.config.pair_time_limit_minutes == 0.5
+    assert main._run.config.pair_time_limit_minutes == 15.0
     assert pair._project.data.roles.get("z") is None
     evidence = pair.summary()["pair_stages"][0]
     assert evidence["parents"] == ("x", "z")
@@ -128,6 +137,7 @@ def test_interaction_uses_unassigned_parent_and_reports_validation_evidence() ->
         "z", "q", name="Second pair", trials=1, prefix_trials=1
     )
     frozen_table = second._run.rate_model.to_dict()["pair_tables"][0]
+    assert second._run.config.pair_time_limit_minutes == 0.5
     assert frozen_table["axes"] == first_table["axes"]
     assert frozen_table["cells"] == first_table["cells"]
     assert second._frozen_stages == []

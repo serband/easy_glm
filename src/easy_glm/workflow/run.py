@@ -44,6 +44,8 @@ from .project import (
     ModelConfig,
     Project,
     VariableDesign,
+    pair_time_limit_seconds,
+    pair_timeout_message,
     premium_offset_column,
 )
 
@@ -450,14 +452,22 @@ def run_model(
     train, holdout = train_holdout(df, project.data.split)
     if train.is_empty():
         raise ValueError("No training rows after the split")
+    pair_deadline = None
     if cfg.pair_stages:
-        from .pair_stages import MAX_SECONDS, preflight_pair_stages
+        pair_deadline = time.monotonic() + pair_time_limit_seconds(
+            cfg.pair_time_limit_minutes
+        )
+    if cfg.pair_stages:
+        from .pair_stages import preflight_pair_stages
 
         # Refuse an oversized pair grid/search before fitting even the main GLM.
-        preflight_pair_stages(cfg.pair_stages, project, train, cfg)
-        pair_deadline = time.monotonic() + MAX_SECONDS
-    else:
-        pair_deadline = None
+        preflight_pair_stages(
+            cfg.pair_stages,
+            project,
+            train,
+            cfg,
+            deadline_seconds=pair_time_limit_seconds(cfg.pair_time_limit_minutes),
+        )
 
     dropped: list[str] = []
     spec = build_design(
@@ -491,6 +501,8 @@ def run_model(
         progress=progress,
         **kwargs,
     )
+    if pair_deadline is not None and time.monotonic() > pair_deadline:
+        raise TimeoutError(pair_timeout_message(cfg.pair_time_limit_minutes))
     fit: GLMFit
     if spec.interactions:
         # two stages (the actuary's answer to Q5): the mains are fitted exactly
@@ -508,6 +520,8 @@ def run_model(
         fit = _fit_main_effects(
             train, spec, cfg.target, cache=main_effects_cache, **fit_kwargs
         )
+    if pair_deadline is not None and time.monotonic() > pair_deadline:
+        raise TimeoutError(pair_timeout_message(cfg.pair_time_limit_minutes))
     exposure = exposure_for(project, cfg)
     rm = to_rate_model(
         fit,
