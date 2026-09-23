@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
+import ast
 import re
-import shutil
 from pathlib import Path
 
-import matplotlib
 import numpy as np
 import plotly.graph_objects as go
-
-from easy_glm import RateModel
 
 ROOT = Path(__file__).resolve().parents[1]
 LESSON = ROOT / "docs" / "examples" / "french_motor_walkthrough.py"
@@ -41,196 +38,107 @@ def markdown_python_blocks(source: str) -> list[str]:
     return [match.group(1) for match in PYTHON_FENCE.finditer(source)]
 
 
-def test_walkthrough_executes_as_reviewable_cells_on_full_fixture(
-    tmp_path, monkeypatch
-):
-    matplotlib.use("Agg")
-    lesson_directory = tmp_path / "installed-package-lesson"
-    lesson_directory.mkdir()
-    shutil.copy2(
-        ROOT / "tests" / "fixtures" / "french_motor_50k.parquet",
-        lesson_directory / "french_motor_50k.parquet",
-    )
-    monkeypatch.chdir(lesson_directory)
-    monkeypatch.delenv("EASY_GLM_FRENCH_MOTOR_DATA", raising=False)
-    monkeypatch.setenv("EASY_GLM_LESSON_OUTPUT", str(lesson_directory / "outputs"))
-    source = LESSON.read_text(encoding="utf-8")
-    cells = lesson_cells(source)
-
-    assert [number for number, _title, _body in cells] == list(range(1, 16))
-    assert "def run_all" not in source
-    assert "if __name__" not in source
-    assert "easy_glm.app" not in source
-    assert "easy_glm.desktop" not in source
-    assert "input(" not in source
-    assert all("locked_holdout" not in body for _n, _t, body in cells[2:11])
-
-    namespace: dict[str, object] = {"__name__": "__main__"}
-    for number, title, body in cells:
-        exec(compile(body, f"{LESSON.name}:cell-{number}:{title}", "exec"), namespace)
-
-    assert namespace["split_counts"] == {"train": 34_887, "holdout": 15_113}
-    assert (
-        namespace["settings_roundtrip"].to_dict()
-        == namespace["settings_project"].to_dict()
-    )
-    assert namespace["settings_project"].data.roles.get("Area") is None
-    assert namespace["settings_project"].data.roles.get("Region") is None
-    assert (
-        namespace["binning_examples"]["literal_custom_DrivAge"]
-        == namespace["CUSTOM_KNOTS"]["DrivAge"]
-    )
-    assert len(namespace["binning_examples"]["per_variable_6_bins_VehPower"]) <= 5
-
-    reviewed_main = namespace["reviewed_main"]
-    mains_run = namespace["mains_run"]
-    pair1_run = namespace["pair1_run"]
-    pair2_run = namespace["pair2_run"]
-    training_only = namespace["training_only"]
-    assert mains_run.spec.to_dict() == reviewed_main.spec.to_dict()
-    np.testing.assert_allclose(
-        mains_run.predict(training_only),
-        reviewed_main.predict(training_only).to_numpy(),
-        rtol=1e-8,
-    )
-    assert set(mains_run.metrics) == {"train"}
-    assert set(pair1_run.metrics) == {"train"}
-    assert set(pair2_run.metrics) == {"train"}
-    assert len(pair1_run.config.pair_stages) == 1
-    assert len(pair2_run.config.pair_stages) == 2
-    assert len(pair1_run.rate_model.pair_tables) == 1
-    assert len(pair2_run.rate_model.pair_tables) == 2
-    assert (
-        pair1_run.rate_model.to_dict()["pair_tables"][0]
-        == pair2_run.rate_model.to_dict()["pair_tables"][0]
-    )
-    assert (
-        mains_run.rate_model.to_dict()["variables"]
-        == pair2_run.rate_model.to_dict()["variables"]
-    )
-    np.testing.assert_allclose(
-        namespace["final_unit_prediction"],
-        namespace["main_unit_prediction"]
-        * namespace["pair1_factor"]
-        * namespace["pair2_factor"],
-        rtol=1e-12,
-    )
-
-    final_metrics = namespace["final_metrics"]
-    assert set(final_metrics) == {"train", "holdout"}
-    for subset in ("train", "holdout"):
-        assert final_metrics[subset]["rows"] > 0
-        assert np.isfinite(final_metrics[subset]["mean_deviance"])
-        assert np.isfinite(final_metrics[subset]["ae"])
-
-    assert namespace["accepted_run"] is pair2_run
-    replayed_prepared = namespace["replayed_prepared"]
-    np.testing.assert_array_equal(
-        replayed_prepared.filter(namespace["pl"].col("traintest") == 1)[
-            "IDpol"
-        ].to_numpy(),
-        training_only["IDpol"].to_numpy(),
-    )
-
-    artifact_paths = namespace["artifact_paths"]
-    assert all(path.is_file() for path in artifact_paths.values())
-    assert (lesson_directory / "outputs" / "skinny_train_ae_DrivAge.png").is_file()
-    assert (lesson_directory / "outputs" / "pair1_relativity_heatmap.png").is_file()
-    assert (lesson_directory / "outputs" / "lesson_results.json").is_file()
-
-    # A reviewer may accept the main-effects model without presentation failing.
-    namespace["accepted_run"] = mains_run
-    exec(
-        compile(cells[12][2], f"{LESSON.name}:cell-13:no-pairs", "exec"),
-        namespace,
-    )
-    assert namespace["accepted_pair_heatmap"] is None
+def test_optional_script_contains_the_same_cells_as_the_walkthrough():
+    """The convenient script must not teach a second, incompatible workflow."""
+    cells = lesson_cells(LESSON.read_text(encoding="utf-8"))
+    blocks = markdown_python_blocks(GUIDE.read_text(encoding="utf-8"))
+    assert len(cells) == len(blocks)
+    assert [ast.dump(ast.parse(body)) for _number, _title, body in cells] == [
+        ast.dump(ast.parse(block)) for block in blocks
+    ]
 
 
 def test_markdown_walkthrough_executes_independently_on_full_fixture(
     tmp_path, monkeypatch
 ):
-    """The main guide alone must reproduce the complete staged workflow."""
-    matplotlib.use("Agg")
-    lesson_directory = tmp_path / "installed-package-guide"
-    lesson_directory.mkdir()
-    shutil.copy2(
-        ROOT / "tests" / "fixtures" / "french_motor_50k.parquet",
-        lesson_directory / "french_motor_50k.parquet",
-    )
-    monkeypatch.chdir(lesson_directory)
-    monkeypatch.delenv("EASY_GLM_FRENCH_MOTOR_DATA", raising=False)
-    monkeypatch.setenv(
-        "EASY_GLM_LESSON_OUTPUT", str(lesson_directory / "guide-outputs")
-    )
+    """Run the public page verbatim, including both pair stages and edit choices."""
+    import json
+
+    import polars as pl
+
+    import easy_glm
+    from easy_glm.pricing.review import ReviewPreview
+    from easy_glm.pricing.views import DisplayResult
+
+    fixture = pl.read_parquet(ROOT / "tests" / "fixtures" / "french_motor_50k.parquet")
+    monkeypatch.setattr(easy_glm, "load_external_dataframe", lambda: fixture)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(DisplayResult, "show", lambda self: self)
+    monkeypatch.setattr(ReviewPreview, "show", lambda self: self)
     monkeypatch.setattr(go.Figure, "show", lambda self, *args, **kwargs: None)
 
     source = GUIDE.read_text(encoding="utf-8")
     blocks = markdown_python_blocks(source)
     assert blocks
-    assert all("french_motor_walkthrough" not in block for block in blocks)
+    assert "def plot_" not in source
+    assert "def easyglm_design_kwargs" not in source
+    assert "from easy_glm.workflow import" not in source
 
-    namespace: dict[str, object] = {"__name__": "__main__"}
+    namespace = {"__name__": "__main__"}
     for index, block in enumerate(blocks, start=1):
-        exec(
-            compile(block, f"{GUIDE.name}:python-block-{index}", "exec"),
-            namespace,
-        )
+        exec(compile(block, f"{GUIDE.name}:block-{index}", "exec"), namespace)
 
-    skinny = namespace["skinny"]
-    reviewed_main = namespace["reviewed_main"]
-    mains_run = namespace["mains_run"]
-    pair1_run = namespace["pair1_run"]
-    pair2_run = namespace["pair2_run"]
-    training_only = namespace["training_only"]
-    accepted_run = namespace["accepted_run"]
-
-    assert skinny is not reviewed_main
-    assert mains_run.spec.to_dict() == reviewed_main.spec.to_dict()
-    np.testing.assert_allclose(
-        mains_run.predict(training_only),
-        reviewed_main.predict(training_only).to_numpy(),
-        rtol=1e-8,
-    )
-    for run in (mains_run, pair1_run, pair2_run):
-        assert set(run.metrics) == {"train"}
-        assert run.train_rows == training_only.height
-        assert run.holdout_rows == 0
-
-    assert len(mains_run.rate_model.pair_tables) == 0
-    assert len(pair1_run.rate_model.pair_tables) == 1
-    assert len(pair2_run.rate_model.pair_tables) == 2
+    basic = namespace["basic"]
+    main = namespace["main"]
+    first = namespace["first"]
+    second = namespace["second"]
+    adjusted = namespace["adjusted"]
+    refitted = namespace["refitted"]
+    data = namespace["data"]
+    assert data.height == 50_000
+    assert basic.summary()["factors"] == ["DrivAge", "VehAge"]
+    assert main.summary()["factors"] == ["DrivAge", "VehAge", "BonusMalus", "Density"]
+    assert "Region" not in second.summary()["factors"]
+    assert len(first._run.rate_model.pair_tables) == 1
+    assert len(second._run.rate_model.pair_tables) == 2
     assert (
-        mains_run.rate_model.to_dict()["variables"]
-        == pair1_run.rate_model.to_dict()["variables"]
-        == pair2_run.rate_model.to_dict()["variables"]
+        main._run.rate_model.to_dict()["variables"]
+        == first._run.rate_model.to_dict()["variables"]
     )
     assert (
-        pair1_run.rate_model.to_dict()["pair_tables"][0]
-        == pair2_run.rate_model.to_dict()["pair_tables"][0]
+        first._run.rate_model.to_dict()["variables"]
+        == second._run.rate_model.to_dict()["variables"]
     )
+    assert (
+        first._run.rate_model.to_dict()["pair_tables"][0]
+        == second._run.rate_model.to_dict()["pair_tables"][0]
+    )
+    for original, frozen in zip(
+        second._run.rate_model.to_dict()["pair_tables"],
+        adjusted._run.rate_model.to_dict()["pair_tables"],
+        strict=True,
+    ):
+        # Pricing edits relabel old CV evidence as historical, but keep rates.
+        for key in ("stage_id", "parents", "axes", "cells"):
+            assert frozen[key] == original[key]
 
-    artifact_paths = namespace["artifact_paths"]
-    assert artifact_paths
-    assert all(path.is_file() for path in artifact_paths.values())
+    for candidate in (adjusted, refitted):
+        edited = candidate.relativities("DrivAge").table
+        row = edited.filter((pl.col("from") == 25) & (pl.col("to") == 35))
+        assert row["relativity"].item() == 0.95
+        assert set(candidate._run.metrics) == {"train"}
+    assert second._run.config.adjustments == []
+    assert len(refitted._run.rate_model.pair_tables) == 2
+    assert namespace["accepted"] is refitted
 
-    locked_holdout = namespace["locked_holdout"]
-    accepted_prediction = accepted_run.predict(locked_holdout)
-    restored = RateModel.from_json(artifact_paths["model"])
     np.testing.assert_allclose(
-        restored.predict(locked_holdout, exposure_col=None),
-        accepted_prediction,
+        namespace["reopened"].predict(data), refitted.predict(data), rtol=1e-12
+    )
+    np.testing.assert_allclose(
+        namespace["expected_claims"],
+        namespace["predicted_frequency"] * data["Exposure"].to_numpy(),
         rtol=1e-12,
     )
+    assert (tmp_path / "motor_settings.json").is_file()
+    assert (tmp_path / "motor_pricing_tables.xlsx").is_file()
+    saved = json.loads((tmp_path / "motor_pricing_model.easyglm").read_text())
+    assert saved
+    assert "IDpol" not in saved.get("data", {})
 
-    scorer_source = artifact_paths["scorer"].read_text(encoding="utf-8")
-    scorer_namespace: dict[str, object] = {"__name__": "guide_frozen_scorer"}
-    exec(
-        compile(scorer_source, str(artifact_paths["scorer"]), "exec"),
-        scorer_namespace,
-    )
-    np.testing.assert_allclose(
-        scorer_namespace["predict"](locked_holdout, exposure_col=None),
-        accepted_prediction,
-        rtol=1e-12,
-    )
+    # The preview is also independently usable as a chart/table, with no notebook.
+    ae = refitted.ae("DrivAge")
+    assert len(ae.figure.data) >= 3
+    assert ae.table["actual"].sum() == refitted._frame("train")["ClaimNb"].sum()
+    pair = refitted.relativities("VehAge", "Region")
+    assert pair.figure is not None
+    assert pair.table.height > 0

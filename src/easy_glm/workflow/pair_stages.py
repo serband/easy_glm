@@ -384,6 +384,26 @@ def _append_table(prefix: RateModel, table: PairTableConfig) -> RateModel:
     return scorer
 
 
+def _pair_table_grid(table: PairTableConfig) -> tuple[Any, ...]:
+    """Comparable deployed axes and cell values, excluding evidence metadata."""
+    axes = tuple(
+        tuple((row.from_, row.to_) for row in axis.table) for axis in table.axes
+    )
+    values = [[1.0 for _ in table.axes[1].table] for _ in table.axes[0].table]
+    for cell in table.cells:
+        values[cell.axis_a_row][cell.axis_b_row] = float(cell.relativity)
+    return table.parents, axes, tuple(tuple(row) for row in values)
+
+
+def _mark_pricing_adjustment(artifact: PairStageArtifact) -> None:
+    artifact.status = "pricing_adjustment"
+    artifact.table.provenance = {
+        **artifact.table.provenance,
+        "pricing_adjustment": True,
+        "cv_evidence": "historical_pre_edit",
+    }
+
+
 def _apply_stage_edits(
     project: Project,
     cfg: ModelConfig,
@@ -404,6 +424,11 @@ def _apply_stage_edits(
                 raise ValueError(
                     f"Pair edit on {stage.stage_id!r} cannot replay across CV folds: "
                     f"{parent!r} has data-derived cuts. Specify fixed cuts or reset the edit"
+                )
+            if axis.type == "categorical" and not design.levels:
+                raise ValueError(
+                    f"Pair edit on {stage.stage_id!r} cannot replay across CV folds: "
+                    f"{parent!r} has data-derived levels. Specify fixed levels or reset the edit"
                 )
     from .run import apply_adjustments
 
@@ -733,6 +758,8 @@ def fit_pair_stages(
     progress: Callable[[str], None] | None = None,
     deadline_monotonic: float | None = None,
     replay_pair_adjustments: bool = False,
+    frozen_prefix_artifacts: list[PairStageArtifact] | None = None,
+    frozen_prefix_rate_model: RateModel | None = None,
 ) -> tuple[RateModel, list[PairStageArtifact]]:
     """Fit the ordered pair chain, selecting each deployed table by nested CV.
 
@@ -740,10 +767,31 @@ def fit_pair_stages(
     previous teacher tables and candidate table from its training partition.
     Inner selection evaluates complete, fixed prefix configurations.  A cache
     can reuse full-training prefix artifacts; it never supplies fold artefacts.
+    ``frozen_prefix_artifacts`` keeps the evidence for a reviewed contiguous
+    prefix while later stages are fitted again. ``frozen_prefix_rate_model`` is
+    the exact current full-training scorer and supplies those deployed tables,
+    including deliberate edits. Validation still rebuilds the prefix on each
+    fold and replays its edits against fixed axes; a full-training table is
+    never used as a fold offset.
     """
     stages = model_config.pair_stages
     if not stages:
         return copy.deepcopy(main_rate_model), []
+    frozen_prefix = list(frozen_prefix_artifacts or [])
+    if frozen_prefix_rate_model is not None and frozen_prefix_artifacts is None:
+        raise ValueError("A frozen pair rate model needs frozen prefix artifacts")
+    if len(frozen_prefix) > len(stages):
+        raise ValueError("Frozen pair prefix is longer than the configured stages")
+    for index, artifact in enumerate(frozen_prefix):
+        stage = stages[index]
+        if artifact.stage_id != stage.stage_id or tuple(artifact.parents) != (
+            stage.a,
+            stage.b,
+        ):
+            raise ValueError(
+                "Frozen pair stages must be a contiguous prefix matching the "
+                "configured stage IDs and parent order"
+            )
     # Inner and outer folds retain multiple frames.  Keep only fitting and
     # scoring columns so unrelated prepared columns do not multiply in memory.
     from .run import exposure_for
@@ -1161,6 +1209,47 @@ def fit_pair_stages(
     power = model_config.tweedie_power if model_config.family == "tweedie" else 1.0
     for stage_index, stage in enumerate(stages):
         started = time.perf_counter()
+        if stage_index < len(frozen_prefix):
+            artifact = copy.deepcopy(frozen_prefix[stage_index])
+            original_grid = _pair_table_grid(artifact.table)
+            if frozen_prefix_rate_model is not None:
+                try:
+                    exact_table = frozen_prefix_rate_model.get_pair_table(
+                        stage.stage_id
+                    )
+                except KeyError as exc:
+                    raise ValueError(
+                        f"The frozen scorer has no table for {stage.stage_id!r}"
+                    ) from exc
+                if exact_table.parents != (stage.a, stage.b):
+                    raise ValueError(
+                        f"The frozen scorer table {stage.stage_id!r} does not match "
+                        "the configured parent order"
+                    )
+                artifact.table = copy.deepcopy(exact_table)
+            artifact.reused = True
+            has_stage_edit = any(
+                adjustment.stage_id == stage.stage_id
+                for adjustment in model_config.adjustments
+            )
+            table_changed = _pair_table_grid(artifact.table) != original_grid
+            already_adjusted = bool(artifact.table.provenance.get("pricing_adjustment"))
+            if has_stage_edit or table_changed or already_adjusted:
+                _mark_pricing_adjustment(artifact)
+            scorer = _append_table(scorer, artifact.table)
+            if frozen_prefix_rate_model is None:
+                _apply_stage_edits(
+                    project, model_config, stage, scorer, fold_local=False
+                )
+            artifacts.append(artifact)
+            if progress:
+                description = (
+                    "kept reviewed pricing table"
+                    if artifact.status == "pricing_adjustment"
+                    else "reused unchanged table"
+                )
+                progress(f"Pair stage {stage_index + 1}/{len(stages)}: {description}")
+            continue
         fingerprint = _fingerprint(
             project, model_config, train, scorer, stage, stages[:stage_index]
         )
@@ -1169,6 +1258,14 @@ def fit_pair_stages(
             artifact.reused = True
             scorer = _append_table(scorer, artifact.table)
             _apply_stage_edits(project, model_config, stage, scorer, fold_local=False)
+            if any(
+                adjustment.stage_id == stage.stage_id
+                for adjustment in model_config.adjustments
+            ):
+                artifact.table = copy.deepcopy(scorer.get_pair_table(stage.stage_id))
+                _mark_pricing_adjustment(artifact)
+                scorer_table = scorer.get_pair_table(stage.stage_id)
+                scorer_table.provenance = copy.deepcopy(artifact.table.provenance)
             artifacts.append(artifact)
             if progress:
                 progress(
@@ -1422,5 +1519,13 @@ def fit_pair_stages(
         full_cache[fingerprint] = copy.deepcopy(artifact)
         scorer = next_scorer
         _apply_stage_edits(project, model_config, stage, scorer, fold_local=False)
+        if any(
+            adjustment.stage_id == stage.stage_id
+            for adjustment in model_config.adjustments
+        ):
+            artifact.table = copy.deepcopy(scorer.get_pair_table(stage.stage_id))
+            _mark_pricing_adjustment(artifact)
+            scorer_table = scorer.get_pair_table(stage.stage_id)
+            scorer_table.provenance = copy.deepcopy(artifact.table.provenance)
         artifacts.append(artifact)
     return scorer, artifacts

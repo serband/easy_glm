@@ -30,6 +30,29 @@ If Astra or Sol is unavailable, use the nearest available equivalent and report 
 relevant limitation. Do not edit the README unless expressly asked. Keep any requested
 changelog concise and human-readable, and release only with explicit authorization.
 
+## Pricing actuary workflow
+
+The primary user is a pricing actuary working interactively. Use
+`examples/pricing_walkthrough.md` as the public acceptance scenario and track the
+current build in `docs/PRICING_WORKFLOW_BUILD.md`.
+
+- Start from the user's next modelling decision: fit main effects, inspect A/E,
+  investigate missing factors, add an interaction, compare, amend, or export.
+- Show one short public call for each action. Put prediction arrays, offsets,
+  configuration conversion, caches and plotting machinery inside the package.
+- Explain a public concept before its first use. Use concrete rating factors and
+  explicit edits; avoid loops over modelling choices and tutorial helper functions.
+- Preserve named fitted models. Band changes and new fits must not mutate earlier
+  models. Table edits require a preview and explicit application.
+- Searches and A/E use the complete current table scorer. Each subsequent
+  interaction offsets the main model and all earlier accepted tables.
+- Keep discovery on training data. Label in-sample, tuning and independently
+  evaluated results accurately. Do not display holdout results until requested.
+- Execute the markdown examples exactly as written. Require a separate actuarial
+  usability review as well as statistical and software checks before completion.
+- Keep reviewable examples in the normal project's `examples/` directory. Avoid
+  development-checkout installation instructions in the public walkthrough.
+
 ---
 
 ## Build, Lint, and Tests
@@ -43,13 +66,13 @@ changelog concise and human-readable, and release only with explicit authorizati
 - Command line: `easy-glm run|export|validate|workbench project.json` (module form for a
   source checkout: `PYTHONPATH=src python -m easy_glm.cli run project.json --out out/`)
 - Lint: `ruff check .`
-- Types: `mypy src/easy_glm/core src/easy_glm/workflow --ignore-missing-imports` (a CI step;
-  `core` and `workflow` are kept clean, the app and engine are not checked yet).
-  Only `core` and `workflow` are type-checked; `[tool.mypy]` in `pyproject.toml`
+- Types: `mypy src/easy_glm/core src/easy_glm/workflow src/easy_glm/pricing --ignore-missing-imports` (a CI step;
+  `core`, `workflow` and `pricing` are kept clean, the app and engine are not checked yet).
+  Only these three packages are type-checked; `[tool.mypy]` in `pyproject.toml`
   sets `follow_imports = "silent"` so errors in the modules they import
   (`engine`, `ui`) don't fail the CI step.
 - Format: `black .`
-- Run all quality steps: `black . && ruff check . && mypy src/easy_glm/core src/easy_glm/workflow --ignore-missing-imports && pytest -q`
+- Run all quality steps: `black . && ruff check . && mypy src/easy_glm/core src/easy_glm/workflow src/easy_glm/pricing --ignore-missing-imports && pytest -q`
 
 ## Releasing
 
@@ -101,6 +124,11 @@ print('OK')
 ---
 
 ## Public API (layers)
+
+For the interactive pricing workflow, use `PricingSession` to set data and bands,
+then named `PricingModel` results to fit, inspect, compare, amend and export.
+`examples/pricing_walkthrough.md` exercises that public workflow. Its implementation
+reuses the layers below; tutorial users should not need to assemble them manually.
 
 1. **Recommended:** `EasyGLM.fit()` — full pipeline.
 2. **Building blocks:** `DesignSpec.from_data` → `fit_glm` (returns `GLMFit`) →
