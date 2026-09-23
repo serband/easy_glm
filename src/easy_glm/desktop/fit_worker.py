@@ -38,6 +38,30 @@ def write_json(path: Path, value: Any) -> None:
     os.replace(temporary, path)
 
 
+def _write_optional_pickle(path: Path, value: Any) -> None:
+    """Replace a private acceleration cache without masking a fit outcome."""
+    import pickle
+
+    temporary = path.with_suffix(".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with temporary.open("wb") as handle:
+            pickle.dump(value, handle, protocol=5)
+        os.replace(temporary, path)
+    except OSError as exc:
+        try:
+            print(
+                f"Could not update optional fit cache {path}: {exc}",
+                file=sys.stderr,
+            )
+        except (OSError, ValueError):
+            pass
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def fit_result(
     project: Any,
     raw: Any,
@@ -150,17 +174,11 @@ def fit_result(
             )
         finally:
             if pair_cache_path is not None and project.models[name].pair_stages:
-                pair_cache_path.parent.mkdir(parents=True, exist_ok=True)
-                temporary = pair_cache_path.with_suffix(".tmp")
-                with temporary.open("wb") as handle:
-                    pickle.dump({"format": 3, "cache": pair_cache}, handle, protocol=5)
-                os.replace(temporary, pair_cache_path)
+                _write_optional_pickle(
+                    pair_cache_path, {"format": 3, "cache": pair_cache}
+                )
     if main_cache_path is not None:
-        main_cache_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = main_cache_path.with_suffix(".tmp")
-        with temporary.open("wb") as handle:
-            pickle.dump({"format": 2, "cache": main_cache}, handle, protocol=5)
-        os.replace(temporary, main_cache_path)
+        _write_optional_pickle(main_cache_path, {"format": 2, "cache": main_cache})
     if artifact is not None:
         with (artifact / "fit.pkl").open("wb") as handle:
             pickle.dump(run, handle)
@@ -363,17 +381,14 @@ def result_for(
 
 
 def main() -> None:
+    from easy_glm.desktop.fit_progress import reserve_progress_stdout
+
+    progress = reserve_progress_stdout()
     import polars as pl
 
     from easy_glm.workflow.project import Project
 
     folder, name = Path(sys.argv[1]), sys.argv[2]
-
-    def progress(message: str | dict[str, Any]) -> None:
-        write_json(
-            folder / "progress.json",
-            message if isinstance(message, dict) else {"message": message},
-        )
 
     try:
         result = fit_result(
@@ -389,7 +404,10 @@ def main() -> None:
         Exception
     ) as exc:  # process boundary; actionable message is the public result
         result = {"error": str(exc)}
-    write_json(folder / "result.json", result)
+    try:
+        write_json(folder / "result.json", result)
+    finally:
+        progress.close()
 
 
 if __name__ == "__main__":
