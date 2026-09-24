@@ -1,81 +1,104 @@
-# Future releases
+# Roadmap
 
-This is the running list of improvements identified while using EasyGLM on
-real modelling work. Items belong here until they are scheduled for a release.
+This separates completed work from proposed work. A place on this list does not
+mean a feature has been built or assigned a release version.
 
-## Model examples
+## Built, awaiting release
 
-- Add a binomial example built around a genuine yes/no outcome.
-- **Implemented on the feature branch:** a Tweedie incurred-claims example and
-  workbench walkthrough using the Swedish motorcycle portfolio, including
-  zero-claim policies and exposure filtering.
+- CatBoost interactions for Gaussian models with a log link. Other Gaussian
+  links remain unsupported for these interactions.
+- Searchable, alphabetically sorted variable lists for Explore, fitted A/E
+  plots and rate-table plots.
 
-## Tweedie power selection
+## Next: stack GLMs, CatBoost models and rating files
 
-- Keep manual selection as the current default.
-- Add an optional training-only search across candidate powers between 1 and
-  2, using profile likelihood to select the power.
-- Show the powers tested, the comparison, and the selected power so the choice
-  can be reviewed.
-- Keep the holdout data completely separate for final model validation.
+**Planning only.** See [the proposed workflow and build plan](plans/STACKED_MODELS.md).
 
-## Data setup
+- Start with either a GLM or CatBoost. Fit another GLM or CatBoost against its
+  predictions, keeping the earlier model fixed.
+- Combine main effects, separate interaction tables, and vehicle, occupation
+  or postcode components in the order chosen by the modeller.
+- Fit every new component against the complete preceding model, using the
+  tables and files actually used for scoring, including applied amendments.
+- Score complete vehicle, occupation and postcode catalogues into lookup
+  files. Use those same files for later fitting, diagnostics and deployment.
+- Preserve named models. Make changing an earlier component explicit, with a
+  choice to keep or refit later components.
+- Provide short Python calls and a workbench view showing the fitting order.
+  The delivery order between these interfaces is still to be agreed.
+- Test both GLM → CatBoost and CatBoost → GLM, full-stack validation, lookup
+  coverage, save/reload and export parity.
 
-- When a dataframe is launched from Python, detect an existing train/test
-  column and make its values and interpretation clear instead of initially
-  presenting the data as broken.
-- **Implemented on `codex/bulk-variable-json`:** add a guarded JSON editor for
-  datasets with many columns. Four compact sections cover renames,
-  single-column assignments, grouped roles and grouped type overrides. It
-  previews every change and validates the whole mapping before applying it.
-- Ensure the exported Python workflow contains the final column roles,
-  renames, recodes, derived columns, and split definition.
+This replaces the earlier staged-recipe and specialist-CatBoost proposals.
+Jointly fitting groups of interactions is no longer the proposed next step:
+existing pair interactions remain separately fitted and inspectable.
+No v0.5 commitment is implied.
 
-## Statistical improvements — implementation status
+## Later modelling work
 
-These items change model or variable selection rather than the fitted tables
-at a given alpha.
+- **Hierarchical rating factors:** let sparse vehicle variants borrow strength
+  from model/make, occupations from occupation groups, and postcodes from larger
+  areas. Show support and fallback rules; export leaf-level lookup files
+  alongside component detail.
+- **Postcode smoothing:** assess geographic smoothing and local residual
+  effects, with validation suited to new areas and future periods.
+- **Tweedie power selection:** investigate an optional training-only
+  profile-likelihood search. Keep manual selection and show the powers and
+  comparison before accepting a choice.
+- **Model selection:** assess the one-standard-error rule for the GLM penalty
+  and a raw linear trend alongside binned step effects. Neither is an accepted
+  statistical change yet.
+- **Residual searches:** review family-specific variance and dispersion in
+  Gamma/Tweedie and Poisson searches. Test ranking and calibration on known
+  examples before changing the method.
 
-- **Implemented on the feature branch:** run the *Missing factors* and *Missing interactions* searches (and the
-  pair heatmap used to find candidates) on the training rows regardless of
-  the Diagnostics page's *Rows* selector, say so on the page, and add a test
-  that a factor planted on holdout rows only is not found. (Blocking: the
-  page currently defaults to holdout.)
-- **Implemented on the feature branch:** cross-validate on shuffled, seeded folds (`KFold(cv, shuffle=True,
-  random_state=<split seed>)`) instead of glum's contiguous blocks; test that
-  the CV alpha does not depend on row order.
-- **Implemented on the feature branch:** score the missing-factor search with the same Pearson-excess z-score the
-  pair search uses (bands with `expected >= min_expected × φ`, rare levels
-  pooled), keeping the zero-claim bands; keep sd of log A/E as a secondary
-  column.
-- **Implemented on the feature branch:** compute "deviance explained" against an intercept-plus-offset null model
-  (`null_model_predict`, fitted on train) on both subsets.
-- **Implemented on the feature branch:** stage 2 cross-validation assembles an
-  out-of-fold stage-1 offset (k extra main-effect fits) using the same seeded,
-  shuffled folds as the two CV stages. After selecting the penalty, the final
-  interaction cells are refitted against the full-training frozen main effects.
-- Options to consider: an AGLM-style raw linear column next to a step
-  factor's O-dummies (trend shrinkage); a "holdout locked" mode that shows
-  train and CV numbers during design and reveals the holdout on request; a
-  split-by-policy-key mode; the one-standard-error rule for the CV alpha;
-  the family's variance function (not `φ E`) in the pair search for
-  gamma/Tweedie, and an estimated φ for Poisson.
-- **Implemented on the feature branch:** a step term's modal base cannot be the
-  null row. Remaining guards: a gamma or inverse-Gaussian holdout row with zero
-  loss should be excluded from the holdout deviance and counted; document that
-  Gaussian uses a log link.
+## Further worked examples
 
-## Leakage review candidates
+The [interactive frequency walkthrough](../examples/pricing_walkthrough.md)
+ships in v0.472. Extend that style with:
 
-- Make default leakage candidates follow the same role meanings as Variables.
-  Currently, a missing role entry is treated as a predictor by the leakage
-  report, while Variables treats it as unassigned. Missing and explicitly
-  unassigned roles must both stay out of the default scan, as must ignored
-  columns.
-- Keep predictors and IDs in the intended leakage review, while preserving
-  the existing exclusions for reserved target, weight, offset and split
-  columns. Offer an explicit opt-in scan of unassigned columns if useful.
-- Add candidate-selection tests for absent roles, explicit unassigned, ignore,
-  predictor and ID roles, including reserved-column exclusions and any opt-in
-  behaviour. This is a roadmap item; the current release does not change
-  leakage selection.
+- Gamma severity, an expanded Swedish motorcycle Tweedie workflow,
+  existing-premium offsets, and a genuine yes/no binomial example.
+- Wide datasets, predictor screening, step versus linear effects, monotone
+  constraints, and comparing candidate models.
+- The complete vehicle/occupation workflow once the proposed stack is built.
+
+Use short public calls, explicit modelling decisions and reviewable outputs.
+Run each example from a fresh standard installation and check that exported
+scoring reproduces the accepted model on new data.
+
+## Consistency checks to scope
+
+These are audits of remaining gaps, rather than claims that the whole feature
+is missing:
+
+- Existing split-column detection when launching the workbench from a
+  dataframe; keep training and holdout labels clear. Python sessions already
+  support an existing split and stable splits by ID.
+- Holdout visibility and grouped/time-based validation across interfaces.
+  Python's interactive workflow already keeps holdout evaluation explicit.
+- Exported Python setup: check final roles, renames, recodes, derived columns
+  and split settings together, rather than adding another export format.
+- Leakage-review candidates: make absent, unassigned and ignored roles
+  consistent with Variables; preserve reserved-column exclusions and make any
+  inclusion of unassigned columns explicit.
+- Invalid evaluation targets for Gamma and inverse Gaussian: report affected
+  rows and agreed treatment without silently dropping them from a headline
+  metric. Keep family/link explanations consistent across examples.
+
+## Recently completed
+
+See [the changelog](../CHANGELOG.md) for released details.
+
+- **v0.472:** interactive pricing workflow; family-specific metrics; sampled
+  importance; categorical/mixed associations; Gaussian screening fix;
+  unassigned interaction variables; per-interaction tuning limits; Windows
+  progress-update fix; CatBoost and Optuna in the standard installation.
+- **v0.470–0.471:** one-way feature selection, separately fitted CatBoost
+  interaction tables, automatic tuning, full-table diagnostics and exports,
+  and removal of feature-selection temporary files.
+- **v0.464:** shared numeric bin settings, custom cuts and Variables JSON.
+
+Older entries marked only “implemented on the feature branch” have been removed
+from the future-work list. Current behaviour and the changelog take precedence
+over those old status notes.
