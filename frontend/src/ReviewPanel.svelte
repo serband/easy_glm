@@ -10,6 +10,7 @@
     import DiagnosticPlot from './DiagnosticPlot.svelte';
     import PathChart from './PathChart.svelte';
     import DiagnosticTable from './DiagnosticTable.svelte';
+    import SearchableVariableSelect from './SearchableVariableSelect.svelte';
     export let fitIdentity = '',
         comparisonFitIdentity = '',
         table = null,
@@ -987,18 +988,18 @@
                 </div>{/if}
 
             <div class="results-toolbar" hidden={diagnosticTab !== 'variable'}>
-                <label
-                    >Variable<select
-                        aria-label="Diagnostic variable"
-                        bind:value={diagnosticVariable}
-                        onchange={() => run('variable', { variable: diagnosticVariable })}
-                        >{#each info.variables as v}<option value={v}
-                                >{v}{info.variable_info?.find((x) => x.name === v)?.kind
-                                    ? ''
-                                    : ' (not in model)'}</option
-                            >{/each}</select
-                    ></label
-                >
+                <SearchableVariableSelect
+                    options={info.variables.map((v) => ({
+                        value: v,
+                        label: v + (info.variable_info?.find((x) => x.name === v)?.kind ? '' : ' (not in model)'),
+                    }))}
+                    bind:value={diagnosticVariable}
+                    label="Variable"
+                    selectLabel="Diagnostic variable"
+                    searchLabel="Search diagnostic variables"
+                    contextKey={key}
+                    onChange={(chosen) => run('variable', { variable: chosen })}
+                />
             </div>
             <div>
                 <div class="pair-controls" hidden={diagnosticTab !== 'pair'}>

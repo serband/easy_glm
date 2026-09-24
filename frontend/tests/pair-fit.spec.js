@@ -156,7 +156,7 @@ test('fitted stages expose pair edits, suffix status, refit impact and narrow la
 
     await page.getByRole('button', { name: 'Rate tables', exact: true }).click();
     const firstStage = saves[0].fields.pair_stages[0].stage_id;
-    await page.getByLabel('Rate table variable').selectOption(firstStage);
+    await page.getByLabel('Rate table variable', { exact: true }).selectOption(firstStage);
     await expect(page.getByRole('region', { name: 'Relativity chart' })).toContainText('A × B');
     await page.getByLabel('Pair chart values').selectOption('fitting_weight');
     await page.getByLabel('Pair chart values').selectOption('relativity');

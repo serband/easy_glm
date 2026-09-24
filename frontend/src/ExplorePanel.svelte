@@ -3,6 +3,7 @@
     import { formatNumber as num } from './format.js';
     import DiagnosticTable from './DiagnosticTable.svelte';
     import ExploreChart from './ExploreChart.svelte';
+    import SearchableVariableSelect from './SearchableVariableSelect.svelte';
     export let api,
         state,
         active = false,
@@ -134,21 +135,18 @@
     {:else}
         <section class="model-card one-way-panel" aria-label="One-way effects">
             <div class="explore-controls">
-                <label class="variable-choice"
-                    >Variable
-                    <select
-                        aria-label="Plot variable"
+                <div class="variable-choice">
+                    <SearchableVariableSelect
+                        options={(metadata?.columns || []).map((item) => ({ value: item.name, label: item.name }))}
                         bind:value={column}
+                        label="Variable"
+                        selectLabel="Plot variable"
+                        searchLabel="Search plot variables"
                         disabled={!metadata?.columns.length}
-                    >
-                        {#if !metadata}<option value={column}
-                                >{column || 'Loading variables…'}</option
-                            >{/if}
-                        {#each metadata?.columns || [] as item}<option value={item.name}
-                                >{item.name}</option
-                            >{/each}
-                    </select>
-                </label>
+                        contextKey={`${context}:${model}`}
+                        emptyLabel={metadata ? 'No variables available' : 'Loading variables…'}
+                    />
+                </div>
                 <label class="band-choice"
                     >Bands
                     <input

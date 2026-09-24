@@ -6,6 +6,7 @@
     import InteractionEditor from './InteractionEditor.svelte';
     import PairStageEditor from './PairStageEditor.svelte';
     import DiagnosticTable from './DiagnosticTable.svelte';
+    import SearchableVariableSelect from './SearchableVariableSelect.svelte';
     import { comparisonIssue, comparisonMetrics, comparisonSettings } from './comparison.js';
     import { rateChartKind } from './rateChartData.js';
     const familyLabels = {
@@ -1408,20 +1409,24 @@
                 {#each result.warnings as warning}<div class="message">{warning}</div>{/each}
             {:else}
                 <div class="results-toolbar">
-                    <label
-                        >Variable<select
-                            aria-label="Rate table variable"
-                            disabled={Object.keys(rowEdits).length > 0}
-                            bind:value={tableName}
-                            onchange={() => {
-                                tableOffset = 0;
-                                loadTable();
-                            }}
-                            >{#each result.table_index as item}<option value={item.name}
-                                    >{item.label || item.name} · {item.rows} rows</option
-                                >{/each}</select
-                        ></label
-                    >
+                    <SearchableVariableSelect
+                        options={result.table_index.map((item) => ({
+                            value: item.name,
+                            label: `${item.label || item.name} · ${item.rows} rows`,
+                            sortLabel: item.label || item.name,
+                        }))}
+                        bind:value={tableName}
+                        label="Variable"
+                        selectLabel="Rate table variable"
+                        searchLabel="Search rate table variables"
+                        disabled={Object.keys(rowEdits).length > 0}
+                        contextKey={`${selected}:${resultId}:${state?.revision}`}
+                        onChange={(chosen) => {
+                            tableName = chosen;
+                            tableOffset = 0;
+                            loadTable();
+                        }}
+                    />
                 </div>
                 {#if table?.kind === 'pair'}
                     <ReviewPanel

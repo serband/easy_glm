@@ -138,6 +138,7 @@ jobs:
           npx playwright test --config playwright.screening.config.js
           npx playwright test --config playwright.explore.config.js
           npx playwright test --config playwright.models.config.js
+          npx playwright test --config playwright.reviews.config.js
           npx playwright test --config playwright.interactions.config.js
           npx playwright test --config playwright.pair-editor.config.js
           npx playwright test --config playwright.pair-fit.config.js
