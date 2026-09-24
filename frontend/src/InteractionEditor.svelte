@@ -2,6 +2,7 @@
     import { formatNumber as num } from './format.js';
     export let interactions = [];
     export let predictors = [];
+    export let allowAdd = true;
     export let valid = true;
     export let onchange = () => {};
     let first = '',
@@ -14,6 +15,7 @@
             (pair.a === first && pair.b === second) || (pair.a === second && pair.b === first),
     );
     $: canAdd =
+        allowAdd &&
         predictors.includes(first) &&
         predictors.includes(second) &&
         first !== second &&

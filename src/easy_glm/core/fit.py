@@ -843,6 +843,10 @@ def fit_glm(
 
     fam, family_name, default_link = resolve_family(family, tweedie_power)
     link = glum_kwargs.pop("link", default_link)
+    if spec.interactions and family_name == "normal" and link not in (None, "log"):
+        raise ValueError("Gaussian interactions require the log link")
+    if family_name == "normal" and link is None:
+        link = default_link
 
     y = data[target].cast(pl.Float64).to_numpy()
     sw = None
@@ -1227,6 +1231,11 @@ def fit_two_stage(
             "fit_two_stage needs a spec with at least one interaction; use "
             "fit_glm for a mains-only design"
         )
+    _, family_name, _ = resolve_family(
+        kwargs.get("family", "poisson"), kwargs.get("tweedie_power")
+    )
+    if family_name == "normal" and kwargs.get("link") not in (None, "log"):
+        raise ValueError("Gaussian interactions require the log link")
     if spec.interactions_spec().n_features == 0:
         # no cell had enough exposure to be rated on its own, so there is
         # nothing for a second stage to fit and the design *is* the main-effect

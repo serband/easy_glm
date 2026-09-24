@@ -1053,12 +1053,18 @@ class Project:
                 problems.append(
                     f"{name}: pair stages cannot be mixed with legacy interactions"
                 )
+            if (
+                (cfg.pair_stages or cfg.interactions)
+                and cfg.family == "gaussian"
+                and cfg.link not in (None, "log")
+            ):
+                problems.append(f"{name}: Gaussian interactions require the log link")
             if cfg.pair_stages and (
-                cfg.family not in ("poisson", "tweedie")
+                cfg.family not in ("poisson", "tweedie", "gaussian")
                 or cfg.link not in (None, "log")
             ):
                 problems.append(
-                    f"{name}: pair stages support Poisson/log and Tweedie/log only"
+                    f"{name}: pair stages support Gaussian/log, Poisson/log and Tweedie/log only"
                 )
             stage_ids: set[str] = set()
             for stage in cfg.pair_stages:

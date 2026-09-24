@@ -854,6 +854,16 @@ def _design_matches(p: Project, model: str, run: ModelRun) -> bool:
     return list(spec.feature_names) == list(run.spec.feature_names)
 
 
+def _forbidden_gaussian_interactions(p: Project, model: str) -> bool:
+    """Reject an old cached fit that predates the Gaussian interaction gate."""
+    cfg = p.models[model]
+    return (
+        cfg.family in ("gaussian", "normal")
+        and cfg.link not in (None, "log")
+        and bool(cfg.interactions or cfg.pair_stages)
+    )
+
+
 def load_persisted_run(model: str) -> ModelRun | None:
     """Load the persisted run for ``model`` when its key matches the current
     spec, data file, library versions and pickle format; otherwise None.
@@ -870,6 +880,8 @@ def load_persisted_run(model: str) -> ModelRun | None:
         return None
     p = project()
     if model not in p.models:
+        return None
+    if _forbidden_gaussian_interactions(p, model):
         return None
     target = run_file(folder, model, run_key(p, model))
     if not target.exists():
@@ -925,6 +937,8 @@ def get_run(model: str) -> ModelRun | None:
     model references a missing column)."""
     p = project()
     if model not in p.models:
+        return None
+    if _forbidden_gaussian_interactions(p, model):
         return None
     prepared = st.session_state.get("prepared")
     if prepared is not None and p.missing_columns(prepared[1].columns, model):

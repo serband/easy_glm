@@ -15,6 +15,11 @@ example is [Building a pricing model](../examples/pricing_walkthrough.md).
 - Main effects stay fixed when an interaction is added. Legacy GLM interactions
   fit cell adjustments against the main-effects offset. Each CatBoost interaction
   uses the GLM and every preceding deployed interaction table as its offset.
+- Gaussian interactions require a log link. The Gaussian family default is log;
+  explicit non-log links cannot be used with interactions. Observed values may
+  be negative or zero, but fitted means and table multipliers remain positive.
+  Gaussian interaction selection uses weighted squared error on the original
+  response scale, including when comparing a proposed table with no interaction.
 - Sparse or unseen interaction cells use the neutral adjustment. Support and
   minimum-weight rules determine which cells can receive an estimated adjustment.
 - Frequency A/E uses claim counts and exposure consistently. A rate-change model

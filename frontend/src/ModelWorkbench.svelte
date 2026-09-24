@@ -165,6 +165,9 @@
     }
     async function includePairDraft({ a, b }) {
         if (pairMethod !== 'sequential') return false;
+        if (!supportsPair(cfg)) {
+            throw new Error(pairPrerequisite(cfg));
+        }
         const eligible = wb.pair_candidates
             ? [...wb.pair_candidates.predictors, ...wb.pair_candidates.unassigned]
             : wb.predictors;
@@ -290,13 +293,25 @@
     function supportsPair(model) {
         return (
             (model?.family === 'poisson' ||
+                model?.family === 'gaussian' ||
                 (model?.family === 'tweedie' &&
                     model.tweedie_power > 1 &&
                     model.tweedie_power < 2)) &&
             (model?.link == null || model.link === 'log')
         );
     }
+    function gaussianInteractionsAllowed(model) {
+        return model?.family !== 'gaussian' || model?.link == null || model.link === 'log';
+    }
+    function pairPrerequisite(model) {
+        return model?.family === 'gaussian'
+            ? 'Gaussian interactions require a log link.'
+            : 'Sequential pairs require Gaussian, Poisson or Tweedie with a log link, and Tweedie power strictly between 1 and 2.';
+    }
     $: pairCapability = supportsPair(cfg);
+    $: interactionsAllowed = gaussianInteractionsAllowed(cfg);
+    $: invalidInteractionLink =
+        !interactionsAllowed && Boolean(cfg?.interactions?.length || cfg?.pair_stages?.length);
     $: savedStages = wb?.models[selected]?.pair_stages || [];
     $: mainChanged =
         selected === '__new__' ||
@@ -518,7 +533,8 @@
         if (
             !interactionsValid ||
             !pairStagesValid ||
-            ((cfg.pair_stages || []).length > 0 && !pairCapability)
+            ((cfg.pair_stages || []).length > 0 && !pairCapability) ||
+            invalidInteractionLink
         ) {
             error = 'Check the pair settings before saving.';
             return;
@@ -585,6 +601,10 @@
         }
     }
     async function fit() {
+        if (invalidInteractionLink || (cfg.pair_stages?.length && !pairCapability)) {
+            error = pairPrerequisite(cfg);
+            return;
+        }
         saving = true;
         error = '';
         notice = '';
@@ -814,7 +834,9 @@
                                 bind:value={() => cfg.link, (value) => setModelField('link', value)}
                                 ><option value={null}>Family default</option><option value="log"
                                     >Log</option
-                                ><option value="logit">Logit</option></select
+                                ><option value="logit">Logit</option>{#if cfg.link &&
+                                    !['log', 'logit'].includes(cfg.link)}<option
+                                        value={cfg.link}>{cfg.link}</option>{/if}</select
                             ></label
                         >
                         {#each ['target', 'weight', 'offset'] as field}<label
@@ -967,8 +989,7 @@
                         {/if}
                         {#if pairMethod === 'sequential'}
                             {#if !pairCapability}<p class="prerequisites" role="alert">
-                                    Sequential pairs currently require Poisson or Tweedie with a log
-                                    link and Tweedie power strictly between 1 and 2.
+                                    {pairPrerequisite(cfg)}
                                 </p>{/if}
                             <PairStageEditor
                                 stages={cfg.pair_stages || []}
@@ -981,6 +1002,7 @@
                                 {mainChanged}
                                 newModel={selected === '__new__'}
                                 {savedStages}
+                                allowAdd={pairCapability}
                                 bind:valid={pairStagesValid}
                             />
                         {:else}
@@ -988,8 +1010,12 @@
                                 interactions={cfg.interactions}
                                 onchange={(pairs) => (cfg = { ...cfg, interactions: pairs })}
                                 predictors={cfg.predictors}
+                                allowAdd={interactionsAllowed}
                                 bind:valid={interactionsValid}
                             />
+                            {#if !interactionsAllowed}<p class="prerequisites" role="alert">
+                                    Gaussian interactions require a log link.
+                                </p>{/if}
                             {#if selected !== '__new__' && pairCapability}
                                 <button
                                     type="button"
@@ -1111,7 +1137,8 @@
                             onclick={saveModel}
                             disabled={!interactionsValid ||
                                 !pairStagesValid ||
-                                (cfg.pair_stages?.length && !pairCapability)}
+                                (cfg.pair_stages?.length && !pairCapability) ||
+                                invalidInteractionLink}
                             >{selected === '__new__'
                                 ? 'Create model'
                                 : 'Save model settings'}</button
@@ -1123,7 +1150,9 @@
                             disabled={selected === '__new__' ||
                                 dirty ||
                                 active ||
-                                wb.problems.length > 0}
+                                wb.problems.length > 0 ||
+                                invalidInteractionLink ||
+                                (cfg.pair_stages?.length && !pairCapability)}
                             >{cfg.pair_stages?.length
                                 ? fitAllStages
                                     ? 'Fit all stages'

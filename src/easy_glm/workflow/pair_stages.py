@@ -56,7 +56,7 @@ MAX_PREFIX_CONFIGS = 8
 MAX_TEACHER_FITS = 5_000
 MAX_ESTIMATED_PEAK_BYTES = 3 * 1024**3
 CV_TIE_TOLERANCE = 1e-8
-ALGORITHM_VERSION = "pair-stages-2-optuna"
+ALGORITHM_VERSION = "pair-stages-3-gaussian-log"
 SEARCH_SPACE_VERSION = "shallow-v1"
 MAIN_TPE_STARTUP_TRIALS = 3
 PREFIX_TPE_STARTUP_TRIALS = 2
@@ -188,8 +188,14 @@ def _response(cfg: ModelConfig, frame: pl.DataFrame) -> tuple[np.ndarray, np.nda
         raise ValueError("Model fitting weights must be finite and strictly positive")
     if cfg.divide_target_by_weight:
         target = target / weight
-    if not np.all(np.isfinite(target) & (target >= 0)):
-        raise ValueError("Poisson/Tweedie pair targets must be finite and nonnegative")
+    if not np.all(np.isfinite(target)) or (
+        cfg.family != "gaussian" and np.any(target < 0)
+    ):
+        raise ValueError(
+            "Gaussian pair targets must be finite"
+            if cfg.family == "gaussian"
+            else "Poisson/Tweedie pair targets must be finite and nonnegative"
+        )
     return target.astype(np.float64), weight.astype(np.float64)
 
 
@@ -214,6 +220,53 @@ def _deviance_sum(
     if not math.isfinite(result):
         raise ValueError("Validation loss is not finite")
     return result
+
+
+def _pair_loss_sum(
+    observed: np.ndarray,
+    prediction: np.ndarray,
+    weight: np.ndarray,
+    family: str,
+    power: float,
+) -> float:
+    """Validation loss in original response units for every pair decision."""
+    if family != "gaussian":
+        return _deviance_sum(observed, prediction, weight, power)
+    if not np.all(np.isfinite(prediction) & (prediction > 0)):
+        raise ValueError("Deployed pair predictions must be finite and positive")
+    with np.errstate(over="ignore", invalid="ignore"):
+        loss = float(
+            np.sum(weight * np.square(observed - prediction), dtype=np.float64)
+        )
+    if not math.isfinite(loss):
+        raise ValueError("Validation loss is not finite")
+    return loss
+
+
+def _tie_allowance(best: float, family: str) -> float:
+    """A Gaussian SSE tie must not depend on the unit of the response."""
+    return CV_TIE_TOLERANCE * (abs(best) if family == "gaussian" else max(1, abs(best)))
+
+
+def _gaussian_training_scale(target: np.ndarray, baseline: np.ndarray) -> float:
+    """Fold-training response magnitude that defines dimensionless teacher L2.
+
+    The median resists a single extreme label. A common change of response
+    units changes this scale by the same factor.
+    """
+    magnitude = np.maximum(np.abs(target), baseline)
+    if not np.all(np.isfinite(magnitude) & (magnitude > 0)):
+        raise ValueError("Gaussian training magnitudes must be finite and positive")
+    ordered = np.sort(magnitude)
+    lower = float(ordered[(len(ordered) - 1) // 2])
+    if len(ordered) % 2:
+        scale = lower
+    else:
+        upper = float(ordered[len(ordered) // 2])
+        scale = lower / 2 + upper / 2
+    if not math.isfinite(scale) or scale <= 0:
+        raise ValueError("Gaussian training scale is not representable")
+    return scale
 
 
 def _axis(
@@ -370,9 +423,13 @@ def _fit_table(
         raw, categorical = _raw_features(train, parents, axes)
         positive_target = y[y > 0]
         target_scale = (
-            max(1.0, float(np.max(positive_target)) / 1000.0)
-            if cfg.family == "tweedie" and positive_target.size
-            else 1.0
+            _gaussian_training_scale(y, baseline)
+            if cfg.family == "gaussian"
+            else (
+                max(1.0, float(np.max(positive_target)) / 1000.0)
+                if cfg.family == "tweedie" and positive_target.size
+                else 1.0
+            )
         )
         if tuning_budget is not None:
             tuning_budget.check()
@@ -855,10 +912,12 @@ def fit_pair_stages(
         *(parent for stage in stages for parent in (stage.a, stage.b)),
     }
     train = train.select([name for name in train.columns if name in required])
-    if model_config.family not in ("poisson", "tweedie") or (
+    if model_config.family not in ("poisson", "tweedie", "gaussian") or (
         model_config.link and model_config.link != "log"
     ):
-        raise ValueError("Pair stages support only Poisson/log or Tweedie/log")
+        raise ValueError(
+            "Pair stages support only Gaussian/log, Poisson/log or Tweedie/log"
+        )
     configured_seconds = pair_time_limit_seconds(model_config.pair_time_limit_minutes)
     legacy_limit_seconds = (
         max(0.0, deadline_monotonic - time.monotonic())
@@ -1151,8 +1210,12 @@ def fit_pair_stages(
                 contexts
             ):
                 scorer = fixed_prefix(fit_frame, params, base, tuning_budget)
-                loss = _deviance_sum(
-                    y, scorer.predict(val_frame, exposure_col=None), weight, power
+                loss = _pair_loss_sum(
+                    y,
+                    scorer.predict(val_frame, exposure_col=None),
+                    weight,
+                    model_config.family,
+                    power,
                 )
                 folds.append(
                     FoldLoss(inner_fold, loss, float(weight.sum()), loss, None)
@@ -1214,7 +1277,8 @@ def fit_pair_stages(
             close = [
                 record
                 for record in trials
-                if record.value <= best_loss + CV_TIE_TOLERANCE * max(1, abs(best_loss))
+                if record.value
+                <= best_loss + _tie_allowance(best_loss, model_config.family)
             ]
             selected = min(
                 close,
@@ -1249,7 +1313,7 @@ def fit_pair_stages(
                 item
                 for item in fixed_records
                 if item[0].value
-                <= best_loss + CV_TIE_TOLERANCE * max(1, abs(best_loss))
+                <= best_loss + _tie_allowance(best_loss, model_config.family)
             ]
             selected, choices = min(
                 close_fixed,
@@ -1390,7 +1454,9 @@ def fit_pair_stages(
             fold_prefix = fixed_prefix(fit_frame, params, fold_base, tuning_budget)
             y_val, w_val = _response(model_config, val_frame)
             prefix_pred = fold_prefix.predict(val_frame, exposure_col=None)
-            prefix_sum = _deviance_sum(y_val, prefix_pred, w_val, power)
+            prefix_sum = _pair_loss_sum(
+                y_val, prefix_pred, w_val, model_config.family, power
+            )
             axes = (
                 _axis(project, fit_frame, stage.a, model_config.weight),
                 _axis(project, fit_frame, stage.b, model_config.weight),
@@ -1449,14 +1515,18 @@ def fit_pair_stages(
                         val_frame, (stage_spec.a, stage_spec.b), axes
                     )
                     teacher_mean = teacher.predict_mean(raw_val, prefix_pred)
-                    teacher_sum = _deviance_sum(y_val, teacher_mean, w_val, power)
-                    approximation_sum = _deviance_sum(
-                        teacher_mean, table_pred, w_val, power
+                    teacher_sum = _pair_loss_sum(
+                        y_val, teacher_mean, w_val, model_config.family, power
+                    )
+                    approximation_sum = _pair_loss_sum(
+                        teacher_mean, table_pred, w_val, model_config.family, power
                     )
                 records.append(
                     FoldLoss(
                         fold_index,
-                        _deviance_sum(y_val, table_pred, w_val, power),
+                        _pair_loss_sum(
+                            y_val, table_pred, w_val, model_config.family, power
+                        ),
                         float(w_val.sum()),
                         prefix_sum,
                         teacher_sum,
@@ -1520,7 +1590,7 @@ def fit_pair_stages(
         close = [
             item
             for item in candidates_cv
-            if item.table_loss <= best + CV_TIE_TOLERANCE * max(1, abs(best))
+            if item.table_loss <= best + _tie_allowance(best, model_config.family)
         ]
         selected = min(
             close,
@@ -1561,11 +1631,15 @@ def fit_pair_stages(
             teacher_mean = teacher.predict_mean(
                 raw_train, scorer.predict(train, exposure_col=None)
             )
-            teacher_train_loss = _deviance_sum(
-                y_train, teacher_mean, w_train, power
+            teacher_train_loss = _pair_loss_sum(
+                y_train, teacher_mean, w_train, model_config.family, power
             ) / float(w_train.sum())
-        table_train_loss = _deviance_sum(
-            y_train, next_scorer.predict(train, exposure_col=None), w_train, power
+        table_train_loss = _pair_loss_sum(
+            y_train,
+            next_scorer.predict(train, exposure_col=None),
+            w_train,
+            model_config.family,
+            power,
         ) / float(w_train.sum())
         artifact = PairStageArtifact(
             stage_id=stage.stage_id,
@@ -1586,6 +1660,11 @@ def fit_pair_stages(
             training_teacher_loss=teacher_train_loss,
             training_table_loss=table_train_loss,
             target_scale=teacher.target_scale if teacher is not None else 1.0,
+            scaling_policy=(
+                "gaussian_fold_train_median_max_abs_target_baseline"
+                if model_config.family == "gaussian"
+                else "tweedie_fold_train_max_over_1000_else_one"
+            ),
             fit_seconds=time.perf_counter() - started,
             status="no_improvement" if selected.candidate is None else "up_to_date",
             baseline_stage_ids=tuple(

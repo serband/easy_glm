@@ -110,6 +110,29 @@ st.session_state["out"] = out
 """
 
 
+def test_old_gaussian_nonlog_interaction_run_is_not_restored(workspace):
+    body = """
+from easy_glm.workflow.project import Interaction
+run = S.fit_model("freq")
+old_file = S.persist_run("freq", run)
+out["ordinary_run"] = S.get_run("freq") is run
+cfg = p.models["freq"]
+cfg.family = "gaussian"
+cfg.link = "identity"
+cfg.interactions = [Interaction("DrivAge", "Region")]
+st.session_state.runs["freq"] = (S.model_hash(p, "freq"), run)
+old_shape_file = S.run_file(S.runs_dir(), "freq", S.run_key(p, "freq"))
+old_shape_file.write_bytes(old_file.read_bytes())
+out["cached_rejected"] = S.get_run("freq") is None
+out["disk_rejected"] = S.load_persisted_run("freq") is None
+out["old_file_preserved"] = old_shape_file.exists()
+cfg.interactions = []
+out["main_only_allowed"] = not S._forbidden_gaussian_interactions(p, "freq")
+"""
+    out = _run(_script(workspace["project"], body)).session_state["out"]
+    assert all(out.values())
+
+
 # --------------------------------------------------------------------------
 # hashes (pure)
 # --------------------------------------------------------------------------
