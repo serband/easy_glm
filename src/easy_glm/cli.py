@@ -40,7 +40,9 @@ from easy_glm.workflow import (
     run_model,
     to_report_html,
     to_script,
+    train_holdout,
 )
+from easy_glm.workflow.export import write_stack_bundle
 from easy_glm.workflow.project import safe_filename
 
 
@@ -154,7 +156,11 @@ def fit(project: Project, model: str, df: pl.DataFrame) -> ModelRun:
     if problems:
         raise CliError(f"model {model!r} cannot be fitted", problems)
     try:
-        return run_model(project, df, model)
+        run = run_model(project, df, model)
+        if run.stack is not None:
+            _, holdout = train_holdout(df, project.data.split)
+            run.holdout_rows = holdout.height
+        return run
     except Exception as exc:  # noqa: BLE001
         raise CliError(f"fitting {model!r} failed: {exc}") from exc
 
@@ -169,15 +175,23 @@ def prefix(project: Project, model: str, out: Path) -> Path:
 # --------------------------------------------------------------------------
 # writing artefacts
 # --------------------------------------------------------------------------
-def write_easyglm(run: ModelRun, stem: Path) -> Path:
+def write_easyglm(run: ModelRun, stem: Path, project: Project | None = None) -> Path:
     # with_name, never with_suffix: a project called "motor v0.4" has a dot in
     # its stem and with_suffix would eat the "4"
     path = stem.with_name(f"{stem.name}.easyglm")
+    if run.stack is not None:
+        if project is None:
+            raise CliError("saving an ordered stack needs its project recipe")
+        return write_stack_bundle(project, run, path)
     run.rate_model.to_json(path)
     return path
 
 
 def write_excel(run: ModelRun, stem: Path) -> Path:
+    if run.stack is not None:
+        from easy_glm.pricing.excel import export_stack_excel
+
+        return export_stack_excel(run, stem.with_name(f"{stem.name}_rate_tables.xlsx"))
     return run.rate_model.to_excel(stem.with_name(f"{stem.name}_rate_tables.xlsx"))
 
 
@@ -188,6 +202,10 @@ def write_script(project: Project, run: ModelRun, stem: Path) -> Path:
 
 
 def write_report(project: Project, run: ModelRun, df: pl.DataFrame, stem: Path) -> Path:
+    if run.stack is not None:
+        raise CliError(
+            "HTML reports for ordered stacks are not available yet; export the scorer and Excel workbook"
+        )
     path = stem.with_name(f"{stem.name}_report.html")
     path.write_text(
         to_report_html(project, {run.name: run}, df, champion=run.name),
@@ -199,6 +217,20 @@ def write_report(project: Project, run: ModelRun, df: pl.DataFrame, stem: Path) 
 def summary_lines(project: Project, run: ModelRun) -> list[str]:
     """The lines ``run`` prints: what was fitted and how well."""
     s = run.summary()
+    if run.stack is not None:
+        lines = [
+            f"{project.name} · model {run.name} · {run.config.family} (log link)",
+            f"  rows          train {run.train_rows:,} · holdout {run.holdout_rows:,}",
+            f"  components    {len(run.stack.components)} accepted",
+        ]
+        for index, item in enumerate(run.stack.components, start=1):
+            lines.append(f"    {index}. {item.name} ({item.kind})")
+        if run.stack.offset_col:
+            lines.append(f"  offset        {run.stack.offset_col}")
+        train = run.metrics.get("train", {})
+        if train:
+            lines.append(f"  train         A/E {_fmt(train.get('ae'))}")
+        return lines
     rm = run.rate_model
     lines = [
         f"{project.name} · model {run.name} · {s['family']}"
@@ -246,15 +278,20 @@ def cmd_run(args: argparse.Namespace) -> int:
     run = fit(project, model, df)
     stem = prefix(project, model, Path(args.out))
     written = [
-        write_easyglm(run, stem),
+        write_easyglm(run, stem, project),
         write_excel(run, stem),
         write_script(project, run, stem),
-        write_report(project, run, df, stem),
     ]
+    if run.stack is None:
+        written.append(write_report(project, run, df, stem))
     print("\n".join(summary_lines(project, run)))
     print("written:")
     for path in written:
         print(f"  {path}")
+    if run.stack is not None:
+        print(
+            "  HTML report unavailable for ordered stacks; use the workbook for component review"
+        )
     return 0
 
 
@@ -272,6 +309,10 @@ def cmd_export(args: argparse.Namespace) -> int:
         raise CliError("pass at least one of --script, --report, --excel")
     project = open_project(args.project)
     model = pick_model(project, args.model)
+    if args.report and project.models[model].components:
+        raise CliError(
+            "HTML reports for ordered stacks are not available yet; use --excel or --script"
+        )
     df = prepared_frame(project)
     run = fit(project, model, df)
     stem = prefix(project, model, Path(args.out))

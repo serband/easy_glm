@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from html import escape
 from typing import TYPE_CHECKING, Any
@@ -138,7 +138,7 @@ def _pair_for(rate_model: RateModel, a: str, b: str) -> PairTableConfig:
 
 
 def _metric_summary(
-    frame: pl.DataFrame, cfg: ModelConfig, before: RateModel, after: RateModel
+    frame: pl.DataFrame, cfg: ModelConfig, before: Any, after: Any
 ) -> pl.DataFrame:
     rows = []
     before_expected_total: float | None = None
@@ -199,11 +199,131 @@ class RateReview:
         self._project = Project.from_dict(model._project.to_dict())
         self._config = self._project.models[model.name]
         self._edited_keys: set[tuple[Any, ...]] = set()
+        self._component_edits: dict[str, list[dict[str, Any]]] = {}
         self._base_rate_changed = False
         train = model._frame("train")
-        before_prediction = model._run.rate_model.predict(train, exposure_col=None)
+        before_prediction = model._scorer.predict(train, exposure_col=None)
         _, before_expected, _ = totals(train, model._run.config, before_prediction)
         self._original_expected_total = float(before_expected.sum())
+
+    def cap_component(
+        self, component: str, *, lower: float, upper: float
+    ) -> RateReview:
+        """Draft a bound on every multiplier in a deployed lookup."""
+        low = _finite_positive(lower, "Lower cap")
+        high = _finite_positive(upper, "Upper cap")
+        if low > high:
+            raise ValueError("Lower cap must not exceed upper cap")
+        self._lookup_artifact(component)
+        self._component_edits.setdefault(component, []).append(
+            {"operation": "cap", "lower": low, "upper": high}
+        )
+        return self
+
+    def round_component(self, component: str, *, decimals: int) -> RateReview:
+        """Draft deployment rounding on a deployed lookup."""
+        if not isinstance(decimals, int) or not 0 <= decimals <= 15:
+            raise ValueError("decimals must be an integer between 0 and 15")
+        self._lookup_artifact(component)
+        self._component_edits.setdefault(component, []).append(
+            {"operation": "round", "decimals": decimals}
+        )
+        return self
+
+    def _lookup_artifact(self, component: str) -> Any:
+        from easy_glm.workflow.stack_types import LookupScorer
+
+        stack = getattr(self._model._run, "stack", None)
+        if stack is None:
+            raise ValueError("Component review requires an ordered model stack")
+        artifact = stack.component(component)
+        if not isinstance(artifact.scorer, LookupScorer):
+            raise ValueError(f"Component {component!r} has no editable lookup")
+        return artifact
+
+    def _proposed_stack(self) -> Any:
+        from easy_glm.workflow.stack import _apply_amendments
+
+        if self._model._run.stack is None:
+            raise ValueError("This model has no component stack")
+        stack = self._model._run.stack.clone()
+        for component, rules in self._component_edits.items():
+            artifact = stack.component(component)
+            _apply_amendments(artifact.scorer, tuple(rules))
+            artifact.status = "pricing_adjustment"
+        legacy = next(
+            (item for item in stack.components if item.kind == "legacy"), None
+        )
+        if legacy is not None and legacy.recipe.component_id in self._component_edits:
+            from easy_glm.engine.rate_model import RateModel
+            from easy_glm.workflow.stack_types import RateModelScorer
+
+            for visible in stack.virtual_components:
+                if visible.kind == "glm":
+                    main = legacy.scorer.rate_model.clone()
+                    main.pair_tables = []
+                    visible.scorer = RateModelScorer(main)
+                elif visible.kind == "interaction":
+                    stage_id = visible.evidence["stage_id"]
+                    table = copy.deepcopy(
+                        legacy.scorer.rate_model.get_pair_table(stage_id)
+                    )
+                    visible.scorer = RateModelScorer(
+                        RateModel(1.0, {}, pair_tables=[table])
+                    )
+                visible.status = "pricing_adjustment"
+        return stack
+
+    def _rate_artifact(
+        self,
+        *,
+        component: str | None,
+        variable: str | None = None,
+        pair: tuple[str, str] | None = None,
+    ) -> Any:
+        from easy_glm.workflow.stack_types import RateModelScorer
+
+        stack = self._model._run.stack
+        if stack is None:
+            raise ValueError("This model has no component stack")
+        if component is not None:
+            virtual = next(
+                (
+                    item
+                    for item in stack.virtual_components
+                    if component in (item.name, item.recipe.component_id)
+                ),
+                None,
+            )
+            if virtual is not None:
+                legacy = next(
+                    (item for item in stack.components if item.kind == "legacy"), None
+                )
+                if legacy is None:
+                    raise ValueError("The accepted legacy scorer is missing")
+                component = legacy.recipe.component_id
+        matches = [
+            artifact
+            for artifact in stack.components
+            if isinstance(artifact.scorer, RateModelScorer)
+            and (
+                component is None
+                or component in (artifact.name, artifact.recipe.component_id)
+            )
+            and (variable is None or variable in artifact.scorer.rate_model.variables)
+            and (
+                pair is None
+                or any(
+                    set(table.parents) == set(pair)
+                    for table in artifact.scorer.rate_model.pair_tables
+                )
+            )
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                "Select exactly one rate-table component with component=..."
+            )
+        return matches[0]
 
     def _proposed_rate_model(self) -> RateModel:
         scorer = self._model._run.rate_model.clone()
@@ -228,8 +348,29 @@ class RateReview:
         upper: Any = None,
         level: str | None = None,
         value: float,
+        component: str | None = None,
     ) -> RateReview:
         """Set one main-table row by its human band edges or displayed level."""
+        if getattr(self._model._run, "stack", None) is not None:
+            artifact = self._rate_artifact(component=component, variable=variable)
+            config = (
+                self._proposed_stack()
+                .component(artifact.recipe.component_id)
+                .scorer.rate_model.variables[variable]
+            )
+            _, row = _resolve_axis_row(
+                config, lower=lower, upper=upper, level=level, label=variable
+            )
+            self._component_edits.setdefault(artifact.recipe.component_id, []).append(
+                {
+                    "operation": "set_rate_row",
+                    "variable": variable,
+                    "from": row.from_,
+                    "to": row.to_,
+                    "multiplier": _finite_positive(value, "Relativity"),
+                }
+            )
+            return self
         scorer = self._proposed_rate_model()
         try:
             config = scorer.variables[variable]
@@ -262,8 +403,48 @@ class RateReview:
         upper_b: Any = None,
         level_b: str | None = None,
         value: float,
+        component: str | None = None,
     ) -> RateReview:
         """Set one deployed pair cell using bands/levels in the requested order."""
+        if getattr(self._model._run, "stack", None) is not None:
+            artifact = self._rate_artifact(component=component, pair=(a, b))
+            scorer = (
+                self._proposed_stack()
+                .component(artifact.recipe.component_id)
+                .scorer.rate_model
+            )
+            table = _pair_for(scorer, a, b)
+            requested = (
+                ((lower_a, upper_a, level_a), (lower_b, upper_b, level_b))
+                if table.parents == (a, b)
+                else ((lower_b, upper_b, level_b), (lower_a, upper_a, level_a))
+            )
+            (axis_a_row, row_a), (axis_b_row, row_b) = (
+                _resolve_axis_row(
+                    axis,
+                    lower=address[0],
+                    upper=address[1],
+                    level=address[2],
+                    label=parent,
+                )
+                for axis, address, parent in zip(
+                    table.axes, requested, table.parents, strict=True
+                )
+            )
+            self._component_edits.setdefault(artifact.recipe.component_id, []).append(
+                {
+                    "operation": "set_pair_cell",
+                    "stage_id": table.stage_id,
+                    "axis_a_row": axis_a_row,
+                    "axis_b_row": axis_b_row,
+                    "axis_a_from": row_a.from_,
+                    "axis_a_to": row_a.to_,
+                    "axis_b_from": row_b.from_,
+                    "axis_b_to": row_b.to_,
+                    "multiplier": _finite_positive(value, "Pair relativity"),
+                }
+            )
+            return self
         scorer = self._proposed_rate_model()
         table = _pair_for(scorer, a, b)
         if table.parents == (a, b):
@@ -310,6 +491,11 @@ class RateReview:
         Omitting ``expected_total`` restores the original model's training total.
         Nothing is changed until :meth:`apply` is called.
         """
+        if getattr(self._model._run, "stack", None) is not None:
+            raise ValueError(
+                "Stack-level rebalancing is not supported; review and apply "
+                "component rates without automatic total calibration."
+            )
         target = (
             self._original_expected_total
             if expected_total is None
@@ -400,6 +586,76 @@ class RateReview:
     def preview(self) -> ReviewPreview:
         """Show the draft's training totals and exact table changes without fitting."""
         train = self._model._frame("train")
+        if getattr(self._model._run, "stack", None) is not None:
+            proposed_stack = self._proposed_stack()
+            assert self._model._run.stack is not None
+            summary = _metric_summary(
+                train, self._config, self._model._run.stack, proposed_stack
+            )
+            change_rows: list[dict[str, Any]] = []
+            for component in self._component_edits:
+                old_scorer = self._model._run.stack.component(component).scorer
+                new_scorer = proposed_stack.component(component).scorer
+                if hasattr(old_scorer, "table"):
+                    old_values = old_scorer.table["multiplier"].to_list()
+                    new_values = new_scorer.table["multiplier"].to_list()
+                    for before, after in zip(old_values, new_values, strict=True):
+                        if before == after:
+                            continue
+                        change_rows.append(
+                            {
+                                "table": component,
+                                "row": str(len(change_rows) + 1),
+                                "before": float(before),
+                                "proposed": float(after),
+                            }
+                        )
+                else:
+                    for rule in self._component_edits[component]:
+                        if rule["operation"] == "set_rate_row":
+                            row = next(
+                                item
+                                for item in old_scorer.rate_model.variables[
+                                    rule["variable"]
+                                ].table
+                                if (item.from_, item.to_) == (rule["from"], rule["to"])
+                            )
+                            before = float(row.relativity)
+                            address = (
+                                f"{rule['variable']}: {rule['from']} to {rule['to']}"
+                            )
+                        else:
+                            table = old_scorer.rate_model.get_pair_table(
+                                rule["stage_id"]
+                            )
+                            before = float(
+                                table.cell_matrix[
+                                    rule["axis_a_row"], rule["axis_b_row"]
+                                ]
+                            )
+                            address = f"cell {rule['axis_a_row']}, {rule['axis_b_row']}"
+                        change_rows.append(
+                            {
+                                "table": component,
+                                "row": address,
+                                "before": before,
+                                "proposed": float(rule["multiplier"]),
+                            }
+                        )
+            return ReviewPreview(
+                summary,
+                pl.DataFrame(
+                    change_rows,
+                    schema={
+                        "table": pl.Utf8,
+                        "row": pl.Utf8,
+                        "before": pl.Float64,
+                        "proposed": pl.Float64,
+                    },
+                ),
+                _preview_chart(summary),
+                "Complete-model training totals include every accepted component.",
+            )
         proposed = self._proposed_rate_model()
         summary = _metric_summary(
             train, self._config, self._model._run.rate_model, proposed
@@ -611,8 +867,24 @@ class RateReview:
             frozen_stages=frozen_stages,
         )
 
-    def apply(self, *, refit_later_interactions: bool) -> PricingModel:
+    def apply(
+        self,
+        *,
+        refit_later_interactions: bool | None = None,
+        refit_later_components: bool | None = None,
+    ) -> PricingModel:
         """Create a new model, explicitly keeping or refitting affected later pairs."""
+        if refit_later_components is not None and refit_later_interactions is not None:
+            if refit_later_components != refit_later_interactions:
+                raise ValueError("Conflicting refit choices")
+        refit = bool(
+            refit_later_components
+            if refit_later_components is not None
+            else refit_later_interactions
+        )
+        if getattr(self._model._run, "stack", None) is not None:
+            return self._apply_stack(refit=refit)
+        refit_later_interactions = refit
         if not self._edited_keys and not self._base_rate_changed:
             raise ValueError("No rate changes have been proposed")
         project = self._renamed_project()
@@ -679,4 +951,87 @@ class RateReview:
             run,
             refit=True,
             frozen_stages=frozen,
+        )
+
+    def _apply_stack(self, *, refit: bool) -> PricingModel:
+        """Accept lookup amendments with explicit downstream evidence status."""
+        if not self._component_edits:
+            raise ValueError("No component changes have been proposed")
+        from easy_glm.workflow.stack import fit_stack
+
+        proposed = self._proposed_stack()
+        project = self._renamed_project()
+        config = project.models[self.name]
+        artifact_positions = {
+            artifact.recipe.component_id: index
+            for index, artifact in enumerate(proposed.components)
+        }
+        recipe_positions = {
+            recipe.component_id: index for index, recipe in enumerate(config.components)
+        }
+        affected_recipe = min(
+            recipe_positions[proposed.component(name).recipe.component_id]
+            for name in self._component_edits
+        )
+        affected = artifact_positions[config.components[affected_recipe].component_id]
+        edits_by_id = {
+            proposed.component(identifier).recipe.component_id: rules
+            for identifier, rules in self._component_edits.items()
+        }
+        recipes = []
+        for recipe in config.components:
+            rules = edits_by_id.get(recipe.component_id)
+            recipes.append(
+                replace(
+                    recipe,
+                    amendments=(*recipe.amendments, *(rules or [])),
+                )
+            )
+        config.components = recipes
+        for recipe in recipes:
+            proposed.component(recipe.component_id).recipe = recipe
+        if refit and affected_recipe + 1 < len(recipes):
+            prefix = proposed.clone()
+            prefix.components = prefix.components[: affected + 1]
+            run = fit_stack(
+                project,
+                self._model._frame("train"),
+                config,
+                frozen_prefix=prefix,
+            )
+            run.name = self.name
+            project.models[self.name] = copy.deepcopy(run.config)
+            run.project_snapshot = project.to_dict()
+        else:
+            run = copy.copy(self._model._run)
+            run.name = self.name
+            run.stack = proposed
+            run.config = config
+            run.project_snapshot = project.to_dict()
+            if not refit:
+                for artifact in run.stack.components[affected + 1 :]:
+                    artifact.status = "preceding_model_amended"
+        from .validation import metric_row
+
+        candidate = copy.copy(self._model)
+        candidate._run = run
+        run.metrics = {"train": metric_row(candidate, "train")}
+        preview = self.preview()
+        history = [
+            *self._model._history,
+            {
+                "action": "rate_review",
+                "name": self.name,
+                "refit_later_components": refit,
+                "changes": preview.changes.to_dicts(),
+            },
+        ]
+        evidence = copy.deepcopy(self._model._evidence)
+        evidence.pop("validation", None)
+        return type(self._model)(
+            self._model._session,
+            project,
+            run,
+            history=history,
+            evidence=evidence,
         )

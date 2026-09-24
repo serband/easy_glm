@@ -17,7 +17,7 @@ from easy_glm.engine import RateModel
 from easy_glm.workflow import ModelRun, Project
 
 BUNDLE_FORMAT = "easy-glm-pricing-model"
-BUNDLE_VERSION = 1
+BUNDLE_VERSION = 2
 
 
 def _json_value(value: Any) -> Any:
@@ -46,7 +46,16 @@ def save_model(model: Any, path: str | Path) -> Path:
         "format_version": BUNDLE_VERSION,
         "name": model.name,
         "project": model._project.to_dict(),
-        "rate_model": model._run.rate_model.to_dict(),
+        "rate_model": (
+            model._run.rate_model.to_dict()
+            if model._run.rate_model is not None
+            else None
+        ),
+        "stack": (
+            model._run.stack.to_dict()
+            if getattr(model._run, "stack", None) is not None
+            else None
+        ),
         "run": {
             "metrics": model._run.metrics,
             "created_at": model._run.created_at,
@@ -98,17 +107,30 @@ def load_model(
     raw = json.loads(Path(path).read_text())
     if raw.get("format") != BUNDLE_FORMAT:
         raise ValueError("This is not an EasyGLM pricing-model JSON file")
-    if raw.get("format_version") != BUNDLE_VERSION:
+    if raw.get("format_version") not in {1, BUNDLE_VERSION}:
         raise ValueError(
-            f"Unsupported pricing-model format {raw.get('format_version')!r}; expected {BUNDLE_VERSION}"
+            f"Unsupported pricing-model format {raw.get('format_version')!r}; expected 1 or {BUNDLE_VERSION}"
         )
     project = Project.from_dict(raw["project"])
     name = str(raw["name"])
     if name not in project.models:
         raise ValueError(f"Saved project does not contain model {name!r}")
-    scorer = RateModel.from_dict(raw["rate_model"])
+    scorer = (
+        RateModel.from_dict(raw["rate_model"])
+        if raw.get("rate_model") is not None
+        else None
+    )
+    stack = None
+    if raw.get("stack") is not None:
+        from easy_glm.workflow.stack_types import StackScorer
+
+        stack = StackScorer.from_dict(raw["stack"])
     run_data = raw.get("run", {})
-    tables_by_stage = {table.stage_id: table for table in scorer.pair_tables}
+    tables_by_stage = (
+        {table.stage_id: table for table in scorer.pair_tables}
+        if scorer is not None
+        else {}
+    )
     pair_stages = []
     for saved in run_data.get("pair_stages", []):
         values = dict(saved)
@@ -122,8 +144,8 @@ def load_model(
         # A frozen scorer has no fit matrix; refitting starts from saved settings.
         spec=None,  # type: ignore[arg-type]
         fit=None,  # type: ignore[arg-type]
-        rate_model=scorer,
-        tables=rate_model_tables(scorer),
+        rate_model=scorer,  # type: ignore[arg-type]  # direct stacks have no single rate table
+        tables=rate_model_tables(scorer) if scorer is not None else {},
         metrics=run_data.get("metrics", {}),
         project_snapshot=project.to_dict(),
         created_at=run_data.get("created_at", ""),
@@ -131,6 +153,7 @@ def load_model(
         holdout_rows=int(run_data.get("holdout_rows", 0)),
         dropped_predictors=list(run_data.get("dropped_predictors", [])),
         pair_stages=pair_stages,
+        stack=stack,
     )
     attached = _read_data(data)
     from .session import PricingSession

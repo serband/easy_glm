@@ -186,7 +186,8 @@ class FitJobs:
                     raise ValueError("Restored fit identity does not match.")
                 if prepared is None:
                     prepared = prepare(project, raw)
-                rebuild_rate_model(project, run, prepared)
+                if getattr(run, "stack", None) is None:
+                    rebuild_rate_model(project, run, prepared)
                 warnings = json.loads((source / "result.json").read_text()).get(
                     "warnings", []
                 )
@@ -396,7 +397,16 @@ class FitJobs:
                 }
             return previews
 
-    def start(self, project: Project, raw: pl.DataFrame, name: str) -> dict[str, Any]:
+    def start(
+        self,
+        project: Project,
+        raw: pl.DataFrame,
+        name: str,
+        *,
+        amendment: dict[str, Any] | None = None,
+        source_fit: Path | None = None,
+        frozen_source_name: str | None = None,
+    ) -> dict[str, Any]:
         with self.lock:
             if self.active and self.active["status"] in ("queued", "running"):
                 raise ValueError(
@@ -431,6 +441,9 @@ class FitJobs:
                 "previous": deepcopy(self.last_complete.get(name)),
                 "clear_stage_ids": clear_stage_ids,
                 "first_refit_stage": first_refit,
+                "amendment": amendment,
+                "source_fit": source_fit,
+                "frozen_source_name": frozen_source_name,
             }
             self.jobs[name] = self.active = job
             self.thread = threading.Thread(
@@ -464,6 +477,23 @@ class FitJobs:
                 ]
             clean_project.to_json(folder / "project.json")
             raw.write_parquet(folder / "raw.parquet")
+            if (
+                job.get("amendment") is not None
+                or job.get("frozen_source_name") is not None
+            ):
+                if job.get("source_fit") is None:
+                    raise ValueError("A frozen-prefix fit needs its fitted source.")
+                import shutil
+
+                shutil.copy2(job["source_fit"] / "fit.pkl", folder / "prefix-fit.pkl")
+            if job.get("frozen_source_name") is not None:
+                (folder / "frozen-source.json").write_text(
+                    json.dumps({"name": job["frozen_source_name"]}), encoding="utf-8"
+                )
+            if job.get("amendment") is not None:
+                (folder / "amendment.json").write_text(
+                    json.dumps(job["amendment"]), encoding="utf-8"
+                )
             with self.lock:
                 if job["cancel"]:
                     return
@@ -631,6 +661,44 @@ class FitJobs:
     def edited(self, project: Project, name: str, result: dict[str, Any]) -> None:
         with self.lock:
             self.jobs[name].update(key=model_key(project, name), result=result)
+
+    def publish_stack(
+        self,
+        project: Project,
+        raw: pl.DataFrame,
+        name: str,
+        run: Any,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Publish an immutable reviewed stack checkpoint without another fit."""
+        import pickle
+
+        with self.lock:
+            if name in self.jobs:
+                raise ValueError(f"A fit named {name!r} already exists.")
+            job_id = str(time.time_ns())
+            destination = Path(self.folder.name) / job_id
+            destination.mkdir()
+            with (destination / "fit.pkl").open("wb") as handle:
+                pickle.dump(run, handle, protocol=5)
+            (destination / "result.json").write_text(
+                json.dumps(result, allow_nan=False), encoding="utf-8"
+            )
+            project.to_json(destination / "project.json")
+            raw.write_parquet(destination / "raw.parquet")
+            record = {
+                "id": job_id,
+                "name": name,
+                "key": model_key(project, name),
+                "status": "complete",
+                "message": "Reviewed component checkpoint is ready.",
+                "elapsed": 0.0,
+                "result": result,
+                "project": deepcopy(project),
+            }
+            self.jobs[name] = record
+            self.last_complete[name] = _completed_record(record)
+            return {k: record[k] for k in ("id", "name", "status", "message")}
 
     def close(self) -> None:
         with self.lock:

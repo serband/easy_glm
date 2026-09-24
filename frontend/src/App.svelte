@@ -1,6 +1,7 @@
 <script>
     import { onMount } from 'svelte';
     import ModelWorkbench from './ModelWorkbench.svelte';
+    import StackWorkbench from './StackWorkbench.svelte';
     import ExportPanel from './ExportPanel.svelte';
     import ProjectOpen from './ProjectOpen.svelte';
     import ExplorePanel from './ExplorePanel.svelte';
@@ -12,6 +13,7 @@
         modelContext = { fitted: [], selected: '', champion: null };
     let view = 'variables',
         resultsReady = false;
+    let stackMode = false;
     function modelState(snapshot) {
         const keepDraft = dirty;
         const variablesChanged =
@@ -272,6 +274,19 @@
             failure.status = response.status;
             throw failure;
         }
+        return data;
+    }
+    async function uploadCatalogue(file, body) {
+        if (differentProject) throw new Error('Reconnect to the current project before uploading.');
+        if (!token) await bootstrap();
+        const query = new URLSearchParams({ ...body, filename: file.name });
+        const response = await fetch('/api/catalogues/upload?' + query, {
+            method: 'POST', cache: 'no-store', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/octet-stream', 'X-EasyGLM-Token': token },
+            body: file,
+        });
+        const data = await response.json();
+        if (!response.ok) throw responseError(data, 'Could not read catalogue.');
         return data;
     }
     function projectName(name) {
@@ -1188,7 +1203,13 @@
                             onReconnect={reconnectForOpen}
                         />{/key}{/if}
             </section>
-            {#if view === 'export'}<ExportPanel
+            {#if ['model', 'diagnostics', 'compare', 'tables', 'export'].includes(view)}
+                <div class="workflow-mode" role="group" aria-label="Model workflow">
+                    <button class:chosen={!stackMode} onclick={() => (stackMode = false)}>Single model</button>
+                    <button class:chosen={stackMode} onclick={() => (stackMode = true)}>Build a stacked model</button>
+                </div>
+            {/if}
+            {#if view === 'export' && !stackMode}<ExportPanel
                     {api}
                     {state}
                     context={modelContext}
@@ -1196,7 +1217,7 @@
                     {downloadProject}
                     {saveDownload}
                 />{/if}
-            {#if state && draft}{#key state.project_id}<ModelWorkbench
+            {#if state && draft && !stackMode}{#key state.project_id}<ModelWorkbench
                         {api}
                         {state}
                         {view}
@@ -1206,11 +1227,24 @@
                         onReady={(ready) => (resultsReady = ready)}
                         onNavigate={navigate}
                     />{/key}{/if}
+            {#if state && draft && stackMode}{#key state.project_id}<StackWorkbench
+                        {api}
+                        {state}
+                        {view}
+                        {uploadCatalogue}
+                        {saveDownload}
+                        onState={modelState}
+                        onReady={(ready) => (resultsReady = ready)}
+                        onContext={(context) => (modelContext = context)}
+                        onNavigate={navigate}
+                    />{/key}{/if}
         </main>
     </div>
 </div>
 
 <style>
+    .workflow-mode { display: flex; gap: 8px; margin-bottom: 16px; }
+    .workflow-mode button.chosen { background: #154b35; color: white; }
     .loaded-dataset {
         display: flex;
         flex-wrap: wrap;

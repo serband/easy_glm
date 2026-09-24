@@ -59,6 +59,7 @@ from .core import (
     validate_train_test_column,
     write_rate_tables_xlsx,
 )
+from .datasets import load_motor_catalogue_example
 from .pricing import PricingModel, PricingSession
 
 __all__ = [
@@ -69,6 +70,7 @@ __all__ = [
     "RateModel",
     "load_external_dataframe",
     "load_swedish_motorcycle_data",
+    "load_motor_catalogue_example",
     "add_train_test_split",
     "launch_workbench",
     # Building blocks

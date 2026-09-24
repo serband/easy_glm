@@ -10,9 +10,9 @@ mean a feature has been built or assigned a release version.
 - Searchable, alphabetically sorted variable lists for Explore, fitted A/E
   plots and rate-table plots.
 
-## Next: stack GLMs, CatBoost models and rating files
+## Built, awaiting review: stack GLMs, CatBoost models and rating files
 
-**Planning only.** See [the proposed workflow and build plan](plans/STACKED_MODELS.md).
+Implemented in Python and the workbench, with software, statistical and actuarial checks completed. See [the worked example](../examples/stacked_models.md) and [the agreed design](plans/STACKED_MODELS.md). Not yet released.
 
 - Allow any ordering or repetition of supported multiplicative components:
   GLMs, CatBoost models, interaction tables and rating-file lookups. The vehicle
@@ -29,7 +29,7 @@ mean a feature has been built or assigned a release version.
 - Preserve named models. Make changing an earlier component explicit, with a
   choice to keep or refit later components.
 - Provide short Python calls and a workbench view showing the fitting order.
-  The delivery order between these interfaces is still to be agreed.
+  Both interfaces are included in this build.
 - Test both GLM → CatBoost and CatBoost → GLM, full-stack validation, lookup
   coverage, save/reload and export parity.
 
@@ -65,7 +65,7 @@ ships in v0.472. Extend that style with:
   existing-premium offsets, and a genuine yes/no binomial example.
 - Wide datasets, predictor screening, step versus linear effects, monotone
   constraints, and comparing candidate models.
-- The complete vehicle/occupation workflow once the proposed stack is built.
+- Extend the [stacking example](../examples/stacked_models.md) with real catalogue data.
 
 Use short public calls, explicit modelling decisions and reviewable outputs.
 Run each example from a fresh standard installation and check that exported

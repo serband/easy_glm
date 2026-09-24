@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import pickle
 import tempfile
@@ -102,8 +103,49 @@ def export_attachment(
             run = pickle.load(handle)
         if not isinstance(run, ModelRun) or run.name != model_name:
             raise ValueError("The fitted artifact does not match the selected model.")
-        runs[model_name] = rebuild_rate_model(project, run, frame)
+        runs[model_name] = (
+            run
+            if getattr(run, "stack", None) is not None
+            else rebuild_rate_model(project, run, frame)
+        )
     run = runs[name]
+    if getattr(run, "stack", None) is not None:
+        if format not in {"easyglm", "python_score", "xlsx"}:
+            raise ValueError(
+                "This stack exports as an Excel component workbook, a self-contained scorer bundle, "
+                "or a Python scoring entry point. Export individual catalogue files from the component table."
+            )
+        prefix = f"{safe_filename(project.name, 'project')}_{safe_filename(name)}"
+        if format == "xlsx":
+            from easy_glm.pricing.excel import export_stack_excel
+
+            with tempfile.TemporaryDirectory(prefix="easyglm_stack_export_") as folder:
+                filename = prefix + "_components.xlsx"
+                path = Path(folder) / filename
+                export_stack_excel(run, path)
+                return ExportAttachment(
+                    path.read_bytes(),
+                    filename,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+        serialized = json.dumps(run.stack.to_dict(), allow_nan=False)
+        if format == "easyglm":
+            return ExportAttachment(
+                serialized.encode("utf-8"), prefix + "_stack.json", "application/json"
+            )
+        script = (
+            '"""Score the accepted EasyGLM component stack."""\n'
+            "import json\n"
+            "import polars as pl\n"
+            "from easy_glm.workflow.stack_types import StackScorer\n\n"
+            f"STACK = StackScorer.from_dict(json.loads({serialized!r}))\n\n"
+            "def predict(frame: pl.DataFrame):\n"
+            '    """Return the accepted per-unit prediction."""\n'
+            "    return STACK.predict_unit(frame)\n"
+        )
+        return ExportAttachment(
+            script.encode("utf-8"), prefix + "_scorer.py", "text/x-python"
+        )
     if challenger is not None:
         compatible(run, runs[challenger])
     prefix = f"{safe_filename(project.name, 'project')}_{safe_filename(name)}"

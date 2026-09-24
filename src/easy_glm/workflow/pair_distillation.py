@@ -290,6 +290,44 @@ def fit_catboost_pair_raw(
     predicts on feature columns without a Pool baseline; its raw output is only
     the correction.  Validation and early stopping belong to a fold-local caller.
     """
+    return fit_catboost_raw(
+        two_raw_features,
+        target,
+        baseline_mean,
+        sample_weight=sample_weight,
+        family=family,
+        tweedie_power=tweedie_power,
+        target_scale=target_scale,
+        iterations=iterations,
+        depth=depth,
+        learning_rate=learning_rate,
+        l2_leaf_reg=l2_leaf_reg,
+        thread_count=thread_count,
+        seed=seed,
+        cat_features=cat_features,
+        required_features=2,
+    )
+
+
+def fit_catboost_raw(
+    raw_features: Any,
+    target: ArrayLike,
+    baseline_mean: ArrayLike,
+    *,
+    sample_weight: ArrayLike | None = None,
+    family: str = "poisson",
+    tweedie_power: float | None = None,
+    target_scale: float = 1.0,
+    iterations: int = 120,
+    depth: int = 3,
+    learning_rate: float = 0.05,
+    l2_leaf_reg: float = 3.0,
+    thread_count: int = 2,
+    seed: int = 0,
+    cat_features: Sequence[int] | None = None,
+    required_features: int | None = None,
+) -> CatBoostPairTeacher:
+    """Fit a raw CatBoost correction on any positive number of predictors."""
     power = _power(family, tweedie_power)
     if not math.isfinite(target_scale) or target_scale <= 0:
         raise ValueError("target_scale must be finite and strictly positive")
@@ -321,13 +359,22 @@ def fit_catboost_pair_raw(
         or l2_leaf_reg < 0
     ):
         raise ValueError("learning_rate must be positive and l2_leaf_reg nonnegative")
-    x = np.asarray(two_raw_features)
-    if x.ndim != 2 or x.shape != (len(y), 2):
+    x = np.asarray(raw_features)
+    if (
+        x.ndim != 2
+        or x.shape[0] != len(y)
+        or x.shape[1] < 1
+        or (required_features is not None and x.shape[1] != required_features)
+    ):
         raise ValueError(
             "two_raw_features must contain exactly two columns and one row per target"
+            if required_features == 2
+            else "raw_features must have one or more columns and one row per target"
         )
-    if cat_features is not None and any(index not in (0, 1) for index in cat_features):
-        raise ValueError("cat_features must refer only to the two raw columns")
+    if cat_features is not None and any(
+        index < 0 or index >= x.shape[1] for index in cat_features
+    ):
+        raise ValueError("cat_features must refer only to the raw columns")
     scaled_y = y[positive] / target_scale
     scaled_baseline = baseline[positive] / target_scale
     if (

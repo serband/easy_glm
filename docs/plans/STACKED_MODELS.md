@@ -1,6 +1,8 @@
 # GLMs, CatBoost models and rating files
 
-**Proposed design — not implemented or approved for building.**
+**Implemented and checked on `codex/multiplicative-model-stack`, awaiting user review. Not yet released.**
+
+The runnable example is [Stacking models and building rating files](../../examples/stacked_models.md). This document records the agreed design; use the worked example for the implemented public calls.
 
 **The core requirement is any ordering or repetition of compatible
 multiplicative components.** Fit a model, keep it fixed, then fit the next
@@ -449,18 +451,19 @@ Build work uses separate planning, software critique, actuarial review,
 implementation and adversarial validation. Internal review notes stay out of
 Git; public examples and reproducible tests provide durable evidence.
 
-## Decisions still needed
+## Settings for each real project
 
 - What response/family is the first project using: frequency, severity, claims
   cost or another target?
 - Is each file defined solely by its key and attributes, or does the required
   key include another rating dimension?
-- Deliver Python and the workbench together, or Python first?
-- Before catalogue implementation, agree actual key columns, attributes,
+- Agree actual key columns, attributes,
   catalogue versions, output schema/precision and fallback treatment. A small
-  schema/example is sufficient; work data is not needed for planning.
+  schema/example is sufficient to prepare the workflow.
 
-Proposed first-version limits are a linear sequence, the three log-link families
+The first version supports both Python and the workbench. Its limits are a linear sequence, the three log-link families
 above, one-key catalogues and user-supplied master data. Multi-key tables,
 arbitrary third-party model imports, automatic hierarchical credibility,
 geographic smoothing and vendor-specific deployment adapters are follow-ups.
+Stack exports include model bundles, Python, Excel and catalogue files. The
+existing HTML report export is not yet available for mixed stacks.

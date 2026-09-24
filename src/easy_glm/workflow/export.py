@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import pprint
+from pathlib import Path
 from typing import Any
 
 from easy_glm.core.design import (
@@ -25,6 +26,28 @@ def to_scoring_script(run: ModelRun, *, output_prefix: str | None = None) -> str
     This is a frozen scoring artefact. :func:`to_script` instead re-runs the
     training workflow, which may select different parameters on changed data.
     """
+    if run.stack is not None:
+        payload = json.dumps(run.stack.to_dict(), ensure_ascii=False, allow_nan=False)
+        prefix = output_prefix or run.name
+        return "\n".join(
+            [
+                f'"""Frozen accepted ordered scorer for {run.name!r}."""',
+                "",
+                "import json",
+                "from pathlib import Path",
+                "from easy_glm.workflow.stack_types import StackScorer",
+                "",
+                f"stack = StackScorer.from_dict(json.loads({payload!r}))",
+                "",
+                "def predict(data, *, exposure_col=None):",
+                '    """Score prepared rows, returning unit predictions by default."""',
+                "    return stack.predict(data, exposure_col=exposure_col)",
+                "",
+                "if __name__ == '__main__':",
+                f"    Path({prefix + '_stack.json'!r}).write_text(json.dumps(stack.to_dict(), ensure_ascii=False))",
+                "",
+            ]
+        )
     payload = json.dumps(run.rate_model.to_dict(), ensure_ascii=False, default=str)
     prefix = output_prefix or run.name
     return "\n".join(
@@ -54,6 +77,82 @@ def to_scoring_script(run: ModelRun, *, output_prefix: str | None = None) -> str
             "if __name__ == '__main__':",
             f"    rate_model.to_json({prefix + '.easyglm'!r})",
             f"    rate_model.to_excel({prefix + '_rate_tables.xlsx'!r})",
+            "",
+        ]
+    )
+
+
+def write_stack_bundle(project: Project, run: ModelRun, path: str | Path) -> Path:
+    """Save the accepted stack in the same portable format as PricingModel.save."""
+    if run.stack is None:
+        raise ValueError("This run has no ordered stack")
+    from easy_glm.pricing.persistence import BUNDLE_FORMAT, BUNDLE_VERSION, _json_value
+
+    snapshot = project.copy()
+    snapshot.models[run.name] = run.config
+    payload = {
+        "format": BUNDLE_FORMAT,
+        "format_version": BUNDLE_VERSION,
+        "name": run.name,
+        "project": snapshot.to_dict(),
+        "rate_model": None,
+        "stack": run.stack.to_dict(),
+        "run": {
+            "metrics": run.metrics,
+            "created_at": run.created_at,
+            "train_rows": run.train_rows,
+            "holdout_rows": run.holdout_rows,
+            "dropped_predictors": run.dropped_predictors,
+            "pair_stages": [],
+        },
+        "history": [],
+        "evidence": {},
+        "frozen_stages": [],
+        "data_fingerprint": None,
+    }
+    destination = Path(path)
+    destination.write_text(
+        json.dumps(_json_value(payload), indent=2, ensure_ascii=False, allow_nan=False)
+    )
+    return destination
+
+
+def _stack_training_script(
+    project: Project, model: str, run: ModelRun | None, prefix: str
+) -> str:
+    """Replay every ordered recipe using pinned catalogue contents."""
+    from .catalogue import load_catalogue
+
+    snapshot = project.copy()
+    if run is not None:
+        snapshot.models[model] = run.config
+    for recipe in snapshot.models[model].components:
+        if recipe.kind != "catalogue":
+            continue
+        settings = recipe.settings
+        if "catalogue" not in settings:
+            master = load_catalogue(settings)
+            settings["catalogue"] = master.to_dict(as_series=False)
+            settings["catalogue_schema"] = {
+                name: str(dtype) for name, dtype in master.schema.items()
+            }
+            settings.pop("source_path", None)
+            settings.pop("source_sha256", None)
+    encoded = json.dumps(snapshot.to_dict(), ensure_ascii=False, default=str)
+    return "\n".join(
+        [
+            f'"""{snapshot.name}: refit ordered model {model!r} and export its accepted scorer."""',
+            "",
+            "import json",
+            "from easy_glm.workflow import Project, prepare, run_model",
+            "from easy_glm.workflow.export import write_stack_bundle",
+            "from easy_glm.pricing.excel import export_stack_excel",
+            "",
+            f"project = Project.from_dict(json.loads({encoded!r}))",
+            "prepared = prepare(project)",
+            f"run = run_model(project, prepared, {model!r})",
+            f"write_stack_bundle(project, run, {prefix + '.easyglm'!r})",
+            f"export_stack_excel(run, {prefix + '_rate_tables.xlsx'!r})",
             "",
         ]
     )
@@ -389,6 +488,8 @@ def to_script(
             "Save the source data to a file and select it before exporting a Python script."
         )
     prefix = output_prefix or model
+    if cfg.components:
+        return _stack_training_script(project, model, run, prefix)
     if cfg.pair_stages:
         return _pair_training_script(project, model, prefix)
     uses_sas = d.source.type.lower() == "sas7bdat"

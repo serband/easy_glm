@@ -17,6 +17,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
 import polars as pl
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
@@ -90,6 +91,24 @@ class BinningPreviewEdit(Edit):
     column: str
 
 
+class StackAmendEdit(Revision):
+    operation: Literal["cap", "round"]
+    lower: float | None = None
+    upper: float | None = None
+    decimals: int | None = Field(default=None, ge=0, le=12)
+    refit_later: bool = False
+    new_name: str | None = None
+    fit_id: str | None = None
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def create_app(
     project: Project,
     raw: pl.DataFrame,
@@ -108,6 +127,14 @@ def create_app(
     feature_selections = FeatureSelectionJobs()
     undo_steps = {}
     redo_steps = {}
+    catalogue_sources: dict[str, str] = {}
+    append_sources: dict[str, dict[str, str]] = {}
+    for config in project.models.values():
+        for component in getattr(config, "components", ()):
+            source_path = component.settings.get("source_path")
+            source_hash = component.settings.get("source_sha256")
+            if source_path and source_hash:
+                catalogue_sources[str(Path(source_path).resolve())] = str(source_hash)
     if restore_folder is not None and (restore_folder / "history.json").exists():
         history = json.loads((restore_folder / "history.json").read_text())
         for name, stacks in history.items():
@@ -200,6 +227,17 @@ def create_app(
             run = pickle.load(handle)  # private fit artifact created by this app
         return pair_stage_fingerprint(cfg, run.rate_model)
 
+    def fitted_prefix(name: str) -> Any:
+        """Read an exact applicable source scorer for a guarded append."""
+        from easy_glm.workflow.stack import stack_from_legacy
+
+        source = jobs.artifact(current, name)
+        with (source / "fit.pkl").open("rb") as handle:
+            fitted = pickle.load(handle)  # private fit artifact
+        if fitted.name != name:
+            raise ValueError("The source fit identity does not match its model.")
+        return stack_from_legacy(current, fitted)
+
     token = secrets.token_urlsafe(32)
     session_id = secrets.token_urlsafe(16)
     project_id = hashlib.sha256(
@@ -283,7 +321,10 @@ def create_app(
                     headers={"Cache-Control": "no-store"},
                 )
         if request.method == "POST":
-            upload = request.url.path == "/api/project/upload"
+            upload = request.url.path in {
+                "/api/project/upload",
+                "/api/catalogues/upload",
+            }
             required_type = "application/octet-stream" if upload else "application/json"
             if request.headers.get("content-type", "").split(";")[0] != required_type:
                 return JSONResponse({"detail": f"{required_type} is required."}, 415)
@@ -583,6 +624,16 @@ def create_app(
             exploration = ExplorationCache()
             jobs.on_complete = complete_fit
             current, raw = loaded, loaded_raw
+            append_sources.clear()
+            catalogue_sources.clear()
+            for config in loaded.models.values():
+                for component in getattr(config, "components", ()):
+                    source_path = component.settings.get("source_path")
+                    source_hash = component.settings.get("source_sha256")
+                    if source_path and source_hash:
+                        catalogue_sources[str(Path(source_path).resolve())] = str(
+                            source_hash
+                        )
             revision = 0
             session_id = secrets.token_urlsafe(16)
             project_id = secrets.token_hex(32)
@@ -673,6 +724,64 @@ def create_app(
         await run_in_threadpool(previous_jobs.close)
         return result
 
+    @app.post("/api/catalogues/upload")
+    async def upload_catalogue(
+        request: Request,
+        filename: str = Query(min_length=1, max_length=255),
+        session_id: str = Query(min_length=1),
+        revision: int = Query(ge=0),
+    ) -> dict[str, Any]:
+        """Pin a full master file under a server-issued path for a later recipe."""
+        edit = Revision(session_id=session_id, revision=revision)
+        with lock:
+            check_revision(edit)
+        suffix = Path(filename).suffix.lower()
+        if suffix not in {".csv", ".parquet"}:
+            raise HTTPException(422, "Choose a CSV or Parquet catalogue.")
+        length = request.headers.get("content-length", "")
+        if length.isdigit() and int(length) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "The upload exceeds 512 MiB.")
+        folder = new_input_folder()
+        source = folder / upload_basename(filename)
+        received = 0
+        digest = hashlib.sha256()
+        try:
+            with source.open("xb") as destination:
+                async for chunk in request.stream():
+                    received += len(chunk)
+                    if received > MAX_UPLOAD_BYTES:
+                        raise HTTPException(413, "The upload exceeds 512 MiB.")
+                    digest.update(chunk)
+                    await run_in_threadpool(destination.write, chunk)
+            if not received:
+                raise ValueError("Choose a non-empty catalogue.")
+            catalogue = await run_in_threadpool(
+                pl.read_csv if suffix == ".csv" else pl.read_parquet,
+                source,
+                **({"infer_schema_length": 0} if suffix == ".csv" else {}),
+            )
+            if not catalogue.height or not catalogue.width:
+                raise ValueError("The catalogue must contain rows and columns.")
+            with lock:
+                check_revision(edit)
+                catalogue_sources[str(source.resolve())] = digest.hexdigest()
+            return {
+                "source_path": str(source.resolve()),
+                "source_sha256": digest.hexdigest(),
+                "filename": source.name,
+                "rows": catalogue.height,
+                "columns": [
+                    {"name": name, "dtype": str(dtype)}
+                    for name, dtype in catalogue.schema.items()
+                ],
+            }
+        except HTTPException:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
+        except Exception as exc:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise HTTPException(422, f"Could not read catalogue: {exc}") from exc
+
     @app.get("/api/workbench")
     def workbench() -> dict[str, Any]:
         with lock:
@@ -681,6 +790,22 @@ def create_app(
             saved_jobs = jobs.status(saved)
             saved_stage_statuses = jobs.stage_statuses(saved)
             saved_refit_previews = jobs.refit_previews(saved)
+            stack_sources = {}
+            for source_name, job in saved_jobs.items():
+                if not job.get("applicable"):
+                    continue
+                try:
+                    stack = fitted_prefix(source_name)
+                except (ValueError, KeyError, OSError):
+                    continue
+                stack_sources[source_name] = {
+                    "components": [
+                        item.recipe.to_dict()
+                        for item in stack.components
+                        if item.recipe.kind != "baseline"
+                    ],
+                    "source_fit_id": job["id"],
+                }
         return {
             **setup_info(saved, saved_raw),
             "revision": saved_revision,
@@ -688,6 +813,7 @@ def create_app(
             "jobs": saved_jobs,
             "stage_statuses": saved_stage_statuses,
             "stage_refit_preview": saved_refit_previews,
+            "stack_sources": stack_sources,
             "champion": saved.champion,
         }
 
@@ -697,7 +823,58 @@ def create_app(
         with lock:
             check_revision(edit)
             try:
+                for component in edit.fields.get("components", []):
+                    if component.get("kind") != "catalogue":
+                        continue
+                    settings = component.get("settings", {})
+                    if settings.get("catalogue") is not None:
+                        continue
+                    source_path = settings.get("source_path")
+                    source_hash = settings.get("source_sha256")
+                    if not source_path or not source_hash:
+                        raise ValueError(
+                            "Upload a catalogue before saving its component."
+                        )
+                    canonical = str(Path(source_path).resolve())
+                    if catalogue_sources.get(canonical) != source_hash:
+                        raise ValueError(
+                            "Catalogue source is not a pinned upload in this session."
+                        )
+                    actual_hash = _file_sha256(Path(canonical))
+                    if actual_hash != source_hash:
+                        raise ValueError("Catalogue contents changed since upload.")
                 candidate_project = edit_model(current, edit)
+                if bool(edit.source_name) != bool(edit.source_fit_id):
+                    raise ValueError(
+                        "Choose a fitted source and its exact fit identity together."
+                    )
+                if edit.source_name:
+                    from easy_glm.workflow.stack import _check_prefix
+
+                    if edit.source_name == edit.name:
+                        raise ValueError("Append into a new named candidate.")
+                    if edit.source_name not in current.models:
+                        raise ValueError("The starting model is unavailable.")
+                    source_path = jobs.artifact(current, edit.source_name)
+                    if source_path.name != edit.source_fit_id:
+                        raise ValueError(
+                            "The starting fit changed. Refresh before appending."
+                        )
+                    prefix_stack = fitted_prefix(edit.source_name)
+                    config = candidate_project.models[edit.name]
+                    prefix_recipes = [
+                        item.recipe
+                        for item in prefix_stack.components
+                        if item.recipe.kind != "baseline"
+                    ]
+                    if (
+                        config.components[: len(prefix_recipes)] != prefix_recipes
+                        or len(config.components) != len(prefix_recipes) + 1
+                    ):
+                        raise ValueError(
+                            "The append recipe must preserve the fitted prefix and add one component."
+                        )
+                    _check_prefix(config, prefix_stack)
                 if candidate_project.models[edit.name].pair_stages:
                     prepared = apply_variables(raw, candidate_project.data)
                     groups = pair_candidate_groups(
@@ -723,6 +900,15 @@ def create_app(
                 screenings.invalidate((session_id, project_id, revision))
                 feature_selections.invalidate((session_id, project_id, revision))
                 jobs.invalidate(current)
+                if edit.source_name and edit.source_fit_id:
+                    append_sources[edit.name] = {
+                        "source_name": edit.source_name,
+                        "source_fit_id": edit.source_fit_id,
+                        "source_key": model_key(current, edit.source_name),
+                        "candidate_key": model_key(current, edit.name),
+                    }
+                else:
+                    append_sources.pop(edit.name, None)
             return snapshot()
 
     @app.post("/api/models/{name}/reduce", status_code=202)
@@ -799,6 +985,28 @@ def create_app(
             if problems:
                 raise HTTPException(422, "; ".join(problems))
             try:
+                source_info = append_sources.get(name)
+                if source_info is not None:
+                    if source_info["candidate_key"] != model_key(current, name):
+                        raise ValueError(
+                            "Append settings changed. Save the candidate again."
+                        )
+                    source_name = source_info["source_name"]
+                    source_path = jobs.artifact(current, source_name)
+                    if (
+                        source_path.name != source_info["source_fit_id"]
+                        or model_key(current, source_name) != source_info["source_key"]
+                    ):
+                        raise ValueError(
+                            "The starting fit changed. Save the append again."
+                        )
+                    return jobs.start(
+                        deepcopy(current),
+                        raw.clone(),
+                        name,
+                        source_fit=source_path,
+                        frozen_source_name=source_name,
+                    )
                 return jobs.start(deepcopy(current), raw.clone(), name)
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
@@ -822,6 +1030,8 @@ def create_app(
                 result = jobs.result(current, name)
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
+            if result.get("stack"):
+                return result
             return {
                 **{k: v for k, v in result.items() if k != "tables"},
                 "table_index": [
@@ -846,6 +1056,351 @@ def create_app(
                     for key, table in result.get("pair_tables", {}).items()
                 ],
             }
+
+    def stack_artifact(name: str) -> tuple[Project, pl.DataFrame, Any]:
+        with lock:
+            try:
+                source = jobs.artifact(current, name)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            saved, saved_raw = deepcopy(current), raw.clone()
+        with (source / "fit.pkl").open("rb") as handle:
+            fitted = pickle.load(handle)  # private artifact from our fit worker
+        if fitted.name != name or getattr(fitted, "stack", None) is None:
+            raise HTTPException(404, "This fitted model is not a component stack.")
+        from easy_glm.workflow.prep import prepare
+
+        return saved, prepare(saved, saved_raw), fitted
+
+    @app.get("/api/stack/{name}/diagnostics")
+    def stack_diagnostic_view(
+        name: str,
+        subset: Literal["train", "holdout"] = "train",
+        variable: str | None = None,
+    ) -> dict[str, Any]:
+        from easy_glm.desktop.fit_worker import json_safe
+        from easy_glm.desktop.stack_views import stack_diagnostics
+
+        try:
+            saved, frame, fitted = stack_artifact(name)
+            return json_safe(
+                stack_diagnostics(
+                    saved, frame, fitted, subset=subset, variable=variable
+                )
+            )
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/stack/{name}/compare")
+    def stack_comparison(
+        name: str, challenger: str, subset: Literal["train", "holdout"] = "train"
+    ) -> dict[str, Any]:
+        from easy_glm.desktop.diagnostic_views import compatible
+        from easy_glm.desktop.fit_worker import json_safe
+        from easy_glm.desktop.stack_views import stack_diagnostics
+        from easy_glm.workflow.diagnostics import totals
+        from easy_glm.workflow.prep import train_holdout
+
+        try:
+            saved, frame, fitted = stack_artifact(name)
+            _other_project, _other_frame, other = stack_artifact(challenger)
+            compatible(fitted, other)
+            train, holdout = train_holdout(frame, saved.data.split)
+            selected = train if subset == "train" else holdout
+            if selected.is_empty():
+                raise ValueError(f"No {subset} rows are available.")
+            actual, expected, weight = totals(
+                selected, fitted.config, fitted.stack.predict_unit(selected)
+            )
+            _actual, other_expected, _weight = totals(
+                selected, other.config, other.predict(selected)
+            )
+            return json_safe(
+                {
+                    "subset": subset,
+                    "model": name,
+                    "challenger": challenger,
+                    "metrics": stack_diagnostics(saved, frame, fitted, subset=subset)[
+                        "metrics"
+                    ],
+                    "challenger_metrics": (
+                        stack_diagnostics(saved, frame, other, subset=subset)["metrics"]
+                        if getattr(other, "stack", None) is not None
+                        else {
+                            "rows": selected.height,
+                            "exposure": float(weight.sum()),
+                            "actual": float(actual.sum()),
+                            "expected": float(other_expected.sum()),
+                            "ae": (
+                                float(actual.sum() / other_expected.sum())
+                                if other_expected.sum() > 0
+                                else None
+                            ),
+                        }
+                    ),
+                    "expected_change": (
+                        float(expected.sum() / other_expected.sum() - 1)
+                        if other_expected.sum() > 0
+                        else None
+                    ),
+                }
+            )
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/stack/{name}/component/{component_id}/table")
+    def stack_component_table(
+        name: str,
+        component_id: str,
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=200, ge=1, le=500),
+    ) -> dict[str, Any]:
+        from easy_glm.core.excel import pair_table_frames, rate_model_tables
+        from easy_glm.desktop.stack_views import lookup_coverage
+        from easy_glm.workflow.prep import train_holdout
+        from easy_glm.workflow.stack_types import LookupScorer, RateModelScorer
+
+        try:
+            saved, frame, fitted = stack_artifact(name)
+            item = fitted.stack.component(component_id)
+            if isinstance(item.scorer, LookupScorer):
+                tables = {"lookup": item.scorer.table}
+            elif isinstance(item.scorer, RateModelScorer):
+                tables = rate_model_tables(item.scorer.rate_model)
+                if item.scorer.rate_model.pair_tables:
+                    tables.update(pair_table_frames(item.scorer.rate_model))
+            else:
+                tables = {}
+            visible = [
+                *fitted.stack.virtual_components,
+                *(
+                    component
+                    for component in fitted.stack.components
+                    if component.kind != "legacy" or not fitted.stack.virtual_components
+                ),
+            ]
+            position = visible.index(item)
+            unit_label = (
+                "Complete unit prediction"
+                if position == 0
+                and item.kind == "catalogue"
+                and not fitted.stack.offset_col
+                else (
+                    "Multiplier on external offset"
+                    if position == 0 and item.kind == "catalogue"
+                    else "Incremental multiplier"
+                )
+            )
+            return {
+                "id": item.recipe.component_id,
+                "name": item.name,
+                "kind": item.kind,
+                "editable": isinstance(item.scorer, LookupScorer),
+                "unit_label": unit_label,
+                "coverage": (
+                    lookup_coverage(
+                        item.scorer, train_holdout(frame, saved.data.split)[0]
+                    )
+                    if isinstance(item.scorer, LookupScorer)
+                    else None
+                ),
+                "evidence": item.evidence,
+                "tables": [
+                    {
+                        "name": key,
+                        "columns": table.columns,
+                        "rows": table.slice(offset, limit).to_dicts(),
+                        "total": table.height,
+                        "offset": offset,
+                    }
+                    for key, table in tables.items()
+                ],
+                "message": (
+                    "Direct CatBoost trees have no editable rate table."
+                    if not tables
+                    else ""
+                ),
+            }
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/stack/{name}/export/{component_id}")
+    def stack_component_export(name: str, component_id: str) -> Response:
+        from easy_glm.workflow.project import safe_filename
+        from easy_glm.workflow.stack_types import LookupScorer
+
+        try:
+            _saved, _frame, fitted = stack_artifact(name)
+            item = fitted.stack.component(component_id)
+            if not isinstance(item.scorer, LookupScorer):
+                raise ValueError(
+                    "Only a catalogue lookup can be exported as a rating file."
+                )
+            filename = safe_filename(f"{name}_{item.name}") + ".csv"
+            position = fitted.stack.components.index(item)
+            unit_label = (
+                "Complete unit prediction"
+                if position == 0 and not fitted.stack.offset_col
+                else (
+                    "Multiplier on external offset"
+                    if position == 0
+                    else "Incremental multiplier"
+                )
+            )
+            return Response(
+                item.scorer.table.write_csv(),
+                media_type="text/csv",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "X-EasyGLM-Unit-Label": unit_label,
+                },
+            )
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    def preview_stack_amendment(
+        name: str, component_id: str, edit: StackAmendEdit
+    ) -> tuple[Project, pl.DataFrame, Any, Any, dict[str, Any]]:
+        from easy_glm.workflow.diagnostics import totals
+        from easy_glm.workflow.prep import train_holdout
+        from easy_glm.workflow.stack import amend_stack
+        from easy_glm.workflow.stack_types import LookupScorer
+
+        with lock:
+            check_revision(edit)
+            source = jobs.artifact(current, name)
+            if edit.fit_id is not None and source.name != edit.fit_id:
+                raise ValueError("The fitted model changed. Preview this edit again.")
+        saved, frame, fitted = stack_artifact(name)
+        component = fitted.stack.component(component_id)
+        if not isinstance(component.scorer, LookupScorer):
+            raise ValueError(
+                "Caps and rounding are available for catalogue lookup files."
+            )
+        if edit.operation == "cap":
+            if edit.lower is None and edit.upper is None:
+                raise ValueError("Enter a lower or upper cap.")
+            if edit.lower is not None and edit.lower <= 0:
+                raise ValueError("The lower cap must be positive.")
+            if edit.upper is not None and edit.upper <= 0:
+                raise ValueError("The upper cap must be positive.")
+            if (
+                edit.lower is not None
+                and edit.upper is not None
+                and edit.lower > edit.upper
+            ):
+                raise ValueError("The lower cap cannot exceed the upper cap.")
+        elif edit.decimals is None:
+            raise ValueError("Choose the number of decimal places.")
+        train, _holdout = train_holdout(frame, saved.data.split)
+        amended = amend_stack(
+            saved,
+            train,
+            fitted,
+            component_id,
+            edit.operation,
+            lower=edit.lower,
+            upper=edit.upper,
+            decimals=edit.decimals,
+            refit_later=False,
+        )
+        old_table = component.scorer.table
+        new_table = amended.stack.component(component_id).scorer.table
+        old_values = old_table["multiplier"].cast(pl.Float64).to_numpy()
+        new_values = new_table["multiplier"].cast(pl.Float64).to_numpy()
+        _actual, old_expected, _weight = totals(
+            train, fitted.config, fitted.predict(train)
+        )
+        _actual, new_expected, _weight = totals(
+            train, amended.config, amended.predict(train)
+        )
+        key = component.scorer.key
+        changed = np.flatnonzero(~np.isclose(old_values, new_values, rtol=0, atol=0))
+        detail = {
+            "component_id": component_id,
+            "changed_rows": int(changed.size),
+            "expected_before": float(old_expected.sum()),
+            "expected_after": float(new_expected.sum()),
+            "sample_rows": [
+                {
+                    "key": old_table[key][int(index)],
+                    "before": float(old_values[index]),
+                    "after": float(new_values[index]),
+                }
+                for index in changed[:20]
+            ],
+            "refit_later": edit.refit_later,
+            "preview_basis": (
+                "Later components kept fixed; refit is performed after Apply"
+                if edit.refit_later
+                else "Complete accepted scorer on training rows"
+            ),
+        }
+        return saved, frame, fitted, amended, detail
+
+    @app.post("/api/stack/{name}/component/{component_id}/preview")
+    def preview_stack_component(
+        name: str, component_id: str, edit: StackAmendEdit
+    ) -> dict[str, Any]:
+        try:
+            _saved, _frame, _fitted, _amended, detail = preview_stack_amendment(
+                name, component_id, edit
+            )
+            return detail
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/stack/{name}/component/{component_id}/apply")
+    def apply_stack_component(
+        name: str, component_id: str, edit: StackAmendEdit
+    ) -> dict[str, Any]:
+        nonlocal current, revision
+        from easy_glm.desktop.fit_worker import json_safe
+        from easy_glm.desktop.stack_views import stack_result
+        from easy_glm.workflow.project import validate_model_name
+
+        try:
+            saved, frame, _fitted, amended, detail = preview_stack_amendment(
+                name, component_id, edit
+            )
+            if not edit.new_name:
+                raise ValueError("Name the reviewed model checkpoint.")
+            problem = validate_model_name(edit.new_name, saved.models)
+            if problem:
+                raise ValueError(problem)
+            candidate = deepcopy(saved)
+            candidate.models[edit.new_name] = amended.config
+            amended.name = edit.new_name
+            amended.project_snapshot = candidate.to_dict()
+            with lock:
+                check_revision(edit)
+                if edit.refit_later:
+                    source_fit = jobs.artifact(current, name)
+                    queued = jobs.start(
+                        deepcopy(candidate),
+                        raw.clone(),
+                        edit.new_name,
+                        amendment={
+                            "component_id": component_id,
+                            "operation": edit.operation,
+                            "lower": edit.lower,
+                            "upper": edit.upper,
+                            "decimals": edit.decimals,
+                        },
+                        source_fit=source_fit,
+                    )
+                    current = candidate
+                    revision += 1
+                    return {"snapshot": snapshot(), "job": queued, "preview": detail}
+                result = json_safe(stack_result(candidate, frame, amended))
+                published = jobs.publish_stack(
+                    candidate, raw.clone(), edit.new_name, amended, result
+                )
+                current = candidate
+                revision += 1
+                return {"snapshot": snapshot(), "job": published, "preview": detail}
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @app.get("/api/results/{name}/table")
     def result_table(

@@ -46,6 +46,7 @@ from .project import (
     pair_time_limit_seconds,
     premium_offset_column,
 )
+from .stack_types import StackScorer
 
 #: sentinel for "keep the model config's own base-rate override"
 _KEEP: Any = object()
@@ -248,15 +249,21 @@ class ModelRun:
     dropped_predictors: list[str] = field(default_factory=list)
     #: Ordered frozen CatBoost pair tables and their fold-local selection evidence.
     pair_stages: list[Any] = field(default_factory=list)
+    #: Ordered accepted scorer for new mixed models. Legacy models leave this null.
+    stack: StackScorer | None = None
 
     def predict(self, df: pl.DataFrame) -> np.ndarray:
         """Per-unit predictions from the (possibly adjusted) rate model."""
+        if self.stack is not None:
+            return self.stack.predict_unit(df)
+        if self.rate_model is None:
+            raise RuntimeError("A legacy run has no rate model scorer")
         return self.rate_model.predict(df, exposure_col=None)
 
     @property
     def alpha(self) -> float:
         """Stage 1's penalty — the one that fitted the main effects."""
-        return self.fit.alpha
+        return self.fit.alpha if self.fit is not None else float("nan")
 
     @property
     def alpha_stage2(self) -> float | None:
@@ -267,9 +274,24 @@ class ModelRun:
     @property
     def cells_kept(self) -> int:
         """Cell columns the second stage fitted (cells with enough exposure)."""
-        return sum(len(e.cells) for e in self.spec.interactions)
+        return (
+            sum(len(e.cells) for e in self.spec.interactions)
+            if self.spec is not None
+            else 0
+        )
 
     def summary(self) -> dict[str, Any]:
+        if self.stack is not None:
+            return {
+                "name": self.name,
+                "family": self.config.family,
+                "components": [item.recipe.to_dict() for item in self.stack.components],
+                "train_rows": self.train_rows,
+                "holdout_rows": self.holdout_rows,
+                "created_at": self.created_at,
+            }
+        if self.fit is None or self.spec is None:
+            raise RuntimeError("A legacy run is missing its fitted GLM")
         h = self.metrics.get("holdout", {})
         t = self.metrics.get("train", {})
         return {
@@ -437,10 +459,15 @@ def run_model(
     it with no intercept and stage 1's linear predictor as the offset. Main
     rate tables and the base rate therefore never move when an interaction is
     added, and every cell is a pure adjustment (1.00 = none)."""
+    cfg = project.models[model_name]
+    if cfg.components:
+        from .stack import fit_stack
+
+        train, _holdout = train_holdout(df, project.data.split)
+        return fit_stack(project, train, cfg, progress=progress)
     problems = project.validate(model_name)
     if problems:
         raise ValueError("Project is not valid:\n- " + "\n- ".join(problems))
-    cfg = project.models[model_name]
     if frozen_pair_prefix and not cfg.pair_stages:
         raise ValueError("A frozen pair prefix needs configured pair stages")
     if frozen_pair_rate_model is not None and frozen_pair_prefix is None:

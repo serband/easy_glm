@@ -22,6 +22,7 @@ from easy_glm.workflow.project import (
     premium_offset_column,
     validate_model_name,
 )
+from easy_glm.workflow.stack_types import ComponentRecipe
 
 
 class Revision(BaseModel):
@@ -33,6 +34,8 @@ class Revision(BaseModel):
 class ModelEdit(Revision):
     name: str
     create: bool = False
+    source_name: str | None = None
+    source_fit_id: str | None = None
     fields: dict[str, Any] = Field(default_factory=dict)
     designs: dict[
         str, Literal["step", "linear", "continuous", "categorical"] | None
@@ -116,7 +119,8 @@ def setup_info(project: Project, raw: pl.DataFrame) -> dict[str, Any]:
     if not project.target:
         problems.append("Assign a target role on Variables and apply it.")
     if not project.predictors and not any(
-        config.pair_stages for config in project.models.values()
+        config.pair_stages or getattr(config, "components", ())
+        for config in project.models.values()
     ):
         problems.append("Assign at least one predictor role on Variables and apply it.")
     pair_search_preflight = {
@@ -139,6 +143,21 @@ def setup_info(project: Project, raw: pl.DataFrame) -> dict[str, Any]:
         for name, config in project.models.items()
         if config.pair_stages
     }
+    eligible_groups = pair_candidate_groups(project, raw, prepared_columns)
+    base_stack_factors = sorted(
+        set(eligible_groups["predictors"]) | set(eligible_groups["unassigned"]),
+        key=str.casefold,
+    )
+    stack_candidates: dict[str, list[list[str]]] = {}
+    for model_name, config in project.models.items():
+        available = set(base_stack_factors)
+        stages = []
+        for component in getattr(config, "components", ()):
+            stages.append(sorted(available, key=str.casefold))
+            if component.kind == "catalogue":
+                available.update(component.factors)
+        stages.append(sorted(available, key=str.casefold))
+        stack_candidates[model_name] = stages
     return {
         "columns": columns,
         "split": asdict(project.data.split),
@@ -146,7 +165,9 @@ def setup_info(project: Project, raw: pl.DataFrame) -> dict[str, Any]:
         "problems": problems,
         "models": project.to_dict()["models"],
         "predictors": project.predictors,
-        "pair_candidates": pair_candidate_groups(project, raw, prepared_columns),
+        "pair_candidates": eligible_groups,
+        "stack_candidates": stack_candidates,
+        "stack_base_candidates": base_stack_factors,
         "target": project.target,
         "weight": project.weight,
         "offset": project.offset_column,
@@ -319,6 +340,7 @@ def edit_model(project: Project, edit: ModelEdit) -> Project:
         "pair_method",
         "pair_time_limit_minutes",
         "pair_stages",
+        "components",
         "penalty",
         "tweedie_power",
         "base",
@@ -332,6 +354,12 @@ def edit_model(project: Project, edit: ModelEdit) -> Project:
             _edit_interactions(cfg, value)
         elif key == "pair_stages":
             _edit_pair_stages(cfg, value)
+        elif key == "components":
+            if not isinstance(value, list) or not all(
+                isinstance(item, dict) for item in value
+            ):
+                raise ValueError("Components must be an ordered list of recipes.")
+            cfg.components = [ComponentRecipe.from_dict(item) for item in value]
         elif key == "penalty":
             if not isinstance(value, dict) or set(value) - {
                 "alpha",

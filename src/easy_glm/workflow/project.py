@@ -22,6 +22,8 @@ from uuid import uuid4
 
 from easy_glm.engine.models import INTERACTION_SEP
 
+from .stack_types import ComponentRecipe
+
 
 def _is_finite_number(value: Any) -> bool:
     """Whether ``value`` is a real, finite number.
@@ -141,7 +143,7 @@ def safe_filename(name: str, fallback: str = "model") -> str:
     return cleaned[:80] if re.search(r"\w", cleaned) else fallback
 
 
-PROJECT_VERSION = 3  # v3 adds ordered CatBoost pair-stage configuration
+PROJECT_VERSION = 4  # v4 adds ordered multiplicative components
 
 ROLES = (
     "target",
@@ -438,6 +440,7 @@ class ModelConfig:
     pair_method: str = "legacy_glm"
     pair_time_limit_minutes: float = 15.0
     pair_stages: list[PairStageConfig] = field(default_factory=list)
+    components: list[ComponentRecipe] = field(default_factory=list)
     base: str = "modal"
     base_rate_override: float | None = None
     adjustments: list[Adjustment] = field(default_factory=list)
@@ -1022,8 +1025,66 @@ class Project:
                     f"{name}: l1_ratio must be between 0 (ridge) and 1 (lasso), "
                     f"got {cfg.penalty.l1_ratio!r}"
                 )
-            if not cfg.predictors and cfg.pair_method == "legacy_glm":
+            if (
+                not cfg.predictors
+                and not cfg.components
+                and cfg.pair_method == "legacy_glm"
+            ):
                 problems.append(f"{name}: no predictors")
+            if cfg.components:
+                if cfg.family not in (
+                    "poisson",
+                    "tweedie",
+                    "gaussian",
+                ) or cfg.link not in (
+                    ("log",) if cfg.family == "gaussian" else (None, "log")
+                ):
+                    problems.append(
+                        f"{name}: stacks require Poisson, Tweedie or Gaussian with log link"
+                    )
+                component_ids = [item.component_id for item in cfg.components]
+                if any(not value.strip() for value in component_ids) or len(
+                    component_ids
+                ) != len(set(component_ids)):
+                    problems.append(
+                        f"{name}: component IDs must be nonblank and unique"
+                    )
+                for item in cfg.components:
+                    if item.kind == "legacy":
+                        source_name = item.settings.get("model_name")
+                        source = (
+                            self.models.get(source_name)
+                            if isinstance(source_name, str)
+                            else None
+                        )
+                        if (
+                            source_name == name
+                            or source is None
+                            or source.components
+                            or item.component_id != "legacy"
+                        ):
+                            problems.append(
+                                f"{name}: legacy adapter must reference another existing legacy model"
+                            )
+                    elif item.kind not in (
+                        "glm",
+                        "catboost",
+                        "interaction",
+                        "catalogue",
+                    ):
+                        problems.append(
+                            f"{name}: unsupported component kind {item.kind!r}"
+                        )
+                    if item.kind != "catalogue":
+                        forbidden = [
+                            factor
+                            for factor in item.factors
+                            if factor in (cfg.target, cfg.weight, cfg.offset)
+                        ]
+                        if forbidden:
+                            problems.append(
+                                f"{name}: component {item.name!r} uses response/weight/offset as predictors: {forbidden}"
+                            )
             bad = [p for p in cfg.predictors if self.data.roles.get(p) != "predictor"]
             if bad:
                 problems.append(f"{name}: not predictor-role columns: {bad}")
@@ -1256,12 +1317,16 @@ class Project:
         d = asdict(self)
         # Keep ordinary legacy projects readable by version-2 installations.
         d["version"] = (
-            3
-            if any(
-                m.pair_method == "sequential_catboost" or m.pair_stages
-                for m in self.models.values()
+            4
+            if any(m.components for m in self.models.values())
+            else (
+                3
+                if any(
+                    m.pair_method == "sequential_catboost" or m.pair_stages
+                    for m in self.models.values()
+                )
+                else 2
             )
-            else 2
         )
         for m in d["models"].values():
             if m["pair_stages"]:
@@ -1344,6 +1409,9 @@ class Project:
                 _build(Interaction, it, f"models[{name!r}].interactions")
                 for it in m.pop("interactions", [])
             ]
+            components = [
+                ComponentRecipe.from_dict(item) for item in m.pop("components", [])
+            ]
             pair_stages = []
             raw_stages = m.pop("pair_stages", [])
             if not isinstance(raw_stages, list):
@@ -1414,6 +1482,7 @@ class Project:
                         "sequential_catboost" if pair_stages else "legacy_glm",
                     ),
                     "pair_stages": pair_stages,
+                    "components": components,
                 },
                 f"models[{name!r}]",
             )
