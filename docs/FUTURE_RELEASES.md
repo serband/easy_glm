@@ -14,8 +14,12 @@ mean a feature has been built or assigned a release version.
 
 **Planning only.** See [the proposed workflow and build plan](plans/STACKED_MODELS.md).
 
-- Start with either a GLM or CatBoost. Fit another GLM or CatBoost against its
-  predictions, keeping the earlier model fixed.
+- Allow any ordering or repetition of supported multiplicative components:
+  GLMs, CatBoost models, interaction tables and rating-file lookups. The vehicle
+  then occupation sequence is an example, not a required order.
+- Fit each new component against the complete preceding prediction, keeping
+  earlier components fixed. A correction-only first component gets an internal
+  fitted baseline without requiring a separate user-built GLM.
 - Combine main effects, separate interaction tables, and vehicle, occupation
   or postcode components in the order chosen by the modeller.
 - Fit every new component against the complete preceding model, using the

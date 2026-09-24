@@ -2,12 +2,14 @@
 
 **Proposed design — not implemented or approved for building.**
 
-Fit a model, keep it fixed, and fit the next model against what the complete
-fitted model already predicts. Either a GLM or CatBoost can come first. Vehicle,
-occupation and postcode components can become rating files used as single
-lookup factors.
+**The core requirement is any ordering or repetition of compatible
+multiplicative components.** Fit a model, keep it fixed, then fit the next
+component against the complete prediction so far. GLMs, CatBoost models,
+interaction tables and catalogue lookups follow the same stacking rules.
+Vehicle, occupation and postcode files are examples of components, not fixed
+positions in a prescribed workflow.
 
-The first acceptance workflow is:
+One acceptance workflow is:
 
 1. Fit the main GLM and inspect A/E and relativities.
 2. Add two CatBoost interactions, each deployed as its own existing pair table.
@@ -18,8 +20,15 @@ The first acceptance workflow is:
 6. Inspect the complete model, request holdout validation, and export the
    component files and combined scorer.
 
-The same structure must support CatBoost alone, CatBoost followed by a GLM,
-and another GLM or interaction after a catalogue component.
+The same structure must support, for example:
+
+- GLM → CatBoost → GLM → CatBoost.
+- CatBoost → GLM → interaction table → vehicle component.
+- Vehicle component → occupation component → GLM → postcode component.
+- A single supported component used on its own.
+
+There is no architecture rule limiting how many components of a type may
+appear or requiring all GLMs, interactions or rating files to sit together.
 
 ## What a component means
 
@@ -41,14 +50,30 @@ power: fitting vehicle before occupation gives vehicle the first opportunity
 to explain that part of the risk. Reordering requires new fits from the first
 changed position onwards.
 
-A GLM or CatBoost starts the sequence, either as a direct model or as a
-catalogue component. A pair interaction is a correction and requires an
-existing model.
+Any supported component may start the sequence. If it only learns a correction
+(such as a pair interaction), fit a training-only intercept baseline internally
+and build on that, including any declared external offset. Do not require the
+user to build a separate GLM merely to satisfy a GLM-first implementation.
+Save the baseline with the resulting model and reproduce it during validation.
 
 Earlier named models remain available for comparison. An append, refit, band
 change or catalogue replacement must never change them.
 
 ## Fitting and scoring rules
+
+Multiplicative compatibility means a positive, finite starting prediction and
+positive, finite correction multipliers on the same response scale:
+
+```text
+complete unit prediction = starting prediction × correction 1 × correction 2 × ...
+```
+
+Each newly fitted component supplies its incremental correction, not another
+complete prediction to multiply in. Two independently fitted full predictions
+cannot simply be multiplied together and called an offset fit. Check units,
+target definition and exposure treatment before appending a component. Being
+positive alone is not sufficient; for example, odds and unit claim frequencies
+are not interchangeable.
 
 One stack shares its target definition, family, link, Tweedie power where
 relevant, weights, exposure convention and training/holdout split. Each
@@ -357,6 +382,9 @@ owns response semantics and sums contributions once.
 Reuse existing GLM tables, pair fitting/conversion, review tools and fold-specific
 fitting. Generalize the GLM-first runner, pair-only configuration, single-fit
 metadata and persistence; do not overload `pair_stages` with unrelated models.
+Check compatibility through each component's scoring and fitting contract,
+not a hard-coded list of allowed model-order combinations. Adding a supported
+component type must not require redesigning which types may precede or follow it.
 
 Use JSON for recipes and a versioned fitted bundle. Include direct CatBoost
 assets where required. Lookup-only stacks score without CatBoost or the original
@@ -392,6 +420,9 @@ Required checks:
 | --- | --- |
 | Append/refit | Preceding named models unchanged |
 | GLM → CatBoost → GLM; CatBoost → pair → GLM | No hidden GLM-first requirement |
+| Repeated/interleaved GLMs, CatBoost, pairs and lookups | Same offset contract regardless of position or type |
+| Correction-only component first | Internal fitted baseline retained in scoring, folds and export |
+| Incompatible units or invalid multipliers | Clear rejection before fitting/scoring, never a silently changed objective |
 | External offset plus several components | Offset included once |
 | Same risk with exposures 0.5 and 2 | Unit score unchanged; amount scales once |
 | Amend pair/vehicle table before next fit | Next offset uses amendment, not teacher |
