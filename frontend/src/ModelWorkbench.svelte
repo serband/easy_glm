@@ -23,12 +23,18 @@
         comparisonKey = '',
         sentContext = '',
         readingComparison = false;
+    $: legacyNames = wb
+        ? Object.keys(wb.models).filter((name) => !wb.models[name]?.components?.length)
+        : [];
     $: effectiveChallenger =
-        view === 'compare' && comparison !== selected && jobs[comparison]?.applicable
+        view === 'compare' &&
+        legacyNames.includes(comparison) &&
+        comparison !== selected &&
+        jobs[comparison]?.applicable
             ? comparison
             : '';
     $: context = JSON.stringify({
-        fitted: Object.keys(jobs).filter((n) => jobs[n].applicable),
+        fitted: legacyNames.filter((name) => jobs[name]?.applicable),
         selected,
         champion: wb?.champion,
     });
@@ -454,14 +460,19 @@
         const keepDraft = keep && dirty;
         try {
             wb = await api('workbench');
+            const names = Object.keys(wb.models).filter(
+                (name) => !wb.models[name]?.components?.length,
+            );
             jobs = wb.jobs;
             known = wb.session_id + ':' + wb.revision;
             loaded = true;
-            if (selected !== '__new__' && !wb.models[selected])
-                selected = Object.keys(wb.models)[0] || '__new__';
-            if (!cfg && Object.keys(wb.models).length)
+            if (selected !== '__new__' && !names.includes(selected))
+                selected = names[0] || '__new__';
+            if (!cfg && names.length)
                 selected =
-                    wb.champion && wb.models[wb.champion] ? wb.champion : Object.keys(wb.models)[0];
+                    wb.champion && names.includes(wb.champion)
+                        ? wb.champion
+                        : names[0];
             if (!keepDraft || !cfg) pickModel();
             else
                 notice =
@@ -480,7 +491,7 @@
             jobs = await api('jobs');
             const completed = JSON.stringify(
                 Object.entries(jobs)
-                    .filter(([, job]) => job.applicable)
+                    .filter(([name, job]) => legacyNames.includes(name) && job.applicable)
                     .map(([name, job]) => [name, job.id])
                     .sort(([a], [b]) => a.localeCompare(b)),
             );
@@ -767,7 +778,7 @@
                     bind:value={selected}
                     onchange={chooseModel}
                     >{#if view !== 'compare'}<option value="__new__">Create a new model</option
-                        >{/if}{#each Object.keys(wb.models).filter((n) => view !== 'compare' || jobs[n]?.applicable) as name}<option
+                        >{/if}{#each legacyNames.filter((name) => view !== 'compare' || jobs[name]?.applicable) as name}<option
                             value={name}>{name}</option
                         >{/each}</select
                 ></label
@@ -778,7 +789,7 @@
                 <label
                     >Challenger<select aria-label="Compare with challenger" bind:value={comparison}
                         ><option value="">None</option
-                        >{#each Object.keys(jobs).filter((n) => n !== selected && jobs[n].applicable) as name}<option
+                        >{#each legacyNames.filter((name) => name !== selected && jobs[name]?.applicable) as name}<option
                                 value={name}>{name}</option
                             >{/each}</select
                     ></label

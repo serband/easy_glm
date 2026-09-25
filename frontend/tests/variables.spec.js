@@ -1,5 +1,39 @@
 import { test, expect } from '@playwright/test';
 
+test('unchanged Variables preview explains completion and continues to Model', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
+    await expect(page.getByRole('status').filter({ hasText: 'No variable changes to apply' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Continue to Model', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Model design and fit', exact: true })).toBeVisible();
+});
+
+test('stack-only project opens the stacked workflow and keeps single-model creation available', async ({ page }) => {
+    await page.route('**/api/workbench', async (route) => {
+        const response = await route.fetch();
+        const workbench = await response.json();
+        const template = Object.values(workbench.models)[0];
+        workbench.models = {
+            'Stack candidate': {
+                ...template,
+                components: [{ component_id: 'stage-1', name: 'First GLM', kind: 'glm', factors: ['DriverAge'], settings: {}, amendments: [] }],
+            },
+        };
+        workbench.champion = 'Stack candidate';
+        workbench.jobs = {};
+        await route.fulfill({ response, json: workbench });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
+    await page.getByRole('button', { name: 'Continue to Model', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Build a stacked model' })).toHaveClass(/chosen/);
+    await page.getByRole('button', { name: 'Single model' }).click();
+    await expect(page.getByLabel('Model selection')).toHaveValue('__new__');
+    await expect(page.getByLabel('Model selection').locator('option')).toHaveCount(1);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
 test('bidirectional roles, name/type preservation, invalid reset and explicit apply', async ({
     page,
 }) => {
@@ -35,6 +69,7 @@ test('bidirectional roles, name/type preservation, invalid reset and explicit ap
     await expect(page.getByLabel('Type for DriverAge', { exact: true })).toHaveValue('categorical');
     expect(requests.length).toBe(base); // draft edits and view changes are browser-local
     await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
+    await expect(page.locator('.editor-card > .preview-card')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeEnabled();
     await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
     await expect(page.getByRole('status')).toContainText('Settings applied');
@@ -86,7 +121,7 @@ test('singleton reassignment updates old row and invalid duplicate is refused', 
 
 test('pending preview freezes the draft until its result is reviewable', async ({ page }) => {
     await page.goto('/');
-    await page.getByLabel('Role for Region', { exact: true }).selectOption('predictor');
+    await page.getByLabel('Role for Region', { exact: true }).selectOption('ignore');
     let release;
     await page.route('**/api/variables/preview', async (route) => {
         await new Promise((resolve) => {

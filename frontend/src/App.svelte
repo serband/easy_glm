@@ -14,6 +14,7 @@
     let view = 'variables',
         resultsReady = false;
     let stackMode = false;
+    let workflowModeChosen = false;
     function modelState(snapshot) {
         const keepDraft = dirty;
         const variablesChanged =
@@ -41,6 +42,21 @@
     let projectInfo = null,
         projectError = '';
     async function navigate(next) {
+        if (
+            !workflowModeChosen &&
+            ['model', 'diagnostics', 'compare', 'tables', 'export'].includes(next) &&
+            state?.columns.length
+        ) {
+            try {
+                const workbench = await api('workbench');
+                const models = Object.values(workbench.models || {});
+                if (models.length && models.every((model) => model.components?.length))
+                    stackMode = true;
+                workflowModeChosen = true;
+            } catch (e) {
+                error = e.message;
+            }
+        }
         view = next;
         if (next === 'project' || next === 'export') {
             try {
@@ -62,6 +78,7 @@
         binningReset = 0,
         notice = '',
         busy = false,
+        reviewing = false,
         preview = null,
         scrollTop = 0;
     let exploreRequest = { name: '', id: 0 };
@@ -581,6 +598,8 @@
             const fresh = await response.json();
             if (!response.ok) throw responseError(fresh, 'Cannot load the local project.');
             state = fresh;
+            workflowModeChosen = false;
+            stackMode = false;
             differentProject = false;
             reset();
             notice = '';
@@ -599,6 +618,8 @@
         // The POST already replaced the server project. Adopt its confirmed snapshot
         // before any fallible refresh, so old drafts can never masquerade as new data.
         state = opened;
+        workflowModeChosen = false;
+        stackMode = false;
         differentProject = false;
         reset();
         notice = '';
@@ -644,6 +665,7 @@
             return;
         }
         busy = true;
+        reviewing = true;
         error = '';
         const reviewed = JSON.stringify([
             state.session_id,
@@ -670,6 +692,7 @@
         } catch (e) {
             error = e.message;
         } finally {
+            reviewing = false;
             busy = false;
         }
     }
@@ -894,6 +917,50 @@
                                     >Preview changes</button
                                 >
                             </div>
+                            {#if reviewing}<p class="preview-feedback" role="status">Checking variable changes…</p>
+                            {:else if preview?.changes.length === 0}<div class="preview-feedback" role="status">
+                                    No variable changes to apply. Your current settings are ready for a model.
+                                    <button type="button" onclick={() => navigate('model')}>Continue to Model</button>
+                                </div>
+                            {:else if preview?.changes.length}<p class="preview-feedback" role="status">
+                                    {preview.changes.length} changes ready to review.
+                                </p>{/if}
+                            {#if preview?.changes.length}<section class="preview-card" id="variable-preview">
+                                    <div class="preview-title">
+                                        <strong>{preview.changes.length} variable changes</strong
+                                        ><button
+                                            class="primary"
+                                            disabled={busy || differentProject || !!binningError}
+                                            onclick={apply}>Apply changes</button
+                                        >
+                                    </div>
+                                    <div
+                                        class="preview-list"
+                                        onscroll={(e) => (previewScroll = e.currentTarget.scrollTop)}
+                                    >
+                                        <div
+                                            style:height={preview.changes.length * 34 + 'px'}
+                                            style:position="relative"
+                                        >
+                                            <div
+                                                style:position="absolute"
+                                                style:width="100%"
+                                                style:transform={'translateY(' + previewStart * 34 + 'px)'}
+                                            >
+                                                {#each preview.changes.slice(previewStart, previewStart + 18) as change}
+                                                    <div class="preview-change">
+                                                        <b>{change['raw column']}</b><span
+                                                            >{change.name}</span
+                                                        ><span>{change.role}</span><span
+                                                            >{change.type}</span
+                                                        >
+                                                    </div>
+                                                {/each}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    {#each preview.notices as item}<p>{item[1]}</p>{/each}
+                                </section>{/if}
                             {#if tab === 'table'}
                                 <div class="filterbar">
                                     <input
@@ -1123,47 +1190,6 @@
                                 prepare={prepareScreening}
                                 onChange={stageFeatureSelection}
                             />{/if}
-                        {#if preview}<section class="preview-card">
-                                <div class="preview-title">
-                                    <strong>{preview.changes.length} variable changes</strong
-                                    ><button
-                                        class="primary"
-                                        disabled={busy ||
-                                            differentProject ||
-                                            !preview.changes.length ||
-                                            !!binningError}
-                                        onclick={apply}>Apply changes</button
-                                    >
-                                </div>
-                                <div
-                                    class="preview-list"
-                                    onscroll={(e) => (previewScroll = e.currentTarget.scrollTop)}
-                                >
-                                    <div
-                                        style:height={preview.changes.length * 34 + 'px'}
-                                        style:position="relative"
-                                    >
-                                        <div
-                                            style:position="absolute"
-                                            style:width="100%"
-                                            style:transform={'translateY(' +
-                                                previewStart * 34 +
-                                                'px)'}
-                                        >
-                                            {#each preview.changes.slice(previewStart, previewStart + 18) as change}
-                                                <div class="preview-change">
-                                                    <b>{change['raw column']}</b><span
-                                                        >{change.name}</span
-                                                    ><span>{change.role}</span><span
-                                                        >{change.type}</span
-                                                    >
-                                                </div>
-                                            {/each}
-                                        </div>
-                                    </div>
-                                </div>
-                                {#each preview.notices as item}<p>{item[1]}</p>{/each}
-                            </section>{/if}
                     </fieldset>
                 {:else}<div class="loading">Opening local data…</div>{/if}
             </div>
@@ -1205,8 +1231,8 @@
             </section>
             {#if ['model', 'diagnostics', 'compare', 'tables', 'export'].includes(view)}
                 <div class="workflow-mode" role="group" aria-label="Model workflow">
-                    <button class:chosen={!stackMode} onclick={() => (stackMode = false)}>Single model</button>
-                    <button class:chosen={stackMode} onclick={() => (stackMode = true)}>Build a stacked model</button>
+                    <button class:chosen={!stackMode} onclick={() => { stackMode = false; workflowModeChosen = true; }}>Single model</button>
+                    <button class:chosen={stackMode} onclick={() => { stackMode = true; workflowModeChosen = true; }}>Build a stacked model</button>
                 </div>
             {/if}
             {#if view === 'export' && !stackMode}<ExportPanel
@@ -1243,6 +1269,21 @@
 </div>
 
 <style>
+    .preview-feedback {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 12px 15px 4px;
+        color: var(--text);
+        font-size: 13px;
+    }
+    .preview-feedback button {
+        margin-left: 4px;
+    }
+    .editor-card > .preview-card {
+        margin: 12px 15px;
+    }
     .workflow-mode { display: flex; gap: 8px; margin-bottom: 16px; }
     .workflow-mode button.chosen { background: #154b35; color: white; }
     .loaded-dataset {
