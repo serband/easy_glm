@@ -1,38 +1,62 @@
 # Build models with different variables
 
-All models use the project's starting data and train/holdout split. Each new
-stage has its own variable selection. A variable does not need the global
-`predictor` role to be selected here: unassigned columns are available too.
-Targets, weights, IDs, split columns and ignored columns are excluded.
+Open **Model → Build a model in stages**. Choose a model from the list to work
+on it. Its variables, settings and fitting controls appear together. **Show model
+map** opens the connections between models when you want to see the whole flow.
 
-Open **Model → Build a stacked model** to see the model flow.
+All models use the project's starting data and train/holdout split. Each addition
+has its own variable selection. Predictor and unassigned columns are available;
+targets, weights, IDs, split columns, offsets and ignored columns are excluded.
 
-1. Choose **Add standalone model**. Name the model and its first stage, choose
-   GLM or CatBoost, select its variables, then save and fit.
-2. On a fitted card, choose **Add model after this**. Select the new stage's
-   variables and settings. Its offset is the complete fitted model on that card,
-   including earlier accepted interaction tables, catalogue files and amendments.
-3. Repeat to add further stages. For example, a main GLM can feed a vehicle
-   CatBoost model, which then feeds an occupation model or another GLM.
-4. Choose **Create alternative** on a child to try different variables or settings
-   against the same fitted parent. The last stage is copied into the editor;
-   the original named model remains unchanged.
+## Fit a model
 
-Search the variable list to find a column. **Show selected** displays the current
-selection even when it does not match the search. GLMs and interaction tables use
-the shared bands on **Variables**. CatBoost uses raw input values.
+1. Choose **New standalone model** and give it a name.
+2. Choose GLM or CatBoost, select its variables and set the fitting options.
+3. Click **Fit model**. This saves those settings and starts fitting.
 
-Click a model card to inspect that complete model. Expand **Full recipe** to see
-every component. Selecting a card does not replace an unfinished stage draft;
-the add and alternative buttons explicitly start a new draft.
+**Save draft** saves settings without fitting. Selecting a saved draft opens its
+editor. If you leave an unsaved draft, choose **Keep editing**, **Save draft** or
+**Discard changes**.
 
-A connection records the fitted parent used to build a candidate. Refitting a
-parent does not change its existing children. When that exact parent fit is no
-longer available, the connection is marked historical. **Rebuild full model**
-fits the child's saved recipe afresh, including its earlier stages. It does not
-reuse the historical parent. Saving project JSON preserves the recipe and these
-connections; JSON alone does not contain fitted model artifacts.
+Search the available variables to find a column. The selected variables stay
+visible and alphabetical while you search. GLMs and interaction tables use the
+shared numeric bands on **Variables**. Direct CatBoost models use raw columns.
 
-Existing single models remain available in **Single model**. Older multi-stage
-models without parent information can be extended after fitting. Their alternative
-action is disabled because the original parent cannot be identified safely.
+## Add a model after another model
+
+Select a fitted model and click **Add model after this**. Choose the new addition's
+variables and settings, then click **Fit model**. Its offset is the selected
+model's complete fitted score, including earlier interaction tables, catalogue
+files and applied amendments.
+
+For example, fit a main GLM, add a vehicle CatBoost model after it, then add an
+occupation model after the vehicle model. The occupation model uses both earlier
+parts as its offset. Their variables remain separate and their fitted values stay
+fixed.
+
+## Revise a fitted model
+
+Fitted settings are read-only. Choose **Revise model** to copy the last addition
+into a new named draft. A child revision uses the same exact fitted parent; a
+standalone revision starts on its own. Change its variables or settings and fit
+the new version. The original model and its existing children stay unchanged.
+
+To change an earlier part of the sequence, select that earlier named model and
+revise it there. Inherited components cannot be edited inside a child.
+
+## Inspect and export
+
+A fitted model opens on **Results**. **Settings** shows its saved recipe.
+**Inspect actual versus expected**, **Compare**, **Inspect and amend tables** and
+**Export** use that selected complete model. Training results are labelled
+in-sample; holdout evaluation appears only when you request it. Table changes
+still require a preview and explicit application as a new named model.
+
+An unavailable original parent does not stop you inspecting or extending a child
+whose own complete fit is available. It does prevent revising that child's last
+addition against the missing parent. If the child's own fit is unavailable,
+**Create and fit a new copy** fits its full saved recipe again under a new name.
+
+Project JSON stores model settings and connections; it does not contain fitted
+model artifacts. Use the fitted scorer export to preserve a deployable model.
+The existing **Single model** workflow remains available.

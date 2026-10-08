@@ -36,6 +36,9 @@ Implemented in Python and the workbench, with software, statistical and actuaria
 - Show named models in a visual flow. Extend a complete fitted model or create
   an alternative from the same parent, keeping earlier fits unchanged. Preserve
   those connections in project JSON and label historical parents explicitly.
+- Keep the selected model's variables, settings and Fit action together. Save
+  and fit in one click, reopen saved drafts, and revise fitted models as new named
+  versions. Keep the model map available behind a disclosure.
 - Test both GLM → CatBoost and CatBoost → GLM, full-stack validation, lookup
   coverage, save/reload and export parity.
 

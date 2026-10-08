@@ -57,6 +57,7 @@ export function buildModelForest(modelFlow = [], models = {}, jobs = {}) {
 }
 
 export function nodeState(node) {
+    if (node.missing_own_fit || node.status === 'missing_fit') return 'fit unavailable';
     if (node.job?.applicable) return 'fitted';
     if (node.job?.status === 'running' || node.job?.status === 'queued') return node.job.status;
     if (node.fitted) return 'fitted';
@@ -67,6 +68,8 @@ export function nodeState(node) {
 
 export function alternativeBlockedReason(node) {
     const components = node.components || node.model?.components || [];
+    if (node.missing_own_fit || node.status === 'missing_fit') return 'This model’s fitted files are unavailable. Create and fit a new copy of the full model instead.';
+    if (node.revise_available === false) return 'The original parent fit is unavailable, so this last addition cannot be revised.';
     if (node.parent_name && node.edge_status !== 'live') return 'The parent fit is no longer current.';
     if (node.parent_name) return '';
     if (!components.length) return 'A legacy single model has no staged recipe to copy.';

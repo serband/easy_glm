@@ -261,11 +261,20 @@ class FitJobs:
                     )
                 }
                 | {
+                    "artifact_available": self._artifact_available(job),
                     "applicable": job["key"] == model_key(project, name)
-                    and job["status"] == "complete",
+                    and job["status"] == "complete"
+                    and self._artifact_available(job),
                 }
                 for name, job in self.jobs.items()
             }
+
+    def _artifact_available(self, job: dict[str, Any]) -> bool:
+        """Whether the private files needed to score this completed fit remain."""
+        if job.get("status") != "complete" or not isinstance(job.get("id"), str):
+            return False
+        folder = Path(self.folder.name) / job["id"]
+        return (folder / "fit.pkl").is_file() and (folder / "raw.parquet").is_file()
 
     def stage_statuses(self, project: Project) -> dict[str, list[dict[str, Any]]]:
         """Describe the current ordered recipe against the last published fit."""
@@ -662,6 +671,15 @@ class FitJobs:
     def result(self, project: Project, name: str) -> dict[str, Any]:
         with self.lock:
             job = self.jobs.get(name)
+            if (
+                job
+                and job.get("status") == "complete"
+                and job.get("key") == model_key(project, name)
+                and not self._artifact_available(job)
+            ):
+                raise ValueError(
+                    "The fitted model files are no longer available. Fit the model again."
+                )
             if (
                 not job
                 or job["status"] != "complete"

@@ -16,6 +16,31 @@
         resultsReady = false;
     let stackMode = false;
     let workflowModeChosen = false;
+    let stackDraftDirty = false,
+        stackNavigationAttempt = 0,
+        stackNavigationTarget = '';
+    function requestStackNavigation(target) {
+        stackNavigationTarget = target;
+        stackNavigationAttempt += 1;
+    }
+    function resolveStackNavigation(target) {
+        stackDraftDirty = false;
+        if (target === '__single_model__') {
+            stackMode = false;
+            workflowModeChosen = true;
+            return;
+        }
+        navigate(target);
+    }
+    function chooseModelWorkflow(useStack) {
+        if (useStack === stackMode) return;
+        if (stackMode && stackDraftDirty) {
+            requestStackNavigation('__single_model__');
+            return;
+        }
+        stackMode = useStack;
+        workflowModeChosen = true;
+    }
     function modelState(snapshot) {
         const keepDraft = dirty;
         const variablesChanged =
@@ -43,6 +68,10 @@
     let projectInfo = null,
         projectError = '';
     async function navigate(next) {
+        if (stackMode && stackDraftDirty && next !== view) {
+            requestStackNavigation(next);
+            return;
+        }
         if (
             !workflowModeChosen &&
             ['model', 'diagnostics', 'compare', 'tables', 'export'].includes(next) &&
@@ -67,6 +96,13 @@
                 projectError = e.message;
             }
         }
+    }
+    function requestMobilePage(event) {
+        const next = event.currentTarget.value;
+        // Native selects change their displayed value before a guarded navigation
+        // can be accepted. Put it back until `navigate` changes the actual view.
+        event.currentTarget.value = view;
+        navigate(next);
     }
     let state = null,
         draft = null,
@@ -851,6 +887,18 @@
                 <button class="quiet" onclick={download} disabled={!state}>Export project</button>
             </div>
         </header>
+        <label class="mobile-page-selector">Page
+            <select aria-label="Page" value={view} onchange={requestMobilePage}>
+                {#each Object.entries(pageTitles) as [key, title]}
+                    <option
+                        value={key}
+                        disabled={!state ||
+                            (['diagnostics', 'compare', 'tables'].includes(key) && !resultsReady)}
+                        >{title}</option
+                    >
+                {/each}
+            </select>
+        </label>
         <main>
             <div hidden={view !== 'variables'}>
                 <div class="heading">
@@ -1232,8 +1280,8 @@
             </section>
             {#if ['model', 'diagnostics', 'compare', 'tables', 'export'].includes(view)}
                 <div class="workflow-mode" role="group" aria-label="Model workflow">
-                    <button class:chosen={!stackMode} onclick={() => { stackMode = false; workflowModeChosen = true; }}>Single model</button>
-                    <button class:chosen={stackMode} onclick={() => { stackMode = true; workflowModeChosen = true; }}>Build a stacked model</button>
+                    <button class:chosen={!stackMode} onclick={() => chooseModelWorkflow(false)}>Single model</button>
+                    <button class:chosen={stackMode} onclick={() => chooseModelWorkflow(true)}>Build a model in stages</button>
                 </div>
             {/if}
             {#if view === 'export' && !stackMode}<ExportPanel
@@ -1265,7 +1313,10 @@
                         onReady={(ready) => (resultsReady = ready)}
                         onContext={(context) => (modelContext = context)}
                         onNavigate={navigate}
-                        onSingle={(model) => { legacySelected = model; stackMode = false; workflowModeChosen = true; }}
+                        onDirty={(isDirty) => (stackDraftDirty = isDirty)}
+                        navigationAttempt={stackNavigationAttempt}
+                        navigationTarget={stackNavigationTarget}
+                        onNavigationResolved={resolveStackNavigation}
                     />{/key}{/if}
         </main>
     </div>
@@ -1305,6 +1356,9 @@
         overflow-wrap: anywhere;
         min-width: 0;
     }
+    .mobile-page-selector {
+        display: none;
+    }
 
     .variable-random-split {
         margin: 20px 0;
@@ -1328,6 +1382,19 @@
     @media (max-width: 900px) {
         .random-split-fields {
             grid-template-columns: 1fr;
+        }
+    }
+    @media (max-width: 760px) {
+        .mobile-page-selector {
+            display: grid;
+            gap: 4px;
+            padding: 10px 12px 0;
+            color: var(--muted);
+            font-size: 12px;
+        }
+        .mobile-page-selector select {
+            width: 100%;
+            min-width: 0;
         }
     }
 </style>

@@ -89,7 +89,7 @@ def test_catalogue_attributes_only_enter_scope_after_its_pinned_lookup():
     validate_stack_factor_scope(project, raw, set(raw.columns), config)
 
 
-def test_saved_branch_can_only_refit_its_full_recipe_without_live_parent():
+def test_saved_branch_without_live_parent_must_be_copied_before_refitting():
     rng = np.random.default_rng(4)
     raw = pl.DataFrame(
         {
@@ -134,11 +134,51 @@ def test_saved_branch_can_only_refit_its_full_recipe_without_live_parent():
 
         assert client.post("/api/models/Child/fit", json=revision()).status_code == 409
         assert (
-            client.post("/api/models/Child/fit", json=revision(True)).status_code == 202
+            client.post("/api/models/Child/fit", json=revision(True)).status_code == 409
+        )
+        # A named fitted recipe is a checkpoint.  Recovering without its
+        # recorded parent means creating a separate, independently fitted copy.
+        copied = client.post(
+            "/api/models/save",
+            json={
+                **{
+                    key: client.get("/api/variables").json()[key]
+                    for key in ("session_id", "revision")
+                },
+                "name": "Child rebuilt",
+                "create": True,
+                "fields": {
+                    "family": "poisson",
+                    "link": "log",
+                    "target": "y",
+                    "weight": "w",
+                    "components": [
+                        {
+                            "component_id": "main",
+                            "name": "Main",
+                            "kind": "glm",
+                            "factors": ["age"],
+                            "settings": {"alpha": 0.01},
+                        },
+                        {
+                            "component_id": "region",
+                            "name": "Region",
+                            "kind": "glm",
+                            "factors": ["region"],
+                            "settings": {"alpha": 0.01},
+                        },
+                    ],
+                },
+            },
+        )
+        assert copied.status_code == 200, copied.text
+        assert (
+            client.post("/api/models/Child rebuilt/fit", json=revision()).status_code
+            == 202
         )
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
-            status = client.get("/api/jobs").json()["Child"]
+            status = client.get("/api/jobs").json()["Child rebuilt"]
             if status["status"] not in ("queued", "running"):
                 break
             time.sleep(0.05)

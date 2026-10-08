@@ -17,8 +17,8 @@ try {
     await page.goto(url);
     const nav = page.getByRole('navigation', { name: 'Workbench' });
     await nav.getByRole('button', { name: 'Model', exact: true }).click();
-    await page.getByRole('button', { name: 'Build a stacked model' }).click();
-    await page.getByLabel('Stacked model', { exact: true }).selectOption(model);
+    await page.getByRole('button', { name: 'Build a model in stages' }).click();
+    await page.getByRole('button', { name: model, exact: true }).click();
     assert.ok(await page.locator('.stack-components li').count());
     await page.screenshot({ path: '/private/tmp/easyglm-stack-model-867.png', fullPage: true });
     await nav.getByRole('button', { name: 'Diagnostics', exact: true }).click();
@@ -27,7 +27,7 @@ try {
     assert.ok(await page.locator('.stack-table table').count());
     await page.screenshot({ path: '/private/tmp/easyglm-stack-diagnostics-867.png', fullPage: true });
     await nav.getByRole('button', { name: 'Rate tables', exact: true }).click();
-    await page.getByLabel('Inspect stack stage').selectOption({ index: 0 });
+    await page.getByLabel('Inspect model component').selectOption({ index: 0 });
     await page.getByRole('button', { name: 'Preview adjustment' }).waitFor();
     await page.screenshot({ path: '/private/tmp/easyglm-stack-lookup-867.png', fullPage: true });
     await nav.getByRole('button', { name: 'Export', exact: true }).click();

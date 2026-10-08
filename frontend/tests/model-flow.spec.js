@@ -1,74 +1,99 @@
 import { test, expect } from '@playwright/test';
 
-async function fitLegacy(page) {
+async function fitSingleModel(page) {
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await page.getByRole('button', { name: 'Create model', exact: true }).click();
-    await page.getByRole('button', { name: 'Fit model', exact: true }).click();
+    await page.getByRole('button', { name: 'Fit model', exact: true }).first().click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 60000 });
 }
-function flowCard(page, name) {
-    return page.getByRole('article', { name: `${name}, fitted`, exact: true });
-}
-async function saveStage(page, { name, stage, kind, variable }) {
-    await page.getByLabel('New stacked model name').fill(name);
-    await page.getByLabel('New stage type').selectOption(kind);
-    await page.getByLabel('New stage name').fill(stage);
-    await page.getByRole('group', { name: 'Stage factors' }).getByText(variable, { exact: true }).click();
-    // Search does not discard an existing checked variable.
-    await page.getByLabel('Search stage factors').fill('no matching variable');
-    await expect(page.getByText(/1 selected:/)).toBeVisible();
-    await page.getByRole('button', { name: 'Show selected' }).click();
-    await expect(page.getByRole('group', { name: 'Stage factors' }).getByText(variable, { exact: true })).toBeVisible();
+
+async function fillDraft(page, { name, component, kind, variable }) {
+    await page.getByLabel('Stacked model name').fill(name);
+    await page.getByLabel('Model component type').selectOption(kind);
+    await page.getByLabel('Model component name').fill(component);
+    await page.getByRole('group', { name: 'Model variables' }).getByText(variable, { exact: true }).click();
+    await expect(page.getByText('Selected (1)', { exact: true })).toBeVisible();
     if (kind === 'catboost') {
         await page.getByLabel('CatBoost iterations').fill('20');
         await page.getByLabel('CatBoost time limit').fill('1');
     }
-    await page.getByRole('button', { name: 'Save new candidate' }).click();
-    await page.getByLabel('Stacked model', { exact: true }).selectOption(name);
-    await page.getByRole('button', { name: 'Fit candidate' }).click();
-    await expect(page.getByText('Review complete model', { exact: true })).toBeVisible({ timeout: 60000 });
 }
 
-test('visual flow builds standalone GLM, CatBoost, GLM and a sibling alternative', async ({ page }) => {
+test('model builder fits a model where its settings are edited', async ({ page }) => {
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto('/');
-    await fitLegacy(page);
-    await page.getByRole('button', { name: 'Build a stacked model' }).click();
-    await expect(page.getByRole('region', { name: 'Model flow' })).toBeVisible();
-    await page.getByRole('button', { name: 'Add standalone model' }).click();
-    await saveStage(page, { name: 'Flow Root GLM', stage: 'Root region', kind: 'glm', variable: 'Region' });
-    await flowCard(page, 'Flow Root GLM').getByRole('button', { name: 'Add model after this', exact: true }).click();
-    await saveStage(page, { name: 'Flow CatBoost', stage: 'Vehicle correction', kind: 'catboost', variable: 'VehicleAge' });
-    await flowCard(page, 'Flow CatBoost').getByRole('button', { name: 'Add model after this', exact: true }).click();
-    await saveStage(page, { name: 'Flow GLM', stage: 'Region correction', kind: 'glm', variable: 'Region' });
-    await expect(flowCard(page, 'Flow GLM')).toContainText('Builds on Flow CatBoost · complete model predictions as offset');
-    await flowCard(page, 'Flow CatBoost').getByRole('button', { name: 'Create alternative', exact: true }).click();
-    await expect(page.getByLabel('Start from fitted candidate')).toHaveValue('Flow Root GLM');
-    await expect(page.getByLabel('New stage name')).toHaveValue(/Vehicle correction alternative/);
-    await expect(page.getByText(/1 selected: VehicleAge/)).toBeVisible();
-    await page.getByRole('group', { name: 'Stage factors' }).getByText('Region', { exact: true }).click();
-    await page.getByLabel('New stacked model name').fill('Flow CatBoost alternative');
-    await page.getByRole('button', { name: 'Save new candidate' }).click();
-    await page.getByLabel('Stacked model', { exact: true }).selectOption('Flow CatBoost alternative');
-    await page.getByRole('button', { name: 'Fit candidate' }).click();
-    await expect(page.getByText('Review complete model', { exact: true })).toBeVisible({ timeout: 60000 });
-    await expect(flowCard(page, 'Flow CatBoost alternative')).toContainText('Builds on Flow Root GLM · complete model predictions as offset');
-    await page.getByRole('button', { name: 'Reset editor' }).click();
-    await expect(page.getByText('No factors selected')).toBeVisible();
-    for (const viewport of [{ width: 867, height: 850 }, { width: 390, height: 844 }]) {
-        await page.setViewportSize(viewport);
-        expect(await page.locator('.model-flow').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
-        expect(await page.locator('.flow-card').evaluateAll((cards) => cards.every((card) => card.scrollWidth <= card.clientWidth))).toBe(true);
-        if (viewport.width === 867) await page.screenshot({ path: 'test-results/model-flow-desktop.png', fullPage: true });
-    }
-    const offsetCaption = flowCard(page, 'Flow CatBoost alternative').locator('.flow-select small');
-    expect(await offsetCaption.evaluate((caption) => {
-        const card = caption.closest('.flow-card');
-        return caption.getBoundingClientRect().right <= card.getBoundingClientRect().right;
-    })).toBe(true);
-    await page.screenshot({ path: 'test-results/model-flow-mobile.png', fullPage: true });
-    await flowCard(page, 'Frequency').locator('.flow-select').click();
-    await expect(page.getByRole('button', { name: 'Build a stacked model' })).toBeVisible();
+    await fitSingleModel(page);
+    await page.getByRole('button', { name: 'Build a model in stages' }).click();
+
+    await page.getByRole('complementary', { name: 'Models' }).getByRole('button', { name: 'New standalone model', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'New standalone model', exact: true })).toBeVisible();
+    await fillDraft(page, { name: 'Flow Root GLM', component: 'Root region', kind: 'glm', variable: 'Region' });
+    let releaseJobsGate;
+    const jobsGate = new Promise((resolve) => {
+        releaseJobsGate = resolve;
+    });
+    let holdFirstJobsRead = true;
+    const holdJobsRoute = async (route) => {
+        if (holdFirstJobsRead) {
+            holdFirstJobsRead = false;
+            await jobsGate;
+        }
+        await route.continue();
+    };
+    await page.route('**/api/jobs', holdJobsRoute);
+    await page.getByRole('button', { name: 'Fit model', exact: true }).first().click();
+    await expect(page.getByRole('status').filter({ hasText: /Starting fit|Fitting:/ })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'New standalone model', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Edit draft', exact: true })).toHaveCount(0);
+    releaseJobsGate();
+    await page.waitForTimeout(0);
+    await page.unroute('**/api/jobs', holdJobsRoute);
+    await expect(page.getByRole('heading', { name: 'Flow Root GLM', exact: true })).toBeVisible({ timeout: 60000 });
+    await expect(page.getByText('Fitted', { exact: true }).first()).toBeVisible({ timeout: 60000 });
+    await expect(page.locator('.model-list-item').filter({ has: page.locator('strong', { hasText: 'Flow Root GLM' }) })).toContainText('Fitted', { timeout: 60000 });
+
+    await page.getByRole('button', { name: 'Add model after this', exact: true }).click();
+    await expect(page.getByText("This model is fitted after Flow Root GLM. Flow Root GLM's complete fitted score is used as the offset.", { exact: true })).toBeVisible();
+    await fillDraft(page, { name: 'Flow CatBoost', component: 'Vehicle correction', kind: 'catboost', variable: 'VehicleAge' });
+    await page.getByRole('button', { name: 'Fit model', exact: true }).first().click();
+    await expect(page.getByRole('heading', { name: 'Flow CatBoost', exact: true })).toBeVisible({ timeout: 60000 });
+    await expect(page.getByText('Built on Flow Root GLM. Its complete fitted score is the offset for this model.', { exact: true })).toBeVisible();
+    await expect(page.locator('.model-list-item').filter({ has: page.locator('strong', { hasText: 'Flow CatBoost' }) })).toContainText('Built on Flow Root GLM');
+
+    await page.getByRole('button', { name: 'Revise model', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Revise Flow CatBoost', exact: true })).toBeVisible();
+    await expect(page.getByLabel('Model component name')).toHaveValue('Vehicle correction revised');
+    await expect(page.getByLabel('Stacked model name')).toHaveValue('Flow CatBoost revised');
+    await page.getByRole('button', { name: 'Save draft', exact: true }).first().click();
+    await expect(page.getByText('Draft saved.', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Edit draft', exact: true }).click();
+    await page.getByLabel('CatBoost iterations').fill('21');
+    await page.getByLabel('Search model variables').fill('Region');
+    await page.getByRole('group', { name: 'Model variables' }).getByText('Region', { exact: true }).click();
+    await page.locator('.model-list-item').filter({ has: page.locator('strong', { hasText: 'Flow Root GLM' }) }).click();
+    await expect(page.getByRole('dialog', { name: 'Unsaved draft' })).toBeVisible();
+    await page.getByRole('button', { name: 'Keep editing', exact: true }).click();
+    await expect(page.getByLabel('Search model variables')).toHaveValue('Region');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByLabel('Model', { exact: true })).toBeVisible();
+    expect(await page.locator('.model-builder').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+
+    await page.getByLabel('Model', { exact: true }).selectOption('Flow Root GLM');
+    await expect(page.getByRole('dialog', { name: 'Unsaved draft' })).toBeVisible();
+    await page.getByRole('dialog', { name: 'Unsaved draft' }).getByRole('button', { name: 'Keep editing', exact: true }).click();
+    await expect(page.getByLabel('Model', { exact: true })).toHaveValue('Flow CatBoost revised');
+
+    await page.getByLabel('Page', { exact: true }).selectOption('variables');
+    await expect(page.getByRole('dialog', { name: 'Unsaved draft' })).toBeVisible();
+    await page.getByRole('dialog', { name: 'Unsaved draft' }).getByRole('button', { name: 'Keep editing', exact: true }).click();
+    await expect(page.getByLabel('Page', { exact: true })).toHaveValue('model');
+
+    await page.getByLabel('Page', { exact: true }).selectOption('variables');
+    await expect(page.getByRole('dialog', { name: 'Unsaved draft' })).toBeVisible();
+    await page.getByRole('dialog', { name: 'Unsaved draft' }).getByRole('button', { name: 'Discard changes', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeVisible();
+
     expect(errors).toEqual([]);
 });

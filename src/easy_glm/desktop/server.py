@@ -135,7 +135,6 @@ def create_app(
     undo_steps = {}
     redo_steps = {}
     catalogue_sources: dict[str, str] = {}
-    append_sources: dict[str, dict[str, str]] = {}
     for config in project.models.values():
         for component in getattr(config, "components", ()):
             source_path = component.settings.get("source_path")
@@ -246,22 +245,23 @@ def create_app(
         return stack_from_legacy(current, fitted)
 
     def verified_append_source(name: str) -> tuple[str, Path] | None:
-        """Return the only scorer that may be reused for an append, if exact."""
-        source_info = append_sources.get(name)
-        if source_info is None:
-            return None
-        if source_info["candidate_key"] != model_key(current, name):
-            raise ValueError("Append settings changed. Save the candidate again.")
-        source_name = source_info["source_name"]
-        source_path = jobs.artifact(current, source_name)
-        if (
-            source_path.name != source_info["source_fit_id"]
-            or model_key(current, source_name) != source_info["source_key"]
-        ):
-            raise ValueError("The starting fit changed. Save the append again.")
+        """Return an exact saved parent scorer for the candidate's final addition.
+
+        Lineage is durable project data, whereas ``append_sources`` used to be an
+        in-memory convenience map.  Deriving the guard from lineage means that a
+        saved draft can be reopened, amended and fitted as a suffix without
+        accidentally dropping its frozen parent association.
+        """
         lineage = current.models[name].lineage
         if lineage is None:
-            raise ValueError("Append provenance is missing. Save the candidate again.")
+            return None
+        source_name = lineage.parent_name
+        source_path = jobs.artifact(current, source_name)
+        if (
+            source_path.name != lineage.parent_fit_id
+            or model_key(current, source_name) != lineage.parent_key
+        ):
+            raise ValueError("The recorded starting fit is no longer available.")
         prefix = fitted_prefix(source_name)
         if (
             lineage.parent_name != source_name
@@ -269,12 +269,13 @@ def create_app(
             or lineage.parent_key != model_key(current, source_name)
             or lineage.parent_prefix_fingerprint != prefix.fingerprint()
         ):
-            raise ValueError(
-                "The recorded starting checkpoint changed. Save the append again."
-            )
+            raise ValueError("The recorded starting checkpoint is no longer available.")
         return source_name, source_path
 
-    def append_is_live(name: str) -> bool:
+    def parent_fit_is_available(name: str) -> bool:
+        """Whether this child can still revise its last addition against its parent."""
+        if current.models[name].lineage is None:
+            return True
         try:
             return verified_append_source(name) is not None
         except (KeyError, OSError, ValueError):
@@ -288,16 +289,39 @@ def create_app(
         edges = []
         for name, config in saved.models.items():
             job = saved_jobs.get(name, {})
+            own_fit_available = bool(job.get("applicable"))
+            missing_own_fit = bool(
+                job.get("status") == "complete"
+                and not job.get("artifact_available", False)
+            )
+            parent_fit_available = parent_fit_is_available(name)
             nodes.append(
                 {
                     "name": name,
                     "kind": "stack" if config.components else "legacy",
-                    "status": job.get("status", "not_fitted"),
-                    "fitted": bool(job.get("applicable")),
-                    "fit_id": job.get("id") if job.get("applicable") else None,
+                    "status": (
+                        "missing_fit"
+                        if missing_own_fit
+                        else job.get("status", "not_fitted")
+                    ),
+                    # ``fitted`` remains for older clients.  The explicit flags
+                    # stop one historical incoming edge from making a complete
+                    # child scorer look unusable.
+                    "fitted": own_fit_available,
+                    "own_fit_available": own_fit_available,
+                    "missing_own_fit": missing_own_fit,
+                    "append_available": own_fit_available,
+                    "parent_fit_available": parent_fit_available,
+                    "revise_available": config.lineage is None or parent_fit_available,
+                    "fit_id": job.get("id") if own_fit_available else None,
                     "component_count": len(config.components),
                     "full_refit_required": bool(
-                        config.lineage is not None and not append_is_live(name)
+                        missing_own_fit
+                        or (
+                            not own_fit_available
+                            and config.lineage is not None
+                            and not parent_fit_available
+                        )
                     ),
                 }
             )
@@ -719,7 +743,6 @@ def create_app(
             exploration = ExplorationCache()
             jobs.on_complete = complete_fit
             current, raw = loaded, loaded_raw
-            append_sources.clear()
             catalogue_sources.clear()
             for config in loaded.models.values():
                 for component in getattr(config, "components", ()):
@@ -920,6 +943,31 @@ def create_app(
         with lock:
             check_revision(edit)
             try:
+                existing = current.models.get(edit.name)
+                existing_job = jobs.status(current).get(edit.name, {})
+                if (
+                    not edit.create
+                    and existing is not None
+                    and existing.components
+                    and existing_job.get("applicable")
+                ):
+                    raise HTTPException(
+                        409,
+                        "This fitted model is read-only. Revise it as a new named model.",
+                    )
+                if not edit.create and existing is not None and existing.lineage:
+                    if edit.source_name is not None or edit.source_fit_id is not None:
+                        raise ValueError(
+                            "A saved draft keeps its recorded parent automatically."
+                        )
+                    if (
+                        edit.designs
+                        or edit.n_bins is not None
+                        or edit.min_level_share is not None
+                    ):
+                        raise ValueError(
+                            "Bands belong to Variables and cannot be changed from this model draft."
+                        )
                 for component in edit.fields.get("components", []):
                     if component.get("kind") != "catalogue":
                         continue
@@ -981,6 +1029,33 @@ def create_app(
                         prefix_length=len(prefix_recipes),
                     )
                     scope_start = len(prefix_recipes)
+                elif not edit.create and existing is not None and existing.lineage:
+                    # A draft child may change only the last component.  Its
+                    # fitted parent, frozen prefix and response convention are
+                    # deliberately copied from the existing saved definition.
+                    config = candidate_project.models[edit.name]
+                    prefix_length = existing.lineage.prefix_length
+                    if (
+                        len(existing.components) != prefix_length + 1
+                        or len(config.components) != prefix_length + 1
+                        or config.components[:prefix_length]
+                        != existing.components[:prefix_length]
+                    ):
+                        raise ValueError(
+                            "This draft can change only its final model component."
+                        )
+                    original = dict(current.to_dict()["models"][edit.name])
+                    amended = dict(candidate_project.to_dict()["models"][edit.name])
+                    original.pop("components", None)
+                    original.pop("lineage", None)
+                    amended.pop("components", None)
+                    amended.pop("lineage", None)
+                    if amended != original:
+                        raise ValueError(
+                            "This draft keeps its original settings; change only its final model component."
+                        )
+                    config.lineage = existing.lineage
+                    scope_start = prefix_length
                 elif edit.create:
                     # A root candidate has no implicit provenance, even when
                     # its recipes resemble an existing model.
@@ -1019,15 +1094,6 @@ def create_app(
                 screenings.invalidate((session_id, project_id, revision))
                 feature_selections.invalidate((session_id, project_id, revision))
                 jobs.invalidate(current)
-                if edit.source_name and edit.source_fit_id:
-                    append_sources[edit.name] = {
-                        "source_name": edit.source_name,
-                        "source_fit_id": edit.source_fit_id,
-                        "source_key": model_key(current, edit.source_name),
-                        "candidate_key": model_key(current, edit.name),
-                    }
-                else:
-                    append_sources.pop(edit.name, None)
             return snapshot()
 
     @app.post("/api/models/{name}/reduce", status_code=202)
@@ -1100,15 +1166,36 @@ def create_app(
             check_revision(edit)
             if name not in current.models:
                 raise HTTPException(404, "Save a model definition before fitting.")
+            config = current.models[name]
+            existing_job = jobs.status(current).get(name, {})
+            if config.components and existing_job.get("applicable"):
+                raise HTTPException(
+                    409,
+                    "This fitted model is read-only. Revise it as a new named model.",
+                )
+            if (
+                config.components
+                and existing_job.get("status") == "complete"
+                and not existing_job.get("artifact_available", False)
+            ):
+                raise HTTPException(
+                    409,
+                    "The previous fitted model files are missing. Create a new named copy to fit this recipe again.",
+                )
+            if config.components and config.lineage is not None and edit.full_refit:
+                raise HTTPException(
+                    409,
+                    "Create a new named copy to rebuild this saved model from scratch.",
+                )
             problems = current.validate(name)
             if problems:
                 raise HTTPException(422, "; ".join(problems))
             try:
-                if current.models[name].components:
+                if config.components:
                     prepared = apply_variables(raw, current.data)
                     start_index = 0
-                    if not edit.full_refit and current.models[name].lineage is not None:
-                        start_index = current.models[name].lineage.prefix_length
+                    if not edit.full_refit and config.lineage is not None:
+                        start_index = config.lineage.prefix_length
                     validate_stack_factor_scope(
                         current,
                         raw,
@@ -1132,12 +1219,12 @@ def create_app(
                         source_fit=source_path,
                         frozen_source_name=source_name,
                     )
-                if current.models[name].lineage is not None:
+                if config.lineage is not None:
                     if not edit.full_refit:
                         raise HTTPException(
                             409,
-                            "This saved branch has no live frozen starting checkpoint. "
-                            "Request a full refit to fit its complete recipe afresh.",
+                            "This draft's original fitted model is no longer available. "
+                            "Create a new named copy to fit its complete recipe afresh.",
                         )
                     # This intentionally does not consult the lineage parent.
                     # It rebuilds the child's complete recorded recipe, so a

@@ -27,7 +27,7 @@ test('stack-only project opens the stacked workflow and keeps single-model creat
     await page.goto('/');
     await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
     await page.getByRole('button', { name: 'Continue to Model', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Build a stacked model' })).toHaveClass(/chosen/);
+    await expect(page.getByRole('button', { name: 'Build a model in stages' })).toHaveClass(/chosen/);
     await page.getByRole('button', { name: 'Single model' }).click();
     await expect(page.getByLabel('Model selection')).toHaveValue('__new__');
     await expect(page.getByLabel('Model selection').locator('option')).toHaveCount(1);
@@ -121,7 +121,9 @@ test('singleton reassignment updates old row and invalid duplicate is refused', 
 
 test('pending preview freezes the draft until its result is reviewable', async ({ page }) => {
     await page.goto('/');
-    await page.getByLabel('Role for Region', { exact: true }).selectOption('ignore');
+    const regionRole = page.getByLabel('Role for Region', { exact: true });
+    const currentRole = await regionRole.inputValue();
+    await regionRole.selectOption(currentRole === 'ignore' ? 'unassigned' : 'ignore');
     let release;
     await page.route('**/api/variables/preview', async (route) => {
         await new Promise((resolve) => {

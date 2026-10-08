@@ -198,6 +198,7 @@ time.sleep(.25)
 for index in range(12000):
     print(json.dumps({'message': 'burst-' + str(index)}))
 sys.stdout.flush()
+(folder / 'fit.pkl').write_bytes(b'completed fit marker')
 (folder / 'result.json').write_text(json.dumps({'ok': True}))
 """
     _fake_worker(monkeypatch, body)

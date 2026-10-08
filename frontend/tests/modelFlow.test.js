@@ -40,12 +40,28 @@ test('nodeState labels fitted and historical candidates without guessing a score
     assert.equal(nodeState({ kind: 'legacy', job: {} }), 'legacy');
     assert.equal(nodeState({ kind: 'stack', job: {} }), 'unfitted');
     assert.equal(nodeState({ status: 'not_fitted', job: {} }), 'not fitted');
+    assert.equal(nodeState({ status: 'missing_fit', missing_own_fit: true, job: { status: 'complete' } }), 'fit unavailable');
 });
 
 test('alternatives only copy a complete safe checkpoint', () => {
+    assert.match(alternativeBlockedReason({ revise_available: false, components: [{}] }), /original parent fit is unavailable/);
     assert.match(alternativeBlockedReason({ kind: 'legacy' }), /no staged recipe/);
     assert.match(alternativeBlockedReason({ components: [{}, {}] }), /would change the model/);
     assert.match(alternativeBlockedReason({ parent_name: 'Gone', edge_status: 'missing', components: [{}] }), /no longer current/);
     assert.equal(alternativeBlockedReason({ components: [{}] }), '');
     assert.equal(alternativeBlockedReason({ parent_name: 'Root', edge_status: 'live', components: [{}, {}] }), '');
+    assert.match(
+        alternativeBlockedReason({ status: 'missing_fit', missing_own_fit: true, parent_name: 'Root', edge_status: 'live', components: [{}] }),
+        /fitted files are unavailable/,
+    );
+    const liveChildWithMissingParent = {
+        own_fit_available: true,
+        append_available: true,
+        parent_fit_available: false,
+        revise_available: false,
+        parent_name: 'Gone',
+        edge_status: 'missing',
+        components: [{}],
+    };
+    assert.match(alternativeBlockedReason(liveChildWithMissingParent), /original parent fit is unavailable/);
 });

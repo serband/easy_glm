@@ -30,8 +30,8 @@
 </script>
 
 <section class="model-flow" aria-label="Model flow">
-    <div class="flow-heading"><div><div class="eyebrow">MODEL FLOW</div><h2>Named complete models</h2><p>Connections show how candidates were built. Selecting a card never changes the stage editor.</p></div><button onclick={() => onAdd('')}>Add standalone model</button></div>
-    {#if !forest.nodes.length}<p class="flow-empty">No model candidates yet. Add a standalone model to start.</p>{/if}
+    <div class="flow-heading"><div><div class="eyebrow">MODEL MAP</div><h2>Models</h2><p>Connections show which fitted model supplied each offset.</p></div><button onclick={() => onAdd('')}>New standalone model</button></div>
+    {#if !forest.nodes.length}<p class="flow-empty">No models yet. Start with a standalone model.</p>{/if}
     <div class="flow-columns">
         {#each forest.roots as root}
             <div class="flow-tree">
@@ -41,9 +41,9 @@
                     <article class:chosen={selected === node.name} class="flow-card" aria-label={`${node.name}, ${state}`}>
                         {#if node.parent}<div class:live={node.edge_status === 'live'} class="flow-connector" aria-label={edgeText(node)}></div>{/if}
                         <button class="flow-select" onclick={() => onSelect(node.name)}><strong>{node.name}</strong><span class="flow-state">{state}</span><span>{label(node)}</span><span class="flow-inputs">{inputSummary(node)}</span><small>{edgeText(node)}</small></button>
-                        <div class="flow-actions"><button onclick={() => onAdd(node.name)} disabled={!node.job?.applicable}>Add model after this</button><button onclick={() => onAlternative(node.name)} disabled={Boolean(alternativeBlockedReason(node))}>Create alternative</button></div>
+                        <div class="flow-actions"><button onclick={() => onAdd(node.name)} disabled={node.append_available === false || !node.job?.applicable}>Add model after this</button><button onclick={() => onAlternative(node.name)} disabled={Boolean(alternativeBlockedReason(node))}>Revise model</button></div>
                         {#if alternativeBlockedReason(node)}<small class="flow-warning">{alternativeBlockedReason(node)}</small>{/if}
-                        {#if componentsFor(node).length}<details><summary>Full recipe</summary><ol>{#each componentsFor(node) as component}<li>{component.name} · {component.kind} · {(component.factors || component.inputs || []).join(', ') || 'no selected inputs'}</li>{/each}</ol></details>{/if}
+                        {#if componentsFor(node).length}<details><summary>Model recipe</summary><ol>{#each componentsFor(node) as component}<li>{component.name} · {component.kind} · {(component.factors || component.inputs || []).join(', ') || 'no selected inputs'}</li>{/each}</ol></details>{/if}
                     </article>
                     {#if node.children.length}<div class="flow-children">{#each node.children as child}{@render card(child)}{/each}</div>{/if}
                 {/snippet}

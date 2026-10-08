@@ -413,8 +413,8 @@ def test_append_reuses_exact_stack_and_legacy_prefix(tmp_path):
                 },
             },
         )
-        assert forged.status_code == 422
-        assert "unavailable" in forged.json()["detail"]
+        assert forged.status_code == 409
+        assert "read-only" in forged.json()["detail"]
         wb = client.get("/api/workbench").json()
         pin = wb["stack_sources"]["Base"]
         appended = client.post(
@@ -460,6 +460,69 @@ def test_append_reuses_exact_stack_and_legacy_prefix(tmp_path):
             ]
             == "Base"
         )
+        draft_node = next(
+            node
+            for node in client.get("/api/workbench").json()["model_flow"]["nodes"]
+            if node["name"] == "Extended"
+        )
+        assert draft_node["own_fit_available"] is False
+        assert draft_node["parent_fit_available"] is True
+        assert draft_node["full_refit_required"] is False
+        # A saved, unfitted append remains tied to its original fitted prefix.
+        # Editing its last component must not silently turn the later fit into
+        # a full-recipe fit.
+        amended = client.post(
+            "/api/models/save",
+            json={
+                **_revision(client),
+                "name": "Extended",
+                "fields": {
+                    "components": [
+                        *pin["components"],
+                        {
+                            "component_id": "region",
+                            "name": "Region correction",
+                            "kind": "glm",
+                            "factors": ["Region"],
+                            "settings": {"alpha": 0.02},
+                        },
+                    ]
+                },
+            },
+        )
+        assert amended.status_code == 200, amended.text
+        amended_project = client.get("/api/project").json()
+        assert (
+            amended_project["models"]["Extended"]["lineage"]
+            == client.get("/api/workbench").json()["models"]["Extended"]["lineage"]
+        )
+        assert (
+            amended_project["models"]["Extended"]["components"][-1]["settings"]["alpha"]
+            == 0.02
+        )
+        # A rejected edit is atomic: the saved draft still has the amended
+        # suffix and unchanged frozen parent prefix.
+        bad_edit = client.post(
+            "/api/models/save",
+            json={
+                **_revision(client),
+                "name": "Extended",
+                "fields": {
+                    "components": [
+                        {
+                            "component_id": "replacement",
+                            "name": "Replacement",
+                            "kind": "glm",
+                            "factors": ["Region"],
+                            "settings": {"alpha": 0.01},
+                        },
+                        *pin["components"],
+                    ]
+                },
+            },
+        )
+        assert bad_edit.status_code == 422
+        assert client.get("/api/project").json() == amended_project
         assert (
             client.post("/api/models/Extended/fit", json=_revision(client)).status_code
             == 202
@@ -478,15 +541,8 @@ def test_append_reuses_exact_stack_and_legacy_prefix(tmp_path):
                 "/api/models/Extended/fit",
                 json={**_revision(client), "full_refit": True},
             ).status_code
-            == 202
+            == 409
         )
-        assert wait_fit(client, "Extended")["status"] == "complete"
-        fresh_edge = next(
-            edge
-            for edge in client.get("/api/workbench").json()["model_flow"]["edges"]
-            if edge["to"] == "Extended"
-        )
-        assert fresh_edge["edge_status"] == "historical"
         saved_project = client.get("/api/project").json()
         saved_job = client.get("/api/jobs").json()["Extended"]
         source = next(
@@ -512,6 +568,85 @@ def test_append_reuses_exact_stack_and_legacy_prefix(tmp_path):
                 if edge["to"] == "Extended"
             )
             assert restored_edge["edge_status"] == "historical"
+            restored_workbench = restored.get("/api/workbench").json()
+            extended_node = next(
+                node
+                for node in restored_workbench["model_flow"]["nodes"]
+                if node["name"] == "Extended"
+            )
+            # The original Base artifact was not restored, but Extended's own
+            # complete scorer was.  It remains usable as the next offset.
+            assert extended_node["own_fit_available"] is True
+            assert extended_node["parent_fit_available"] is False
+            assert extended_node["append_available"] is True
+            assert extended_node["revise_available"] is False
+            source_components = restored_workbench["stack_sources"]["Extended"][
+                "components"
+            ]
+            grandchild = restored.post(
+                "/api/models/save",
+                json={
+                    **_revision(restored),
+                    "name": "Grandchild",
+                    "create": True,
+                    "source_name": "Extended",
+                    "source_fit_id": extended_node["fit_id"],
+                    "fields": {
+                        "family": "poisson",
+                        "link": "log",
+                        "target": "Claims",
+                        "weight": "Exposure",
+                        "components": [
+                            *source_components,
+                            {
+                                "component_id": "age-again",
+                                "name": "Age again",
+                                "kind": "glm",
+                                "factors": ["Age"],
+                                "settings": {"alpha": 0.01},
+                            },
+                        ],
+                    },
+                },
+            )
+            assert grandchild.status_code == 200, grandchild.text
+            assert (
+                restored.post(
+                    "/api/models/Grandchild/fit", json=_revision(restored)
+                ).status_code
+                == 202
+            )
+            assert wait_fit(restored, "Grandchild")["status"] == "complete"
+            # Losing a child's own artifact is different from losing its
+            # incoming parent.  Its parent remains live, but this named
+            # checkpoint cannot be advertised as scoreable or overwritten.
+            grandchild_job = restored.get("/api/jobs").json()["Grandchild"]
+            grandchild_source = next(
+                Path(tempfile.gettempdir()).glob(
+                    "easyglm_fits_*/" + grandchild_job["id"]
+                )
+            )
+            shutil.rmtree(grandchild_source)
+            missing_workbench = restored.get("/api/workbench").json()
+            missing_node = next(
+                node
+                for node in missing_workbench["model_flow"]["nodes"]
+                if node["name"] == "Grandchild"
+            )
+            assert missing_node["status"] == "missing_fit"
+            assert missing_node["own_fit_available"] is False
+            assert missing_node["parent_fit_available"] is True
+            assert missing_node["full_refit_required"] is True
+            assert restored.get("/api/jobs").json()["Grandchild"]["applicable"] is False
+            missing_result = restored.get("/api/results/Grandchild")
+            assert missing_result.status_code == 409
+            assert "files are no longer available" in missing_result.json()["detail"]
+            assert (
+                restored.post(
+                    "/api/models/Grandchild/fit", json=_revision(restored)
+                ).status_code
+                == 409
+            )
 
         legacy = client.post(
             "/api/models/save",
