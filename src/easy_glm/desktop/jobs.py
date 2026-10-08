@@ -30,6 +30,10 @@ def model_key(project: Project, name: str) -> str:
     data.pop("sample_seed", None)
     model = dict(spec["models"].get(name) or {})
     model.pop("pair_time_limit_minutes", None)
+    # The model-flow diagram is navigation provenance, never an input to a
+    # statistical fit.  Keeping it out means adding/removing a graph edge does
+    # not make a valid fitted artefact stale.
+    model.pop("lineage", None)
     return hashlib.sha256(
         json.dumps(
             {"data": data, "design": spec["design"], "model": model},
@@ -53,6 +57,7 @@ def _main_key(project: Project, name: str) -> str:
         "base_rate_override",
         "snapshots",
         "notes",
+        "lineage",
     ):
         model.pop(field, None)
     design = _design_for(project, model["predictors"])
@@ -105,6 +110,7 @@ def _completed_record(job: dict[str, Any]) -> dict[str, Any]:
             "elapsed",
             "result",
             "project",
+            "full_refit",
         )
         if key in job
     }
@@ -166,7 +172,16 @@ class FitJobs:
                 continue
             saved = {
                 k: record[k]
-                for k in ("id", "name", "status", "message", "elapsed", "key")
+                for k in (
+                    "id",
+                    "name",
+                    "status",
+                    "message",
+                    "elapsed",
+                    "key",
+                    "full_refit",
+                )
+                if k in record
             }
             if record.get("applicable"):
                 if record["key"] != model_key(project, name):
@@ -234,7 +249,16 @@ class FitJobs:
                     k: v
                     for k, v in job.items()
                     if k
-                    in ("id", "name", "status", "message", "elapsed", "key", "progress")
+                    in (
+                        "id",
+                        "name",
+                        "status",
+                        "message",
+                        "elapsed",
+                        "key",
+                        "progress",
+                        "full_refit",
+                    )
                 }
                 | {
                     "applicable": job["key"] == model_key(project, name)
@@ -406,6 +430,7 @@ class FitJobs:
         amendment: dict[str, Any] | None = None,
         source_fit: Path | None = None,
         frozen_source_name: str | None = None,
+        full_refit: bool = False,
     ) -> dict[str, Any]:
         with self.lock:
             if self.active and self.active["status"] in ("queued", "running"):
@@ -444,6 +469,7 @@ class FitJobs:
                 "amendment": amendment,
                 "source_fit": source_fit,
                 "frozen_source_name": frozen_source_name,
+                "full_refit": full_refit,
             }
             self.jobs[name] = self.active = job
             self.thread = threading.Thread(

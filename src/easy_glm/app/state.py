@@ -200,6 +200,8 @@ def model_hash(project: Project, model: str) -> str:
     if not staged:
         cfg.pop("base_rate_override", None)
     cfg.pop("notes", None)
+    # Model-flow provenance is navigation metadata, not fit input.
+    cfg.pop("lineage", None)
     design_names = set(cfg["predictors"])
     for stage in cfg.get("pair_stages", []):
         design_names.update((stage["a"], stage["b"]))

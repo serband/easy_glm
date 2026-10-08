@@ -143,7 +143,7 @@ def safe_filename(name: str, fallback: str = "model") -> str:
     return cleaned[:80] if re.search(r"\w", cleaned) else fallback
 
 
-PROJECT_VERSION = 4  # v4 adds ordered multiplicative components
+PROJECT_VERSION = 5  # v5 adds optional visual model-flow provenance
 
 ROLES = (
     "target",
@@ -421,6 +421,22 @@ class PairStageConfig:
     search: PairSearchConfig | None = None
 
 
+@dataclass(frozen=True)
+class ModelLineage:
+    """Durable navigation provenance for a named model candidate.
+
+    This deliberately records an identity, rather than a scorer.  A saved
+    project can therefore show an old branch after its local fit artefact has
+    gone away, but can never silently use that old scorer to fit a successor.
+    """
+
+    parent_name: str
+    parent_fit_id: str
+    parent_key: str
+    parent_prefix_fingerprint: str
+    prefix_length: int
+
+
 @dataclass
 class ModelConfig:
     family: str = "poisson"
@@ -449,6 +465,9 @@ class ModelConfig:
     #: invalidate one
     snapshots: list[TableSnapshot] = field(default_factory=list)
     notes: str = ""
+    #: Provenance for the visual model-flow diagram.  It has no modelling
+    #: meaning and is excluded from all fit identities.
+    lineage: ModelLineage | None = None
 
     def drop_adjustments_for(self, variable: str) -> int:
         """Remove every adjustment on ``variable`` — from the working set **and
@@ -1317,18 +1336,24 @@ class Project:
         d = asdict(self)
         # Keep ordinary legacy projects readable by version-2 installations.
         d["version"] = (
-            4
-            if any(m.components for m in self.models.values())
+            5
+            if any(m.lineage is not None for m in self.models.values())
             else (
-                3
-                if any(
-                    m.pair_method == "sequential_catboost" or m.pair_stages
-                    for m in self.models.values()
+                4
+                if any(m.components for m in self.models.values())
+                else (
+                    3
+                    if any(
+                        m.pair_method == "sequential_catboost" or m.pair_stages
+                        for m in self.models.values()
+                    )
+                    else 2
                 )
-                else 2
             )
         )
         for m in d["models"].values():
+            if m.get("lineage") is None:
+                m.pop("lineage", None)
             if m["pair_stages"]:
                 m["pair_method"] = "sequential_catboost"
             m["adjustments"] = [_adjustment_to_dict(a) for a in m["adjustments"]]
@@ -1379,6 +1404,27 @@ class Project:
         models: dict[str, ModelConfig] = {}
         for name, m in raw.get("models", {}).items():
             m = dict(m)
+            raw_lineage = m.pop("lineage", None)
+            if raw_lineage is not None:
+                if not isinstance(raw_lineage, dict):
+                    raise ValueError(f"models[{name!r}].lineage must be an object")
+                lineage = _build(ModelLineage, raw_lineage, f"models[{name!r}].lineage")
+                if (
+                    not all(
+                        isinstance(value, str) and value.strip()
+                        for value in (
+                            lineage.parent_name,
+                            lineage.parent_fit_id,
+                            lineage.parent_key,
+                            lineage.parent_prefix_fingerprint,
+                        )
+                    )
+                    or not isinstance(lineage.prefix_length, int)
+                    or lineage.prefix_length < 0
+                ):
+                    raise ValueError(f"models[{name!r}].lineage is invalid")
+            else:
+                lineage = None
             penalty = _build(Penalty, m.pop("penalty", {}), f"models[{name!r}].penalty")
             adjustments = [
                 _adjustment_from_dict(a, f"models[{name!r}].adjustments")
@@ -1483,6 +1529,7 @@ class Project:
                     ),
                     "pair_stages": pair_stages,
                     "components": components,
+                    "lineage": lineage,
                 },
                 f"models[{name!r}]",
             )

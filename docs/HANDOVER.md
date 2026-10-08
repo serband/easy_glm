@@ -1,0 +1,170 @@
+# EasyGLM handover
+
+**Snapshot: 8 October 2026.** Start here when taking over without the previous chat. Check Git and the current package registry before changing a status claim: this is a local snapshot, not proof of today's remote state.
+
+## Start in the right checkout
+
+| Purpose | Checkout and state |
+| --- | --- |
+| Current implementation | `/private/tmp/easyglm-visual-model-flow`, `codex/visual-model-flow`, based on unreleased stack revision `a8ea61961d19a5fe79af08ca3b04be987599c2f3`; visual flow changes are local |
+| User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
+| Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
+
+The current stack is **local branch work, unpushed and unreleased**. Its `pyproject.toml` still says `0.472`; that version string does not make the stack part of the public package. The primary workspace's `main` is older (`4eb8c8a`) and must not be used as a release baseline. Remote GitHub/PyPI status was not live-verified for this snapshot because network name resolution was unavailable. Do not reset, clean, switch, or prune the primary checkout. Inspect `git status`, branch, commit, and file paths before acting.
+
+The primary workspace carries a copy of this handover and selected guidance, but its code does **not** contain the current stack. Read `examples/stacked_models.md`, `docs/plans/STACKED_MODELS.md`, `docs/LLM_USAGE_GUIDE.md`, and the source/tests **in the implementation checkout**; the example and usage guide are absent from the primary workspace, while its untracked copy of the stack plan may differ from the implementation checkout. `examples/pricing_walkthrough.md` covers the earlier released pricing flow. The usage guide describes v0.472, not takeover. The locally available `v0.472` Git tag provides the release source for comparison (`git show v0.472:<path>` from the stack checkout); verify remote state separately when network access returns.
+
+## What the package does
+
+EasyGLM is an insurance-pricing Python package. The released v0.472 package fits regularised GLMs, turns their coefficients into exact rating tables, scores from those tables, and includes a local browser workbench and command-line fit/export/validate commands. The simple API is `EasyGLM.fit`; the interactive actuarial API is `PricingSession` → named `PricingModel` checkpoints; lower-level users can use `DesignSpec` → `fit_glm` → `rate_tables`/`to_rate_model` and `RateModel` for portable lookup scoring. The v0.472 interactive path also supports separately fitted two-factor CatBoost interaction tables, predictor screening, training/CV diagnostics, explicit holdout inspection, rate amendments, and save/reopen. Consult the release tag and `CHANGELOG.md` for exact released details.
+
+The existing core accepts Poisson, Gamma, Gaussian, inverse Gaussian, Tweedie and binomial families, with log links by default except binomial's logit; compatibility and target constraints vary by feature. **Mixed stacks support only Poisson, Tweedie and Gaussian with log links.** The default browser workbench is the local FastAPI/Svelte app (`python -m easy_glm.desktop`, or `python -m easy_glm.app`); the older Streamlit UI is available through `python -m easy_glm.app --legacy-streamlit`. `easy-glm run|export|validate|workbench` is the project CLI. The standalone `.easyglm` scorer, project JSON, and fitted stack bundle serve different purposes; check which artifact a command expects.
+
+## What exists and what remains
+
+The stack branch implements an ordered multiplicative sequence of GLM, direct CatBoost, separately accepted two-factor interaction tables, and complete catalogue lookups. A component fits the original response with the log of the **complete accepted predecessor scorer** as offset. The scorer includes earlier amended tables/files, the declared external offset once, and exposure once when converting unit predictions to expected amounts. A correction-only first component gets an internal fitted baseline. Supported mixed-stack families are Poisson, Tweedie, and Gaussian with log link; do not assume other existing package families/links work in a mixed stack.
+
+`PricingSession` and named `PricingModel` objects provide short public calls (`fit_glm`, `fit_catboost`, `fit_interaction`, `fit_catalogue`, `ae`, `compare`, `edit_rates`, `export_lookup`, `save`/`load`). The workbench has a stacked-model path and component inspection, comparison, amendment, and export views. Named fits are detached; append and amendment create new models. The Python example demonstrates GLM → two pair tables → vehicle → reviewed vehicle → occupation → postcode, then a separate CatBoost → GLM candidate. Catalogue fitting pins the full supplied key/attribute table, scores keys without training rows, checks joins/coverage, and exports an **incremental component** file. A catalogue-first file is a full unit prediction only when there is no external baseline; otherwise the external offset remains separate in the complete scorer. Missing keys error by default unless an explicit fallback is chosen.
+
+**Current product work: independent variable selection and a visual model flow.** The workbench now selects each new component's factors from safe predictor and unassigned source columns, with alphabetical search and a retained selected list. Global roles continue to identify response, weight, ID, split and ignore. GLM and interaction-table bands remain shared through `Project.design`; independent per-component binning is future work. CatBoost uses raw inputs. The diagram shows named complete models, their own last-component inputs and the full component recipe. Add a standalone model, build after a fitted model, or create a sibling alternative from the same exact fitted parent. Existing single-model workflows remain available. See `docs/MODEL_FLOW.md` for the user workflow.
+
+`ModelConfig.lineage` records the parent name, fit identity, settings key and prefix fingerprint. It is provenance, excluded from fit/cache hashes; the complete ordered component recipe remains the scorer. Projects with lineage write schema version 5; older projects without lineage retain their prior serialized version. An appended candidate requires an exact applicable parent artifact and unchanged frozen prefix. Changing a parent does not mutate its existing children. Missing or changed artifacts produce historical links; an explicit full rebuild fits the whole saved recipe afresh and remains marked historical after job restore. Scope validation runs on save and fit, including imported projects, and protects response/control fields against catalogue-name collisions.
+
+The visual flow work is local, unpushed and unreleased. Independent software, adversarial and actuarial reviews are required before completion, as are fresh Python, browser and installed-wheel example checks. Keep discovery on training data, label in-sample and CV evidence accurately, and display holdout results only on explicit request. Table changes need preview then apply and a clear choice to retain or refit later components. A/E and searches must use the accepted complete scorer; earlier named fits must remain unchanged.
+
+Known first-version boundaries: each named model scores a linear sequence; the diagram can show alternatives but does not combine two parent models; one-key, user-supplied catalogues; no arbitrary imported estimators, automatic hierarchical credibility, geographic smoothing, or mixed-stack HTML report. A direct CatBoost component requires its saved model artifact to score and cannot be represented exactly by GLM rate tables alone. Confirm any further limit in code before asserting it.
+
+## Source map and checks
+
+- `src/easy_glm/pricing/session.py`, `model.py`, `review.py`, `views.py`, `validation.py`, `persistence.py`, `excel.py`: public interactive setup, named checkpoints, edits, diagnostics, comparisons, save/load and Excel.
+- `src/easy_glm/workflow/stack_types.py`, `stack.py`, `stack_tuning.py`, `catalogue.py`: component recipes/artifacts, cumulative scoring and offsets, fold-aware tuning, catalogue validation and lookup.
+- `src/easy_glm/workflow/project.py`: global data roles/design, model configuration and JSON migration. `src/easy_glm/desktop/` plus `frontend/src/StackWorkbench.svelte` and `frontend/src/App.svelte`: workbench APIs and screens.
+- `tests/test_pricing_stack_api.py`, `test_stack_tuning.py`, `test_stack_exports.py`, `test_desktop_stack.py`: targeted stack tests; `frontend/tests/stack-visual.mjs` and `stack-legacy-append.mjs` are local browser review scripts, not a dedicated `playwright.stack.config.js` CI job.
+
+Fresh checks on 8 October in the visual-flow checkout: **1,615 Python tests passed**, 1 skipped and 1 slow deselected; Black, Ruff and mypy passed. The new model-flow browser scenario, existing model-editing and interaction-reuse scenarios, all 18 frontend unit tests, Svelte check and static build passed. Both public walkthroughs completed all **48 Python blocks** against an installed wheel, including Excel and complete catalogue exports. Software, adversarial and pricing-actuary reviews closed their findings. These are local macOS checks, not a GitHub CI or Windows release check.
+
+The prior build reported **1,605 passed, 1 skipped, 1 slow deselected** and **17 stack example Python blocks against an installed wheel**. Those are historical reports; use the fresh checks above rather than the old totals as the current baseline. CI currently specifies Python 3.10–3.13 tests, Ruff, Black, mypy for `core`, `workflow`, and `pricing`, a Windows installed-wheel job, and frontend check/build plus existing Playwright suites. The source branch may have no CI run because it is unpushed.
+
+Use the implementation checkout as the working directory (`/private/tmp/easyglm-visual-model-flow` locally, or the fresh clone on another machine). Create **new** environments; do not use the broken `.venv` symlink. From that checkout:
+
+```bash
+checkout=$(pwd -P)
+check_dir=$(mktemp -d "${TMPDIR:-/tmp}/easyglm-check-XXXXXX")
+python3.13 -m venv "$check_dir/source-env"
+"$check_dir/source-env/bin/python" -m pip install -e '.[dev]'
+"$check_dir/source-env/bin/python" -c 'import easy_glm; print(easy_glm.__file__)'
+"$check_dir/source-env/bin/python" -m pytest -q
+"$check_dir/source-env/bin/python" -m ruff check .
+"$check_dir/source-env/bin/python" -m black --check .
+"$check_dir/source-env/bin/python" -m mypy src/easy_glm/core src/easy_glm/workflow src/easy_glm/pricing --ignore-missing-imports
+```
+
+Use Python 3.13 for this local pass to match a CI interpreter. The printed import must resolve to this checkout. CI uses Node 22; this local visual-flow pass uses the available Node 26 (`node --version`). `frontend/playwright.config.js` starts the server through `../.venv/bin/python`; bind that path to the new environment **only if absent or a broken symlink**:
+
+```bash
+cd "$checkout"
+if [ -L .venv ] && [ ! -e .venv ]; then unlink .venv; fi
+if [ ! -e .venv ] && [ ! -L .venv ]; then ln -s "$check_dir/source-env" .venv; fi
+.venv/bin/python -c 'import easy_glm; print(easy_glm.__file__)'
+if [ -L frontend/node_modules ] && [ ! -e frontend/node_modules ]; then unlink frontend/node_modules; fi
+```
+
+If `.venv` is a real environment, preserve it and confirm its import path before browser tests; if it points elsewhere, use a clean clone rather than replacing it. Likewise inspect a real `frontend/node_modules` directory before `npm ci`, which replaces its contents. From `frontend/`, run `npm ci`, `npm run check`, `npm run build`, `node --test tests/*.test.js`, and `npx playwright install chromium` before the relevant config suites (for example, `npx playwright test --config playwright.models.config.js`). Those suites use bundled Chromium. The separate `tests/stack-visual.mjs` and `tests/stack-legacy-append.mjs` launch the Chrome channel and require an installed Chrome browser; `npx playwright install chrome` is an optional browser installation if it is absent. CI's workbench job also checks that rebuilt static assets match tracked files. `pytest -m slow` is the separate 5M-row memory budget.
+
+For package acceptance, build and install a wheel into a **second new** environment. Keep this in the same shell as `check_dir` above:
+
+```bash
+cd "$checkout"
+"$check_dir/source-env/bin/python" -m build --wheel --outdir "$check_dir/dist"
+python3.13 -m venv "$check_dir/wheel-env"
+"$check_dir/wheel-env/bin/python" -m pip install "$check_dir"/dist/easy_glm-*.whl
+mkdir -p "$check_dir/run"
+cd "$check_dir/run"
+EASYGLM_STACK_DOC="$checkout/examples/stacked_models.md" "$check_dir/wheel-env/bin/python" - <<'PYBLOCKS'
+import os
+import re
+from pathlib import Path
+import numpy as np
+import easy_glm
+
+package = Path(easy_glm.__file__).resolve()
+assert "site-packages" in package.parts, package
+source = Path(os.environ["EASYGLM_STACK_DOC"]).read_text()
+blocks = re.findall(r"(?ms)^```python\n(.*?)^```", source)
+assert blocks, "No Python blocks found"
+namespace = {"__name__": "__main__"}
+for number, block in enumerate(blocks, 1):
+    exec(compile(block, f"stacked_models.md block {number}", "exec"), namespace)
+    print(f"Passed block {number}/{len(blocks)}")
+assert np.allclose(
+    namespace["complete"].predict(namespace["data"].head()),
+    namespace["saved"].predict(namespace["data"].head()),
+)
+for name in ("vehicle_factors.csv", "occupation_factors.csv", "postcode_factors.parquet", "motor_model.easyglm"):
+    assert Path(name).is_file(), name
+PYBLOCKS
+```
+
+Do not skip display or export blocks. Inspect the exported full-catalogue keys and accepted multipliers, and run `examples/pricing_walkthrough.md` against the installed wheel as a regression scenario. The old reported counts are not a substitute for this fresh check.
+The 30 September iCloud incident left recovery bundles/patches/manifests at `/Users/serban/Documents/Projects/easy_glm/.internal/recovery-20260930` and `/private/tmp/easyglm-recovery-20260930`. Tracked stack files and Git history survived. The old stack worktree directory is no longer present. The visual-flow worktree was created from its surviving Git branch, with dependencies in a fresh isolated environment. Rebuild dependencies without deleting preserved source or unrelated work. Some old worktrees are prunable; no pruning is required for this handover. These handover edits were created after the recovery bundle and are not contained in it.
+
+## Transfer to another machine or provider
+
+This stack branch is unpushed. Check that all required changes are committed before creating a transfer bundle. The
+implementation checkout is a linked Git worktree: copying its directory or
+`.git` pointer alone will not transfer the repository. For local continuation,
+open `/private/tmp/easyglm-visual-model-flow` directly. For another machine, make a
+packet containing a Git bundle **and today's six guidance files**. This is a
+local backup/transfer operation, not a commit, push or release:
+
+```bash
+source_checkout=/private/tmp/easyglm-visual-model-flow
+packet=/Users/serban/Documents/Projects/easy_glm/.internal/handover-20261004
+mkdir -p "$packet/docs/plans"
+git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/visual-model-flow refs/tags/v0.472
+git -C "$source_checkout" bundle verify "$packet/easyglm.bundle"
+cp "$source_checkout/AGENTS.md" "$packet/AGENTS.md"
+cp "$source_checkout/docs/HANDOVER.md" "$packet/docs/HANDOVER.md"
+cp "$source_checkout/docs/MODEL_FLOW.md" "$packet/docs/MODEL_FLOW.md"
+cp "$source_checkout/docs/FUTURE_RELEASES.md" "$packet/docs/FUTURE_RELEASES.md"
+cp "$source_checkout/docs/PRICING_WORKFLOW_BUILD.md" "$packet/docs/PRICING_WORKFLOW_BUILD.md"
+cp "$source_checkout/docs/plans/STACKED_MODELS.md" "$packet/docs/plans/STACKED_MODELS.md"
+```
+
+Check that the bundle contains the current `codex/visual-model-flow` commit
+(`git rev-parse codex/visual-model-flow`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
+**new** directory with the stack branch selected, then copy the six guidance
+files into that clone and inspect `git status` before work. Keep the packet's
+directory structure; its docs are newer than the 30 September recovery bundle.
+For example, with transferred packet and destination paths chosen by the
+operator:
+
+```bash
+git clone --branch codex/visual-model-flow "$packet/easyglm.bundle" "$destination"
+cp "$packet/AGENTS.md" "$destination/AGENTS.md"
+cp "$packet/docs/HANDOVER.md" "$destination/docs/HANDOVER.md"
+cp "$packet/docs/MODEL_FLOW.md" "$destination/docs/MODEL_FLOW.md"
+cp "$packet/docs/FUTURE_RELEASES.md" "$destination/docs/FUTURE_RELEASES.md"
+cp "$packet/docs/PRICING_WORKFLOW_BUILD.md" "$destination/docs/PRICING_WORKFLOW_BUILD.md"
+mkdir -p "$destination/docs/plans"
+cp "$packet/docs/plans/STACKED_MODELS.md" "$destination/docs/plans/STACKED_MODELS.md"
+git -C "$destination" status --short --branch
+```
+
+Set `packet` and `destination` to actual paths on the receiving machine first.
+A bundle clone's `origin` points to that local bundle. Before checking live GitHub
+state, run `git remote set-url origin https://github.com/serband/easy_glm.git`
+inside the clone and then `git fetch origin` (read-only);
+this does not authorize pushing, merging or release. Do not copy the raw
+worktree, broken environment links, primary checkout's
+unrelated files, private data, or `.git` pointer. Rebuild dependencies in fresh
+environments as above. The bundle contains committed source and history; the
+separately copied docs carry the current handover. If code changes after
+this snapshot without a commit, package those explicitly or commit them to a
+branch before relying on a Git bundle.
+
+## Working and release rules
+
+Follow `AGENTS.md` for architecture and checks. Use the public examples as acceptance scenarios, and keep conversation excerpts, temporary review notes, verification logs, and local recovery material out of Git. Do not edit the README unless explicitly requested. Do not merge to `main`, push a release tag, or publish without the owner's explicit authorization; `v*` tags trigger PyPI publishing. A branch, fitted model, preview, built wheel, or local version number is not a release.
+
+When the stack's capabilities or status change, update this snapshot and the concise status in `docs/FUTURE_RELEASES.md`; keep `docs/PRICING_WORKFLOW_BUILD.md` clearly scoped to the earlier pricing workflow. Record durable API examples and reproducible tests in the normal repository, not a conversation transcript. Before handoff, distinguish what code does now from an accepted requirement and from a proposal, and state which checkout and test run supports each claim.

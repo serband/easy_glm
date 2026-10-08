@@ -1,9 +1,10 @@
 <script>
     import { onDestroy } from 'svelte';
     import DiagnosticPlot from './DiagnosticPlot.svelte';
+    import ModelFlow from './ModelFlow.svelte';
     import { formatNumber as num } from './format.js';
     export let api, state, view, uploadCatalogue, saveDownload;
-    export let onState = () => {}, onReady = () => {}, onContext = () => {}, onNavigate = () => {};
+    export let onState = () => {}, onReady = () => {}, onContext = () => {}, onNavigate = () => {}, onSingle = () => {};
     const labels = { glm: 'GLM', catboost: 'CatBoost', interaction: 'Pair interaction', catalogue: 'Catalogue lookup', legacy: 'Accepted legacy model' };
     function statusLabel(status, fitted) {
         if (!status) return fitted ? 'Fitted' : 'Awaiting fit';
@@ -25,13 +26,15 @@
     };
     let wb = null, jobs = {}, selected = '', source = '', result = null, kind = 'glm',
         stackFamily = 'poisson', tweediePower = 1.5, divideTargetByWeight = false,
-        name = '', stageName = '', factors = [], query = '', settings = structuredClone(defaults.glm),
+        name = '', stageName = '', factors = [], query = '', showSelected = false, settings = structuredClone(defaults.glm),
         catalogue = null, error = '', notice = '', busy = '', timer = null, known = '',
         reading = false, subset = 'train', variable = '', diagnosticQuery = '', diagnostics = null, challenger = '',
         comparison = null, stage = '', table = null, preview = null,
         lower = '', upper = '', decimals = '', operation = 'cap', amendedName = '', refitLater = false, viewKey = '';
     $: names = wb ? Object.keys(wb.models || {}).filter((n) => wb.models[n]?.components?.length) : [];
     $: fitted = names.filter((n) => jobs[n]?.applicable);
+    $: modelFlow = wb?.model_flow || [];
+    $: selectedFlow = (Array.isArray(modelFlow) ? modelFlow : modelFlow?.nodes || []).find((entry) => entry.name === selected);
     $: fittedSources = wb ? Object.keys(wb.stack_sources || {}).filter((n) => jobs[n]?.applicable && wb.models[n]).sort((a, b) => a.localeCompare(b)) : [];
     $: sourceInfo = source ? wb?.stack_sources?.[source] : null;
     $: components = result?.components || wb?.models?.[selected]?.components || [];
@@ -45,7 +48,7 @@
     $: factorChoices = kind === 'catalogue' && catalogue
         ? catalogue.columns.map((c) => c.name || c).filter((n) => n !== settings.key).sort((a, b) => a.localeCompare(b))
         : choices;
-    $: filtered = factorChoices.filter((n) => n.toLowerCase().includes(query.toLowerCase()));
+    $: filtered = factorChoices.filter((n) => showSelected ? factors.includes(n) : n.toLowerCase().includes(query.toLowerCase()));
     $: onReady(Boolean(jobs[selected]?.applicable));
     $: onContext({ fitted, selected, champion: wb?.champion });
     $: if (state && !reading && known !== `${state.session_id}:${state.revision}`) refresh();
@@ -54,7 +57,7 @@
         loadView();
     }
     function rev() { return { session_id: state.session_id, revision: state.revision }; }
-    function changeKind(value) { kind = value; factors = []; settings = structuredClone(defaults[value]); catalogue = null; }
+    function changeKind(value) { kind = value; settings = structuredClone(defaults[value]); catalogue = null; }
     function toggleFactor(value) { factors = factors.includes(value) ? factors.filter((n) => n !== value) : [...factors, value]; }
     async function refresh() {
         reading = true;
@@ -62,7 +65,6 @@
             wb = await api('workbench'); jobs = wb.jobs || {}; known = `${wb.session_id}:${wb.revision}`;
             if (!wb.models[selected]?.components?.length) selected = Object.keys(wb.models).find((n) => wb.models[n]?.components?.length) || '';
             if (source && !wb.stack_sources?.[source]) source = '';
-            if (!source && selected && jobs[selected]?.applicable) source = selected;
             if (selected && jobs[selected]?.applicable) await loadResult();
             if (!timer) timer = setInterval(poll, 1000);
         } catch (e) { error = e.message; } finally { reading = false; }
@@ -76,7 +78,6 @@
             if (changed && next[selected]?.applicable) {
                 const snapshot = await api('variables'); onState(snapshot);
                 wb = await api('workbench'); jobs = wb.jobs; known = `${wb.session_id}:${wb.revision}`;
-                if (!source && selected && jobs[selected]?.applicable) source = selected;
                 await loadResult();
             }
         } catch (e) { error = e.message; }
@@ -93,8 +94,32 @@
         await loadView();
     }
     async function chooseSelected() {
-        if (jobs[selected]?.applicable) source = selected;
         await loadResult();
+    }
+    function clearEditor() {
+        source = ''; name = ''; stageName = ''; factors = []; query = ''; showSelected = false;
+        kind = 'glm'; settings = structuredClone(defaults.glm); catalogue = null;
+    }
+    function addAfter(model) {
+        source = model;
+        name = ''; stageName = ''; factors = []; query = ''; showSelected = false; catalogue = null;
+        kind = 'glm'; settings = structuredClone(defaults.glm);
+        notice = model ? `New candidate will build on ${model}. Choose its next stage.` : 'New standalone candidate. Choose its first stage.';
+    }
+    function createAlternative(model) {
+        const item = (Array.isArray(modelFlow) ? modelFlow : modelFlow?.nodes || []).find((entry) => entry.name === model) || {};
+        const edge = (Array.isArray(modelFlow) ? [] : modelFlow?.edges || []).find((entry) => entry.to === model);
+        const parent = edge?.from || item.parent_name || '';
+        const last = (item.components || wb?.models?.[model]?.components || []).at(-1);
+        source = parent;
+        name = ''; stageName = last?.name ? `${last.name} alternative` : '';
+        kind = last?.kind || 'glm';
+        factors = [...(last?.factors || last?.inputs || [])];
+        settings = structuredClone(last?.settings || defaults[kind]);
+        catalogue = null; query = ''; showSelected = false;
+        notice = parent
+            ? `Alternative starts from ${parent}; its last stage was copied for editing.`
+            : 'Standalone alternative copied its stage inputs for editing.';
     }
     async function loadView() {
         if (!result) return;
@@ -141,9 +166,9 @@
             onState(snapshot); selected = name.trim(); result = null; await refresh(); notice = 'Candidate saved. Fit to inspect its complete score.';
         } catch (e) { error = e.message; } finally { busy = ''; }
     }
-    async function fit() {
+    async function fit(fullRefit = false) {
         busy = 'fit'; error = '';
-        try { await api(`models/${encodeURIComponent(selected)}/fit`, rev()); jobs = await api('jobs'); notice = 'Fit started.'; }
+        try { await api(`models/${encodeURIComponent(selected)}/fit`, { ...rev(), ...(fullRefit ? { full_refit: true } : {}) }); jobs = await api('jobs'); notice = fullRefit ? 'Full recipe rebuild started.' : 'Fit started.'; }
         catch (e) { error = e.message; } finally { busy = ''; }
     }
     async function cancel() { try { jobs = await api(`models/${encodeURIComponent(selected)}/cancel`, rev()); } catch (e) { error = e.message; } }
@@ -174,31 +199,33 @@
     {#if error}<div class="message error" role="alert">{error}</div>{/if}
     {#if notice}<div class="message" role="status">{notice}</div>{/if}
     {#if !wb}<p>Loading model settings…</p>{:else}
+        {#if view === 'model'}<ModelFlow {modelFlow} models={wb.models || {}} {jobs} {selected} onSelect={(model) => { if (wb.models[model]?.components?.length) { selected = model; chooseSelected(); } else onSingle(model); }} onAdd={addAfter} onAlternative={createAlternative} />{/if}
         <section class="model-card"><div class="stack-line"><label>Named candidate<select aria-label="Stacked model" bind:value={selected} onchange={chooseSelected}><option value="">Choose a candidate</option>{#each names as n}<option value={n}>{n}</option>{/each}</select></label>
             {#if selected}<span>{jobs[selected]?.status || 'Not fitted'}</span>{/if}
-            {#if selected && !jobs[selected]?.applicable}<button onclick={fit} disabled={!!busy || ['running','queued'].includes(jobs[selected]?.status)}>Fit candidate</button>{/if}
+            {#if selected && !jobs[selected]?.applicable}<button onclick={() => fit(Boolean(selectedFlow?.full_refit_required))} disabled={!!busy || ['running','queued'].includes(jobs[selected]?.status)}>{selectedFlow?.full_refit_required ? 'Rebuild full model' : 'Fit candidate'}</button>{/if}
+            {#if selectedFlow?.full_refit_required}<small class="stack-support">The prior fitted parent is no longer available. Rebuild fits this complete saved recipe afresh; it does not score the missing parent.</small>{/if}
             {#if ['running','queued'].includes(jobs[selected]?.status)}<button onclick={cancel}>Cancel fit</button>{/if}</div>
             {#if selected}<ol class="stack-components">{#each components as c, i}<li><strong>{c.name}</strong><span>{labels[c.kind]}</span><span>{(c.factors || c.inputs || []).join(', ')}</span><span>From {i ? components[i - 1].name : 'starting level'}</span><span>{statusLabel(c.status, jobs[selected]?.applicable)}</span>
                 {#if c.kind === 'catalogue'}<small class="stack-support">{c.unit_label || 'Catalogue lookup'} · {c.evidence?.catalogue_rows ?? '—'} catalogue entries · {c.coverage?.rows ?? '—'} training rows · {c.coverage?.missing_key_rows ?? 0} missing-key rows · {c.coverage?.fallback_rows ?? 0} fallback rows{#if unseenSummary(c.evidence?.unseen_attribute_levels)} · Unseen attribute levels: {unseenSummary(c.evidence?.unseen_attribute_levels)}{/if}</small>{/if}
             </li>{/each}</ol>{/if}
         </section>
-        {#if view === 'model'}<section class="model-card"><h2>Add a stage</h2><p>Start from any fitted checkpoint or begin a new model. Every stage type can follow any other compatible type.</p>
+        {#if view === 'model'}<section class="model-card"><div class="stack-form-heading"><div><h2>{source ? 'Add model after this' : 'Add standalone model'}</h2><p>{source ? 'Each saved name is a complete model. Existing fitted predictions remain fixed as the offset for its child.' : kind === 'catboost' ? 'Includes its own fitted starting level; no predecessor model offset.' : 'This complete model starts without a predecessor-model offset.'}</p></div><button onclick={clearEditor}>Reset editor</button></div>
             <div class="form-grid"><label>Start from<select aria-label="Start from fitted candidate" bind:value={source}><option value="">New model</option>{#each fittedSources as n}<option value={n}>{n}{wb.models[n]?.components?.length ? '' : ' · fitted single model'}</option>{/each}</select></label>
                 <label>New candidate name<input aria-label="New stacked model name" bind:value={name} /></label>
                 <label>Stage type<select aria-label="New stage type" value={kind} onchange={(e) => changeKind(e.currentTarget.value)}>{#each Object.entries(labels).filter(([key]) => key !== 'legacy') as [key,label]}<option value={key}>{label}</option>{/each}</select></label>
                 <label>Stage name<input aria-label="New stage name" bind:value={stageName} /></label></div>
-            {#if sourceInfo}<p class="help-text">Starting checkpoint: {sourceInfo.components.map((item) => item.name).join(' → ')}. This fitted score is kept as the prefix of the new candidate.</p>{/if}
-            <div class="form-grid"><label>Model family<select aria-label="Stack model family" bind:value={stackFamily} disabled={!!source}><option value="poisson">Poisson</option><option value="tweedie">Tweedie</option><option value="gaussian">Gaussian</option></select></label>
+            {#if sourceInfo}<p class="help-text">Builds on <strong>{source}</strong> · complete model predictions as offset. Its complete fitted chain is kept: {sourceInfo.components.map((item) => item.name).join(' → ')}.</p>{/if}
+            <div class="form-grid"><label>Model family{#if source}<input aria-label="Stack model family" value={wb.models[source]?.family || ''} readonly />{:else}<select aria-label="Stack model family" bind:value={stackFamily}><option value="poisson">Poisson</option><option value="tweedie">Tweedie</option><option value="gaussian">Gaussian</option></select>{/if}</label>
                 <label>Link<input aria-label="Stack model link" value="Log" readonly /></label>
                 <label>Target<input aria-label="Stack model target" value={source ? wb.models[source]?.target || '' : wb.target || ''} readonly /></label>
                 <label>Weight or exposure<input aria-label="Stack model weight" value={source ? wb.models[source]?.weight || '' : wb.weight || ''} readonly /></label>
                 <label>External offset<input aria-label="Stack model offset" value={source ? wb.models[source]?.offset || '' : wb.offset || ''} readonly /></label>
-                {#if !source && stackFamily === 'tweedie'}<label>Tweedie power<input aria-label="Stack Tweedie power" type="number" min="1.01" max="1.99" step=".05" bind:value={tweediePower} /></label>{/if}
+                {#if source && wb.models[source]?.family === 'tweedie'}<label>Tweedie power<input aria-label="Stack Tweedie power" value={wb.models[source]?.tweedie_power ?? ''} readonly /></label>{:else if !source && stackFamily === 'tweedie'}<label>Tweedie power<input aria-label="Stack Tweedie power" type="number" min="1.01" max="1.99" step=".05" bind:value={tweediePower} /></label>{/if}
             </div>
             <label class="stack-divide"><input aria-label="Divide target by weight" type="checkbox" checked={source ? Boolean(wb.models[source]?.divide_target_by_weight) : divideTargetByWeight} disabled={!!source} onchange={(e) => (divideTargetByWeight = e.currentTarget.checked)} />Divide target by weight when fitting unit outcomes</label>
-            <h3>Factors</h3><p class="help-text">{kind === 'catalogue' ? 'Upload a catalogue below, then choose its required attributes.' : 'Search predictors and unassigned columns. Reserved and ignored columns are excluded.'}</p><input aria-label="Search stage factors" placeholder="Search factors" bind:value={query} />
+            <h3>Variables</h3><p class="help-text">{kind === 'catalogue' ? 'Upload a catalogue below, then choose its required attributes.' : kind === 'catboost' ? 'CatBoost receives these raw input variables.' : 'GLM uses these selected variables with the project’s shared settings.'}</p><input aria-label="Search stage factors" placeholder="Search variables" bind:value={query} />
             <div class="stack-factors" role="group" aria-label="Stage factors">{#each filtered as f}<label><input type="checkbox" checked={factors.includes(f)} onchange={() => toggleFactor(f)} />{f}</label>{/each}</div>
-            <p>{factors.length ? factors.join(', ') : 'No factors selected'}</p>
+            <p>{factors.length ? `${factors.length} selected: ${factors.join(', ')}` : 'No factors selected'} <button class="text-button" onclick={() => (showSelected = !showSelected)}>{showSelected ? 'Show all' : 'Show selected'}</button></p>
             {#if kind === 'catalogue'}<h3>Full catalogue</h3><p>Upload the complete CSV or Parquet file, including unseen keys.</p><input type="file" accept=".csv,.parquet" aria-label="Upload catalogue" onchange={upload} disabled={!!busy} />
                 {#if catalogue}<p>{catalogue.filename} · {catalogue.rows} rows</p><label>Unique key<select aria-label="Catalogue key" bind:value={settings.key}><option value="">Choose key</option>{#each catalogue.columns as c}<option value={c.name || c}>{c.name || c}</option>{/each}</select></label><p>Select required catalogue attributes in Factors above.</p>
                     <label>Missing-key fallback value (optional)<input aria-label="Missing key fallback" type="number" min="0.000001" step="any" value={settings.fallback ?? ''} onchange={(e) => (settings = { ...settings, fallback: e.currentTarget.value ? Number(e.currentTarget.value) : null })} /></label>{/if}
@@ -248,5 +275,7 @@
     .stack-diagnostic-controls { display:flex; flex-wrap:wrap; gap:12px; margin:12px 0; }
     .stack-diagnostic-controls label { display:grid; gap:5px; min-width:160px; }
     .stack-divide { display:flex; align-items:center; gap:8px; margin:10px 0; }
+    .stack-form-heading { display:flex; justify-content:space-between; gap:12px; align-items:start; }
+    .text-button { border:0; background:transparent; color:#154b35; text-decoration:underline; padding:0 3px; }
     @media (max-width:900px) { .stack-components li { grid-template-columns:1fr 1fr; } }
 </style>

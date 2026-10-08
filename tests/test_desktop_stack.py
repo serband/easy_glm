@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import zipfile
 from io import BytesIO
@@ -330,7 +332,7 @@ def test_catalogue_review_creates_named_checkpoint(tmp_path):
         np.testing.assert_allclose(json.loads(executed.stdout), expected, rtol=1e-12)
 
 
-def test_append_reuses_exact_stack_and_legacy_prefix():
+def test_append_reuses_exact_stack_and_legacy_prefix(tmp_path):
     rng = np.random.default_rng(117)
     raw = pl.DataFrame(
         {
@@ -338,6 +340,7 @@ def test_append_reuses_exact_stack_and_legacy_prefix():
             "Exposure": np.ones(450),
             "Age": rng.integers(20, 75, 450),
             "Region": rng.choice(["A", "B"], 450),
+            "PolicyId": np.arange(450),
         }
     )
     project = Project(name="Append source")
@@ -346,6 +349,7 @@ def test_append_reuses_exact_stack_and_legacy_prefix():
         "Exposure": "weight",
         "Age": "predictor",
         "Region": "predictor",
+        "PolicyId": "id",
     }
     project.data.split.mode = "random"
 
@@ -391,6 +395,26 @@ def test_append_reuses_exact_stack_and_legacy_prefix():
             == 202
         )
         assert wait_fit(client, "Base")["status"] == "complete"
+        forged = client.post(
+            "/api/models/save",
+            json={
+                **_revision(client),
+                "name": "Base",
+                "fields": {
+                    "components": [
+                        {
+                            "component_id": "forged",
+                            "name": "Forged ID",
+                            "kind": "glm",
+                            "factors": ["PolicyId"],
+                            "settings": {"alpha": 0.01},
+                        }
+                    ]
+                },
+            },
+        )
+        assert forged.status_code == 422
+        assert "unavailable" in forged.json()["detail"]
         wb = client.get("/api/workbench").json()
         pin = wb["stack_sources"]["Base"]
         appended = client.post(
@@ -420,6 +444,22 @@ def test_append_reuses_exact_stack_and_legacy_prefix():
             },
         )
         assert appended.status_code == 200, appended.text
+        flow = client.get("/api/workbench").json()["model_flow"]
+        assert {
+            "from": "Base",
+            "to": "Extended",
+            "kind": "builds_on",
+            "parent_fit_id": pin["source_fit_id"],
+            "prefix_length": 1,
+            "edge_status": "live",
+            "historical": False,
+        } in flow["edges"]
+        assert (
+            client.get("/api/workbench").json()["models"]["Extended"]["lineage"][
+                "parent_name"
+            ]
+            == "Base"
+        )
         assert (
             client.post("/api/models/Extended/fit", json=_revision(client)).status_code
             == 202
@@ -433,6 +473,45 @@ def test_append_reuses_exact_stack_and_legacy_prefix():
         ).json()
         assert base_bundle["components"][0] == extended_bundle["components"][0]
         assert len(extended_bundle["components"]) == 2
+        assert (
+            client.post(
+                "/api/models/Extended/fit",
+                json={**_revision(client), "full_refit": True},
+            ).status_code
+            == 202
+        )
+        assert wait_fit(client, "Extended")["status"] == "complete"
+        fresh_edge = next(
+            edge
+            for edge in client.get("/api/workbench").json()["model_flow"]["edges"]
+            if edge["to"] == "Extended"
+        )
+        assert fresh_edge["edge_status"] == "historical"
+        saved_project = client.get("/api/project").json()
+        saved_job = client.get("/api/jobs").json()["Extended"]
+        source = next(
+            Path(tempfile.gettempdir()).glob("easyglm_fits_*/" + saved_job["id"])
+        )
+        shutil.copytree(source, tmp_path / "fits" / saved_job["id"])
+        (tmp_path / "jobs.json").write_text(json.dumps({"Extended": saved_job}))
+        with TestClient(
+            create_app(
+                Project.from_dict(saved_project),
+                raw,
+                port=8801,
+                restore_folder=tmp_path,
+            ),
+            base_url="http://127.0.0.1:8801",
+        ) as restored:
+            restored.headers["X-EasyGLM-Token"] = restored.get("/api/session").json()[
+                "token"
+            ]
+            restored_edge = next(
+                edge
+                for edge in restored.get("/api/workbench").json()["model_flow"]["edges"]
+                if edge["to"] == "Extended"
+            )
+            assert restored_edge["edge_status"] == "historical"
 
         legacy = client.post(
             "/api/models/save",

@@ -18,6 +18,7 @@
         inverse_gaussian: ['Inverse Gaussian', 'Positive amounts.'],
     };
     export let comparison = '',
+        requestedModel = '',
         onContext = () => {};
     let comparisonResult = null,
         comparisonKey = '',
@@ -26,6 +27,7 @@
     $: legacyNames = wb
         ? Object.keys(wb.models).filter((name) => !wb.models[name]?.components?.length)
         : [];
+    $: if (requestedModel && legacyNames.includes(requestedModel) && selected !== requestedModel) selected = requestedModel;
     $: effectiveChallenger =
         view === 'compare' &&
         legacyNames.includes(comparison) &&

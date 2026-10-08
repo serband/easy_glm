@@ -50,6 +50,7 @@ from easy_glm.desktop.loading import (
     upload_basename,
 )
 from easy_glm.desktop.modeling import (
+    FitRequest,
     ModelEdit,
     ReducedModelEdit,
     Revision,
@@ -57,6 +58,7 @@ from easy_glm.desktop.modeling import (
     edit_model,
     pair_candidate_groups,
     setup_info,
+    validate_stack_factor_scope,
 )
 from easy_glm.desktop.reviews import ReviewEdit, ReviewJobs
 from easy_glm.desktop.screening import ScreeningJobs, ScreeningRequest
@@ -68,7 +70,12 @@ from easy_glm.desktop.splits import (
 )
 from easy_glm.workflow.explore import univariate
 from easy_glm.workflow.prep import apply_variables
-from easy_glm.workflow.project import SINGLE_ROLES, Project, pair_stage_fingerprint
+from easy_glm.workflow.project import (
+    SINGLE_ROLES,
+    ModelLineage,
+    Project,
+    pair_stage_fingerprint,
+)
 from easy_glm.workflow.variables import (
     BULK_ROLE_GROUPS,
     apply_roles_grid,
@@ -237,6 +244,94 @@ def create_app(
         if fitted.name != name:
             raise ValueError("The source fit identity does not match its model.")
         return stack_from_legacy(current, fitted)
+
+    def verified_append_source(name: str) -> tuple[str, Path] | None:
+        """Return the only scorer that may be reused for an append, if exact."""
+        source_info = append_sources.get(name)
+        if source_info is None:
+            return None
+        if source_info["candidate_key"] != model_key(current, name):
+            raise ValueError("Append settings changed. Save the candidate again.")
+        source_name = source_info["source_name"]
+        source_path = jobs.artifact(current, source_name)
+        if (
+            source_path.name != source_info["source_fit_id"]
+            or model_key(current, source_name) != source_info["source_key"]
+        ):
+            raise ValueError("The starting fit changed. Save the append again.")
+        lineage = current.models[name].lineage
+        if lineage is None:
+            raise ValueError("Append provenance is missing. Save the candidate again.")
+        prefix = fitted_prefix(source_name)
+        if (
+            lineage.parent_name != source_name
+            or lineage.parent_fit_id != source_path.name
+            or lineage.parent_key != model_key(current, source_name)
+            or lineage.parent_prefix_fingerprint != prefix.fingerprint()
+        ):
+            raise ValueError(
+                "The recorded starting checkpoint changed. Save the append again."
+            )
+        return source_name, source_path
+
+    def append_is_live(name: str) -> bool:
+        try:
+            return verified_append_source(name) is not None
+        except (KeyError, OSError, ValueError):
+            return False
+
+    def model_flow(
+        saved: Project, saved_jobs: dict[str, dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Read-only durable provenance; it never supplies a scorer to a fit."""
+        nodes = []
+        edges = []
+        for name, config in saved.models.items():
+            job = saved_jobs.get(name, {})
+            nodes.append(
+                {
+                    "name": name,
+                    "kind": "stack" if config.components else "legacy",
+                    "status": job.get("status", "not_fitted"),
+                    "fitted": bool(job.get("applicable")),
+                    "fit_id": job.get("id") if job.get("applicable") else None,
+                    "component_count": len(config.components),
+                    "full_refit_required": bool(
+                        config.lineage is not None and not append_is_live(name)
+                    ),
+                }
+            )
+            lineage = config.lineage
+            if lineage is None:
+                continue
+            parent_job = saved_jobs.get(lineage.parent_name)
+            if job.get("full_refit"):
+                # Its recipe was rebuilt independently; provenance remains a
+                # navigational record but must not imply scorer reuse.
+                edge_status = "historical"
+            elif lineage.parent_name not in saved.models:
+                edge_status = "missing"
+            elif not parent_job or not parent_job.get("applicable"):
+                edge_status = "historical"
+            elif (
+                parent_job.get("id") == lineage.parent_fit_id
+                and model_key(saved, lineage.parent_name) == lineage.parent_key
+            ):
+                edge_status = "live"
+            else:
+                edge_status = "historical"
+            edges.append(
+                {
+                    "from": lineage.parent_name,
+                    "to": name,
+                    "kind": "builds_on",
+                    "parent_fit_id": lineage.parent_fit_id,
+                    "prefix_length": lineage.prefix_length,
+                    "edge_status": edge_status,
+                    "historical": edge_status != "live",
+                }
+            )
+        return {"nodes": nodes, "edges": edges}
 
     token = secrets.token_urlsafe(32)
     session_id = secrets.token_urlsafe(16)
@@ -790,6 +885,7 @@ def create_app(
             saved_jobs = jobs.status(saved)
             saved_stage_statuses = jobs.stage_statuses(saved)
             saved_refit_previews = jobs.refit_previews(saved)
+            saved_flow = model_flow(saved, saved_jobs)
             stack_sources = {}
             for source_name, job in saved_jobs.items():
                 if not job.get("applicable"):
@@ -814,6 +910,7 @@ def create_app(
             "stage_statuses": saved_stage_statuses,
             "stage_refit_preview": saved_refit_previews,
             "stack_sources": stack_sources,
+            "model_flow": saved_flow,
             "champion": saved.champion,
         }
 
@@ -844,6 +941,7 @@ def create_app(
                     if actual_hash != source_hash:
                         raise ValueError("Catalogue contents changed since upload.")
                 candidate_project = edit_model(current, edit)
+                scope_start = 0
                 if bool(edit.source_name) != bool(edit.source_fit_id):
                     raise ValueError(
                         "Choose a fitted source and its exact fit identity together."
@@ -875,6 +973,27 @@ def create_app(
                             "The append recipe must preserve the fitted prefix and add one component."
                         )
                     _check_prefix(config, prefix_stack)
+                    config.lineage = ModelLineage(
+                        parent_name=edit.source_name,
+                        parent_fit_id=edit.source_fit_id,
+                        parent_key=model_key(current, edit.source_name),
+                        parent_prefix_fingerprint=prefix_stack.fingerprint(),
+                        prefix_length=len(prefix_recipes),
+                    )
+                    scope_start = len(prefix_recipes)
+                elif edit.create:
+                    # A root candidate has no implicit provenance, even when
+                    # its recipes resemble an existing model.
+                    candidate_project.models[edit.name].lineage = None
+                if "components" in edit.fields:
+                    prepared = apply_variables(raw, candidate_project.data)
+                    validate_stack_factor_scope(
+                        candidate_project,
+                        raw,
+                        set(prepared.columns),
+                        candidate_project.models[edit.name],
+                        start_index=scope_start,
+                    )
                 if candidate_project.models[edit.name].pair_stages:
                     prepared = apply_variables(raw, candidate_project.data)
                     groups = pair_candidate_groups(
@@ -976,7 +1095,7 @@ def create_app(
             return snapshot()
 
     @app.post("/api/models/{name}/fit", status_code=202)
-    def start_fit(name: str, edit: Revision) -> dict[str, Any]:
+    def start_fit(name: str, edit: FitRequest) -> dict[str, Any]:
         with lock:
             check_revision(edit)
             if name not in current.models:
@@ -985,21 +1104,27 @@ def create_app(
             if problems:
                 raise HTTPException(422, "; ".join(problems))
             try:
-                source_info = append_sources.get(name)
-                if source_info is not None:
-                    if source_info["candidate_key"] != model_key(current, name):
-                        raise ValueError(
-                            "Append settings changed. Save the candidate again."
-                        )
-                    source_name = source_info["source_name"]
-                    source_path = jobs.artifact(current, source_name)
-                    if (
-                        source_path.name != source_info["source_fit_id"]
-                        or model_key(current, source_name) != source_info["source_key"]
-                    ):
-                        raise ValueError(
-                            "The starting fit changed. Save the append again."
-                        )
+                if current.models[name].components:
+                    prepared = apply_variables(raw, current.data)
+                    start_index = 0
+                    if not edit.full_refit and current.models[name].lineage is not None:
+                        start_index = current.models[name].lineage.prefix_length
+                    validate_stack_factor_scope(
+                        current,
+                        raw,
+                        set(prepared.columns),
+                        current.models[name],
+                        start_index=start_index,
+                    )
+                if edit.full_refit:
+                    # Never let an in-memory append source turn this explicit
+                    # recovery action into historical scorer reuse.
+                    return jobs.start(
+                        deepcopy(current), raw.clone(), name, full_refit=True
+                    )
+                source = verified_append_source(name)
+                if source is not None:
+                    source_name, source_path = source
                     return jobs.start(
                         deepcopy(current),
                         raw.clone(),
@@ -1007,9 +1132,25 @@ def create_app(
                         source_fit=source_path,
                         frozen_source_name=source_name,
                     )
+                if current.models[name].lineage is not None:
+                    if not edit.full_refit:
+                        raise HTTPException(
+                            409,
+                            "This saved branch has no live frozen starting checkpoint. "
+                            "Request a full refit to fit its complete recipe afresh.",
+                        )
+                    # This intentionally does not consult the lineage parent.
+                    # It rebuilds the child's complete recorded recipe, so a
+                    # historical graph edge can never supply a scorer.
+                    return jobs.start(deepcopy(current), raw.clone(), name)
                 return jobs.start(deepcopy(current), raw.clone(), name)
             except ValueError as exc:
-                raise HTTPException(409, str(exc)) from exc
+                # Bad component scope is a validation error; stale provenance
+                # is a conflict requiring a fresh save or full refit.
+                status = (
+                    422 if "Component " in str(exc) or "Catalogue " in str(exc) else 409
+                )
+                raise HTTPException(status, str(exc)) from exc
 
     @app.post("/api/models/{name}/cancel")
     def cancel_fit(name: str, edit: Revision) -> dict[str, Any]:

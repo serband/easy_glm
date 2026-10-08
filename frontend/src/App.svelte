@@ -11,6 +11,7 @@
     import BinningSettings from './BinningSettings.svelte';
     let comparison = '',
         modelContext = { fitted: [], selected: '', champion: null };
+    let legacySelected = '';
     let view = 'variables',
         resultsReady = false;
     let stackMode = false;
@@ -828,7 +829,7 @@
             <strong>Setup progress</strong>
             <span>{state?.columns.length ? '✓' : '○'} Data loaded</span>
             <span
-                >{state?.setup.assignments.target && state?.setup.roles.predictor.length
+                >{state?.setup.assignments.target && (state?.setup.roles.predictor.length || (stackMode && (modelContext?.fitted?.length || modelContext?.selected)))
                     ? '✓'
                     : '○'} Target and predictors</span
             >
@@ -1252,6 +1253,7 @@
                         onState={modelState}
                         onReady={(ready) => (resultsReady = ready)}
                         onNavigate={navigate}
+                        requestedModel={legacySelected}
                     />{/key}{/if}
             {#if state && draft && stackMode}{#key state.project_id}<StackWorkbench
                         {api}
@@ -1263,6 +1265,7 @@
                         onReady={(ready) => (resultsReady = ready)}
                         onContext={(context) => (modelContext = context)}
                         onNavigate={navigate}
+                        onSingle={(model) => { legacySelected = model; stackMode = false; workflowModeChosen = true; }}
                     />{/key}{/if}
         </main>
     </div>
