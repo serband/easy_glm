@@ -22,6 +22,7 @@ async function fillDraft(page, { name, component, kind, variable }) {
 test('model builder fits a model where its settings are edited', async ({ page }) => {
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
+    await page.setViewportSize({ width: 1332, height: 1225 });
     await page.goto('/');
     await fitSingleModel(page);
     await page.getByRole('button', { name: 'Build a model in stages' }).click();
@@ -52,6 +53,26 @@ test('model builder fits a model where its settings are edited', async ({ page }
     await expect(page.getByRole('heading', { name: 'Flow Root GLM', exact: true })).toBeVisible({ timeout: 60000 });
     await expect(page.getByText('Fitted', { exact: true }).first()).toBeVisible({ timeout: 60000 });
     await expect(page.locator('.model-list-item').filter({ has: page.locator('strong', { hasText: 'Flow Root GLM' }) })).toContainText('Fitted', { timeout: 60000 });
+    const selectedHeader = page.locator('.selected-model-header');
+    const identity = selectedHeader.locator('.selected-model-identity');
+    const context = selectedHeader.locator('.selected-model-context');
+    const actions = selectedHeader.locator('.selected-model-actions');
+    const [identityBox, contextBox, actionBox] = await Promise.all([
+        identity.boundingBox(), context.boundingBox(), actions.boundingBox(),
+    ]);
+    expect(identityBox.width).toBeGreaterThan(300);
+    expect(contextBox.y).toBeGreaterThan(identityBox.y);
+    expect(actionBox.y).toBeGreaterThan(contextBox.y);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByLabel('Model', { exact: true })).toBeVisible();
+    const [mobileIdentity, mobileContext, mobileActions] = await Promise.all([
+        identity.boundingBox(), context.boundingBox(), actions.boundingBox(),
+    ]);
+    expect(mobileContext.y).toBeGreaterThan(mobileIdentity.y);
+    expect(mobileActions.y).toBeGreaterThan(mobileContext.y);
+    expect(await page.locator('.model-builder').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.setViewportSize({ width: 1332, height: 1225 });
 
     await page.getByRole('button', { name: 'Add model after this', exact: true }).click();
     await expect(page.getByText("This model is fitted after Flow Root GLM. Flow Root GLM's complete fitted score is used as the offset.", { exact: true })).toBeVisible();

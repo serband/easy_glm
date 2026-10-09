@@ -1,12 +1,12 @@
 # EasyGLM handover
 
-**Snapshot: 8 October 2026.** Start here when taking over without the previous chat. Check Git and the current package registry before changing a status claim: this is a local snapshot, not proof of today's remote state.
+**Snapshot: 9 October 2026.** Start here when taking over without the previous chat. Check Git and the current package registry before changing a status claim: this is a local snapshot, not proof of today's remote state.
 
 ## Start in the right checkout
 
 | Purpose | Checkout and state |
 | --- | --- |
-| Current implementation | `/private/tmp/easyglm-visual-model-flow`, `codex/model-builder-workspace`, based on visual-flow revision `fc25598`; Model builder changes are local |
+| Current implementation | `/private/tmp/easyglm-visual-model-flow`, `codex/model-workspace-recovery`, based on Model builder revision `24a8131`; layout and recovery-state corrections are local |
 | User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
 | Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
 
@@ -30,6 +30,8 @@ The stack branch implements an ordered multiplicative sequence of GLM, direct Ca
 
 Each component selects its own factors from safe predictor and unassigned source columns, with alphabetical search and a retained selected list. Global roles identify response, weight, ID, split and ignore. GLM and interaction-table bands remain shared through `Project.design`; independent per-component binning is future work. CatBoost uses raw inputs. A child's own complete fit can still be used as the next offset when its original incoming parent is unavailable; that missing parent blocks revision of just the last addition. If its own fit is missing, rebuilding creates a new named copy of the whole saved recipe. Fitted stack settings and fit endpoints reject in-place overwrite. Existing single-model workflows remain available. See `docs/MODEL_FLOW.md` for the user workflow.
 
+The 9 October correction separates ordinary drafts from saved setups that need recovery. **Needs a new fit** means the saved setup's exact earlier starting fit is unavailable; a currently fitted model with the same name is not a replacement for it. **Fit saved recipe as new model** fits the saved sequence from the beginning under a new name. **Cannot score** means the selected model's own fitted files are unavailable. A usable complete scorer remains **Fitted** even when its original starting fit is missing. The header shows identity, context and actions in separate rows; a read-only saved recipe shows the fitting order.
+
 `ModelConfig.lineage` records the parent name, fit identity, settings key and prefix fingerprint. It is provenance, excluded from fit/cache hashes; the complete ordered component recipe remains the scorer. Projects with lineage write schema version 5; older projects without lineage retain their prior serialized version. An appended candidate requires an exact applicable parent artifact and unchanged frozen prefix. Changing a parent does not mutate its existing children. Missing or changed artifacts produce historical links; an explicit full rebuild fits the whole saved recipe afresh and remains marked historical after job restore. Scope validation runs on save and fit, including imported projects, and protects response/control fields against catalogue-name collisions.
 
 The Model builder work is local, unpushed and unreleased. Fresh validation for this redesign is recorded below; the earlier visual-flow results are a separate baseline. Keep discovery on training data, label in-sample and CV evidence accurately, and display holdout results only on explicit request. Table changes need preview then apply and a clear choice to retain or refit later components. A/E and searches must use the accepted complete scorer; earlier named fits must remain unchanged.
@@ -48,6 +50,8 @@ Earlier visual-flow checks on 8 October, before the selected-workspace redesign:
 Fresh selected-workspace checks on 8 October: the broad Python run recorded **1,614 passed**, 1 skipped, 1 slow deselected and one launcher failure while the frontend build replaced static assets. With the build finished, the desktop, model-flow and launcher suites passed **278 tests**, including that failed launcher check. The final missing-artifact guard then passed **276 tests** in those suites; two test fixtures needed the new availability field/completed-artifact contract and both closed in a **21-test** diagnostic/progress rerun. The focused stack/model-flow suite passed **8 tests**. Black, Ruff, mypy, all 18 frontend unit tests, Svelte check and the bundled static build passed. The selected-model browser scenario, both existing single-model scenarios, interaction-reuse scenario and all six Variables scenarios passed. Independent software, adversarial and pricing-actuary reviews closed their findings, including delayed fit status, draft recovery, missing artifacts and guarded mobile navigation.
 
 Both public walkthroughs ran all **48 Python blocks unchanged** in a fresh installed-wheel environment. Fresh-process checks confirmed full catalogue-key coverage, accepted multiplier export parity, cumulative model scoring, exposure applied once and readable Excel XML. The final wheel's frontend assets match the source build. These are local macOS checks; GitHub CI, Windows and the separate 5M-row budget were not run for this redesign. No release or push was performed.
+
+Fresh recovery-workspace checks on 9 October: all **18 frontend unit tests**, Svelte check and static build passed. The model-flow, recovery-view and retry browser suites passed on the final bundle. These cover desktop/mobile recovery layouts, unavailable starting fits, missing fitted files with an available parent, and a delayed failed-job response during a new retry. The retry keeps fitting controls locked until the newly accepted job finishes or is cancelled. Independent design, software, adversarial and pricing-actuary reviews closed their findings. The designer reviewed the rendered desktop and mobile states; the earlier review had missed the cramped desktop recovery card. Python fitting and the 48-block installed-wheel checks above are the 8 October baseline, not new runs for this frontend correction. Nothing was pushed or released.
 
 The prior build reported **1,605 passed, 1 skipped, 1 slow deselected** and **17 stack example Python blocks against an installed wheel**. Both totals are historical baselines for the redesign; they are not fresh validation of later changes. CI currently specifies Python 3.10–3.13 tests, Ruff, Black, mypy for `core`, `workflow`, and `pricing`, a Windows installed-wheel job, and frontend check/build plus existing Playwright suites. The source branch may have no CI run because it is unpushed.
 
@@ -127,7 +131,7 @@ local backup/transfer operation, not a commit, push or release:
 source_checkout=/private/tmp/easyglm-visual-model-flow
 packet=/Users/serban/Documents/Projects/easy_glm/.internal/handover-20261004
 mkdir -p "$packet/docs/plans"
-git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/model-builder-workspace refs/tags/v0.472
+git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/model-workspace-recovery refs/tags/v0.472
 git -C "$source_checkout" bundle verify "$packet/easyglm.bundle"
 cp "$source_checkout/AGENTS.md" "$packet/AGENTS.md"
 cp "$source_checkout/docs/HANDOVER.md" "$packet/docs/HANDOVER.md"
@@ -137,8 +141,8 @@ cp "$source_checkout/docs/PRICING_WORKFLOW_BUILD.md" "$packet/docs/PRICING_WORKF
 cp "$source_checkout/docs/plans/STACKED_MODELS.md" "$packet/docs/plans/STACKED_MODELS.md"
 ```
 
-Check that the bundle contains the current `codex/model-builder-workspace` commit
-(`git rev-parse codex/model-builder-workspace`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
+Check that the bundle contains the current `codex/model-workspace-recovery` commit
+(`git rev-parse codex/model-workspace-recovery`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
 **new** directory with the stack branch selected, then copy the six guidance
 files into that clone and inspect `git status` before work. Keep the packet's
 directory structure; its docs are newer than the 30 September recovery bundle.
@@ -146,7 +150,7 @@ For example, with transferred packet and destination paths chosen by the
 operator:
 
 ```bash
-git clone --branch codex/model-builder-workspace "$packet/easyglm.bundle" "$destination"
+git clone --branch codex/model-workspace-recovery "$packet/easyglm.bundle" "$destination"
 cp "$packet/AGENTS.md" "$destination/AGENTS.md"
 cp "$packet/docs/HANDOVER.md" "$destination/docs/HANDOVER.md"
 cp "$packet/docs/MODEL_FLOW.md" "$destination/docs/MODEL_FLOW.md"

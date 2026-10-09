@@ -34,13 +34,15 @@ test('actual edge-only payload breaks a three-node cycle and retains a missing p
     assert.equal(orphan.edge_status, 'missing');
 });
 
-test('nodeState labels fitted and historical candidates without guessing a score', () => {
+test('nodeState gives job and scorer availability precedence over historical recovery markers', () => {
     assert.equal(nodeState({ job: { applicable: true } }), 'fitted');
-    assert.equal(nodeState({ job: { status: 'running' } }), 'running');
-    assert.equal(nodeState({ kind: 'legacy', job: {} }), 'legacy');
-    assert.equal(nodeState({ kind: 'stack', job: {} }), 'unfitted');
-    assert.equal(nodeState({ status: 'not_fitted', job: {} }), 'not fitted');
-    assert.equal(nodeState({ status: 'missing_fit', missing_own_fit: true, job: { status: 'complete' } }), 'fit unavailable');
+    assert.equal(nodeState({ own_fit_available: true, missing_own_fit: true, job: {} }), 'fitted');
+    assert.equal(nodeState({ own_fit_available: true, job: { status: 'running' } }), 'fitting');
+    assert.equal(nodeState({ job: { status: 'queued' } }), 'fitting');
+    assert.equal(nodeState({ status: 'missing_fit', missing_own_fit: true, job: { status: 'complete' } }), 'cannot score');
+    assert.equal(nodeState({ full_refit_required: true, own_fit_available: false, job: {} }), 'needs a new fit');
+    assert.equal(nodeState({ kind: 'legacy', job: {} }), 'draft');
+    assert.equal(nodeState({ kind: 'stack', job: {} }), 'draft');
 });
 
 test('alternatives only copy a complete safe checkpoint', () => {

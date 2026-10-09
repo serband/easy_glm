@@ -2,17 +2,12 @@
     import { onDestroy, tick } from 'svelte';
     import DiagnosticPlot from './DiagnosticPlot.svelte';
     import ModelFlow from './ModelFlow.svelte';
+    import { nodeState } from './modelFlow.js';
     import { formatNumber as num } from './format.js';
     export let api, state, view, uploadCatalogue, saveDownload;
     export let onState = () => {}, onReady = () => {}, onContext = () => {}, onNavigate = () => {};
     export let onDirty = () => {}, navigationAttempt = 0, navigationTarget = '', onNavigationResolved = () => {};
     const labels = { glm: 'GLM', catboost: 'CatBoost', interaction: 'Pair interaction', catalogue: 'Catalogue lookup', legacy: 'Accepted legacy model' };
-    function statusLabel(status, fitted) {
-        if (!status) return fitted ? 'Fitted' : 'Awaiting fit';
-        if (status === 'current') return 'Fitted';
-        if (status === 'amended_prefix_kept_fixed') return 'Kept after earlier edit · review fit evidence';
-        return status.replaceAll('_', ' ');
-    }
     function unseenSummary(levels) {
         return Object.entries(levels || {})
             .filter(([, detail]) => Number(detail?.count || 0) > 0)
@@ -34,15 +29,17 @@
         lower = '', upper = '', decimals = '', operation = 'cap', amendedName = '', refitLater = false, viewKey = '',
         editorOpen = false, editingExisting = '', editorDirty = false, pendingAction = null,
         selectedTab = 'results', requestEpoch = 0, modelError = '', modelNotice = '', draftBaseline = '', revisionOf = '', lastNavigationAttempt = 0,
-        sourceFitId = '', refreshSuggested = false, fitDraftName = '';
+        sourceFitId = '', refreshSuggested = false, fitDraftName = '', fitJobId = '';
     $: names = wb ? Object.keys(wb.models || {}).filter((n) => wb.models[n]?.components?.length) : [];
     $: fitted = names.filter((n) => jobs[n]?.applicable);
     $: modelFlow = wb?.model_flow || [];
     // Keep status rendering explicitly dependent on both server snapshots. Svelte
     // cannot see the reactive inputs hidden inside a template helper call.
-    $: modelStatuses = Object.fromEntries(names.map((n) => [n, modelStatusLabel(n, jobs, modelFlow)]));
+    $: modelStatuses = Object.fromEntries(names.map((n) => [n, modelStatusLabel(n, jobs, modelFlow, fitDraftName, fitJobId)]));
     $: selectedFlow = (Array.isArray(modelFlow) ? modelFlow : modelFlow?.nodes || []).find((entry) => entry.name === selected);
     $: selectedParent = selectedFlow?.parent_name || (!Array.isArray(modelFlow) ? (modelFlow?.edges || []).find((edge) => edge.to === selected)?.from : '');
+    $: selectedStatus = modelStatusLabel(selected, jobs, modelFlow, fitDraftName, fitJobId);
+    $: selectedNeedsRecovery = selectedStatus === 'Cannot score' || selectedStatus === 'Needs a new fit';
     $: currentDraftState = JSON.stringify({ source, name, stageName, kind, factors: [...factors].sort(), settings, stackFamily, tweediePower, divideTargetByWeight });
     $: if (editorOpen && draftBaseline) editorDirty = draftBaseline !== currentDraftState;
     $: onDirty(Boolean(editorOpen && editorDirty));
@@ -79,11 +76,31 @@
     function toggleFactor(value) { factors = factors.includes(value) ? factors.filter((n) => n !== value) : [...factors, value]; }
     function parentFor(model) { return (Array.isArray(modelFlow) ? [] : modelFlow?.edges || []).find((edge) => edge.to === model)?.from || ''; }
     function flowNodeFor(model, flow = modelFlow) { return (Array.isArray(flow) ? flow : flow?.nodes || []).find((entry) => entry.name === model); }
-    function modelStatusLabel(model, currentJobs = jobs, flow = modelFlow) {
+    function modelStatusLabel(model, currentJobs = jobs, flow = modelFlow, starting = '', acceptedJobId = '') {
         const node = flowNodeFor(model, flow);
-        if (node?.missing_own_fit || node?.status === 'missing_fit') return 'Fit unavailable';
-        if (currentJobs[model]?.applicable) return 'Fitted';
-        return currentJobs[model]?.status ? statusLabel(currentJobs[model]?.status, false) : 'Draft · not fitted';
+        const job = currentJobs[model] || {};
+        // A retry can still have the prior failed job in this snapshot when the
+        // accepted fit request returns. Keep the saved draft locked until the
+        // worker publishes the new job state; poll clears fitDraftName only for
+        // an actual terminal result from that new attempt.
+        const staleTerminal = ['failed', 'cancelled', 'stale'].includes(job.status);
+        const waitingForAcceptedJob = acceptedJobId && job.id !== acceptedJobId;
+        const localAccepted = starting === model && (!job.status || staleTerminal || waitingForAcceptedJob);
+        const state = nodeState({ ...node, job: localAccepted ? { ...job, status: 'accepted' } : job });
+        return {
+            fitting: 'Fitting',
+            fitted: 'Fitted',
+            'cannot score': 'Cannot score',
+            'needs a new fit': 'Needs a new fit',
+            draft: 'Draft',
+        }[state] || 'Draft';
+    }
+    function modelListContext(model) {
+        const node = flowNodeFor(model);
+        const parent = parentFor(model);
+        if (!parent) return 'Starts on its own';
+        if (node?.parent_fit_available === false || node?.edge_status === 'missing') return `Original starting fit: ${parent} (unavailable)`;
+        return `Built on ${parent}`;
     }
     async function refresh() {
         reading = true;
@@ -107,14 +124,15 @@
                 const snapshot = await api('variables'); onState(snapshot);
                 wb = await api('workbench'); jobs = wb.jobs; known = `${wb.session_id}:${wb.revision}`;
                 editorOpen = false; editingExisting = ''; revisionOf = ''; draftBaseline = ''; editorDirty = false;
-                fitDraftName = '';
+                fitDraftName = ''; fitJobId = '';
                 modelNotice = 'Fit complete.';
                 await loadResult();
             } else if (changed && ['failed', 'cancelled', 'stale'].includes(next[selected]?.status)) {
+                if (fitDraftName === selected && fitJobId && next[selected]?.id !== fitJobId) return;
                 const message = next[selected]?.message || 'Fit did not complete.';
                 if (fitDraftName === selected) {
                     editSelectedDraft();
-                    fitDraftName = '';
+                    fitDraftName = ''; fitJobId = '';
                 }
                 modelNotice = '';
                 modelError = message;
@@ -154,7 +172,7 @@
     function clearEditor() {
         source = ''; name = ''; stageName = ''; factors = []; query = ''; showSelected = false;
         kind = 'glm'; settings = structuredClone(defaults.glm); catalogue = null;
-        editingExisting = ''; revisionOf = ''; sourceFitId = ''; draftBaseline = ''; editorDirty = false;
+        editingExisting = ''; revisionOf = ''; sourceFitId = ''; draftBaseline = ''; editorDirty = false; fitJobId = '';
     }
     function addAfter(model) {
         if (editorDirty) { pendingAction = () => addAfter(model); return; }
@@ -319,12 +337,14 @@
     async function fit(fullRefit = false, target = selected) {
         busy = 'fit'; modelError = ''; modelNotice = '';
         const operationEpoch = ++requestEpoch;
+        const jobBeforeRequest = structuredClone(jobs[target] || {});
         try {
-            await api(`models/${encodeURIComponent(target)}/fit`, { ...rev(), ...(fullRefit ? { full_refit: true } : {}) });
+            const started = await api(`models/${encodeURIComponent(target)}/fit`, { ...rev(), ...(fullRefit ? { full_refit: true } : {}) });
             if (operationEpoch === requestEpoch && target === selected) {
                 // A successful request has saved this draft and started its fit. Lock it
                 // before waiting for the worker to publish its first job status.
                 fitDraftName = target;
+                fitJobId = started?.id || '';
                 editorDirty = false;
                 setDraftBaseline();
                 editorOpen = false;
@@ -335,9 +355,16 @@
             jobs = await api('jobs');
             if (operationEpoch === requestEpoch && target === selected) {
                 const job = jobs[target] || {};
-                if (['failed', 'cancelled', 'stale'].includes(job.status)) {
+                const terminal = ['failed', 'cancelled', 'stale'].includes(job.status);
+                const staleTerminalSnapshot = terminal && (
+                    (fitJobId && job.id !== fitJobId)
+                    || (!fitJobId
+                        && ['failed', 'cancelled', 'stale'].includes(jobBeforeRequest.status)
+                        && job.id === jobBeforeRequest.id)
+                );
+                if (terminal && !staleTerminalSnapshot) {
                     editSelectedDraft();
-                    fitDraftName = '';
+                    fitDraftName = ''; fitJobId = '';
                     modelNotice = '';
                     modelError = job.message || 'Fit did not complete.';
                     return;
@@ -345,7 +372,7 @@
                 if (job.applicable) {
                     editorOpen = false;
                     editingExisting = '';
-                    fitDraftName = '';
+                    fitDraftName = ''; fitJobId = '';
                     modelNotice = 'Fit complete.';
                     await loadResult();
                 }
@@ -396,7 +423,19 @@
             } else { modelError = ''; refreshSuggested = false; }
         } catch (e) { modelError = e.message; } finally { busy = ''; }
     }
-    async function cancel() { try { jobs = await api(`models/${encodeURIComponent(selected)}/cancel`, rev()); } catch (e) { error = e.message; } }
+    async function cancel() {
+        try {
+            jobs = await api(`models/${encodeURIComponent(selected)}/cancel`, rev());
+            const job = jobs[selected] || {};
+            if (fitDraftName === selected && ['failed', 'cancelled', 'stale'].includes(job.status)
+                && (!fitJobId || job.id === fitJobId)) {
+                editSelectedDraft();
+                fitDraftName = ''; fitJobId = '';
+                modelNotice = '';
+                modelError = job.message || 'Fit was cancelled.';
+            }
+        } catch (e) { error = e.message; }
+    }
     async function editPreview() {
         busy = 'preview'; error = ''; preview = null;
         try { preview = await api(`stack/${encodeURIComponent(selected)}/component/${encodeURIComponent(stage)}/preview`, { ...rev(), operation, lower: lower === '' ? null : Number(lower), upper: upper === '' ? null : Number(upper), decimals: decimals === '' ? null : Number(decimals), refit_later: refitLater }); }
@@ -434,21 +473,39 @@
                     <div class="model-list-items">{#each names as n}
                         {@const node = (Array.isArray(modelFlow) ? modelFlow : modelFlow?.nodes || []).find((entry) => entry.name === n)}
                         {@const last = wb.models[n]?.components?.at(-1)}
-                        <button class:active={selected === n} class="model-list-item" onclick={() => selectModel(n)}><strong>{n}</strong><span>{modelStatuses[n]}</span><small>{parentFor(n) ? `Built on ${parentFor(n)}` : 'Starts on its own'} · {last?.name || 'Model'}</small></button>
+                        <button class:active={selected === n} class="model-list-item" onclick={() => selectModel(n)}><strong>{n}</strong><span>{modelStatuses[n]}</span><small>{modelListContext(n)} · {last?.name || 'Model'}</small></button>
                     {/each}</div>
                     {#if !names.length}<p>No models yet. Start with a standalone model.</p>{/if}
                     <details class="model-map"><summary>Show model map</summary><ModelFlow {modelFlow} models={wb.models || {}} {jobs} {selected} onSelect={selectModel} onAdd={addAfter} onAlternative={createAlternative} /></details>
                 </aside>
                 <div class="selected-workspace">
                     {#if !selected && !editorOpen}<section class="model-card empty-workspace"><h2>Start a model</h2><p>Create a standalone model, or select an existing fitted model and add the next model after it.</p><button onclick={startStandalone}>New standalone model</button></section>{/if}
-                    {#if selected && !editorOpen}<section class="model-card selected-model-header"><div><div class="eyebrow">SELECTED MODEL</div><h2>{selected}</h2><p>{jobs[selected]?.applicable ? `This model is fitted. Its score includes ${components.map((c) => c.name).join(' and ')}.` : selectedFlow?.missing_own_fit ? 'The saved model definition is here, but its fitted files are unavailable.' : 'This is a draft. It has not changed any fitted model.'}</p></div><span class:fit-state={jobs[selected]?.applicable} class="model-state">{modelStatuses[selected] || 'Draft · not fitted'}</span>
-                        {#if sourceInfo || selectedParent}<p class="help-text">{selectedParent ? `Built on ${selectedParent}. Its complete fitted score is the offset for this model.` : 'This model starts on its own.'}</p>{/if}
-                        <div class="workspace-actions">
-                            {#if jobs[selected]?.applicable}<button onclick={addAfterSelected} disabled={selectedFlow?.append_available === false}>Add model after this</button><button onclick={reviseSelected} disabled={selectedFlow?.revise_available === false}>Revise model</button>{:else if fitDraftName === selected || ['running', 'queued'].includes(jobs[selected]?.status)}<span class="fit-progress" role="status">{['running', 'queued'].includes(jobs[selected]?.status) ? `Fitting: ${jobs[selected]?.message || jobs[selected]?.status}` : 'Starting fit…'}</span>{#if ['running', 'queued'].includes(jobs[selected]?.status)}<button onclick={cancel}>Cancel fit</button>{/if}{:else if selectedFlow?.full_refit_required}<button class="primary" onclick={createFullCopy} disabled={!!busy}>Create and fit a new copy</button>{:else}<button class="primary" onclick={() => fit(false)} disabled={!!busy}>Fit model</button><button onclick={editSelectedDraft}>Edit draft</button>{/if}
+                    {#if selected && !editorOpen}<section class="model-card selected-model-header">
+                        <div class="selected-model-identity"><div><div class="eyebrow">SELECTED MODEL</div><h2>{selected}</h2></div><span class:fit-state={selectedStatus === 'Fitted'} class="model-state">{selectedStatus}</span></div>
+                        <div class:recovery={selectedNeedsRecovery} class="selected-model-context">
+                            {#if selectedStatus === 'Fitted'}
+                                <p>This model is fitted. Its score includes {components.map((c) => c.name).join(' and ')}.</p>
+                                {#if selectedParent}<p class="help-text">{selectedFlow?.revise_available === false ? `It was originally built on an earlier ${selectedParent} fit. That exact fit is no longer available for revising this last addition.` : `Built on ${selectedParent}. Its complete fitted score is the offset for this model.`}</p>{:else}<p class="help-text">This model starts on its own.</p>{/if}
+                            {:else if selectedStatus === 'Cannot score'}
+                                <p>This saved model cannot be scored because its fitted files are unavailable.</p>
+                                <p class="help-text">The saved recipe is still available below. It is read-only so the original model stays unchanged.</p>
+                            {:else if selectedStatus === 'Needs a new fit'}
+                                <p>This saved setup uses an earlier {selectedParent || 'starting'} fit as its offset. That exact fit is no longer available.</p>
+                                <p class="help-text">Original starting fit: {selectedParent || 'not recorded'} (unavailable).</p>
+                            {:else if selectedStatus === 'Fitting'}
+                                <p>This model has been saved and is fitting now.</p>
+                            {:else}
+                                <p>This is a saved draft. It has not changed any fitted model.</p>
+                                {#if selectedParent}<p class="help-text">It will use {selectedParent}'s complete fitted score as its offset.</p>{:else}<p class="help-text">This model starts on its own.</p>{/if}
+                            {/if}
                         </div>
-                        {#if selectedFlow?.full_refit_required}<p class="help-text">{selectedFlow?.missing_own_fit ? 'This model’s fitted files are unavailable. Creating a new copy fits the full saved sequence again.' : 'The model it starts from is unavailable. Creating a new copy fits the full saved sequence again; it does not reuse the missing fit.'}</p>{/if}
-                        {#if jobs[selected]?.applicable && selectedFlow?.revise_available === false}<p class="help-text">The model can still be used as the offset for a new model, but its original parent fit is unavailable, so this last addition cannot be revised.</p>{/if}
+                        <div class="workspace-actions selected-model-actions">
+                            {#if selectedStatus === 'Fitted'}<button onclick={addAfterSelected} disabled={selectedFlow?.append_available === false}>Add model after this</button><button onclick={reviseSelected} disabled={selectedFlow?.revise_available === false}>Revise model</button>{:else if selectedStatus === 'Fitting'}<span class="fit-progress" role="status">{['running', 'queued'].includes(jobs[selected]?.status) ? `Fitting: ${jobs[selected]?.message || jobs[selected]?.status}` : 'Starting fit…'}</span>{#if ['running', 'queued'].includes(jobs[selected]?.status)}<button onclick={cancel}>Cancel fit</button>{/if}{:else if selectedNeedsRecovery}<button class="primary" onclick={createFullCopy} disabled={!!busy}>Fit saved recipe as new model</button>{:else}<button class="primary" onclick={() => fit(false)} disabled={!!busy}>Fit model</button><button onclick={editSelectedDraft}>Edit draft</button>{/if}
+                        </div>
+                        {#if selectedNeedsRecovery}<p class="recovery-consequence">The new model fits {components.map((component) => component.name).join(' → ') || 'the saved components'} from the beginning. {selected} stays unchanged.</p>{/if}
+                        {#if selectedStatus === 'Fitted' && selectedFlow?.revise_available === false}<p class="help-text">The model can still be used as the offset for a new model, but its original parent fit is unavailable, so this last addition cannot be revised.</p>{/if}
                     </section>
+                    {#if selectedNeedsRecovery}<section class="model-card saved-recipe"><h2>Saved recipe</h2><p>The saved models and variables are shown in fitting order. This setup is read-only.</p><ol class="stack-components">{#each components as c, i}<li><strong>{c.name}</strong><span>{labels[c.kind]}</span><span>{(c.factors || c.inputs || []).join(', ') || 'No selected variables'}</span><span>{i ? `After ${components[i - 1].name}` : 'Starting model'}</span><span>Saved</span></li>{/each}</ol></section>{/if}
                     {#if jobs[selected]?.applicable}<section class="model-card selected-results"><div class="result-tabs"><button class:tab-active={selectedTab === 'results'} onclick={() => (selectedTab = 'results')}>Results</button><button class:tab-active={selectedTab === 'settings'} onclick={() => (selectedTab = 'settings')}>Settings</button><button onclick={() => onNavigate('compare')}>Compare</button><button onclick={() => onNavigate('export')}>Export</button></div>
                         {#if selectedTab === 'results'}<h2>Results</h2><p>{result?.summary?.components || components.length} model components · {result?.summary?.family || ''} · training A/E {result?.summary?.train_ae == null ? '—' : Number(result.summary.train_ae).toFixed(3)}</p><p class="help-text">Training results are shown here. Choose a holdout view from Diagnostics when you want an independent evaluation.</p><div class="stack-review-actions"><button onclick={() => onNavigate('diagnostics')}>Inspect actual versus expected</button><button onclick={() => onNavigate('tables')}>Inspect and amend tables</button></div>{:else}<h2>Settings</h2><p>These settings are fixed for this fitted model. Use Revise model to create a new version.</p><ol class="stack-components">{#each components as c, i}<li><strong>{c.name}</strong><span>{labels[c.kind]}</span><span>{(c.factors || c.inputs || []).join(', ')}</span><span>{i ? `After ${components[i - 1].name}` : 'Starting model'}</span><span>Fitted</span></li>{/each}</ol>{/if}
                     </section>{/if}
@@ -526,10 +583,11 @@
     .text-button { border:0; background:transparent; color:#154b35; text-decoration:underline; padding:0 3px; }
     .model-builder { display:grid; grid-template-columns:minmax(230px, 300px) minmax(0, 1fr); gap:18px; align-items:start; }
     .model-list { position:sticky; top:12px; border:1px solid #c7d7ca; border-radius:12px; padding:14px; background:#f7faf7; min-width:0; }
-    .model-list-heading,.selected-model-header { display:flex; justify-content:space-between; align-items:start; gap:12px; }.model-list-heading h2 { margin:2px 0; }
+    .model-list-heading { display:flex; justify-content:space-between; align-items:start; gap:12px; }.model-list-heading h2 { margin:2px 0; }
     .model-list-items { display:grid; gap:6px; margin-top:12px; }.model-list-item { display:grid; gap:3px; width:100%; text-align:left; color:inherit; background:white; border:1px solid #d6e0d7; padding:9px; white-space:normal; }.model-list-item.active { border-color:#287550; box-shadow:inset 3px 0 #287550; }.model-list-item span { color:#245f43; font-size:12px; }.model-list-item small { color:#526e5d; overflow-wrap:anywhere; }.mobile-model-select { display:none; }
     .model-map { margin-top:14px; }.model-map :global(.model-flow) { margin:10px 0 0; padding:10px; }.model-map :global(.flow-heading) { display:none; }
-    .selected-workspace { min-width:0; }.selected-model-header .model-state { border-radius:20px; padding:4px 9px; background:#eef2ee; white-space:nowrap; }.selected-model-header .fit-state { color:#1e6745; background:#e0f0e4; }.fit-progress { color:#285c45; align-self:center; }.workspace-actions,.editor-actions,.result-tabs { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }.result-tabs { border-bottom:1px solid #dae3db; padding-bottom:10px; }.result-tabs button { background:transparent; border:0; color:#285c45; }.result-tabs button.tab-active { font-weight:bold; border-bottom:3px solid #287550; border-radius:0; }.selected-factors { margin:12px 0; padding:10px; border:1px solid #d6e0d7; background:#f7faf7; display:grid; gap:7px; }.selected-factors > div { display:flex; gap:5px; flex-wrap:wrap; }.selected-factor { font-size:12px; padding:3px 6px; }.empty-workspace { min-height:180px; }.model-editor { border-top:4px solid #287550; }
+    .selected-workspace { min-width:0; }.selected-model-header { display:grid; gap:14px; }.selected-model-identity { display:grid; grid-template-columns:minmax(0, 1fr) auto; align-items:start; gap:12px; }.selected-model-identity h2 { margin:2px 0; overflow-wrap:anywhere; }.selected-model-header .model-state { border-radius:20px; padding:4px 9px; background:#eef2ee; white-space:nowrap; }.selected-model-header .fit-state { color:#1e6745; background:#e0f0e4; }.selected-model-context { width:100%; box-sizing:border-box; padding:12px 14px; border-left:3px solid #6e9478; background:#f5f8f5; }.selected-model-context.recovery { border-color:#a27944; background:#fff8ed; }.selected-model-context p { margin:0; }.selected-model-context p + p { margin-top:6px; }.fit-progress { color:#285c45; align-self:center; }.workspace-actions,.editor-actions,.result-tabs { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }.selected-model-actions { margin-top:0; }.recovery-consequence { margin:0; color:#526e5d; }.result-tabs { border-bottom:1px solid #dae3db; padding-bottom:10px; }.result-tabs button { background:transparent; border:0; color:#285c45; }.result-tabs button.tab-active { font-weight:bold; border-bottom:3px solid #287550; border-radius:0; }.selected-factors { margin:12px 0; padding:10px; border:1px solid #d6e0d7; background:#f7faf7; display:grid; gap:7px; }.selected-factors > div { display:flex; gap:5px; flex-wrap:wrap; }.selected-factor { font-size:12px; padding:3px 6px; }.empty-workspace { min-height:180px; }.model-editor { border-top:4px solid #287550; }
     .draft-dialog-backdrop { position:fixed; inset:0; display:grid; place-items:center; background:rgb(20 35 25 / .35); z-index:20; padding:16px; }.draft-dialog { max-width:430px; background:white; padding:22px; border-radius:10px; box-shadow:0 6px 30px #2339; }.draft-dialog h2 { margin-top:0; }.draft-dialog div { display:flex; flex-wrap:wrap; gap:8px; }
     @media (max-width:900px) { .stack-components li { grid-template-columns:1fr 1fr; }.model-builder { grid-template-columns:1fr; }.model-list { position:static; }.model-list-items { display:none; }.mobile-model-select { display:grid; gap:5px; margin-top:12px; }.model-map { display:none; } }
+    @media (max-width:430px) { .selected-model-identity { gap:8px; }.selected-model-header .model-state { font-size:12px; padding:4px 7px; }.selected-model-context { padding:10px; }.workspace-actions button { max-width:100%; white-space:normal; } }
 </style>

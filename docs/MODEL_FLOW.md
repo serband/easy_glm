@@ -54,8 +54,14 @@ still require a preview and explicit application as a new named model.
 
 An unavailable original parent does not stop you inspecting or extending a child
 whose own complete fit is available. It does prevent revising that child's last
-addition against the missing parent. If the child's own fit is unavailable,
-**Create and fit a new copy** fits its full saved recipe again under a new name.
+addition against the missing original fit, even if a newer fit has the same
+parent model name.
+
+**Needs a new fit** means an unfitted saved setup refers to an earlier starting
+fit that is no longer available. **Cannot score** means the selected model's
+own fitted files are unavailable. In either case, inspect the saved recipe and
+choose **Fit saved recipe as new model** to fit every saved component from the
+beginning under a new name. The original saved model stays unchanged.
 
 Project JSON stores model settings and connections; it does not contain fitted
 model artifacts. Use the fitted scorer export to preserve a deployable model.

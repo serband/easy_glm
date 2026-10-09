@@ -57,13 +57,16 @@ export function buildModelForest(modelFlow = [], models = {}, jobs = {}) {
 }
 
 export function nodeState(node) {
-    if (node.missing_own_fit || node.status === 'missing_fit') return 'fit unavailable';
-    if (node.job?.applicable) return 'fitted';
-    if (node.job?.status === 'running' || node.job?.status === 'queued') return node.job.status;
-    if (node.fitted) return 'fitted';
-    if (node.status) return node.status.replaceAll('_', ' ');
-    if (node.kind === 'legacy') return 'legacy';
-    return 'unfitted';
+    const job = node?.job || {};
+    // A job that has been accepted is the newest fact. Do not let an older
+    // recovery marker make a model look unavailable while it is being rebuilt.
+    if (job.status === 'accepted' || job.status === 'queued' || job.status === 'running') return 'fitting';
+    // A complete scorer is still useful when the model it originally built on
+    // has since disappeared. Only revising that last addition is unavailable.
+    if (job.applicable || node?.own_fit_available) return 'fitted';
+    if (node?.missing_own_fit || node?.status === 'missing_fit') return 'cannot score';
+    if (node?.full_refit_required) return 'needs a new fit';
+    return 'draft';
 }
 
 export function alternativeBlockedReason(node) {

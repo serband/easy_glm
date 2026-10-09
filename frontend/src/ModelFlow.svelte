@@ -22,6 +22,7 @@
     }
     function edgeText(node) {
         if (!node.parent_name) return 'Standalone model';
+        if (node.parent_fit_available === false || node.edge_status === 'missing') return `Original starting fit ${node.parent_name} is unavailable`;
         if (node.edge_status === 'live') return `Builds on ${node.parent_name} · complete model predictions as offset`;
         if (node.edge_status === 'missing') return `Historical parent ${node.parent_name} is unavailable`;
         return `Historical link to ${node.parent_name}`;
