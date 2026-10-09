@@ -179,7 +179,7 @@
         source = model; sourceFitId = model ? wb?.stack_sources?.[model]?.source_fit_id || '' : '';
         name = ''; stageName = ''; factors = []; query = ''; showSelected = false; catalogue = null;
         kind = 'glm'; settings = structuredClone(defaults.glm);
-        notice = model ? `This model will use ${model}'s complete fitted score as its offset.` : 'This model starts on its own.';
+        notice = model ? `This model will use ${model}'s complete fitted score as its offset.` : '';
         modelNotice = ''; modelError = ''; refreshSuggested = false; editorOpen = true; editingExisting = ''; revisionOf = ''; setDraftBaseline();
     }
     function createAlternative(model) {
@@ -468,7 +468,7 @@
         {#if view === 'model'}
             <div class="model-builder">
                 <aside class="model-list" aria-label="Models">
-                    <div class="model-list-heading"><div><div class="eyebrow">MODELS</div><h2>Models</h2></div><button onclick={startStandalone}>New standalone model</button></div>
+                    <div class="model-list-heading"><div><div class="eyebrow">MODELS</div><h2>Models</h2></div><button onclick={startStandalone}>Start a new model chain</button></div>
                     <label class="mobile-model-select">Model<select aria-label="Model" value={selected} onchange={requestMobileModel}><option value="">Choose a model</option>{#each names as n}<option value={n}>{n}</option>{/each}</select></label>
                     <div class="model-list-items">{#each names as n}
                         {@const node = (Array.isArray(modelFlow) ? modelFlow : modelFlow?.nodes || []).find((entry) => entry.name === n)}
@@ -479,13 +479,13 @@
                     <details class="model-map"><summary>Show model map</summary><ModelFlow {modelFlow} models={wb.models || {}} {jobs} {selected} onSelect={selectModel} onAdd={addAfter} onAlternative={createAlternative} /></details>
                 </aside>
                 <div class="selected-workspace">
-                    {#if !selected && !editorOpen}<section class="model-card empty-workspace"><h2>Start a model</h2><p>Create a standalone model, or select an existing fitted model and add the next model after it.</p><button onclick={startStandalone}>New standalone model</button></section>{/if}
+                    {#if !selected && !editorOpen}<section class="model-card empty-workspace"><h2>Start a new model chain</h2><p>Choose and fit the first model. Then add the next model after it.</p><button onclick={startStandalone}>Start a new model chain</button></section>{/if}
                     {#if selected && !editorOpen}<section class="model-card selected-model-header">
                         <div class="selected-model-identity"><div><div class="eyebrow">SELECTED MODEL</div><h2>{selected}</h2></div><span class:fit-state={selectedStatus === 'Fitted'} class="model-state">{selectedStatus}</span></div>
                         <div class:recovery={selectedNeedsRecovery} class="selected-model-context">
                             {#if selectedStatus === 'Fitted'}
                                 <p>This model is fitted. Its score includes {components.map((c) => c.name).join(' and ')}.</p>
-                                {#if selectedParent}<p class="help-text">{selectedFlow?.revise_available === false ? `It was originally built on an earlier ${selectedParent} fit. That exact fit is no longer available for revising this last addition.` : `Built on ${selectedParent}. Its complete fitted score is the offset for this model.`}</p>{:else}<p class="help-text">This model starts on its own.</p>{/if}
+                                {#if selectedParent}<p class="help-text">{selectedFlow?.revise_available === false ? `It was originally built on an earlier ${selectedParent} fit. That exact fit is no longer available for revising this last addition.` : `Built on ${selectedParent}. Its complete fitted score is the offset for this model.`}</p>{:else}<p class="help-text">First model in this chain.</p>{/if}
                             {:else if selectedStatus === 'Cannot score'}
                                 <p>This saved model cannot be scored because its fitted files are unavailable.</p>
                                 <p class="help-text">The saved recipe is still available below. It is read-only so the original model stays unchanged.</p>
@@ -496,7 +496,7 @@
                                 <p>This model has been saved and is fitting now.</p>
                             {:else}
                                 <p>This is a saved draft. It has not changed any fitted model.</p>
-                                {#if selectedParent}<p class="help-text">It will use {selectedParent}'s complete fitted score as its offset.</p>{:else}<p class="help-text">This model starts on its own.</p>{/if}
+                                {#if selectedParent}<p class="help-text">It will use {selectedParent}'s complete fitted score as its offset.</p>{:else}<p class="help-text">First model in this chain.</p>{/if}
                             {/if}
                         </div>
                         <div class="workspace-actions selected-model-actions">
@@ -510,7 +510,7 @@
                         {#if selectedTab === 'results'}<h2>Results</h2><p>{result?.summary?.components || components.length} model components · {result?.summary?.family || ''} · training A/E {result?.summary?.train_ae == null ? '—' : Number(result.summary.train_ae).toFixed(3)}</p><p class="help-text">Training results are shown here. Choose a holdout view from Diagnostics when you want an independent evaluation.</p><div class="stack-review-actions"><button onclick={() => onNavigate('diagnostics')}>Inspect actual versus expected</button><button onclick={() => onNavigate('tables')}>Inspect and amend tables</button></div>{:else}<h2>Settings</h2><p>These settings are fixed for this fitted model. Use Revise model to create a new version.</p><ol class="stack-components">{#each components as c, i}<li><strong>{c.name}</strong><span>{labels[c.kind]}</span><span>{(c.factors || c.inputs || []).join(', ')}</span><span>{i ? `After ${components[i - 1].name}` : 'Starting model'}</span><span>Fitted</span></li>{/each}</ol>{/if}
                     </section>{/if}
                     {/if}
-        {#if editorOpen}<section class="model-card model-editor"><div class="stack-form-heading"><div><div class="eyebrow">DRAFT MODEL</div><h2>{revisionOf ? `Revise ${revisionOf}` : source ? 'Add model after this' : editingExisting ? 'Edit draft model' : 'New standalone model'}</h2><p>{source ? `This model is fitted after ${source}. ${source}'s complete fitted score is used as the offset.` : 'This model starts on its own.'}</p></div><button onclick={() => { discardDraft(); }}>Discard changes</button></div>
+        {#if editorOpen}<section class="model-card model-editor"><div class="stack-form-heading"><div><div class="eyebrow">DRAFT MODEL</div><h2>{revisionOf ? `Revise ${revisionOf}` : source ? 'Add model after this' : editingExisting ? 'Edit draft model' : 'First model in the chain'}</h2><p>{source ? `This model is fitted after ${source}. ${source}'s complete fitted score is used as the offset.` : 'This is the first model in the chain, using the project’s data.'}</p></div><button onclick={() => { discardDraft(); }}>Discard changes</button></div>
             <div class="form-grid"><label>Model name<input aria-label="Stacked model name" bind:value={name} /></label>
                 <label>Component type<select aria-label="Model component type" value={kind} onchange={(e) => changeKind(e.currentTarget.value)}>{#each Object.entries(labels).filter(([key]) => key !== 'legacy') as [key,label]}<option value={key}>{label}</option>{/each}</select></label>
                 <label>Component name<input aria-label="Model component name" bind:value={stageName} /></label></div>
