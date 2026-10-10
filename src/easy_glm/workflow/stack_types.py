@@ -43,6 +43,70 @@ def _finite_number(value: Any) -> bool:
     )
 
 
+def validate_catboost_tuning_settings(kind: str, settings: dict[str, Any]) -> None:
+    """Check the explicit CatBoost controls without changing legacy recipes.
+
+    Recipes saved before these controls deliberately omit ``tuning_budget`` and
+    retain their old combined trials/time behaviour.
+    """
+    if kind not in {"catboost", "catalogue"}:
+        return
+    tune: Any
+    mode: Any
+    # Older recipes could explicitly contain ``tune: true`` but did not have a
+    # named budget.  They retain the combined trials/time implementation.
+    if "tuning_budget" not in settings:
+        if settings.get("tune") is not False:
+            return
+        tune = False
+        mode = None
+    else:
+        tune = settings.get("tune")
+        mode = settings.get("tuning_budget")
+    if not isinstance(tune, bool):
+        raise ValueError("CatBoost tune must be true or false")
+    if mode not in {"trials", "time"}:
+        if tune:
+            raise ValueError("CatBoost tuning_budget must be 'trials' or 'time'")
+        if mode is not None:
+            raise ValueError("CatBoost tuning_budget must be 'trials' or 'time'")
+    # A fixed manual recipe never uses CV/trials.  It can therefore retain old
+    # ignored values such as ``cv: null`` while still validating CatBoost's raw
+    # fitting parameters below.
+    integer_settings = [("seed", 42, 0)]
+    if tune:
+        integer_settings.insert(0, ("cv", 3, 2))
+    for name, default, minimum in integer_settings:
+        value = settings.get(name, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise ValueError(f"CatBoost {name} must be an integer at least {minimum}")
+    for name, default, minimum in (("iterations", 300, 1), ("depth", 6, 1)):
+        value = settings.get(name, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise ValueError(f"CatBoost {name} must be an integer at least {minimum}")
+    thread_count = settings.get("thread_count", 2)
+    if (
+        isinstance(thread_count, bool)
+        or not isinstance(thread_count, int)
+        or thread_count < 1
+    ):
+        raise ValueError("CatBoost thread_count must be a positive integer")
+    learning_rate = settings.get("learning_rate", 0.05)
+    if not _finite_number(learning_rate) or float(learning_rate) <= 0:
+        raise ValueError("CatBoost learning_rate must be positive and finite")
+    l2_leaf_reg = settings.get("l2_leaf_reg", 3.0)
+    if not _finite_number(l2_leaf_reg) or float(l2_leaf_reg) < 0:
+        raise ValueError("CatBoost l2_leaf_reg must be nonnegative and finite")
+    if mode == "trials":
+        value = settings.get("trials", 8)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("CatBoost trials must be a positive integer")
+    elif mode == "time":
+        value = settings.get("time_limit_minutes", 15.0)
+        if not _finite_number(value) or float(value) <= 0:
+            raise ValueError("CatBoost time_limit_minutes must be positive and finite")
+
+
 def validate_component_design(
     design: Any, factors: tuple[str, ...]
 ) -> dict[str, Any] | None:
@@ -195,6 +259,7 @@ class ComponentRecipe:
         object.__setattr__(
             self, "design", validate_component_design(self.design, self.factors)
         )
+        validate_catboost_tuning_settings(self.kind, self.settings)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> ComponentRecipe:

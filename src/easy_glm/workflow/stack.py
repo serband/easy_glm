@@ -35,15 +35,17 @@ from .stack_types import (
     LookupScorer,
     RateModelScorer,
     StackScorer,
+    validate_catboost_tuning_settings,
 )
 
 
 class TuningBudget:
     """CatBoost fit time only, shared across candidates and validation folds."""
 
-    def __init__(self, seconds: float) -> None:
+    def __init__(self, seconds: float, *, raise_on_exhaustion: bool = True) -> None:
         self.limit_seconds = seconds
         self.consumed = 0.0
+        self.raise_on_exhaustion = raise_on_exhaustion
 
     def check(self) -> None:
         if self.consumed >= self.limit_seconds:
@@ -51,7 +53,8 @@ class TuningBudget:
 
     def debit(self, seconds: float) -> None:
         self.consumed += max(0.0, seconds)
-        self.check()
+        if self.raise_on_exhaustion:
+            self.check()
 
 
 _active_tuning_budget: ContextVar[TuningBudget | None] = ContextVar(
@@ -444,9 +447,11 @@ def _fit_component(
     if recipe.kind == "glm":
         return _fit_glm(project, train, config, recipe, prefix, progress)
     if recipe.kind == "catboost":
+        validate_catboost_tuning_settings(recipe.kind, recipe.settings)
         scorer, evidence = _fit_catboost(train, config, recipe, prefix)
         return scorer, evidence, None
     if recipe.kind == "catalogue":
+        validate_catboost_tuning_settings(recipe.kind, recipe.settings)
         catalogue_scorer, catalogue_evidence = _fit_catalogue(
             train, config, recipe, prefix
         )
@@ -699,6 +704,12 @@ def fit_stack(
                 project, train, config, recipe, config.components[:index]
             )
             config.components[index] = recipe
+        elif needs_tuning and recipe.settings.get("tune") is False:
+            tuning_evidence = {
+                "kind": "manual_catboost_fit",
+                "reason": "Automatic tuning is off; fitted the configured CatBoost settings once",
+                "catboost_tuning_seconds": 0.0,
+            }
         artifact, new_fit = _append_component(
             project, train, config, recipe, stack, progress
         )

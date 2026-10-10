@@ -16,6 +16,7 @@ from easy_glm.workflow.stack_types import (
     ComponentRecipe,
     ConstantScorer,
     StackScorer,
+    validate_catboost_tuning_settings,
 )
 
 
@@ -175,6 +176,8 @@ def test_real_catboost_candidate_is_evaluated_on_original_response() -> None:
         "catboost",
         ("x",),
         {
+            "tune": True,
+            "tuning_budget": "trials",
             "trials": 1,
             "cv": 2,
             "seed": 5,
@@ -191,6 +194,8 @@ def test_real_catboost_candidate_is_evaluated_on_original_response() -> None:
     )
     chosen, evidence = tune_component(project, frame, config, recipe, [])
     assert not chosen.settings.get("no_change", False)
+    assert evidence["selected_no_change"] is False
+    assert evidence["selected_params"] is not None
     assert evidence["selected_cv_loss"] < evidence["prefix_cv_loss"]
     assert evidence["catboost_tuning_seconds"] > 0
 
@@ -211,3 +216,186 @@ def test_zero_trials_preserves_reviewed_component_without_claiming_cv() -> None:
     assert selected.amendments == recipe.amendments
     assert evidence["kind"] == "tuning_skipped"
     assert "selected_cv_loss" not in evidence
+
+
+def test_explicit_trial_budget_uses_optuna_from_its_first_trial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from easy_glm.workflow import stack_tuning
+
+    recipe = ComponentRecipe(
+        "cb",
+        "CatBoost",
+        "catboost",
+        ("x",),
+        {
+            "tune": True,
+            "tuning_budget": "trials",
+            "trials": 1,
+            "cv": 2,
+            "seed": 7,
+            "iterations": 12,
+        },
+    )
+    project, config = _config(recipe)
+    frame = pl.DataFrame({"x": [0, 1, 2, 3], "y": [1.0, 2.0, 3.0, 4.0], "w": [1.0] * 4})
+    seen: list[ComponentRecipe] = []
+
+    def candidate(_project, _rows, _config, candidate, prefix):
+        seen.append(candidate)
+        result = prefix.clone()
+        result.components.append(ComponentArtifact(candidate, "", ConstantScorer(0.0)))
+        return result, 0.01
+
+    monkeypatch.setattr(stack_tuning, "_fit_fold_candidate", candidate)
+    selected, evidence = tune_component(project, frame, config, recipe, [])
+    assert evidence["kind"] == "optuna_catboost_tuning"
+    assert evidence["attempted_trials"] == evidence["completed_trials"] == 1
+    assert evidence["pruned_trials"] == 0
+    assert len(seen) == 2  # two CV folds, one sampled candidate
+    assert selected.settings["no_change"] is True
+    assert evidence["selected_no_change"] is True
+    assert evidence["selected_params"] is None
+    assert "No sampled CatBoost setting improved" in evidence["reason"]
+
+
+def test_explicit_time_budget_has_no_hidden_trial_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from easy_glm.workflow import stack_tuning
+
+    recipe = ComponentRecipe(
+        "cb",
+        "CatBoost",
+        "catboost",
+        ("x",),
+        {
+            "tune": True,
+            "tuning_budget": "time",
+            "time_limit_minutes": 10 / 60,
+            "cv": 2,
+            "seed": 7,
+        },
+    )
+    project, config = _config(recipe)
+    frame = pl.DataFrame({"x": [0, 1, 2, 3], "y": [1.0, 2.0, 3.0, 4.0], "w": [1.0] * 4})
+
+    def candidate(_project, _rows, _config, candidate, prefix):
+        result = prefix.clone()
+        result.components.append(ComponentArtifact(candidate, "", ConstantScorer(0.0)))
+        return result, 0.5
+
+    monkeypatch.setattr(stack_tuning, "_fit_fold_candidate", candidate)
+    _, evidence = tune_component(project, frame, config, recipe, [])
+    # Two folds consume one second per completed trial. Ten seconds permits ten
+    # completed trials, demonstrating that time mode does not retain an 8 cap.
+    assert evidence["completed_trials"] == 10
+    assert evidence["attempted_trials"] == 10
+    assert (
+        evidence["stop_reason"] == "time limit reached after the current CatBoost fit"
+    )
+
+
+def test_explicit_tuning_keeps_no_change_when_every_tree_is_worse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from easy_glm.workflow import stack_tuning
+
+    recipe = ComponentRecipe(
+        "cb",
+        "CatBoost",
+        "catboost",
+        ("x",),
+        {"tune": True, "tuning_budget": "trials", "trials": 2, "cv": 2},
+    )
+    project, config = _config(recipe)
+    frame = pl.DataFrame({"x": [0, 1, 2, 3], "y": [1.0] * 4, "w": [1.0] * 4})
+
+    def worse(_project, _rows, _config, candidate, prefix):
+        result = prefix.clone()
+        result.components.append(
+            ComponentArtifact(candidate, "", ConstantScorer(math.log(0.1)))
+        )
+        return result, 0.01
+
+    monkeypatch.setattr(stack_tuning, "_fit_fold_candidate", worse)
+    selected, evidence = tune_component(project, frame, config, recipe, [])
+    assert selected.settings["no_change"] is True
+    assert evidence["selected_no_change"] is True
+    assert evidence["selected_cv_loss"] == pytest.approx(evidence["prefix_cv_loss"])
+    assert "No sampled CatBoost setting improved" in evidence["reason"]
+
+
+def test_manual_recipe_never_imports_or_runs_optuna(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from easy_glm.workflow import stack_tuning
+
+    recipe = ComponentRecipe(
+        "cb", "CatBoost", "catboost", ("x",), {"tune": False, "iterations": 12}
+    )
+    project, config = _config(recipe)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Optuna must not run for a manual CatBoost recipe")
+
+    monkeypatch.setattr(stack_tuning, "_tune_component_explicit", forbidden)
+    selected, evidence = tune_component(
+        project,
+        pl.DataFrame({"x": [1, 2], "y": [1.0, 2.0], "w": [1.0, 1.0]}),
+        config,
+        recipe,
+        [],
+    )
+    assert selected.settings["iterations"] == 12
+    assert evidence["kind"] == "manual_catboost_fit"
+
+
+@pytest.mark.parametrize(
+    ("settings", "message"),
+    [
+        ({"tune": True, "tuning_budget": "trials", "trials": True}, "trials"),
+        ({"tune": True, "tuning_budget": "trials", "trials": 1.5}, "trials"),
+        ({"tune": True, "tuning_budget": "trials", "cv": True}, "cv"),
+        ({"tune": False, "depth": True}, "depth"),
+        ({"tune": False, "thread_count": 0}, "thread_count"),
+        ({"tune": True, "tuning_budget": "trials", "thread_count": -1}, "thread_count"),
+        (
+            {"tune": True, "tuning_budget": "trials", "thread_count": True},
+            "thread_count",
+        ),
+        (
+            {
+                "tune": True,
+                "tuning_budget": "time",
+                "time_limit_minutes": math.inf,
+            },
+            "time_limit_minutes",
+        ),
+        (
+            {
+                "tune": True,
+                "tuning_budget": "time",
+                "time_limit_minutes": math.nan,
+            },
+            "time_limit_minutes",
+        ),
+    ],
+)
+def test_explicit_catboost_settings_reject_invalid_values(
+    settings: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_catboost_tuning_settings("catboost", settings)
+
+
+def test_legacy_tune_flag_without_named_budget_is_preserved() -> None:
+    # Older saved recipes may have the old opt-out flag but no named budget.
+    # They must continue through the legacy combined trials/time path.
+    validate_catboost_tuning_settings(
+        "catboost", {"tune": True, "trials": 1, "time_limit_minutes": 1}
+    )
+    # A manual legacy recipe does not tune and can retain an ignored CV null.
+    validate_catboost_tuning_settings(
+        "catboost", {"tune": False, "cv": None, "depth": 3, "thread_count": 2}
+    )

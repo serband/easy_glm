@@ -28,9 +28,9 @@
     }
     const defaults = {
         glm: { alpha: 0.001, cv: null, n_alphas: 20, l1_ratio: 1, min_alpha_ratio: 0.01, base: 'modal' },
-        catboost: { iterations: 500, depth: 6, learning_rate: 0.05, l2_leaf_reg: 3, seed: 42, thread_count: 4, time_limit_minutes: 15 },
+        catboost: { tune: true, tuning_budget: 'trials', trials: 8, cv: 3, seed: 42, thread_count: 4, iterations: 500, depth: 6, learning_rate: 0.05, l2_leaf_reg: 3, time_limit_minutes: 15 },
         interaction: { candidates: [{ iterations: 300, depth: 4, learning_rate: 0.05, l2_leaf_reg: 3 }], min_weight_share: 0.0025, cv_folds: 3, seed: 42, time_limit_minutes: 15 },
-        catalogue: { key: '', method: 'catboost', source_path: '', source_sha256: '', fallback: null, iterations: 500, depth: 6, learning_rate: 0.05, l2_leaf_reg: 3, seed: 42, thread_count: 4, time_limit_minutes: 15 },
+        catalogue: { key: '', method: 'catboost', source_path: '', source_sha256: '', fallback: null, tune: true, tuning_budget: 'trials', trials: 8, cv: 3, seed: 42, thread_count: 4, iterations: 500, depth: 6, learning_rate: 0.05, l2_leaf_reg: 3, time_limit_minutes: 15 },
     };
     let wb = null, jobs = {}, selected = '', source = '', result = null, kind = 'glm',
         stackFamily = 'poisson', tweediePower = 1.5, divideTargetByWeight = false,
@@ -68,6 +68,9 @@
             ? `${Math.round(100 * (wb.split.fraction ?? wb.split.train_fraction ?? 0.7))}% training (seed ${wb.split.seed ?? 42})`
             : 'Project split';
     $: components = result?.components || wb?.models?.[selected]?.components || [];
+    // `baseline` is an internal constant scorer used to start a correction-only
+    // stack. It is not a model the actuary configured or needs to inspect.
+    $: publicComponents = components.filter((component) => component.kind !== 'baseline');
     $: choices = wb ? [...new Set(
         (source && wb.stack_candidates?.[source]?.at(-1)) || wb.stack_base_candidates ||
         [...(wb.pair_candidates?.predictors || wb.predictors || []), ...(wb.pair_candidates?.unassigned || [])]
@@ -110,6 +113,63 @@
                 ])),
             };
         }
+    }
+    function catBoostSettings() {
+        return ['catboost', 'catalogue'].includes(kind) && settings?.method !== 'lookup';
+    }
+    function isLegacyCatBoostSettings() {
+        return catBoostSettings()
+            && settings?.tune !== false
+            && !Object.prototype.hasOwnProperty.call(settings || {}, 'tuning_budget');
+    }
+    function savedCatBoostSettings() {
+        const saved = structuredClone(settings);
+        if (!catBoostSettings() || saved.tune == null) return saved;
+        if (saved.tune) {
+            // Recipes written before the explicit budget choice retain their
+            // legacy behaviour until the user deliberately chooses a mode.
+            if (!Object.prototype.hasOwnProperty.call(saved, 'tuning_budget')) return saved;
+            saved.tuning_budget = saved.tuning_budget === 'time' ? 'time' : 'trials';
+            if (saved.tuning_budget === 'time') delete saved.trials;
+            else delete saved.time_limit_minutes;
+        } else {
+            delete saved.tuning_budget;
+            delete saved.trials;
+            delete saved.time_limit_minutes;
+            delete saved.cv;
+        }
+        return saved;
+    }
+    function setCatBoostMode(tune) {
+        settings = tune
+            ? {
+                ...settings,
+                tune: true,
+                tuning_budget: settings.tuning_budget || 'trials',
+                trials: Number(settings.trials) > 0 ? settings.trials : 8,
+                cv: Number(settings.cv) >= 2 ? settings.cv : 3,
+                time_limit_minutes: Number(settings.time_limit_minutes) > 0 ? settings.time_limit_minutes : 15,
+            }
+            : { ...settings, tune: false };
+    }
+    function setTuningBudget(tuning_budget) {
+        settings = { ...settings, tune: true, tuning_budget };
+    }
+    function selectedTreeSettings(evidence) {
+        return Object.entries(evidence?.selected_params || {})
+            .map(([key, value]) => `${key.replaceAll('_', ' ')} ${value}`)
+            .join(' · ');
+    }
+    function hasCatBoostEvidence(component) {
+        const kind = component?.evidence?.kind;
+        return kind === 'optuna_catboost_tuning'
+            || kind === 'manual_catboost_fit'
+            || component?.evidence?.selected_no_change === true;
+    }
+    function catBoostEvidenceTitle(component) {
+        if (component?.evidence?.kind === 'manual_catboost_fit') return 'Manual CatBoost settings';
+        if (component?.evidence?.selected_no_change) return 'No change selected';
+        return 'Optuna tuning';
     }
     function draftState() { return JSON.stringify({ source, name, stageName, kind, factors: [...factors].sort(), componentDesign, settings, stackFamily, tweediePower, divideTargetByWeight, modelVariablesDraftText }); }
     function setDraftBaseline() { draftBaseline = draftState(); editorDirty = false; }
@@ -210,7 +270,7 @@
         if (!availableScopes.some((scope) => scope.id === diagnosticScope)) {
             diagnosticScope = availableScopes.at(-1)?.id || '';
         }
-        const currentComponents = data.components || wb?.models?.[model]?.components || [];
+        const currentComponents = (data.components || wb?.models?.[model]?.components || []).filter((component) => component.kind !== 'baseline');
         if (!currentComponents.some((c) => (c.id || c.component_id) === stage)) stage = currentComponents.at(-1)?.id || currentComponents.at(-1)?.component_id || '';
         await loadView(epoch);
     }
@@ -426,7 +486,7 @@
             // existing internal final-step label while they are retried.
             const finalStepName = editingExisting ? stageName.trim() : name.trim();
             const effectiveComponentDesign = componentDesignSnapshot();
-            const component = { component_id: crypto.randomUUID(), name: finalStepName, kind, factors: [...factors], settings: structuredClone(settings), amendments: [], ...(effectiveComponentDesign ? { design: effectiveComponentDesign } : {}) };
+            const component = { component_id: crypto.randomUUID(), name: finalStepName, kind, factors: [...factors], settings: savedCatBoostSettings(), amendments: [], ...(effectiveComponentDesign ? { design: effectiveComponentDesign } : {}) };
             const fields = Object.fromEntries([
                 'family', 'link', 'target', 'weight', 'offset', 'divide_target_by_weight',
                 'predictors', 'penalty', 'tweedie_power', 'base', 'pair_method',
@@ -610,7 +670,7 @@
                         <div class="selected-model-identity"><div><div class="eyebrow">SELECTED MODEL</div><h2>{selected}</h2></div><span class:fit-state={selectedStatus === 'Fitted'} class="model-state">{selectedStatus}</span></div>
                         <div class:recovery={selectedNeedsRecovery} class="selected-model-context">
                             {#if selectedStatus === 'Fitted'}
-                                <p>This model is fitted. Its score includes {components.map((c) => c.name).join(' and ')}.</p>
+                                <p>This model is fitted. Its score includes {publicComponents.map((c) => c.name).join(' and ')}.</p>
                                 {#if selectedParent}<p class="help-text">{selectedFlow?.revise_available === false ? `It was originally built on an earlier ${selectedParent} fit. That exact fit is no longer available for revising this last addition.` : `Built on ${selectedParent}. Its complete fitted score is the offset for this model.`}</p>{:else}<p class="help-text">First model in this chain.</p>{/if}
                             {:else if selectedStatus === 'Cannot score'}
                                 <p>This saved model cannot be scored because its fitted files are unavailable.</p>
@@ -628,12 +688,12 @@
                         <div class="workspace-actions selected-model-actions">
                             {#if selectedStatus === 'Fitted'}<button onclick={addAfterSelected} disabled={selectedFlow?.append_available === false}>Add model after this</button><button onclick={reviseSelected} disabled={selectedFlow?.revise_available === false}>Revise model</button>{:else if selectedStatus === 'Fitting'}<span class="fit-progress" role="status">{['running', 'queued'].includes(jobs[selected]?.status) ? `Fitting: ${jobs[selected]?.message || jobs[selected]?.status}` : 'Starting fit…'}</span>{#if ['running', 'queued'].includes(jobs[selected]?.status)}<button onclick={cancel}>Cancel fit</button>{/if}{:else if selectedNeedsRecovery}<button class="primary" onclick={createFullCopy} disabled={!!busy}>Fit saved recipe as new model</button>{:else}<button class="primary" onclick={() => fit(false)} disabled={!!busy}>Fit model</button><button onclick={editSelectedDraft}>Edit draft</button>{/if}
                         </div>
-                        {#if selectedNeedsRecovery}<p class="recovery-consequence">The new model fits {components.map((component) => component.name).join(' → ') || 'the saved components'} from the beginning. {selected} stays unchanged.</p>{/if}
+                        {#if selectedNeedsRecovery}<p class="recovery-consequence">The new model fits {publicComponents.map((component) => component.name).join(' → ') || 'the saved components'} from the beginning. {selected} stays unchanged.</p>{/if}
                         {#if selectedStatus === 'Fitted' && selectedFlow?.revise_available === false}<p class="help-text">The model can still be used as the offset for a new model, but its original parent fit is unavailable, so this last addition cannot be revised.</p>{/if}
                     </section>
-                    {#if selectedNeedsRecovery}<section class="model-card saved-recipe"><h2>Saved recipe</h2><p>The saved models and variables are shown in fitting order. This setup is read-only.</p><ol class="stack-components">{#each components as c, i}<li><strong>{c.name}</strong><span>{labels[c.kind]}</span><span>{(c.factors || c.inputs || []).join(', ') || 'No selected variables'}</span><span>{i ? `After ${components[i - 1].name}` : 'Starting model'}</span><span>Saved</span></li>{/each}</ol></section>{/if}
+                    {#if selectedNeedsRecovery}<section class="model-card saved-recipe"><h2>Saved recipe</h2><p>The saved models and variables are shown in fitting order. This setup is read-only.</p><ol class="stack-components">{#each publicComponents as c, i}<li><strong>{c.name}</strong><span>{labels[c.kind]}</span><span>{(c.factors || c.inputs || []).join(', ') || 'No selected variables'}</span><span>{i ? `After ${publicComponents[i - 1].name}` : 'Starting model'}</span><span>Saved</span></li>{/each}</ol></section>{/if}
                     {#if jobs[selected]?.applicable}<section class="model-card selected-results"><div class="result-tabs"><button class:tab-active={selectedTab === 'results'} onclick={() => (selectedTab = 'results')}>Results</button><button class:tab-active={selectedTab === 'settings'} onclick={() => (selectedTab = 'settings')}>Settings</button><button onclick={() => onNavigate('compare')}>Compare</button><button onclick={() => onNavigate('export')}>Export</button></div>
-                        {#if selectedTab === 'results'}<h2>Results</h2><p>{result?.summary?.components || components.length} model components · {result?.summary?.family || ''} · training A/E {result?.summary?.train_ae == null ? '—' : Number(result.summary.train_ae).toFixed(3)}</p><p class="help-text">Training results are shown here. Choose a holdout view from Diagnostics when you want an independent evaluation.</p><div class="stack-review-actions"><button onclick={() => onNavigate('diagnostics')}>Inspect actual versus expected</button><button onclick={() => onNavigate('tables')}>Inspect and amend tables</button></div>{:else}<h2>Settings</h2><p>These settings are fixed for this fitted model. Use Revise model to create a new version.</p><ol class="stack-components">{#each components as c, i}<li><strong>{c.name}</strong><span>{labels[c.kind]}</span><span>{(c.factors || c.inputs || []).join(', ')}</span><span>{i ? `After ${components[i - 1].name}` : 'Starting model'}</span><span>Fitted</span></li>{/each}</ol>{/if}
+                        {#if selectedTab === 'results'}<h2>Results</h2><p>{publicComponents.length} fitted model{publicComponents.length === 1 ? '' : 's'} · {result?.summary?.family || ''} · training A/E {result?.summary?.train_ae == null ? '—' : Number(result.summary.train_ae).toFixed(3)}</p><p class="help-text">Training results are shown here. Choose a holdout view from Diagnostics when you want an independent evaluation.</p>{#each publicComponents.filter(hasCatBoostEvidence) as component}<section class="tuning-evidence" aria-label={`${component.name} fitting result`}><h3>{component.name} — {catBoostEvidenceTitle(component)}</h3>{#if component.evidence.kind === 'optuna_catboost_tuning'}<p>{component.evidence.completed_trials} completed of {component.evidence.attempted_trials} trial{component.evidence.attempted_trials === 1 ? '' : 's'} · {component.evidence.folds} training folds · {component.evidence.stop_reason}</p>{#if component.evidence.selected_no_change}<p>{component.evidence.reason || 'No CatBoost correction was accepted.'}</p>{/if}{:else if component.evidence.selected_no_change}<p>No further correction was selected from the saved candidates.</p>{:else}<p>{component.evidence.reason || 'One CatBoost fit used the saved manual settings.'}</p>{/if}<p class="help-text">{component.evidence.evidence_label || 'Training-fold tuning; not independent performance.'}</p></section>{/each}<div class="stack-review-actions"><button onclick={() => onNavigate('diagnostics')}>Inspect actual versus expected</button><button onclick={() => onNavigate('tables')}>Inspect and amend tables</button></div>{:else}<h2>Settings</h2><p>These settings are fixed for this fitted model. Use Revise model to create a new version.</p><ol class="stack-components">{#each publicComponents as c, i}<li><strong>{c.name}</strong><span>{labels[c.kind]}</span><span>{(c.factors || c.inputs || []).join(', ')}</span><span>{i ? `After ${publicComponents[i - 1].name}` : 'Starting model'}</span><span>Fitted</span></li>{/each}</ol>{#each publicComponents.filter(hasCatBoostEvidence) as component}<section class="tuning-evidence" aria-label={`${component.name} tuning evidence`}><h3>{component.name} — {catBoostEvidenceTitle(component)}</h3>{#if component.evidence.kind === 'optuna_catboost_tuning'}{#if component.evidence.selected_no_change}<p>{component.evidence.completed_trials} completed of {component.evidence.attempted_trials} trial{component.evidence.attempted_trials === 1 ? '' : 's'} · {component.evidence.folds} training folds · {num(component.evidence.catboost_tuning_seconds)} seconds</p><p>{component.evidence.reason || 'No CatBoost correction was accepted.'}</p><p>Stopped: {component.evidence.stop_reason}</p>{:else if component.evidence.completed_trials > 0}<p>{component.evidence.completed_trials} completed of {component.evidence.attempted_trials} trial{component.evidence.attempted_trials === 1 ? '' : 's'} · {component.evidence.folds} training folds · {num(component.evidence.catboost_tuning_seconds)} seconds</p><p>Selected tree settings: {selectedTreeSettings(component.evidence)}</p><p>Stopped: {component.evidence.stop_reason}</p>{:else}<p>No completed Optuna trial was selected.</p>{/if}{:else if component.evidence.selected_no_change}<p>No further correction was selected from the saved candidates.</p>{:else}<p>{component.evidence.reason || 'One CatBoost fit used the saved manual settings.'}</p>{/if}<p class="help-text">{component.evidence.evidence_label || 'Training-fold tuning; not independent performance.'}</p></section>{/each}{/if}
                     </section>{/if}
                     {/if}
         {#if editorOpen}<section class="model-card model-editor"><div class="stack-form-heading"><div><div class="eyebrow">DRAFT MODEL</div><h2>{revisionOf ? `Revise ${revisionOf}` : source ? 'Add model after this' : editingExisting ? 'Edit draft model' : 'First model in the chain'}</h2><p>{source ? `This model is fitted after ${source}.` : 'This is the first model in the chain, using the project’s data.'}</p></div><button onclick={() => { discardDraft(); }}>Discard changes</button></div>
@@ -672,7 +732,45 @@
             <div class="form-grid">
                 {#if kind === 'glm'}<label>Alpha<input aria-label="GLM alpha" type="number" min="0" step="any" bind:value={settings.alpha} /></label><label>CV folds (optional)<input aria-label="GLM CV folds" type="number" min="2" value={settings.cv ?? ''} onchange={(e) => (settings = { ...settings, cv: e.currentTarget.value ? Number(e.currentTarget.value) : null, alpha: e.currentTarget.value ? null : 0.001 })} /></label><label>L1 ratio<input aria-label="GLM L1 ratio" type="number" min="0" max="1" step=".1" bind:value={settings.l1_ratio} /></label>
                 {:else if kind === 'interaction'}<label>CV folds<input aria-label="Pair CV folds" type="number" min="2" bind:value={settings.cv_folds} /></label><label>Trial time limit (minutes)<input aria-label="Pair time limit" type="number" min="1" bind:value={settings.time_limit_minutes} /></label><label>Trial iterations<input aria-label="Pair iterations" type="number" min="1" value={settings.candidates[0].iterations} onchange={(e) => (settings = { ...settings, candidates: [{ ...settings.candidates[0], iterations: Number(e.currentTarget.value) }] })} /></label>
-                {:else}<label>Iterations<input aria-label="CatBoost iterations" type="number" min="1" bind:value={settings.iterations} /></label><label>Depth<input aria-label="CatBoost depth" type="number" min="1" bind:value={settings.depth} /></label><label>Learning rate<input aria-label="CatBoost learning rate" type="number" min="0.0001" step="any" bind:value={settings.learning_rate} /></label><label>Trial time limit (minutes)<input aria-label="CatBoost time limit" type="number" min="1" bind:value={settings.time_limit_minutes} /></label>{/if}
+                {:else if catBoostSettings()}
+                    {#if isLegacyCatBoostSettings()}
+                        <div class="catboost-fitting legacy-fitting">
+                            <div><h3>Fitting method</h3><p class="help-text">Existing CatBoost fitting settings. Choose a method only if you want to change this draft.</p></div>
+                            <div class="workspace-actions"><button type="button" onclick={() => setCatBoostMode(true)}>Use Optuna tuning</button><button type="button" onclick={() => setCatBoostMode(false)}>Use manual settings</button></div>
+                            <label>Iterations<input aria-label="CatBoost iterations" type="number" min="1" bind:value={settings.iterations} /></label>
+                            <label>Depth<input aria-label="CatBoost depth" type="number" min="1" bind:value={settings.depth} /></label>
+                            <label>Learning rate<input aria-label="CatBoost learning rate" type="number" min="0.0001" step="any" bind:value={settings.learning_rate} /></label>
+                            <label>L2 regularisation<input aria-label="CatBoost L2 regularisation" type="number" min="0" step="any" bind:value={settings.l2_leaf_reg} /></label>
+                            {#if settings.trials != null}<label>Number of trials<input aria-label="CatBoost trial count" type="number" min="1" bind:value={settings.trials} /></label>{/if}
+                            {#if settings.time_limit_minutes != null}<label>CatBoost tuning time (minutes)<input aria-label="CatBoost tuning time" type="number" min="1" bind:value={settings.time_limit_minutes} /></label>{/if}
+                            <label>Seed<input aria-label="CatBoost seed" type="number" min="0" bind:value={settings.seed} /></label>
+                            <label>Threads<input aria-label="CatBoost threads" type="number" min="1" bind:value={settings.thread_count} /></label>
+                        </div>
+                    {:else}
+                        <div class="catboost-fitting">
+                            <div><h3>Fitting method</h3><p class="help-text">CatBoost is fitted using training rows only. Holdout rows are not used for tuning.</p></div>
+                            <label>Method<select aria-label="CatBoost fitting method" value={settings.tune ? 'tune' : 'manual'} onchange={(event) => setCatBoostMode(event.currentTarget.value === 'tune')}><option value="tune">Optuna tuning</option><option value="manual">Manual settings</option></select></label>
+                            {#if settings.tune}
+                                <p class="help-text catboost-fit-help">One trial tests one settings combination across training folds. A time limit covers this model’s candidate CatBoost fits, not earlier models or the final all-training fit. The CatBoost fit already in progress is allowed to finish before tuning stops.</p>
+                                <label>Budget<select aria-label="CatBoost tuning budget" value={settings.tuning_budget || 'trials'} onchange={(event) => setTuningBudget(event.currentTarget.value)}><option value="trials">Number of trials</option><option value="time">CatBoost tuning time (minutes)</option></select></label>
+                                {#if settings.tuning_budget === 'time'}
+                                    <label>CatBoost tuning time (minutes)<input aria-label="CatBoost tuning time" type="number" min="1" value={settings.time_limit_minutes ?? 15} onchange={(event) => (settings = { ...settings, time_limit_minutes: Number(event.currentTarget.value) })} /></label>
+                                {:else}
+                                    <label>Optuna trials<input aria-label="CatBoost trial count" type="number" min="1" value={settings.trials ?? 8} onchange={(event) => (settings = { ...settings, trials: Number(event.currentTarget.value) })} /></label>
+                                {/if}
+                                <details class="catboost-advanced"><summary>Advanced tuning settings</summary><div class="form-grid"><label>CV folds<input aria-label="CatBoost CV folds" type="number" min="2" bind:value={settings.cv} /></label><label>Seed<input aria-label="CatBoost seed" type="number" min="0" bind:value={settings.seed} /></label><label>Threads<input aria-label="CatBoost threads" type="number" min="1" bind:value={settings.thread_count} /></label></div></details>
+                            {:else}
+                                <p class="help-text catboost-fit-help">Use these fixed tree settings. No Optuna tuning is run.</p>
+                                <label>Iterations<input aria-label="CatBoost iterations" type="number" min="1" bind:value={settings.iterations} /></label>
+                                <label>Depth<input aria-label="CatBoost depth" type="number" min="1" bind:value={settings.depth} /></label>
+                                <label>Learning rate<input aria-label="CatBoost learning rate" type="number" min="0.0001" step="any" bind:value={settings.learning_rate} /></label>
+                                <label>L2 regularisation<input aria-label="CatBoost L2 regularisation" type="number" min="0" step="any" bind:value={settings.l2_leaf_reg} /></label>
+                                <label>Seed<input aria-label="CatBoost seed" type="number" min="0" bind:value={settings.seed} /></label>
+                                <label>Threads<input aria-label="CatBoost threads" type="number" min="1" bind:value={settings.thread_count} /></label>
+                            {/if}
+                        </div>
+                    {/if}
+                {/if}
             </div>{#if modelVariablesError}<p class="help-text validation-error">Fix the variable JSON before saving or fitting.</p>{:else if modelVariablesDraftText}<p class="help-text validation-error">Apply the variable JSON before saving or fitting.</p>{/if}<div class="editor-actions"><button onclick={() => save(false)} disabled={!!busy || !!modelVariablesError || !!modelVariablesDraftText}>Save draft</button><button class="primary" onclick={() => save(true)} disabled={!!busy || !!modelVariablesError || !!modelVariablesDraftText}>Fit model</button></div></section>{/if}
                 </div>
             </div>
@@ -682,15 +780,15 @@
             {#if diagnosticsLoading}<p class="help-text" aria-live="polite">Loading diagnostics…</p>{:else if diagnostics}<dl class="stack-metrics">{#each metricDefinitions.filter((definition) => definition.section === 'primary' && diagnostics.metrics?.[definition.key] != null) as definition}<div><dt>{definition.label}</dt><dd>{num(diagnostics.metrics[definition.key])}</dd></div>{/each}</dl>
                 <p class="stack-totals">{#each ['rows', 'exposure', 'actual', 'expected'] as key}<span>{key.charAt(0).toUpperCase() + key.slice(1)}: <strong>{num(diagnostics.metrics?.[key])}</strong></span>{/each}</p>
                 <p class="stack-totals">{#each metricDefinitions.filter((definition) => definition.section === 'secondary' && diagnostics.metrics?.[definition.key] != null) as definition}<span>{definition.label}: <strong>{num(diagnostics.metrics[definition.key])}</strong></span>{/each}</p>
-                {#if diagnostics.catalogue_coverage && Object.keys(diagnostics.catalogue_coverage).length}<h3>Catalogue coverage on these rows</h3><div class="stack-table"><table><thead><tr><th>Stage</th><th>Rows</th><th>Missing keys</th><th>Fallback rows</th></tr></thead><tbody>{#each Object.entries(diagnostics.catalogue_coverage) as [id, coverage]}<tr><td>{components.find((c) => (c.id || c.component_id) === id)?.name || id}</td><td>{coverage.rows}</td><td>{coverage.missing_key_rows}</td><td>{coverage.fallback_rows}</td></tr>{/each}</tbody></table></div>{/if}
+                {#if diagnostics.catalogue_coverage && Object.keys(diagnostics.catalogue_coverage).length}<h3>Catalogue coverage on these rows</h3><div class="stack-table"><table><thead><tr><th>Stage</th><th>Rows</th><th>Missing keys</th><th>Fallback rows</th></tr></thead><tbody>{#each Object.entries(diagnostics.catalogue_coverage) as [id, coverage]}<tr><td>{publicComponents.find((c) => (c.id || c.component_id) === id)?.name || id}</td><td>{coverage.rows}</td><td>{coverage.missing_key_rows}</td><td>{coverage.fallback_rows}</td></tr>{/each}</tbody></table></div>{/if}
                 {#if diagnostics.ae?.length}<DiagnosticPlot rows={diagnostics.ae} title={`Actual and expected by ${variable || 'overall'} — ${diagnosticModel}: ${selectedDiagnosticScope?.label || ''}`} xKey="label" kind={wb.columns.find((column) => column.name === variable)?.numeric || diagnostics.ae.some((row) => /^[<≥\[]/.test(String(row.label))) ? 'numeric' : 'categorical'} showTable={false} ariaLabel={`Actual and expected by ${variable || 'overall'} for ${diagnosticModel}, ${selectedDiagnosticScope?.label || ''}, ${subset}`} /><div class="stack-table"><table><caption>Actual and expected by {variable || 'overall'} — {diagnosticModel}: {selectedDiagnosticScope?.label || ''}</caption><thead><tr>{#each Object.keys(diagnostics.ae[0]) as key}<th>{key.replaceAll('_', ' ')}</th>{/each}</tr></thead><tbody>{#each diagnostics.ae as row}<tr>{#each Object.values(row) as value}<td>{typeof value === 'number' ? Number(value.toPrecision(3)) : value ?? '—'}</td>{/each}</tr>{/each}</tbody></table></div>{/if}
                 {#if diagnostics.lift?.length}<DiagnosticPlot rows={diagnostics.lift} title={`Lift by predicted risk — ${diagnosticModel}: ${selectedDiagnosticScope?.label || ''}`} xKey="bin" showTable={false} ariaLabel={`Actual and expected lift for ${diagnosticModel}, ${selectedDiagnosticScope?.label || ''}, ${subset}`} /><div class="stack-table"><table><caption>Lift by predicted risk — {diagnosticModel}: {selectedDiagnosticScope?.label || ''}</caption><thead><tr>{#each Object.keys(diagnostics.lift[0]) as key}<th>{key.replaceAll('_', ' ')}</th>{/each}</tr></thead><tbody>{#each diagnostics.lift as row}<tr>{#each Object.values(row) as value}<td>{typeof value === 'number' ? Number(value.toPrecision(3)) : value ?? '—'}</td>{/each}</tr>{/each}</tbody></table></div>{/if}
             {/if}</section>{/if}
         {#if result && view === 'compare'}<section class="model-card"><h2>Compare named models</h2><label>Compare with<select aria-label="Stack challenger" bind:value={challenger}><option value="">Choose a fitted model</option>{#each fitted.filter((n) => n !== selected) as n}<option value={n}>{n}</option>{/each}</select></label><label>Rows<select aria-label="Comparison rows" bind:value={subset}><option value="train">Training (in-sample)</option><option value="holdout">Holdout (request evaluation)</option></select></label>{#if comparison}<p>Expected change: {comparison.expected_change == null ? '—' : (100 * comparison.expected_change).toFixed(2) + '%'}</p><div class="stack-compare"><div><h3>{comparison.model}</h3><p>A/E {comparison.metrics?.ae == null ? '—' : Number(comparison.metrics.ae).toFixed(3)}</p></div><div><h3>{comparison.challenger}</h3><p>A/E {comparison.challenger_metrics?.ae == null ? '—' : Number(comparison.challenger_metrics.ae).toFixed(3)}</p></div></div>{/if}</section>{/if}
-        {#if result && view === 'tables'}<section class="model-card"><h2>Component table or lookup</h2><label>Model component<select aria-label="Inspect model component" bind:value={stage}>{#each components as c}<option value={c.id || c.component_id}>{c.name}</option>{/each}</select></label>{#if table}{#if table.unit_label}<p class="help-text">{table.unit_label}</p>{/if}{#if table.coverage}<p class="help-text">{table.evidence?.catalogue_rows ?? '—'} catalogue entries · {table.coverage.rows} training rows · {table.coverage.missing_key_rows || 0} missing-key rows · {table.coverage.fallback_rows || 0} fallback rows</p>{/if}{#if unseenSummary(table.evidence?.unseen_attribute_levels)}<p class="help-text">Unseen attribute levels: {unseenSummary(table.evidence?.unseen_attribute_levels)}</p>{/if}{#each table.tables || [] as item}<h3>{item.name}</h3><div class="stack-table"><table><thead><tr>{#each item.columns as column}<th>{column.replaceAll('_', ' ')}</th>{/each}</tr></thead><tbody>{#each item.rows.slice(0, 300) as row}<tr>{#each item.columns as column}<td>{typeof row[column] === 'number' ? Number(row[column].toPrecision(7)) : row[column] ?? '—'}</td>{/each}</tr>{/each}</tbody></table></div>{#if item.rows.length > 300}<p>Showing 300 of {item.rows.length} rows. Download the full rating file on Export.</p>{/if}{/each}{#if table.message}<p>{table.message}</p>{/if}{/if}
+        {#if result && view === 'tables'}<section class="model-card"><h2>Component table or lookup</h2><label>Model component<select aria-label="Inspect model component" bind:value={stage}>{#each publicComponents as c}<option value={c.id || c.component_id}>{c.name}</option>{/each}</select></label>{#if table}{#if table.unit_label}<p class="help-text">{table.unit_label}</p>{/if}{#if table.coverage}<p class="help-text">{table.evidence?.catalogue_rows ?? '—'} catalogue entries · {table.coverage.rows} training rows · {table.coverage.missing_key_rows || 0} missing-key rows · {table.coverage.fallback_rows || 0} fallback rows</p>{/if}{#if unseenSummary(table.evidence?.unseen_attribute_levels)}<p class="help-text">Unseen attribute levels: {unseenSummary(table.evidence?.unseen_attribute_levels)}</p>{/if}{#each table.tables || [] as item}<h3>{item.name}</h3><div class="stack-table"><table><thead><tr>{#each item.columns as column}<th>{column.replaceAll('_', ' ')}</th>{/each}</tr></thead><tbody>{#each item.rows.slice(0, 300) as row}<tr>{#each item.columns as column}<td>{typeof row[column] === 'number' ? Number(row[column].toPrecision(7)) : row[column] ?? '—'}</td>{/each}</tr>{/each}</tbody></table></div>{#if item.rows.length > 300}<p>Showing 300 of {item.rows.length} rows. Download the full rating file on Export.</p>{/if}{/each}{#if table.message}<p>{table.message}</p>{/if}{/if}
             {#if table?.editable}<h3>Adjust this lookup</h3><p>Preview the change to the lookup and full model. Apply creates a new named candidate.</p><label>Adjustment<select aria-label="Lookup adjustment" bind:value={operation} onchange={() => (preview = null)}><option value="cap">Cap lookup value</option><option value="round">Round for deployment</option></select></label><div class="form-grid">{#if operation === 'cap'}<label>Minimum lookup value<input aria-label="Minimum lookup value" type="number" step="any" bind:value={lower} oninput={() => (preview = null)} /></label><label>Maximum lookup value<input aria-label="Maximum lookup value" type="number" step="any" bind:value={upper} oninput={() => (preview = null)} /></label>{:else}<label>Decimal places<input aria-label="Rate decimal places" type="number" min="0" bind:value={decimals} oninput={() => (preview = null)} /></label>{/if}</div><label><input type="checkbox" bind:checked={refitLater} onchange={() => (preview = null)} />Refit later stages after applying (otherwise keep them fixed)</label><button onclick={editPreview} disabled={!!busy}>Preview adjustment</button>{#if preview}<p>{preview.changed_rows} rows changed · expected {preview.expected_before} → {preview.expected_after}</p><pre class="stack-json">{JSON.stringify(preview.sample_rows, null, 2)}</pre><label>New candidate name<input aria-label="Amended candidate name" bind:value={amendedName} /></label><button onclick={editApply} disabled={!!busy || !amendedName}>Apply to new candidate</button>{/if}{/if}
         </section>{/if}
-        {#if result && view === 'export'}<section class="model-card"><h2>Combined scorer</h2><p>Save the complete fitted stack and inspect its component tables.</p><div class="stack-review-actions"><button onclick={() => download('easyglm')} disabled={!!busy}>Download JSON scorer</button><button onclick={() => download('python_score')} disabled={!!busy}>Download Python scorer</button><button onclick={() => download('xlsx')} disabled={!!busy}>Download Excel component workbook</button></div><h2>Stage rating files</h2>{#each components as c}<div class="stack-line"><span>{c.name} · {labels[c.kind]}</span>{#if c.kind === 'catalogue'}<button onclick={() => download('csv', c.id || c.component_id)} disabled={!!busy}>Download full lookup CSV</button>{:else}<span>{c.kind === 'catboost' ? 'Included in combined scorer' : 'Inspect on Rate tables'}</span>{/if}</div>{/each}</section>{/if}
+        {#if result && view === 'export'}<section class="model-card"><h2>Combined scorer</h2><p>Save the complete fitted stack and inspect its component tables.</p><div class="stack-review-actions"><button onclick={() => download('easyglm')} disabled={!!busy}>Download JSON scorer</button><button onclick={() => download('python_score')} disabled={!!busy}>Download Python scorer</button><button onclick={() => download('xlsx')} disabled={!!busy}>Download Excel component workbook</button></div><h2>Stage rating files</h2>{#each publicComponents as c}<div class="stack-line"><span>{c.name} · {labels[c.kind]}</span>{#if c.kind === 'catalogue'}<button onclick={() => download('csv', c.id || c.component_id)} disabled={!!busy}>Download full lookup CSV</button>{:else}<span>{c.kind === 'catboost' ? 'Included in combined scorer' : 'Inspect on Rate tables'}</span>{/if}</div>{/each}</section>{/if}
         {#if !result && view !== 'model'}<section class="model-card"><p>Fit a named stacked candidate to inspect these results.</p><button onclick={() => onNavigate('model')}>Go to Model</button></section>{/if}
     {/if}
 </div>
@@ -717,6 +815,16 @@
     .diagnostic-scope span, .diagnostic-scope p { color:#526e5d; font-size:13px; }
     .diagnostic-scope p { margin:2px 0 0; }
     .stack-divide { display:flex; align-items:center; gap:8px; margin:10px 0; }
+    .catboost-fitting { display:contents; }
+    .catboost-fitting > div:first-child { grid-column:1 / -1; }
+    .catboost-fitting h3 { margin:0 0 4px; }
+    .catboost-fitting .workspace-actions { margin:0; align-self:end; }
+    .catboost-fit-help { grid-column:1 / -1; margin:0; }
+    .catboost-advanced { grid-column:1 / -1; }
+    .catboost-advanced .form-grid { margin-top:10px; }
+    .legacy-fitting { grid-column:1 / -1; display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; padding:12px; border:1px solid #d8e3d9; background:#f7faf7; }
+    .legacy-fitting > div:first-child, .legacy-fitting .workspace-actions { grid-column:1 / -1; }
+    .tuning-evidence { margin:14px 0; padding:12px 14px; border-left:3px solid #287550; background:#f5f8f5; }.tuning-evidence h3 { margin:0 0 6px; }.tuning-evidence p { margin:4px 0; }
     .inherited-definition { margin:14px 0; padding:13px 14px; border:1px solid #c7d7ca; border-left:4px solid #287550; background:#f7faf7; }.inherited-definition h3 { margin:0 0 10px; }.inherited-definition dl { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px 18px; margin:0; }.inherited-definition dt { color:#526e5d; font-size:11px; }.inherited-definition dd { margin:2px 0 0; font-size:13px; font-weight:600; overflow-wrap:anywhere; }.inherited-definition p { margin:10px 0 0; font-size:12px; color:#526e5d; }
     .stack-form-heading { display:flex; justify-content:space-between; gap:12px; align-items:start; }
     .model-builder { display:grid; grid-template-columns:minmax(230px, 300px) minmax(0, 1fr); gap:18px; align-items:start; }

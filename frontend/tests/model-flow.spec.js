@@ -13,8 +13,8 @@ async function fillDraft(page, { name, component, kind, variable }) {
     await page.getByLabel(`Use ${variable}`).check();
     await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
     if (kind === 'catboost') {
+        await page.getByLabel('CatBoost fitting method').selectOption('manual');
         await page.getByLabel('CatBoost iterations').fill('20');
-        await page.getByLabel('CatBoost time limit').fill('1');
     }
 }
 

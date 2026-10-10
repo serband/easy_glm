@@ -6,7 +6,7 @@
 
 | Purpose | Checkout and state |
 | --- | --- |
-| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/stack-diagnostics-scope`, based on per-model variable setup revision `ce6f54e`; includes per-model definitions and selectable cumulative diagnostic fits |
+| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/catboost-optuna-default`, based on diagnostic-scope revision `86dceae`; includes per-model definitions, selectable cumulative diagnostic fits and explicit CatBoost tuning controls |
 | User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
 | Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
 
@@ -36,6 +36,23 @@ The stack branch implements an ordered multiplicative sequence of GLM, direct Ca
 
 Each component selects its own factors from safe predictor and unassigned source columns. Its **Variables for this model** editor provides searchable alphabetical Table and JSON views. Global roles identify response, weight, ID, split and ignore; those controls cannot be changed in this editor. GLMs and interaction tables now store their own defaults, types and bands in optional `ComponentRecipe.design` snapshots. Direct CatBoost uses raw values and local categorical/numeric treatment. Legacy recipes without this field retain their previous project-design behaviour and serialize without the new field, preserving existing fingerprints. A child's target, weight, family, log link and split remain inherited; its offset is the complete fitted predecessor scorer. Model-save validation rejects changes to the response convention or frozen prefix and refuses edits to global bands through a stack-model save.
 
+New direct CatBoost and CatBoost catalogue drafts default to **Optuna tuning**:
+eight trials and three training folds. Choose a trial count or a tuning-time
+budget (15 minutes initially); these are separate limits. Time charges only
+this component's candidate CatBoost fits across training folds. Preparing data,
+refitting earlier components, scoring and the final full-training fit are outside
+that budget. A CatBoost fit already in progress can finish before tuning stops.
+Every counted trial is sampled by Optuna. The unchanged preceding score is a
+separate comparison, not a trial; it is kept when no completed trial improves it.
+The results record completed/pruned trials, the stopping reason and either the
+chosen parameters or **No change selected**. **Manual settings** fits the entered
+parameters once without Optuna or CV. Neither mode uses holdout rows for fitting
+or selection. Recipes without `tuning_budget`, including older `tune: true`
+recipes, keep their old combined trial/time behaviour when reopened or saved.
+Existing interaction-table tuning is unchanged. Python `fit_catboost` accepts
+explicit `tune=True`/`False` and `tuning_budget="trials"`/`"time"`; older calls keep
+their previous behaviour.
+
 Diagnostics now identifies **Saved chain (final model)** and **Fit to inspect**.
 The default is the final combined fit; earlier choices score the original response
 with the saved physical components through that model, including earlier offsets
@@ -64,6 +81,19 @@ Known first-version boundaries: each named model scores a linear sequence; the d
 - `src/easy_glm/workflow/stack_types.py`, `stack.py`, `stack_tuning.py`, `catalogue.py`: component recipes/artifacts, cumulative scoring and offsets, fold-aware tuning, catalogue validation and lookup.
 - `src/easy_glm/workflow/project.py`: global data roles/design, model configuration and JSON migration. `src/easy_glm/desktop/` plus `frontend/src/StackWorkbench.svelte` and `frontend/src/App.svelte`: workbench APIs and screens.
 - `tests/test_pricing_stack_api.py`, `test_stack_tuning.py`, `test_stack_exports.py`, `test_desktop_stack.py`: targeted stack tests; `frontend/tests/stack-visual.mjs` and `stack-legacy-append.mjs` are local browser review scripts, not a dedicated `playwright.stack.config.js` CI job.
+
+Fresh CatBoost-control checks on 10 October: the full Python source run recorded
+**1,627 passed**, one skipped and one slow deselected. Nine launcher cases were
+blocked by the sandbox's localhost-binding restriction; both launcher suites
+then passed **10 tests** with local socket permission. The final focused fitting
+suite passed **47 tests**, including strict setting validation, neutral selection
+and poisoned-holdout checks. All **27 frontend unit tests**, **nine staged-model
+browser scenarios**, Svelte check, Black, Ruff, mypy and the bundled build passed.
+Both public walkthroughs ran all **48 Python blocks unchanged** against the source
+checkout, including scoring and exports. Independent software, adversarial and
+rendered actuarial reviews closed their findings. These are local macOS source
+checks; installed-wheel, Windows, GitHub CI and the separate 5M-row budget were
+not rerun for this change. Nothing was pushed or released.
 
 Fresh per-model definition checks on 10 October: **71 Python pricing/stack
 regressions**, **27 frontend unit tests** and **six browser scenarios** passed.
@@ -184,7 +214,7 @@ local backup/transfer operation, not a commit, push or release:
 source_checkout=/private/tmp/easyglm-model-variable-setup
 packet=/Users/serban/Documents/Projects/easy_glm/.internal/handover-20261010
 mkdir -p "$packet/docs/plans"
-git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/stack-diagnostics-scope refs/tags/v0.472
+git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/catboost-optuna-default refs/tags/v0.472
 git -C "$source_checkout" bundle verify "$packet/easyglm.bundle"
 cp "$source_checkout/AGENTS.md" "$packet/AGENTS.md"
 cp "$source_checkout/docs/HANDOVER.md" "$packet/docs/HANDOVER.md"
@@ -194,8 +224,8 @@ cp "$source_checkout/docs/PRICING_WORKFLOW_BUILD.md" "$packet/docs/PRICING_WORKF
 cp "$source_checkout/docs/plans/STACKED_MODELS.md" "$packet/docs/plans/STACKED_MODELS.md"
 ```
 
-Check that the bundle contains the current `codex/stack-diagnostics-scope` commit
-(`git rev-parse codex/stack-diagnostics-scope`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
+Check that the bundle contains the current `codex/catboost-optuna-default` commit
+(`git rev-parse codex/catboost-optuna-default`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
 **new** directory with the stack branch selected, then copy the six guidance
 files into that clone and inspect `git status` before work. Keep the packet's
 directory structure; its docs are newer than the 30 September recovery bundle.
@@ -203,7 +233,7 @@ For example, with transferred packet and destination paths chosen by the
 operator:
 
 ```bash
-git clone --branch codex/stack-diagnostics-scope "$packet/easyglm.bundle" "$destination"
+git clone --branch codex/catboost-optuna-default "$packet/easyglm.bundle" "$destination"
 cp "$packet/AGENTS.md" "$destination/AGENTS.md"
 cp "$packet/docs/HANDOVER.md" "$destination/docs/HANDOVER.md"
 cp "$packet/docs/MODEL_FLOW.md" "$destination/docs/MODEL_FLOW.md"

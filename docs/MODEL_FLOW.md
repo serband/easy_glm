@@ -29,6 +29,27 @@ Project settings provide the initial defaults; saving the model stores its own
 copy. Later changes to project defaults do not change that saved definition.
 Direct CatBoost models use raw numeric or categorical values, without GLM bands.
 
+### Fit a CatBoost model
+
+New CatBoost models default to **Optuna tuning**. It tests different tree settings
+using folds within the training data. Holdout data is not used to choose settings.
+
+- Choose **Optuna trials** to set how many settings candidates to test; the default
+  is eight. Each candidate is checked across three training folds by default.
+- Choose **Tuning time** to set a budget in minutes; the initial value is 15.
+  This counts candidate CatBoost fitting across folds. Earlier models, scoring
+  and the final fit using all training rows are outside the budget. A CatBoost
+  fit already in progress is allowed to finish before tuning stops.
+- Choose **Manual settings** to enter iterations, depth, learning rate and L2
+  regularisation yourself. This fits those settings once, without Optuna or CV.
+
+The same controls apply when fitting a CatBoost catalogue. Results show the
+completed trial count and selected settings. **No change selected** means the
+tested trees did not improve the preceding model's training-fold loss; its
+predictions are retained. That unchanged comparison is not counted as a trial.
+Earlier saved models keep their existing settings until you explicitly change
+their fitting mode in a new draft.
+
 For example, this JSON selects three variables for this model and gives driver
 age fixed cuts:
 

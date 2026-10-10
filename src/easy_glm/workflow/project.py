@@ -22,7 +22,7 @@ from uuid import uuid4
 
 from easy_glm.engine.models import INTERACTION_SEP
 
-from .stack_types import ComponentRecipe
+from .stack_types import ComponentRecipe, validate_catboost_tuning_settings
 
 
 def _is_finite_number(value: Any) -> bool:
@@ -1094,6 +1094,10 @@ class Project:
                         problems.append(
                             f"{name}: unsupported component kind {item.kind!r}"
                         )
+                    try:
+                        validate_catboost_tuning_settings(item.kind, item.settings)
+                    except ValueError as exc:
+                        problems.append(f"{name}: component {item.name!r}: {exc}")
                     if item.kind != "catalogue":
                         forbidden = [
                             factor

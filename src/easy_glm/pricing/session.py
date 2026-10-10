@@ -458,13 +458,30 @@ class PricingSession:
         time_limit_minutes: float | None = None,
         trials: int = 8,
         cv: int = 5,
+        tune: bool | None = None,
+        tuning_budget: str | None = None,
     ) -> Any:
-        """Fit a direct CatBoost component as the first model component."""
-        return self._first_component(
-            name,
-            kind="catboost",
-            factors=factors,
-            settings={
+        """Fit a direct CatBoost component as the first model component.
+
+        ``tune=True`` uses training-fold tuning with a ``"trials"`` or
+        ``"time"`` budget and keeps the unchanged model if no tree improves it.
+        ``tune=False`` fits the supplied settings once on all training rows.
+        """
+        explicit = tune is not None or tuning_budget is not None
+        settings: dict[str, Any] = (
+            {
+                "iterations": iterations,
+                "depth": depth,
+                "learning_rate": learning_rate,
+                "l2_leaf_reg": l2_leaf_reg,
+                "seed": self._project.data.split.seed if seed is None else seed,
+                "thread_count": thread_count,
+                "time_limit_minutes": time_limit_minutes,
+                "trials": trials,
+                "cv": cv,
+            }
+            if explicit
+            else {
                 "iterations": int(iterations),
                 "depth": int(depth),
                 "learning_rate": float(learning_rate),
@@ -474,7 +491,21 @@ class PricingSession:
                 "time_limit_minutes": time_limit_minutes,
                 "trials": int(trials),
                 "cv": int(cv),
-            },
+            }
+        )
+        if explicit:
+            settings["tune"] = True if tune is None else tune
+            if tune is True or tune is None:
+                settings["tuning_budget"] = (
+                    "trials" if tuning_budget is None else tuning_budget
+                )
+            elif tuning_budget is not None:
+                settings["tuning_budget"] = tuning_budget
+        return self._first_component(
+            name,
+            kind="catboost",
+            factors=factors,
+            settings=settings,
         )
 
     def fit_catalogue(

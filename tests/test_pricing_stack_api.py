@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import polars as pl
 import pytest
 
 from easy_glm import PricingModel, PricingSession, load_motor_catalogue_example
@@ -105,6 +106,58 @@ def test_catboost_can_start_before_glm() -> None:
         "glm",
     ]
     assert np.all(np.isfinite(corrected.predict(data)))
+
+
+def test_pricing_session_catboost_never_fits_holdout_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both Optuna folds and a manual full fit receive training rows only."""
+    from easy_glm.workflow import stack
+
+    class FakeModel:
+        def predict(self, raw, *, prediction_type):
+            assert prediction_type == "RawFormulaVal"
+            return np.zeros(len(raw))
+
+    calls: list[int] = []
+
+    def spy(raw, target, baseline, **_kwargs):
+        values = np.asarray(raw[:, 0], dtype=float)
+        assert np.all(values < 1_000)
+        assert np.all(np.asarray(target, dtype=float) < 1_000)
+        assert len(values) == len(target) == len(baseline)
+        calls.append(len(values))
+        return type("Teacher", (), {"model": FakeModel()})()
+
+    monkeypatch.setattr(stack, "fit_catboost_raw", spy)
+    data = pl.DataFrame(
+        {
+            "PolicyID": list(range(12)),
+            "Claims": [1.0] * 8 + [9_999.0] * 4,
+            "Exposure": [1.0] * 12,
+            "x": list(range(8)) + [9_999] * 4,
+            "traintest": [1] * 8 + [0] * 4,
+        }
+    )
+    session = PricingSession(
+        data,
+        family="poisson",
+        claims="Claims",
+        exposure="Exposure",
+        id="PolicyID",
+        split="traintest",
+    )
+    session.fit_catboost(
+        "Automatic",
+        factors=["x"],
+        tune=True,
+        tuning_budget="trials",
+        trials=1,
+        cv=2,
+    )
+    session.fit_catboost("Manual", factors=["x"], tune=False)
+    assert calls.count(4) == 2  # two training-only Optuna folds
+    assert calls[-1] == 8  # the manual full fit is the whole training partition
 
 
 def test_standalone_catalogue_file_contains_complete_unit_prediction(tmp_path) -> None:

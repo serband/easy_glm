@@ -45,6 +45,9 @@ Implemented in Python and the workbench, with software, statistical and actuaria
 - Identify the saved chain on Diagnostics and choose its final fit or the score
   after an individual model. A/E, lift and metrics include the earlier offsets;
   grouped A/E uses factors available at that point in the chain.
+- Default new CatBoost models and catalogue fits to training-only Optuna tuning,
+  with a trial count or tuning-time budget. Keep manual settings available and
+  show the selected settings or unchanged preceding model in Results.
 - Test both GLM → CatBoost and CatBoost → GLM, full-stack validation, lookup
   coverage, save/reload and export parity.
 

@@ -286,13 +286,31 @@ class PricingModel:
         time_limit_minutes: float | None = None,
         trials: int = 8,
         cv: int = 5,
+        tune: bool | None = None,
+        tuning_budget: str | None = None,
     ) -> PricingModel:
-        """Append a direct CatBoost correction."""
-        return self._append_component(
-            name,
-            kind="catboost",
-            factors=factors,
-            settings={
+        """Append a direct CatBoost correction.
+
+        Pass ``tune=True`` to tune on training folds, with ``tuning_budget``
+        set to ``"trials"`` or ``"time"``.  The unchanged preceding model is
+        retained when no sampled tree improves it.  Pass ``tune=False`` to fit
+        the supplied CatBoost settings once on all training rows.
+        """
+        explicit = tune is not None or tuning_budget is not None
+        settings: dict[str, Any] = (
+            {
+                "iterations": iterations,
+                "depth": depth,
+                "learning_rate": learning_rate,
+                "l2_leaf_reg": l2_leaf_reg,
+                "seed": self._project.data.split.seed if seed is None else seed,
+                "thread_count": thread_count,
+                "time_limit_minutes": time_limit_minutes,
+                "trials": trials,
+                "cv": cv,
+            }
+            if explicit
+            else {
                 "iterations": int(iterations),
                 "depth": int(depth),
                 "learning_rate": float(learning_rate),
@@ -302,7 +320,23 @@ class PricingModel:
                 "time_limit_minutes": time_limit_minutes,
                 "trials": int(trials),
                 "cv": int(cv),
-            },
+            }
+        )
+        if explicit:
+            # Keep legacy calls byte-for-byte compatible, but let the new
+            # explicit controls validate the values the caller actually gave.
+            settings["tune"] = True if tune is None else tune
+            if tune is True or tune is None:
+                settings["tuning_budget"] = (
+                    "trials" if tuning_budget is None else tuning_budget
+                )
+            elif tuning_budget is not None:
+                settings["tuning_budget"] = tuning_budget
+        return self._append_component(
+            name,
+            kind="catboost",
+            factors=factors,
+            settings=settings,
         )
 
     def fit_catalogue(
