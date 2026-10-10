@@ -134,6 +134,10 @@ def test_stack_fit_diagnostics_and_catalogue_upload(tmp_path):
             "/api/stack/Frequency/diagnostics", params={"subset": "holdout"}
         )
         assert holdout.status_code == 200, holdout.text
+        unavailable_scope = client.get(
+            "/api/stack/Frequency/diagnostics", params={"through": "not-a-stage"}
+        )
+        assert unavailable_scope.status_code == 422, unavailable_scope.text
         table = client.get("/api/stack/Frequency/component/main/table")
         assert table.status_code == 200, table.text
         assert table.json()["tables"]

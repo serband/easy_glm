@@ -42,6 +42,9 @@ Implemented in Python and the workbench, with software, statistical and actuaria
 - Keep the selected model's variables, settings and Fit action together. Save
   and fit in one click, reopen saved drafts, and revise fitted models as new named
   versions. Keep the model map available behind a disclosure.
+- Identify the saved chain on Diagnostics and choose its final fit or the score
+  after an individual model. A/E, lift and metrics include the earlier offsets;
+  grouped A/E uses factors available at that point in the chain.
 - Test both GLM → CatBoost and CatBoost → GLM, full-stack validation, lookup
   coverage, save/reload and export parity.
 

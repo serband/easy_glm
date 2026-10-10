@@ -21,7 +21,7 @@ from easy_glm.workflow.diagnostics import (
     unit_values,
 )
 from easy_glm.workflow.prep import train_holdout
-from easy_glm.workflow.stack_types import LookupScorer
+from easy_glm.workflow.stack_types import LookupScorer, StackScorer
 
 
 def lookup_coverage(scorer: LookupScorer, frame: pl.DataFrame) -> dict[str, Any]:
@@ -38,10 +38,12 @@ def lookup_coverage(scorer: LookupScorer, frame: pl.DataFrame) -> dict[str, Any]
     }
 
 
-def _metrics(run: Any, frame: pl.DataFrame) -> dict[str, Any]:
+def _metrics(
+    run: Any, frame: pl.DataFrame, scorer: StackScorer | None = None
+) -> dict[str, Any]:
     from easy_glm.pricing.validation import _family_instance
 
-    prediction = run.stack.predict_unit(frame)
+    prediction = (scorer or run.stack).predict_unit(frame)
     actual, expected, weight = totals(frame, run.config, prediction)
     unit_target, unit_weight = unit_values(frame, run.config)
     family = run.config.family
@@ -72,6 +74,102 @@ def _metrics(run: Any, frame: pl.DataFrame) -> dict[str, Any]:
     }
 
 
+def diagnostic_scopes(stack: StackScorer) -> list[dict[str, Any]]:
+    """Describe the saved physical checkpoints available for diagnostics."""
+    components = stack.diagnostic_components()
+    if not components:
+        return []
+    identifiers = [item.recipe.component_id for item in components]
+    if any(not identifier.strip() for identifier in identifiers):
+        raise ValueError("Saved diagnostic stages need non-empty component IDs.")
+    if len(set(identifiers)) != len(identifiers):
+        raise ValueError("Saved diagnostic stages have duplicate component IDs.")
+    scopes = []
+    for index, component in enumerate(components):
+        detail = {
+            "id": component.recipe.component_id,
+            "name": component.name,
+            "kind": component.kind,
+            "factors": list(component.factors),
+        }
+        included = [item.name for item in components[: index + 1]]
+        if index == len(components) - 1:
+            # The final score is selected by omitting ``through``.  Giving it
+            # a separate empty ID keeps the menu unambiguous and avoids a
+            # duplicate last-stage result.
+            scopes.append(
+                {
+                    "id": "",
+                    "label": f"Final fit — after {component.name}",
+                    "included_models": included,
+                    "component": detail,
+                }
+            )
+        else:
+            scopes.append(
+                {
+                    "id": component.recipe.component_id,
+                    "label": f"After {component.name}",
+                    "included_models": included,
+                    "component": detail,
+                }
+            )
+    return scopes
+
+
+def _diagnostic_scope(
+    stack: StackScorer, through: str | None
+) -> tuple[dict[str, Any], StackScorer]:
+    """Resolve one public scope to its exact saved scorer prefix."""
+    scopes = diagnostic_scopes(stack)
+    if not scopes:
+        raise ValueError("This fitted stack has no diagnostic stages.")
+    selected = "" if through is None else through
+    scope = next((item for item in scopes if item["id"] == selected), None)
+    if scope is None:
+        # The final physical ID is accepted as an alias for the final score.
+        # It is deliberately not emitted separately in ``diagnostic_scopes``.
+        components = stack.diagnostic_components()
+        if components and selected == components[-1].recipe.component_id:
+            scope = scopes[-1]
+        else:
+            raise ValueError(f"Diagnostic stage {selected!r} is unavailable.")
+    return scope, stack.prefix_through(scope["id"] or None)
+
+
+def _review_variables(
+    project: Any,
+    config: Any,
+    raw: pl.DataFrame,
+    enriched: pl.DataFrame,
+) -> list[str]:
+    """Return all factors usable for grouped A/E on this saved checkpoint."""
+    protected_roles = {
+        "target",
+        "weight",
+        "exposure",
+        "offset",
+        "id",
+        "split",
+        "time",
+        "ignore",
+        "current_premium",
+    }
+    protected = {
+        value
+        for value in (config.target, config.weight, config.offset)
+        if value is not None
+    }
+    protected.update(
+        name for name, role in project.data.roles.items() if role in protected_roles
+    )
+    # Start with every raw source column, then add only catalogue attributes
+    # available at this prefix.  This lets a reviewer inspect an unmodelled
+    # source variable while not offering an attribute that has not yet joined.
+    candidates = set(raw.columns) | (set(enriched.columns) - set(raw.columns))
+    return sorted(name for name in candidates if name not in protected)
+
+
 def stack_result(
     project: Any, frame: pl.DataFrame, run: Any, notices: list[str] | None = None
 ) -> dict[str, Any]:
@@ -80,7 +178,7 @@ def stack_result(
     metrics = _metrics(run, train)
     actual, expected, weight = totals(train, run.config, run.stack.predict_unit(train))
     components = []
-    prefix = []
+    prefix: list[str] = []
     visible_components = [
         *run.stack.virtual_components,
         *(
@@ -132,21 +230,9 @@ def stack_result(
         },
         "metrics": {"train": metrics},
         "lift": {"train": lift_table(actual, expected, weight).to_dicts()},
-        "review_variables": sorted(
-            name
-            for name in run.stack.enrich(train).columns
-            if name not in {run.config.target, run.config.weight, run.config.offset}
-            and project.data.roles.get(name)
-            not in {
-                "target",
-                "weight",
-                "exposure",
-                "offset",
-                "id",
-                "split",
-                "time",
-                "ignore",
-            }
+        "diagnostic_scopes": diagnostic_scopes(run.stack),
+        "review_variables": _review_variables(
+            project, run.config, train, run.stack.enrich(train)
         ),
         "metric_definitions": {
             "train": metric_definitions(
@@ -164,6 +250,7 @@ def stack_diagnostics(
     *,
     subset: str,
     variable: str | None = None,
+    through: str | None = None,
 ) -> dict[str, Any]:
     train, holdout = train_holdout(frame, project.data.split)
     if subset not in {"train", "holdout"}:
@@ -171,16 +258,21 @@ def stack_diagnostics(
     selected = train if subset == "train" else holdout
     if selected.is_empty():
         raise ValueError(f"No {subset} rows are available.")
-    enriched = run.stack.enrich(selected)
-    prediction = run.stack.predict_unit(selected)
+    scope, scorer = _diagnostic_scope(run.stack, through)
+    enriched = scorer.enrich(selected)
+    prediction = scorer.predict_unit(selected)
     actual, expected, weight = totals(selected, run.config, prediction)
     result = {
         "subset": subset,
-        "metrics": _metrics(run, selected),
+        "saved_model": run.name,
+        "scope": scope,
+        "diagnostic_scopes": diagnostic_scopes(run.stack),
+        "review_variables": _review_variables(project, run.config, selected, enriched),
+        "metrics": _metrics(run, selected, scorer),
         "lift": lift_table(actual, expected, weight).to_dicts(),
         "catalogue_coverage": {
             item.recipe.component_id: lookup_coverage(item.scorer, selected)
-            for item in run.stack.components
+            for item in scorer.components
             if isinstance(item.scorer, LookupScorer)
         },
     }

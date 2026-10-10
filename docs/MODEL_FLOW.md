@@ -82,6 +82,19 @@ A fitted model opens on **Results**. **Settings** shows its saved recipe.
 in-sample; holdout evaluation appears only when you request it. Table changes
 still require a preview and explicit application as a new named model.
 
+On **Diagnostics**, choose **Saved chain (final model)**, then **Fit to inspect**:
+
+- **Final fit — after Occupation model** uses every model in that saved chain.
+- **After Vehicle model** uses the GLM and vehicle model, leaving out the later
+  occupation model.
+- **After Main GLM** uses the GLM alone.
+
+The page lists the models included in the selected fit. A downstream model's
+A/E includes its earlier models as offsets. Choose **Group by** to inspect A/E
+by a variable; the choices include unmodelled source variables and catalogue
+attributes available at that point. This inspection uses the saved fits and
+does not refit them. Training rows appear first; choose Holdout to evaluate it.
+
 An unavailable original parent does not stop you inspecting or extending a child
 whose own complete fit is available. It does prevent revising that child's last
 addition against the missing original fit, even if a newer fit has the same

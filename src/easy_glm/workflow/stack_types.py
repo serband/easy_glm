@@ -37,7 +37,7 @@ _VARIABLE_DESIGN_KEYS = {
 
 def _finite_number(value: Any) -> bool:
     return (
-        isinstance(value, (int, float))
+        isinstance(value, int | float)
         and not isinstance(value, bool)
         and math.isfinite(value)
     )
@@ -201,11 +201,11 @@ class ComponentRecipe:
         if not isinstance(raw, dict):
             raise ValueError("Component recipe must be an object")
         raw_factors = raw.get("factors", ())
-        if not isinstance(raw_factors, (list, tuple)):
+        if not isinstance(raw_factors, list | tuple):
             raise ValueError("Component factors must be a list")
         if not isinstance(raw.get("settings", {}), dict):
             raise ValueError("Component settings must be an object")
-        if not isinstance(raw.get("amendments", ()), (list, tuple)):
+        if not isinstance(raw.get("amendments", ()), list | tuple):
             raise ValueError("Component amendments must be a list")
         factors = tuple(raw_factors)
         return cls(
@@ -467,6 +467,43 @@ class StackScorer:
         if len(matches) != 1:
             raise KeyError(f"Component {identifier!r} is missing or ambiguous")
         return matches[0]
+
+    def diagnostic_components(self) -> list[ComponentArtifact]:
+        """Return the real fitted stages that can be used as diagnostic cut-offs.
+
+        ``baseline`` is an internal conditional intercept for correction-only
+        stacks, and ``virtual_components`` only expose the shape of an adapted
+        legacy model.  Neither is a model a user can select as a diagnostic
+        result.  A legacy component itself *is* a physical scorer and remains
+        selectable when native stages follow it.
+        """
+        return [item for item in self.components if item.recipe.kind != "baseline"]
+
+    def prefix_through(self, component_id: str | None = None) -> StackScorer:
+        """Return the accepted scorer through one physical fitted component.
+
+        The returned scorer retains the original response convention and
+        external offset.  It uses the saved artifacts themselves, including
+        amendments and catalogue enrichments, rather than fitting anything
+        again or substituting a currently selected parent.
+        """
+        if component_id is None:
+            return self.clone()
+        indices = [
+            index
+            for index, item in enumerate(self.components)
+            if item.recipe.component_id == component_id
+            and item.recipe.kind != "baseline"
+        ]
+        if len(indices) != 1:
+            raise KeyError(f"Diagnostic stage {component_id!r} is unavailable")
+        end = indices[0] + 1
+        result = self.clone()
+        result.components = result.components[:end]
+        # Virtual components are inspection aids for a legacy scorer.  They
+        # have already been incorporated in the physical legacy artifact.
+        result.virtual_components = []
+        return result
 
     def component_multiplier(self, identifier: str, frame: pl.DataFrame) -> np.ndarray:
         target = self.component(identifier)

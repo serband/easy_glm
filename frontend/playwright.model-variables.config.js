@@ -8,6 +8,7 @@ export default defineConfig({
         'model-flow.spec.js',
         'model-recovery.spec.js',
         'model-retry.spec.js',
+        'stack-diagnostics.spec.js',
     ],
     timeout: 120000,
 });

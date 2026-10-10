@@ -36,7 +36,7 @@ and human-readable, and release only with explicit authorization.
 ## Current state
 
 Read `docs/HANDOVER.md` before work on the mixed model stack. The last known public
-release is v0.472. The current Model builder work is on `codex/model-variable-setup` in
+release is v0.472. The current Model builder work is on `codex/stack-diagnostics-scope` in
 `/private/tmp/easyglm-model-variable-setup`, based on the surviving committed builder
 revision `ff39069`. The user's primary checkout contains separate work. Verify the actual
 checkout and preserve its existing changes. Model-flow connections record how named

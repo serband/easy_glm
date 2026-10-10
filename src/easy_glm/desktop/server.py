@@ -1305,6 +1305,7 @@ def create_app(
         name: str,
         subset: Literal["train", "holdout"] = "train",
         variable: str | None = None,
+        through: str | None = None,
     ) -> dict[str, Any]:
         from easy_glm.desktop.fit_worker import json_safe
         from easy_glm.desktop.stack_views import stack_diagnostics
@@ -1313,7 +1314,12 @@ def create_app(
             saved, frame, fitted = stack_artifact(name)
             return json_safe(
                 stack_diagnostics(
-                    saved, frame, fitted, subset=subset, variable=variable
+                    saved,
+                    frame,
+                    fitted,
+                    subset=subset,
+                    variable=variable,
+                    through=through,
                 )
             )
         except (ValueError, KeyError) as exc:

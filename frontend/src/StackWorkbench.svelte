@@ -36,11 +36,11 @@
         stackFamily = 'poisson', tweediePower = 1.5, divideTargetByWeight = false,
         name = '', stageName = '', factors = [], componentDesign = null, query = '', showSelected = false, settings = structuredClone(defaults.glm),
         catalogue = null, error = '', notice = '', busy = '', timer = null, known = '',
-        reading = false, subset = 'train', variable = '', diagnosticQuery = '', diagnostics = null, challenger = '',
+        reading = false, subset = 'train', variable = '', diagnosticQuery = '', diagnostics = null, diagnosticModel = '', diagnosticScope = '', diagnosticsLoading = false, challenger = '',
         comparison = null, stage = '', table = null, preview = null,
         lower = '', upper = '', decimals = '', operation = 'cap', amendedName = '', refitLater = false, viewKey = '',
         editorOpen = false, editingExisting = '', editorDirty = false, pendingAction = null,
-        selectedTab = 'results', requestEpoch = 0, modelError = '', modelNotice = '', draftBaseline = '', revisionOf = '', lastNavigationAttempt = 0,
+        selectedTab = 'results', requestEpoch = 0, diagnosticRequest = 0, modelError = '', modelNotice = '', draftBaseline = '', revisionOf = '', lastNavigationAttempt = 0,
         sourceFitId = '', refreshSuggested = false, fitDraftName = '', fitJobId = '', modelVariablesError = '', modelVariablesDraftText = '';
     $: names = wb ? Object.keys(wb.models || {}).filter((n) => wb.models[n]?.components?.length) : [];
     $: fitted = names.filter((n) => jobs[n]?.applicable);
@@ -72,7 +72,9 @@
         (source && wb.stack_candidates?.[source]?.at(-1)) || wb.stack_base_candidates ||
         [...(wb.pair_candidates?.predictors || wb.predictors || []), ...(wb.pair_candidates?.unassigned || [])]
     )].sort((a, b) => a.localeCompare(b)) : [];
-    $: reviewChoices = result?.review_variables || choices;
+    $: diagnosticScopes = result?.diagnostic_scopes || [];
+    $: selectedDiagnosticScope = diagnosticScopes.find((scope) => scope.id === diagnosticScope) || diagnosticScopes.at(-1) || null;
+    $: reviewChoices = diagnostics?.review_variables || result?.review_variables || choices;
     $: metricDefinitions = diagnostics?.metric_definitions?.[subset] || result?.metric_definitions?.[subset] || [];
     $: filteredReviewChoices = reviewChoices.filter((n) => n === variable || n.toLowerCase().includes(diagnosticQuery.toLowerCase()));
     $: catalogueAttributeColumns = kind === 'catalogue' && catalogue
@@ -85,8 +87,9 @@
     $: onReady(Boolean(jobs[selected]?.applicable));
     $: onContext({ fitted, selected, champion: wb?.champion });
     $: if (state && !reading && known !== `${state.session_id}:${state.revision}`) refresh();
-    $: if (result && ['diagnostics', 'compare', 'tables'].includes(view) && viewKey !== `${view}:${selected}:${subset}:${variable}:${challenger}:${stage}`) {
-        viewKey = `${view}:${selected}:${subset}:${variable}:${challenger}:${stage}`;
+    $: if (result && view === 'diagnostics' && !diagnosticModel && fitted.includes(selected)) diagnosticModel = selected;
+    $: if (result && ['diagnostics', 'compare', 'tables'].includes(view) && viewKey !== `${view}:${view === 'diagnostics' ? diagnosticModel : selected}:${diagnosticScope}:${subset}:${variable}:${challenger}:${stage}`) {
+        viewKey = `${view}:${view === 'diagnostics' ? diagnosticModel : selected}:${diagnosticScope}:${subset}:${variable}:${challenger}:${stage}`;
         loadView();
     }
     function rev() { return { session_id: state.session_id, revision: state.revision }; }
@@ -202,6 +205,11 @@
         if (!data.stack) { modelError = 'Open this model in Single model.'; result = null; return; }
         modelError = '';
         result = data;
+        if (!diagnosticModel || diagnosticModel !== model) diagnosticModel = model;
+        const availableScopes = data.diagnostic_scopes || [];
+        if (!availableScopes.some((scope) => scope.id === diagnosticScope)) {
+            diagnosticScope = availableScopes.at(-1)?.id || '';
+        }
         const currentComponents = data.components || wb?.models?.[model]?.components || [];
         if (!currentComponents.some((c) => (c.id || c.component_id) === stage)) stage = currentComponents.at(-1)?.id || currentComponents.at(-1)?.component_id || '';
         await loadView(epoch);
@@ -211,6 +219,10 @@
         if (editorOpen && !editorDirty) { clearEditor(); editorOpen = false; }
         selected = model;
         result = null;
+        diagnostics = null;
+        diagnosticsLoading = false;
+        diagnosticModel = model;
+        diagnosticScope = '';
         clearTransientModelState();
         error = '';
         selectedTab = 'results';
@@ -326,18 +338,52 @@
     }
     async function loadView(epoch = requestEpoch) {
         if (!result) return;
-        const model = selected;
+        const requestedView = view;
+        const model = requestedView === 'diagnostics' ? diagnosticModel : selected;
+        if (requestedView === 'diagnostics' && !model) return;
+        const scope = diagnosticScope;
+        const diagnosticToken = requestedView === 'diagnostics' ? ++diagnosticRequest : 0;
+        if (requestedView === 'diagnostics') {
+            diagnostics = null;
+            diagnosticsLoading = true;
+        }
         try {
             let data = null;
-            if (view === 'diagnostics') data = await api(`stack/${encodeURIComponent(model)}/diagnostics?subset=${subset}${variable ? '&variable=' + encodeURIComponent(variable) : ''}`);
-            if (view === 'compare' && challenger) data = await api(`stack/${encodeURIComponent(model)}/compare?subset=${subset}&challenger=${encodeURIComponent(challenger)}`);
-            if (view === 'tables' && stage) data = await api(`stack/${encodeURIComponent(model)}/component/${encodeURIComponent(stage)}/table`);
-            if (epoch !== requestEpoch || model !== selected) return;
-            if (view === 'diagnostics') diagnostics = data;
-            if (view === 'compare' && challenger) comparison = data;
-            if (view === 'tables' && stage) table = data;
+            if (requestedView === 'diagnostics') {
+                const parameters = new URLSearchParams({ subset });
+                if (scope) parameters.set('through', scope);
+                if (variable) parameters.set('variable', variable);
+                data = await api(`stack/${encodeURIComponent(model)}/diagnostics?${parameters}`);
+            }
+            if (requestedView === 'compare' && challenger) data = await api(`stack/${encodeURIComponent(model)}/compare?subset=${subset}&challenger=${encodeURIComponent(challenger)}`);
+            if (requestedView === 'tables' && stage) data = await api(`stack/${encodeURIComponent(model)}/component/${encodeURIComponent(stage)}/table`);
+            if (epoch !== requestEpoch || requestedView !== view || (requestedView === 'diagnostics' ? model !== diagnosticModel || scope !== diagnosticScope || diagnosticToken !== diagnosticRequest : model !== selected)) return;
+            if (requestedView === 'diagnostics') diagnostics = data;
+            if (requestedView === 'compare' && challenger) comparison = data;
+            if (requestedView === 'tables' && stage) table = data;
             modelError = '';
-        } catch (e) { if (epoch === requestEpoch && model === selected) modelError = e.message; }
+        } catch (e) { if (epoch === requestEpoch && requestedView === view && (requestedView === 'diagnostics' ? model === diagnosticModel && scope === diagnosticScope && diagnosticToken === diagnosticRequest : model === selected)) modelError = e.message; }
+        finally { if (requestedView === 'diagnostics' && requestedView === view && epoch === requestEpoch && model === diagnosticModel && scope === diagnosticScope && diagnosticToken === diagnosticRequest) diagnosticsLoading = false; }
+    }
+
+    async function chooseDiagnosticModel(model) {
+        if (!model || model === diagnosticModel) return;
+        diagnosticModel = model;
+        diagnosticScope = '';
+        variable = '';
+        diagnosticQuery = '';
+        subset = 'train';
+        diagnostics = null;
+        diagnosticsLoading = true;
+        await chooseSelected(model);
+    }
+
+    function chooseDiagnosticScope(scopeId) {
+        diagnosticScope = scopeId;
+        variable = '';
+        diagnosticQuery = '';
+        diagnostics = null;
+        diagnosticsLoading = true;
     }
     async function upload(event) {
         const file = event.currentTarget.files?.[0]; if (!file) return;
@@ -533,7 +579,13 @@
 </script>
 
 <div hidden={!['model', 'diagnostics', 'compare', 'tables', 'export'].includes(view)} class="stack-workbench">
-    <div class="heading"><div><div class="eyebrow">MODEL BUILDER</div><h1>{view === 'model' ? 'Build a model in stages' : view === 'tables' ? 'Component tables' : view === 'export' ? 'Export stacked model' : view === 'compare' ? 'Compare models' : 'Full-model diagnostics'}</h1><p>Start a model on its own, or add one after a fitted model. Each fitted model is kept as a named version.</p></div></div>
+    <div class="heading"><div>
+        {#if view === 'diagnostics'}
+            <div class="eyebrow">DIAGNOSTICS</div><h1>Diagnostics — {diagnosticModel || 'saved model'}</h1><p>Inspect the final fit or the score after a chosen model. Each score includes the earlier models in that chain.</p>
+        {:else}
+            <div class="eyebrow">MODEL BUILDER</div><h1>{view === 'model' ? 'Build a model in stages' : view === 'tables' ? 'Component tables' : view === 'export' ? 'Export stacked model' : 'Compare models'}</h1><p>Start a model on its own, or add one after a fitted model. Each fitted model is kept as a named version.</p>
+        {/if}
+    </div></div>
     {#if error}<div class="message error" role="alert">{error}</div>{/if}
     {#if notice}<div class="message" role="status">{notice}</div>{/if}
     {#if modelError}<div class="message error" role="alert">{modelError}{#if refreshSuggested}<button onclick={refreshAppliedSettings} disabled={!!busy}>Refresh applied settings</button>{/if}</div>{/if}
@@ -625,13 +677,14 @@
                 </div>
             </div>
         {/if}
-        {#if result && view === 'diagnostics'}<section class="model-card"><h2>Actual versus expected</h2><p>Uses the complete accepted scorer. Training rows are shown first.</p><div class="stack-diagnostic-controls"><label>Rows<select aria-label="Diagnostic rows" bind:value={subset}><option value="train">Training (in-sample)</option><option value="holdout">Holdout (request evaluation)</option></select></label><label>Search group factors<input aria-label="Search A/E factors" placeholder="Search factors" bind:value={diagnosticQuery} /></label><label>Group by<select aria-label="A/E factor" bind:value={variable}><option value="">Overall</option>{#each filteredReviewChoices as n}<option value={n}>{n}</option>{/each}</select></label></div>
-            {#if diagnostics}<dl class="stack-metrics">{#each metricDefinitions.filter((definition) => definition.section === 'primary' && diagnostics.metrics?.[definition.key] != null) as definition}<div><dt>{definition.label}</dt><dd>{num(diagnostics.metrics[definition.key])}</dd></div>{/each}</dl>
+        {#if result && view === 'diagnostics'}<section class="model-card"><h2>Actual versus expected</h2><p>Choose the saved chain, then choose the model to inspect.</p><div class="stack-diagnostic-controls"><label>Saved chain (final model)<select aria-label="Diagnostic saved model" value={diagnosticModel} onchange={(event) => chooseDiagnosticModel(event.currentTarget.value)}>{#each fitted as model}<option value={model}>{model}</option>{/each}</select></label><label>Fit to inspect<select aria-label="Diagnostic scope" value={diagnosticScope} onchange={(event) => chooseDiagnosticScope(event.currentTarget.value)}>{#each diagnosticScopes as scope}<option value={scope.id}>{scope.label}</option>{/each}</select></label><label>Rows<select aria-label="Diagnostic rows" bind:value={subset}><option value="train">Training (in-sample)</option><option value="holdout">Holdout (request evaluation)</option></select></label><label>Search group factors<input aria-label="Search A/E factors" placeholder="Search factors" bind:value={diagnosticQuery} /></label><label>Group by<select aria-label="A/E factor" bind:value={variable}><option value="">Overall</option>{#each filteredReviewChoices as n}<option value={n}>{n}</option>{/each}</select></label></div>
+            {#if selectedDiagnosticScope}<div class="diagnostic-scope"><strong>{selectedDiagnosticScope.label}</strong>{#if selectedDiagnosticScope.included_models?.length}<span>Includes: {selectedDiagnosticScope.included_models.join(' → ')}</span>{/if}{#if selectedDiagnosticScope.component?.name}<span>Stage: {selectedDiagnosticScope.component.name} · {labels[selectedDiagnosticScope.component.kind] || selectedDiagnosticScope.component.kind}{#if selectedDiagnosticScope.component.factors?.length} · {selectedDiagnosticScope.component.factors.join(', ')}{/if}</span>{/if}<p>{selectedDiagnosticScope.included_models?.length > 1 ? 'Earlier models are included as the offset for this model.' : 'This is the first model, using the project data.'}</p></div>{/if}
+            {#if diagnosticsLoading}<p class="help-text" aria-live="polite">Loading diagnostics…</p>{:else if diagnostics}<dl class="stack-metrics">{#each metricDefinitions.filter((definition) => definition.section === 'primary' && diagnostics.metrics?.[definition.key] != null) as definition}<div><dt>{definition.label}</dt><dd>{num(diagnostics.metrics[definition.key])}</dd></div>{/each}</dl>
                 <p class="stack-totals">{#each ['rows', 'exposure', 'actual', 'expected'] as key}<span>{key.charAt(0).toUpperCase() + key.slice(1)}: <strong>{num(diagnostics.metrics?.[key])}</strong></span>{/each}</p>
                 <p class="stack-totals">{#each metricDefinitions.filter((definition) => definition.section === 'secondary' && diagnostics.metrics?.[definition.key] != null) as definition}<span>{definition.label}: <strong>{num(diagnostics.metrics[definition.key])}</strong></span>{/each}</p>
                 {#if diagnostics.catalogue_coverage && Object.keys(diagnostics.catalogue_coverage).length}<h3>Catalogue coverage on these rows</h3><div class="stack-table"><table><thead><tr><th>Stage</th><th>Rows</th><th>Missing keys</th><th>Fallback rows</th></tr></thead><tbody>{#each Object.entries(diagnostics.catalogue_coverage) as [id, coverage]}<tr><td>{components.find((c) => (c.id || c.component_id) === id)?.name || id}</td><td>{coverage.rows}</td><td>{coverage.missing_key_rows}</td><td>{coverage.fallback_rows}</td></tr>{/each}</tbody></table></div>{/if}
-                {#if diagnostics.ae?.length}<DiagnosticPlot rows={diagnostics.ae} title={`Actual and expected by ${variable}`} xKey="label" kind={wb.columns.find((column) => column.name === variable)?.numeric || diagnostics.ae.some((row) => /^[<≥\[]/.test(String(row.label))) ? 'numeric' : 'categorical'} showTable={false} ariaLabel={`Actual and expected by ${variable} on ${subset}`} /><div class="stack-table"><table><thead><tr>{#each Object.keys(diagnostics.ae[0]) as key}<th>{key.replaceAll('_', ' ')}</th>{/each}</tr></thead><tbody>{#each diagnostics.ae as row}<tr>{#each Object.values(row) as value}<td>{typeof value === 'number' ? Number(value.toPrecision(3)) : value ?? '—'}</td>{/each}</tr>{/each}</tbody></table></div>{/if}
-                {#if diagnostics.lift?.length}<DiagnosticPlot rows={diagnostics.lift} title="Lift by predicted risk" xKey="bin" showTable={false} ariaLabel={`Actual and expected lift on ${subset}`} /><div class="stack-table"><table><thead><tr>{#each Object.keys(diagnostics.lift[0]) as key}<th>{key.replaceAll('_', ' ')}</th>{/each}</tr></thead><tbody>{#each diagnostics.lift as row}<tr>{#each Object.values(row) as value}<td>{typeof value === 'number' ? Number(value.toPrecision(3)) : value ?? '—'}</td>{/each}</tr>{/each}</tbody></table></div>{/if}
+                {#if diagnostics.ae?.length}<DiagnosticPlot rows={diagnostics.ae} title={`Actual and expected by ${variable || 'overall'} — ${diagnosticModel}: ${selectedDiagnosticScope?.label || ''}`} xKey="label" kind={wb.columns.find((column) => column.name === variable)?.numeric || diagnostics.ae.some((row) => /^[<≥\[]/.test(String(row.label))) ? 'numeric' : 'categorical'} showTable={false} ariaLabel={`Actual and expected by ${variable || 'overall'} for ${diagnosticModel}, ${selectedDiagnosticScope?.label || ''}, ${subset}`} /><div class="stack-table"><table><caption>Actual and expected by {variable || 'overall'} — {diagnosticModel}: {selectedDiagnosticScope?.label || ''}</caption><thead><tr>{#each Object.keys(diagnostics.ae[0]) as key}<th>{key.replaceAll('_', ' ')}</th>{/each}</tr></thead><tbody>{#each diagnostics.ae as row}<tr>{#each Object.values(row) as value}<td>{typeof value === 'number' ? Number(value.toPrecision(3)) : value ?? '—'}</td>{/each}</tr>{/each}</tbody></table></div>{/if}
+                {#if diagnostics.lift?.length}<DiagnosticPlot rows={diagnostics.lift} title={`Lift by predicted risk — ${diagnosticModel}: ${selectedDiagnosticScope?.label || ''}`} xKey="bin" showTable={false} ariaLabel={`Actual and expected lift for ${diagnosticModel}, ${selectedDiagnosticScope?.label || ''}, ${subset}`} /><div class="stack-table"><table><caption>Lift by predicted risk — {diagnosticModel}: {selectedDiagnosticScope?.label || ''}</caption><thead><tr>{#each Object.keys(diagnostics.lift[0]) as key}<th>{key.replaceAll('_', ' ')}</th>{/each}</tr></thead><tbody>{#each diagnostics.lift as row}<tr>{#each Object.values(row) as value}<td>{typeof value === 'number' ? Number(value.toPrecision(3)) : value ?? '—'}</td>{/each}</tr>{/each}</tbody></table></div>{/if}
             {/if}</section>{/if}
         {#if result && view === 'compare'}<section class="model-card"><h2>Compare named models</h2><label>Compare with<select aria-label="Stack challenger" bind:value={challenger}><option value="">Choose a fitted model</option>{#each fitted.filter((n) => n !== selected) as n}<option value={n}>{n}</option>{/each}</select></label><label>Rows<select aria-label="Comparison rows" bind:value={subset}><option value="train">Training (in-sample)</option><option value="holdout">Holdout (request evaluation)</option></select></label>{#if comparison}<p>Expected change: {comparison.expected_change == null ? '—' : (100 * comparison.expected_change).toFixed(2) + '%'}</p><div class="stack-compare"><div><h3>{comparison.model}</h3><p>A/E {comparison.metrics?.ae == null ? '—' : Number(comparison.metrics.ae).toFixed(3)}</p></div><div><h3>{comparison.challenger}</h3><p>A/E {comparison.challenger_metrics?.ae == null ? '—' : Number(comparison.challenger_metrics.ae).toFixed(3)}</p></div></div>{/if}</section>{/if}
         {#if result && view === 'tables'}<section class="model-card"><h2>Component table or lookup</h2><label>Model component<select aria-label="Inspect model component" bind:value={stage}>{#each components as c}<option value={c.id || c.component_id}>{c.name}</option>{/each}</select></label>{#if table}{#if table.unit_label}<p class="help-text">{table.unit_label}</p>{/if}{#if table.coverage}<p class="help-text">{table.evidence?.catalogue_rows ?? '—'} catalogue entries · {table.coverage.rows} training rows · {table.coverage.missing_key_rows || 0} missing-key rows · {table.coverage.fallback_rows || 0} fallback rows</p>{/if}{#if unseenSummary(table.evidence?.unseen_attribute_levels)}<p class="help-text">Unseen attribute levels: {unseenSummary(table.evidence?.unseen_attribute_levels)}</p>{/if}{#each table.tables || [] as item}<h3>{item.name}</h3><div class="stack-table"><table><thead><tr>{#each item.columns as column}<th>{column.replaceAll('_', ' ')}</th>{/each}</tr></thead><tbody>{#each item.rows.slice(0, 300) as row}<tr>{#each item.columns as column}<td>{typeof row[column] === 'number' ? Number(row[column].toPrecision(7)) : row[column] ?? '—'}</td>{/each}</tr>{/each}</tbody></table></div>{#if item.rows.length > 300}<p>Showing 300 of {item.rows.length} rows. Download the full rating file on Export.</p>{/if}{/each}{#if table.message}<p>{table.message}</p>{/if}{/if}
@@ -654,11 +707,15 @@
     .stack-totals { display:flex; flex-wrap:wrap; gap:8px 18px; }
     .stack-table { overflow:auto; max-height:420px; }
     .stack-table table { width:100%; border-collapse:collapse; }
+    .stack-table caption { caption-side:top; padding:8px 0; text-align:left; font-weight:600; }
     .stack-table th, .stack-table td { padding:7px; border-bottom:1px solid #dae3db; text-align:left; white-space:nowrap; }
     .stack-compare { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
     .stack-review-actions { display:flex; flex-wrap:wrap; gap:8px; }
     .stack-diagnostic-controls { display:flex; flex-wrap:wrap; gap:12px; margin:12px 0; }
     .stack-diagnostic-controls label { display:grid; gap:5px; min-width:160px; }
+    .diagnostic-scope { display:grid; gap:4px; margin:14px 0; padding:12px 14px; border-left:3px solid #287550; background:#f5f8f5; }
+    .diagnostic-scope span, .diagnostic-scope p { color:#526e5d; font-size:13px; }
+    .diagnostic-scope p { margin:2px 0 0; }
     .stack-divide { display:flex; align-items:center; gap:8px; margin:10px 0; }
     .inherited-definition { margin:14px 0; padding:13px 14px; border:1px solid #c7d7ca; border-left:4px solid #287550; background:#f7faf7; }.inherited-definition h3 { margin:0 0 10px; }.inherited-definition dl { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px 18px; margin:0; }.inherited-definition dt { color:#526e5d; font-size:11px; }.inherited-definition dd { margin:2px 0 0; font-size:13px; font-weight:600; overflow-wrap:anywhere; }.inherited-definition p { margin:10px 0 0; font-size:12px; color:#526e5d; }
     .stack-form-heading { display:flex; justify-content:space-between; gap:12px; align-items:start; }
