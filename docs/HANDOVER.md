@@ -6,7 +6,7 @@
 
 | Purpose | Checkout and state |
 | --- | --- |
-| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/core-model-interactions`, based on `34815d5`; named models in Project & data, with interactions owned by a GLM |
+| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/model-review-placement`, based on `ab6c0a7`; named models in Project & data, with interactions owned by a GLM |
 | User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
 | Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
 
@@ -129,6 +129,23 @@ The Model builder work is local, unpushed and unreleased. Fresh validation for t
 Known first-version boundaries: each named model scores a linear sequence; the diagram can show alternatives but does not combine two parent models; one-key, user-supplied catalogues; no arbitrary imported estimators, automatic hierarchical credibility, geographic smoothing, or mixed-stack HTML report. A direct CatBoost component requires its saved model artifact to score and cannot be represented exactly by GLM rate tables alone. Confirm any further limit in code before asserting it.
 
 ## Source map and checks
+
+**Review placement, 10 October.** Each fitted GLM's review is now directly
+inside its own Model row, with a heading such as **Review Main effects**. The
+next model follows that review and its continuation action. Separate reviews
+retain their own candidates when collapsed; an upstream score change refreshes
+an affected downstream review before its candidate can be kept. If that change
+invalidates the downstream fit, its row shows that refitting is needed and its
+review controls remain unavailable until it has a valid fit again. Shared plan
+updates reject older revisions from another review's background request.
+Independent design and pricing-actuary reviewers passed the live three-model
+layout at desktop and narrow widths. This is a frontend correction; fitting and
+scoring APIs are unchanged. Validation: Svelte check (zero errors/warnings),
+production build, 30 frontend unit checks, two rendered Gaussian/binomial smoke
+checks, and ten core browser cases covering inline ownership, candidate retention,
+ordered reload, downstream invalidation/refit and delayed-search responses. Browser
+cases were rechecked individually after fixes; the Python suite was not rerun
+for this frontend-only correction. Nothing was pushed or released.
 
 **GLM-owned interaction tables, 10 October.** New plans offer GLM, CatBoost and
 Catalogue models. Candidate interaction tables belong to a fitted GLM and have
@@ -405,7 +422,7 @@ local backup/transfer operation, not a commit, push or release:
 source_checkout=/private/tmp/easyglm-model-variable-setup
 packet=/Users/serban/Documents/Projects/easy_glm/.internal/handover-20261010
 mkdir -p "$packet/docs/plans"
-git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/core-model-interactions refs/tags/v0.472
+git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/model-review-placement refs/tags/v0.472
 git -C "$source_checkout" bundle verify "$packet/easyglm.bundle"
 cp "$source_checkout/AGENTS.md" "$packet/AGENTS.md"
 cp "$source_checkout/docs/HANDOVER.md" "$packet/docs/HANDOVER.md"
@@ -416,8 +433,8 @@ cp "$source_checkout/docs/plans/STACKED_MODELS.md" "$packet/docs/plans/STACKED_M
 cp "$source_checkout/docs/plans/PROJECT_MODEL_WORKFLOW.md" "$packet/docs/plans/PROJECT_MODEL_WORKFLOW.md"
 ```
 
-Check that the bundle contains the current `codex/core-model-interactions` commit
-(`git rev-parse codex/core-model-interactions`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
+Check that the bundle contains the current `codex/model-review-placement` commit
+(`git rev-parse codex/model-review-placement`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
 **new** directory with the stack branch selected, then copy the seven guidance
 files into that clone and inspect `git status` before work. Keep the packet's
 directory structure; its docs are newer than the 30 September recovery bundle.
@@ -425,7 +442,7 @@ For example, with transferred packet and destination paths chosen by the
 operator:
 
 ```bash
-git clone --branch codex/core-model-interactions "$packet/easyglm.bundle" "$destination"
+git clone --branch codex/model-review-placement "$packet/easyglm.bundle" "$destination"
 cp "$packet/AGENTS.md" "$destination/AGENTS.md"
 cp "$packet/docs/HANDOVER.md" "$destination/docs/HANDOVER.md"
 cp "$packet/docs/MODEL_FLOW.md" "$destination/docs/MODEL_FLOW.md"

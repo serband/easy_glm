@@ -89,9 +89,11 @@ tables. You do not need to declare those tables in Project & data. Fit the main
 effects first, then investigate residuals and add tables inside that named GLM.
 The next named model uses the GLM and all of its accepted tables as its offset.
 
-On **Model**, choose the fitted GLM. Its **Interactions** section lists accepted
-tables in order. Use **Find interactions** to investigate the current accepted
-training score, or **Add interaction** to choose a pair directly. Either column
+On **Model**, the review sits directly beneath its fitted GLM and names that
+model. Use **Manage interactions** on another GLM to open its review there.
+Its **Interactions** section lists accepted tables in order. Use **Find
+interactions** to investigate the current accepted training score, or **Add
+interaction** to choose a pair directly. Either column
 may be absent from the main effects; choosing it here does not add a main effect
 or change its shared role.
 

@@ -43,6 +43,8 @@
     let planSyncEpoch = 0;
     let detailGeneration = 0;
     let detailRequestEpoch = 0;
+    let confirmedSourceSignature = '',
+        sourceConfirmed = false;
     $: modelId = model?.model_id || '';
     $: owningDesign = model?.core?.design || null;
     $: nextDesignSourceKey = JSON.stringify({ modelId, design: owningDesign || {} });
@@ -96,9 +98,72 @@
         ? []
         : (grouped.other || []).filter((factor) => !mainChoices.includes(factor));
     $: frozen = Boolean(model?.frozen || model?.adopted_root);
-    $: canKeep = candidate?.status === 'review' && !candidate?.stale && !candidate?.no_change;
     $: logicalPlanModels = planState?.plan?.models || [];
     $: modelIndex = logicalPlanModels.findIndex((item) => item.model_id === modelId);
+    $: effectiveLink =
+        planState?.plan?.link ||
+        (['poisson', 'tweedie', 'gaussian'].includes(planState?.plan?.family) ? 'log' : null);
+    $: interactionSupported = effectiveLink === 'log';
+    $: sourceSignature = JSON.stringify({
+        modelId,
+        sourceModels: logicalPlanModels.slice(0, modelIndex + 1).map((item) => ({
+            model_id: item.model_id,
+            pairs: (item.pair_corrections || []).map((pair) => pair.component_id),
+        })),
+        checkpoints: (planState?.stage_statuses || [])
+            .filter((item) => {
+                const index = logicalPlanModels.findIndex(
+                    (model) => model.model_id === (item.model_id || item.stage_id),
+                );
+                return index >= 0 && index <= modelIndex;
+            })
+            .map((item) => [
+                item.model_id || item.stage_id,
+                item.state,
+                item.fit?.fit_id,
+                item.fit?.prefix_fingerprint,
+                item.through_component_id,
+            ]),
+        completed: (planState?.fit_refs || [])
+            .filter((item) => {
+                const index = logicalPlanModels.findIndex(
+                    (model) => model.model_id === item.model_id,
+                );
+                return index >= 0 && index <= modelIndex;
+            })
+            .map((item) => [item.model_id, item.fit_id, item.prefix_fingerprint]),
+        partial: (planState?.partial_fit_refs || [])
+            .filter((item) => {
+                const index = logicalPlanModels.findIndex(
+                    (model) => model.model_id === item.model_id,
+                );
+                return index >= 0 && index <= modelIndex;
+            })
+            .map((item) => [
+                item.model_id,
+                item.fit_id,
+                item.prefix_fingerprint,
+                item.through_component_id,
+            ]),
+    });
+    $: if (sourceSignature !== confirmedSourceSignature) {
+        confirmedSourceSignature = sourceSignature;
+        sourceConfirmed = false;
+        detailGeneration += 1;
+        detailRequestEpoch += 1;
+        if (detail) detail = { ...detail, candidates: [] };
+        searchResult = null;
+        searchAction = '';
+        searchError = '';
+        searching = false;
+        selectedCandidateId = '';
+        if (mounted && modelId) void refresh();
+    }
+    $: canKeep =
+        sourceConfirmed &&
+        candidate?.status === 'review' &&
+        !candidate?.stale &&
+        !candidate?.no_change;
     $: downstreamNeedsRefit = (planState?.stage_statuses || [])
         .filter(
             (item) =>
@@ -126,12 +191,14 @@
         revisionNoticeStatusKey = '';
     }
     export async function runSearch(action) {
-        if (!modelId || searching || busy) return;
+        if (!interactionSupported || !sourceConfirmed || !modelId || searching || busy) return;
+        const searchGeneration = detailGeneration;
+        const searchSourceSignature = sourceSignature;
         searching = true;
         searchAction = action;
         searchError = '';
         try {
-            searchResult = await api(`core-models/${encodeURIComponent(modelId)}/search`, {
+            const result = await api(`core-models/${encodeURIComponent(modelId)}/search`, {
                 session_id: state.session_id,
                 revision: state.revision,
                 action,
@@ -140,10 +207,15 @@
                 min_cell_share: candidateSettings.min_weight_share,
                 top: 20,
             });
+            if (searchGeneration !== detailGeneration || searchSourceSignature !== sourceSignature)
+                return;
+            searchResult = result;
         } catch (cause) {
-            searchError = cause.message;
+            if (searchGeneration === detailGeneration && searchSourceSignature === sourceSignature)
+                searchError = cause.message;
         } finally {
-            searching = false;
+            if (searchGeneration === detailGeneration && searchSourceSignature === sourceSignature)
+                searching = false;
         }
     }
     function factorName(row) {
@@ -163,18 +235,22 @@
         [left, right] = pair;
         searchResult = null;
         requestAnimationFrame(() =>
-            document.getElementById('add-interaction')?.scrollIntoView({ block: 'center' }),
+            document
+                .getElementById(`add-interaction-${modelId}`)
+                ?.scrollIntoView({ block: 'center' }),
         );
     }
     async function refresh() {
         if (!modelId) return;
         const requestedModelId = modelId;
         const requestedGeneration = detailGeneration;
+        const requestedSourceSignature = sourceSignature;
         const requestEpoch = ++detailRequestEpoch;
         const isCurrentRequest = () =>
             mounted &&
             modelId === requestedModelId &&
             requestedGeneration === detailGeneration &&
+            requestedSourceSignature === sourceSignature &&
             requestEpoch === detailRequestEpoch;
         loading = true;
         error = '';
@@ -184,6 +260,7 @@
             );
             if (!isCurrentRequest()) return;
             detail = fresh;
+            sourceConfirmed = true;
             resumeFittingCandidates(fresh, requestedModelId);
         } catch (cause) {
             if (isCurrentRequest() && !accepted.length) error = cause.message;
@@ -243,6 +320,11 @@
         // interaction view once the write succeeds.
         detailGeneration += 1;
         detailRequestEpoch += 1;
+        // A search response from the prior source generation now deliberately
+        // ignores its completion handler, so clear its visible state here.
+        searching = false;
+        searchResult = null;
+        searchError = '';
         error = '';
         try {
             const candidateId = extra.candidate_id;
@@ -371,7 +453,7 @@
         }
     }
     function startCandidate() {
-        if (!left || !right || left === right) {
+        if (!interactionSupported || !sourceConfirmed || !left || !right || left === right) {
             error = 'Choose two different variables.';
             return;
         }
@@ -852,7 +934,11 @@
                     >
                 </div>
             </section>
-        {:else}<section id="add-interaction" class="candidate-picker" aria-label="Add interaction">
+        {:else}<section
+                id={`add-interaction-${modelId}`}
+                class="candidate-picker"
+                aria-label="Add interaction"
+            >
                 <h3>Add interaction</h3>
                 <p>
                     Pairs can use a main-effect factor or another eligible predictor. Pair-only
@@ -889,8 +975,10 @@
                                         >{/each}</optgroup
                                 >{/if}</select
                         ></label
-                    ><button class="primary" onclick={startCandidate} disabled={busy || loading}
-                        >Add interaction</button
+                    ><button
+                        class="primary"
+                        onclick={startCandidate}
+                        disabled={busy || loading || !sourceConfirmed}>Add interaction</button
                     >
                 </div>
                 <details class="interaction-settings">

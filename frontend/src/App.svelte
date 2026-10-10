@@ -242,6 +242,12 @@
         }
     }
     function planChanged(next) {
+        // Separate model reviews can complete background reads out of order.
+        if (
+            (next?.session_id && state?.session_id && next.session_id !== state.session_id) ||
+            (next?.revision != null && state?.revision != null && next.revision < state.revision)
+        )
+            return;
         // A successful save supersedes any older initial/background plan read.
         planRefreshEpoch += 1;
         planState = next;

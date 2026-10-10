@@ -1,5 +1,5 @@
 <script>
-    import { onDestroy, onMount } from 'svelte';
+    import { onDestroy, onMount, tick } from 'svelte';
     import CoreInteractions from './CoreInteractions.svelte';
     import { isLogicalPlan, logicalModels, modelSourceLabel } from './modelPlan.js';
     export let api;
@@ -17,10 +17,15 @@
         pollCancelled = false,
         pollGeneration = 0,
         settingsBaseline = '',
-        selectedReviewModelId = '',
-        interactionPanel = null;
+        reviewPanelsInitialisedFor = '';
+    let openReviewIds = [],
+        visitedReviewIds = [],
+        interactionPanels = {};
     $: plan = planState?.plan || null;
     $: logicalPlan = isLogicalPlan(plan);
+    $: interactionsSupported =
+        plan?.link === 'log' ||
+        (['poisson', 'tweedie', 'gaussian'].includes(plan?.family) && plan?.link == null);
     $: plannedModels = logicalModels(plan);
     $: statuses = planState?.stage_statuses || [];
     $: modelStatuses = Object.fromEntries(
@@ -34,27 +39,68 @@
             ),
         ]),
     );
-    $: fittedGlms = plannedModels.filter(
-        (model) => model.core?.kind === 'glm' && Boolean(modelStatuses[model.model_id]?.fit),
+    $: reviewableGlms = plannedModels.filter(
+        (model) =>
+            interactionsSupported &&
+            model.core?.kind === 'glm' &&
+            Boolean(modelStatuses[model.model_id]?.fit),
     );
-    $: if (
-        !selectedReviewModelId ||
-        !fittedGlms.some((model) => model.model_id === selectedReviewModelId)
-    )
-        selectedReviewModelId = fittedGlms[0]?.model_id || '';
-    $: reviewModel = fittedGlms.find((model) => model.model_id === selectedReviewModelId) || null;
-    $: reviewModelIndex = plannedModels.findIndex(
-        (model) => model.model_id === reviewModel?.model_id,
-    );
-    $: reviewStatus = reviewModel ? modelStatuses[reviewModel.model_id] : null;
-    $: reviewFitName = reviewStatus?.fit?.model_name || reviewModel?.name || '';
-    function manageInteractions(model) {
-        selectedReviewModelId = model.model_id;
-        requestAnimationFrame(() =>
-            document
-                .getElementById('glm-interaction-review')
-                ?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+    $: reviewableIds = reviewableGlms.map((model) => model.model_id);
+    $: reviewPlanId = plan?.plan_id || '';
+    $: if (reviewPlanId !== reviewPanelsInitialisedFor) {
+        reviewPanelsInitialisedFor = reviewPlanId;
+        openReviewIds = [];
+        visitedReviewIds = [];
+    }
+    $: if (openReviewIds.some((modelId) => !reviewableIds.includes(modelId)))
+        openReviewIds = openReviewIds.filter((modelId) => reviewableIds.includes(modelId));
+    $: if (visitedReviewIds.some((modelId) => !reviewableIds.includes(modelId)))
+        visitedReviewIds = visitedReviewIds.filter((modelId) => reviewableIds.includes(modelId));
+    $: if (reviewableGlms.length && !visitedReviewIds.length) {
+        const preferred =
+            reviewableGlms.find(
+                (model) => modelStatuses[model.model_id]?.state === 'needs_refit',
+            ) || reviewableGlms[0];
+        openReviewIds = preferred ? [preferred.model_id] : [];
+        visitedReviewIds = preferred ? [preferred.model_id] : [];
+    }
+    $: reviewOpenById = Object.fromEntries(openReviewIds.map((modelId) => [modelId, true]));
+    $: reviewVisitedById = Object.fromEntries(visitedReviewIds.map((modelId) => [modelId, true]));
+    function reviewModelForStatus(status) {
+        return plannedModels.find(
+            (model) =>
+                model.model_id === status?.stage_id ||
+                model.core?.component_id === status?.stage_id,
         );
+    }
+    function reviewModelIndex(model) {
+        return plannedModels.findIndex((item) => item.model_id === model?.model_id);
+    }
+    function displayStageState(item) {
+        return item.state === 'ready' && !item.fit && item.last_attempt?.status === 'complete'
+            ? 'needs_refit'
+            : item.state;
+    }
+    function displayStageMessage(item) {
+        return displayStageState(item) === 'needs_refit' && item.state !== 'needs_refit'
+            ? 'Needs refit'
+            : item.message;
+    }
+    async function toggleInteractions(model) {
+        const modelId = model.model_id;
+        if (reviewOpenById[modelId]) {
+            openReviewIds = openReviewIds.filter((item) => item !== modelId);
+            return;
+        }
+        openReviewIds = [...openReviewIds, modelId];
+        if (!reviewVisitedById[modelId]) visitedReviewIds = [...visitedReviewIds, modelId];
+        await tick();
+        document
+            .getElementById(`glm-interaction-review-${modelId}`)
+            ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    function manageInteractions(model) {
+        toggleInteractions(model);
     }
     $: fittingStage = statuses.find((item) => item.state === 'fitting') || null;
     $: next = statuses.find((item) => item.stage_id === planState?.next_stage_id) || null;
@@ -247,7 +293,7 @@
             busy = false;
         }
     }
-    async function fitRemainingInteractions() {
+    async function fitRemainingInteractions(reviewStatus) {
         if (!reviewStatus || reviewStatus.state !== 'needs_refit' || polling) return;
         busy = true;
         error = '';
@@ -257,7 +303,10 @@
                 revision: state.revision,
             });
             onChanged(started.snapshot || (await api('model-plan')));
-            waitForFit(reviewStatus.stage_id, started.model_name || reviewFitName);
+            waitForFit(
+                reviewStatus.stage_id,
+                started.model_name || reviewStatus.fit?.model_name || '',
+            );
         } catch (e) {
             error = e.message;
         } finally {
@@ -283,159 +332,161 @@
         </section>
     {:else}<section class="model-card">
             <ol class="fit-stages" aria-label="Model fit order">
-                {#each statuses as item, index}<li
+                {#each statuses as item, index (item.stage_id)}
+                    {@const stageModel = logicalPlan ? reviewModelForStatus(item) : null}
+                    {@const stageModelIndex = reviewModelIndex(stageModel)}
+                    {@const stageHasReview = Boolean(
+                        interactionsSupported && stageModel?.core?.kind === 'glm' && item.fit,
+                    )}
+                    {@const visibleStageState = displayStageState(item)}
+                    <li
                         class:fitted={item.state === 'fitted'}
-                        class:needs-refit={item.state === 'needs_refit'}
+                        class:needs-refit={visibleStageState === 'needs_refit'}
                         class:current={item.stage_id === next?.stage_id}
                     >
-                        <div>
-                            <strong>{index + 1}. {item.name}</strong><small
-                                >{plan.adopted_model_name && index === 0
-                                    ? 'Saved fitted model · accepted variables preserved'
-                                    : plan?.stages?.[index]?.kind === 'glm'
-                                      ? 'GLM'
-                                      : plan?.stages?.[index]?.kind === 'catboost'
-                                        ? 'CatBoost'
-                                        : plan?.stages?.[index]?.kind === 'catalogue'
-                                          ? 'Catalogue'
-                                          : 'Interaction'}{#if !(plan.adopted_model_name && index === 0)}
-                                    · {(plan?.stages?.[index]?.factors || []).length
-                                        ? (plan?.stages?.[index]?.factors || []).join(', ')
-                                        : 'No variables selected'}{/if}</small
-                            >
-                            <p>
-                                {item.state === 'fitted'
-                                    ? 'Fitted and kept as a saved version.'
-                                    : item.state === 'fitting'
-                                      ? 'Fit in progress.'
-                                      : item.stage_id === next?.stage_id
-                                        ? index
-                                            ? logicalPlan
-                                                ? `${modelSourceLabel(plan, index)} This is the offset for this model.`
-                                                : `Will use the complete score through ${predecessor?.name} as its offset.`
-                                            : 'Uses the project data and outcome.'
-                                        : 'Waiting for the earlier stage.'}
-                            </p>
-                        </div>
-                        <div class="stage-actions">
-                            <span
-                                >{item.state === 'ready' && setupProblem(plan?.stages?.[index])
-                                    ? 'Variables needed'
-                                    : item.message}</span
-                            >
-                            {#if item.state === 'fitted'}
-                                <button
-                                    onclick={() => {
-                                        onFitted(item.fit?.model_name || item.name);
-                                        onNavigate('diagnostics');
-                                    }}>Inspect {item.name}</button
+                        <div class="fit-stage-row">
+                            <div>
+                                <strong>{index + 1}. {item.name}</strong><small
+                                    >{plan.adopted_model_name && index === 0
+                                        ? 'Saved fitted model · accepted variables preserved'
+                                        : plan?.stages?.[index]?.kind === 'glm'
+                                          ? 'GLM'
+                                          : plan?.stages?.[index]?.kind === 'catboost'
+                                            ? 'CatBoost'
+                                            : plan?.stages?.[index]?.kind === 'catalogue'
+                                              ? 'Catalogue'
+                                              : 'Interaction'}{#if !(plan.adopted_model_name && index === 0)}
+                                        · {(plan?.stages?.[index]?.factors || []).length
+                                            ? (plan?.stages?.[index]?.factors || []).join(', ')
+                                            : 'No variables selected'}{/if}</small
                                 >
-                                {#if logicalPlan && plan?.models?.find((model) => model.core?.component_id === item.stage_id)?.core?.kind === 'glm'}
-                                    <button
-                                        onclick={() =>
-                                            manageInteractions(
-                                                plan.models.find(
-                                                    (model) =>
-                                                        model.core?.component_id === item.stage_id,
-                                                ),
-                                            )}>Manage interactions</button
-                                    >
-                                {/if}
-                            {:else if item.state === 'needs_refit'}
-                                {#if item.stage_id === reviewModel?.model_id}
+                                <p>
+                                    {item.state === 'fitted'
+                                        ? 'Fitted and kept as a saved version.'
+                                        : item.state === 'fitting'
+                                          ? 'Fit in progress.'
+                                          : visibleStageState === 'needs_refit'
+                                            ? 'The saved fit no longer matches this model’s settings or preceding score.'
+                                            : item.stage_id === next?.stage_id
+                                              ? index
+                                                  ? logicalPlan
+                                                      ? `${modelSourceLabel(plan, index)} This is the offset for this model.`
+                                                      : `Will use the complete score through ${predecessor?.name} as its offset.`
+                                                  : 'Uses the project data and outcome.'
+                                              : 'Waiting for the earlier stage.'}
+                                </p>
+                            </div>
+                            <div class="stage-actions">
+                                <span
+                                    >{item.state === 'ready' && setupProblem(plan?.stages?.[index])
+                                        ? 'Variables needed'
+                                        : displayStageMessage(item)}</span
+                                >
+                                {#if item.state === 'fitted'}
                                     <button
                                         onclick={() => {
                                             onFitted(item.fit?.model_name || item.name);
                                             onNavigate('diagnostics');
                                         }}>Inspect {item.name}</button
                                     >
-                                    <button
-                                        class="primary"
-                                        onclick={fitRemainingInteractions}
-                                        disabled={busy || polling}
-                                        >Fit remaining interaction tables</button
+                                    {#if stageHasReview}
+                                        <button onclick={() => manageInteractions(stageModel)}
+                                            >{reviewOpenById[stageModel.model_id]
+                                                ? 'Hide interactions'
+                                                : 'Manage interactions'}</button
+                                        >
+                                    {/if}
+                                {:else if item.state === 'needs_refit'}
+                                    {#if stageHasReview}
+                                        <button
+                                            onclick={() => {
+                                                onFitted(item.fit?.model_name || item.name);
+                                                onNavigate('diagnostics');
+                                            }}>Inspect {item.name}</button
+                                        >
+                                        <button onclick={() => manageInteractions(stageModel)}
+                                            >{reviewOpenById[stageModel.model_id]
+                                                ? 'Hide interactions'
+                                                : 'Manage interactions'}</button
+                                        >
+                                        <button
+                                            class="primary"
+                                            onclick={() => fitRemainingInteractions(item)}
+                                            disabled={busy || polling}
+                                            >Fit remaining interaction tables</button
+                                        >
+                                    {/if}
+                                {:else if item.state !== 'fitting'}
+                                    <button onclick={() => onNavigate('variables', item.stage_id)}
+                                        >Edit variables</button
                                     >
                                 {/if}
-                            {:else if item.state !== 'fitting'}
-                                <button onclick={() => onNavigate('variables', item.stage_id)}
-                                    >Edit variables</button
-                                >
-                            {/if}
+                            </div>
                         </div>
-                    </li>{/each}
-            </ol>
-            {#if logicalPlan && fittedGlms.length}
-                <section
-                    id="glm-interaction-review"
-                    class="model-card glm-review"
-                    aria-label="GLM review"
-                >
-                    <div class="review-heading">
-                        <div>
-                            <h2>Review a fitted GLM</h2>
-                            <p>
-                                Now reviewing {reviewModel?.name || 'this GLM'}. {reviewModelIndex >
-                                0
-                                    ? modelSourceLabel(plan, reviewModelIndex)
-                                    : 'Starts from project data.'} Inspect the accepted score, then add
-                                an interaction only when it is useful.
-                            </p>
-                        </div>
-                        {#if fittedGlms.length > 1}<label
-                                >GLM<select
-                                    aria-label="GLM to review"
-                                    bind:value={selectedReviewModelId}
-                                    >{#each fittedGlms as item}<option value={item.model_id}
-                                            >{item.name}</option
-                                        >{/each}</select
-                                ></label
-                            >{/if}
-                    </div>
-                    {#if reviewModel}
-                        <div class="review-actions">
-                            <button
-                                onclick={() => {
-                                    onFitted(reviewFitName);
-                                    onNavigate('diagnostics');
-                                }}>Check A/E</button
+                        {#if stageHasReview && reviewVisitedById[stageModel.model_id]}
+                            <section
+                                id={`glm-interaction-review-${stageModel.model_id}`}
+                                class="glm-review-inline"
+                                aria-label={`Review ${stageModel.name}`}
+                                hidden={!reviewOpenById[stageModel.model_id]}
                             >
-                            <button onclick={() => interactionPanel?.runSearch('factors')}
-                                >Find missing variables</button
-                            >
-                            <button onclick={() => interactionPanel?.runSearch('interactions')}
-                                >Find interactions</button
-                            >
-                        </div>
-                        <CoreInteractions
-                            bind:this={interactionPanel}
-                            {api}
-                            {state}
-                            {planState}
-                            model={reviewModel}
-                            {onChanged}
-                        />
-                        {#if plannedModels.findIndex((item) => item.model_id === reviewModel.model_id) < plannedModels.length - 1}
-                            <button
-                                class="primary continue-model"
-                                onclick={() =>
-                                    onNavigate(
-                                        'variables',
-                                        plannedModels[
-                                            plannedModels.findIndex(
-                                                (item) => item.model_id === reviewModel.model_id,
-                                            ) + 1
-                                        ].core.component_id,
-                                    )}
-                                >Continue to {plannedModels[
-                                    plannedModels.findIndex(
-                                        (item) => item.model_id === reviewModel.model_id,
-                                    ) + 1
-                                ].name}</button
-                            >
+                                <div class="review-heading">
+                                    <div>
+                                        <h2>Review {stageModel.name}</h2>
+                                        <p>
+                                            {stageModelIndex > 0
+                                                ? modelSourceLabel(plan, stageModelIndex)
+                                                : 'Starts from project data.'} Inspect this model’s accepted
+                                            score, then add an interaction only when it is useful.
+                                        </p>
+                                    </div>
+                                </div>
+                                <div class="review-actions">
+                                    <button
+                                        onclick={() => {
+                                            onFitted(item.fit?.model_name || stageModel.name);
+                                            onNavigate('diagnostics');
+                                        }}>Check A/E</button
+                                    >
+                                    <button
+                                        onclick={() =>
+                                            interactionPanels[stageModel.model_id]?.runSearch(
+                                                'factors',
+                                            )}>Find missing variables</button
+                                    >
+                                    <button
+                                        onclick={() =>
+                                            interactionPanels[stageModel.model_id]?.runSearch(
+                                                'interactions',
+                                            )}>Find interactions</button
+                                    >
+                                </div>
+                                <CoreInteractions
+                                    bind:this={interactionPanels[stageModel.model_id]}
+                                    {api}
+                                    {state}
+                                    {planState}
+                                    model={stageModel}
+                                    {onChanged}
+                                />
+                                {#if stageModelIndex < plannedModels.length - 1}
+                                    <button
+                                        class="primary continue-model"
+                                        onclick={() =>
+                                            onNavigate(
+                                                'variables',
+                                                plannedModels[stageModelIndex + 1].core
+                                                    .component_id,
+                                            )}
+                                        >Continue to {plannedModels[stageModelIndex + 1]
+                                            .name}</button
+                                    >
+                                {/if}
+                            </section>
                         {/if}
-                    {/if}
-                </section>
-            {/if}
+                    </li>
+                {/each}
+            </ol>
             {#if error}<div class="message error" role="alert">{error}</div>{/if}
             {#if fittingStage}<div class="message">
                     <strong>Fitting {fittingStage.name}</strong> · {fittingStage.message ||
@@ -916,11 +967,13 @@
         list-style: none;
     }
     .fit-stages li {
+        border-bottom: 1px solid var(--border);
+        padding: 14px 0;
+    }
+    .fit-stage-row {
         display: flex;
         justify-content: space-between;
         gap: 16px;
-        border-bottom: 1px solid var(--border);
-        padding: 14px 0;
     }
     .fit-stages p {
         margin: 4px 0 0;
@@ -976,7 +1029,7 @@
         margin-top: 10px;
     }
     @media (max-width: 620px) {
-        .fit-stages li,
+        .fit-stage-row,
         .fit-next {
             display: block;
         }
@@ -989,8 +1042,10 @@
             margin-top: 10px;
         }
     }
-    .glm-review {
-        margin-top: 24px;
+    .glm-review-inline {
+        border-top: 1px solid var(--border);
+        margin-top: 18px;
+        padding-top: 18px;
     }
     .review-heading {
         display: flex;
@@ -1004,11 +1059,6 @@
     .review-heading p {
         margin: 8px 0 0;
     }
-    .review-heading label {
-        display: grid;
-        gap: 7px;
-        min-width: 180px;
-    }
     .review-actions {
         display: flex;
         flex-wrap: wrap;
@@ -1021,9 +1071,6 @@
     @media (max-width: 900px) {
         .review-heading {
             flex-direction: column;
-        }
-        .review-heading label {
-            width: 100%;
         }
     }
 </style>
