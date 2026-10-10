@@ -8,14 +8,13 @@ async function openStackBuilder(page) {
 
 async function fillDraft(page, name) {
     await page.getByLabel('Stacked model name').fill(name);
-    await page.getByLabel('Model component name').fill('Retry region');
-    await page.getByRole('group', { name: 'Model variables' }).getByText('Region', { exact: true }).click();
+    await page.getByLabel('Use Region').check();
 }
 
 test('a delayed old failed job cannot unlock a newly accepted retry', async ({ page }) => {
     const name = 'Retry after failure';
     await openStackBuilder(page);
-    await page.getByRole('complementary', { name: 'Models' }).getByRole('button', { name: 'New standalone model', exact: true }).click();
+    await page.getByRole('button', { name: 'Start a new model chain', exact: true }).first().click();
     await fillDraft(page, name);
     await page.getByRole('button', { name: 'Save draft', exact: true }).first().click();
     await expect(page.getByText('Draft saved.', { exact: true })).toBeVisible();

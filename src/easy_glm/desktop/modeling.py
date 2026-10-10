@@ -159,15 +159,21 @@ def validate_stack_factor_scope(
     """Refuse unsafe/new stack factors while allowing repeated corrections."""
     stages = stack_factor_stages(project, raw, prepared_columns, config)
     protected = _stack_protected_columns(project, config)
+    catalogue_id_keys = {
+        project.data.renames.get(source, source)
+        for source in raw.columns
+        if project.data.roles.get(project.data.renames.get(source, source)) == "id"
+        and project.data.renames.get(source, source) in prepared_columns
+    }
     for index, component in enumerate(config.components):
         if index < start_index:
             continue
         available = set(stages[index])
         if component.kind == "catalogue":
             key = component.settings.get("key")
-            if not isinstance(key, str) or key not in available:
+            if not isinstance(key, str) or key not in available | catalogue_id_keys:
                 raise ValueError(
-                    f"Catalogue component {component.name!r} needs an eligible source key."
+                    f"Catalogue component {component.name!r} needs an eligible source key or ID."
                 )
             if not component.factors or not all(
                 isinstance(value, str) and value.strip() for value in component.factors
@@ -431,6 +437,13 @@ def edit_model(project: Project, edit: ModelEdit) -> Project:
     if edit.name not in candidate.models:
         raise ValueError("Choose an existing model or create a new one.")
     cfg = candidate.models[edit.name]
+    if ("components" in edit.fields or cfg.components) and (
+        edit.designs or edit.n_bins is not None or edit.min_level_share is not None
+    ):
+        raise ValueError(
+            "Stack model definitions carry their own variables and bands; "
+            "change them on the model component instead."
+        )
     allowed = {
         "family",
         "link",

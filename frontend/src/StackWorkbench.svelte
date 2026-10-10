@@ -2,6 +2,8 @@
     import { onDestroy, tick } from 'svelte';
     import DiagnosticPlot from './DiagnosticPlot.svelte';
     import ModelFlow from './ModelFlow.svelte';
+    import ModelVariables from './ModelVariables.svelte';
+    import { completeVariableDesign, normaliseDefaults } from './modelVariables.js';
     import { nodeState } from './modelFlow.js';
     import { formatNumber as num } from './format.js';
     export let api, state, view, uploadCatalogue, saveDownload;
@@ -14,6 +16,16 @@
             .map(([factor, detail]) => `${factor}: ${detail.count} (${(detail.examples || []).join(', ')})`)
             .join('; ');
     }
+    function catalogueColumn(column) {
+        const name = column?.name || column;
+        const dtype = String(column?.dtype || column?.type || '').toLowerCase();
+        return {
+            name,
+            // Uploaded catalogues report Polars dtypes.  Leave an unknown type as
+            // "infer" in the editor rather than calling it categorical.
+            numeric: /int|float|decimal|date|time|duration/.test(dtype),
+        };
+    }
     const defaults = {
         glm: { alpha: 0.001, cv: null, n_alphas: 20, l1_ratio: 1, min_alpha_ratio: 0.01, base: 'modal' },
         catboost: { iterations: 500, depth: 6, learning_rate: 0.05, l2_leaf_reg: 3, seed: 42, thread_count: 4, time_limit_minutes: 15 },
@@ -22,14 +34,14 @@
     };
     let wb = null, jobs = {}, selected = '', source = '', result = null, kind = 'glm',
         stackFamily = 'poisson', tweediePower = 1.5, divideTargetByWeight = false,
-        name = '', stageName = '', factors = [], query = '', showSelected = false, settings = structuredClone(defaults.glm),
+        name = '', stageName = '', factors = [], componentDesign = null, query = '', showSelected = false, settings = structuredClone(defaults.glm),
         catalogue = null, error = '', notice = '', busy = '', timer = null, known = '',
         reading = false, subset = 'train', variable = '', diagnosticQuery = '', diagnostics = null, challenger = '',
         comparison = null, stage = '', table = null, preview = null,
         lower = '', upper = '', decimals = '', operation = 'cap', amendedName = '', refitLater = false, viewKey = '',
         editorOpen = false, editingExisting = '', editorDirty = false, pendingAction = null,
         selectedTab = 'results', requestEpoch = 0, modelError = '', modelNotice = '', draftBaseline = '', revisionOf = '', lastNavigationAttempt = 0,
-        sourceFitId = '', refreshSuggested = false, fitDraftName = '', fitJobId = '';
+        sourceFitId = '', refreshSuggested = false, fitDraftName = '', fitJobId = '', modelVariablesError = '', modelVariablesDraftText = '';
     $: names = wb ? Object.keys(wb.models || {}).filter((n) => wb.models[n]?.components?.length) : [];
     $: fitted = names.filter((n) => jobs[n]?.applicable);
     $: modelFlow = wb?.model_flow || [];
@@ -40,7 +52,7 @@
     $: selectedParent = selectedFlow?.parent_name || (!Array.isArray(modelFlow) ? (modelFlow?.edges || []).find((edge) => edge.to === selected)?.from : '');
     $: selectedStatus = modelStatusLabel(selected, jobs, modelFlow, fitDraftName, fitJobId);
     $: selectedNeedsRecovery = selectedStatus === 'Cannot score' || selectedStatus === 'Needs a new fit';
-    $: currentDraftState = JSON.stringify({ source, name, stageName, kind, factors: [...factors].sort(), settings, stackFamily, tweediePower, divideTargetByWeight });
+    $: currentDraftState = JSON.stringify({ source, name, stageName, kind, factors: [...factors].sort(), componentDesign, settings, stackFamily, tweediePower, divideTargetByWeight, modelVariablesDraftText });
     $: if (editorOpen && draftBaseline) editorDirty = draftBaseline !== currentDraftState;
     $: onDirty(Boolean(editorOpen && editorDirty));
     $: if (navigationAttempt !== lastNavigationAttempt) {
@@ -50,6 +62,11 @@
     }
     $: fittedSources = wb ? Object.keys(wb.stack_sources || {}).filter((n) => jobs[n]?.applicable && wb.models[n]).sort((a, b) => a.localeCompare(b)) : [];
     $: sourceInfo = source ? wb?.stack_sources?.[source] : null;
+    $: splitDescription = wb?.split?.mode === 'column'
+        ? `${wb.split.column}: ${wb.split.train_value} is training`
+        : wb?.split?.mode === 'random'
+            ? `${Math.round(100 * (wb.split.fraction ?? wb.split.train_fraction ?? 0.7))}% training (seed ${wb.split.seed ?? 42})`
+            : 'Project split';
     $: components = result?.components || wb?.models?.[selected]?.components || [];
     $: choices = wb ? [...new Set(
         (source && wb.stack_candidates?.[source]?.at(-1)) || wb.stack_base_candidates ||
@@ -58,8 +75,11 @@
     $: reviewChoices = result?.review_variables || choices;
     $: metricDefinitions = diagnostics?.metric_definitions?.[subset] || result?.metric_definitions?.[subset] || [];
     $: filteredReviewChoices = reviewChoices.filter((n) => n === variable || n.toLowerCase().includes(diagnosticQuery.toLowerCase()));
+    $: catalogueAttributeColumns = kind === 'catalogue' && catalogue
+        ? catalogue.columns.map(catalogueColumn).filter((column) => column.name !== settings.key).sort((a, b) => a.name.localeCompare(b.name))
+        : [];
     $: factorChoices = kind === 'catalogue' && catalogue
-        ? catalogue.columns.map((c) => c.name || c).filter((n) => n !== settings.key).sort((a, b) => a.localeCompare(b))
+        ? catalogueAttributeColumns.map((column) => column.name)
         : choices;
     $: filtered = factorChoices.filter((n) => showSelected ? factors.includes(n) : n.toLowerCase().includes(query.toLowerCase()));
     $: onReady(Boolean(jobs[selected]?.applicable));
@@ -70,10 +90,44 @@
         loadView();
     }
     function rev() { return { session_id: state.session_id, revision: state.revision }; }
-    function changeKind(value) { kind = value; settings = structuredClone(defaults[value]); catalogue = null; }
-    function draftState() { return JSON.stringify({ source, name, stageName, kind, factors: [...factors].sort(), settings, stackFamily, tweediePower, divideTargetByWeight }); }
+    function changeKind(value) {
+        kind = value;
+        settings = structuredClone(defaults[value]);
+        catalogue = null;
+        modelVariablesError = '';
+        modelVariablesDraftText = '';
+        if (['catboost', 'catalogue'].includes(value) && componentDesign) {
+            componentDesign = {
+                defaults: structuredClone(componentDesign.defaults || wb?.design?.defaults || {}),
+                variables: Object.fromEntries(factors.map((factor) => [
+                    factor,
+                    componentDesign.variables?.[factor]?.kind === 'categorical'
+                        ? { kind: 'categorical' }
+                        : {},
+                ])),
+            };
+        }
+    }
+    function draftState() { return JSON.stringify({ source, name, stageName, kind, factors: [...factors].sort(), componentDesign, settings, stackFamily, tweediePower, divideTargetByWeight, modelVariablesDraftText }); }
     function setDraftBaseline() { draftBaseline = draftState(); editorDirty = false; }
     function toggleFactor(value) { factors = factors.includes(value) ? factors.filter((n) => n !== value) : [...factors, value]; }
+    function updateComponentVariables(next) { factors = next.factors; componentDesign = next.design; }
+    function componentDesignSnapshot() {
+        const inherited = ['glm', 'interaction'].includes(kind)
+            ? wb?.design
+            : { defaults: wb?.design?.defaults, variables: {} };
+        return {
+            defaults: normaliseDefaults({ ...inherited?.defaults, ...componentDesign?.defaults }),
+            variables: Object.fromEntries(factors.map((factor) => [
+                factor,
+                completeVariableDesign(
+                    factor,
+                    inherited?.variables,
+                    componentDesign?.variables,
+                ),
+            ])),
+        };
+    }
     function parentFor(model) { return (Array.isArray(modelFlow) ? [] : modelFlow?.edges || []).find((edge) => edge.to === model)?.from || ''; }
     function flowNodeFor(model, flow = modelFlow) { return (Array.isArray(flow) ? flow : flow?.nodes || []).find((entry) => entry.name === model); }
     function modelStatusLabel(model, currentJobs = jobs, flow = modelFlow, starting = '', acceptedJobId = '') {
@@ -170,16 +224,16 @@
         await loadResult();
     }
     function clearEditor() {
-        source = ''; name = ''; stageName = ''; factors = []; query = ''; showSelected = false;
+        source = ''; name = ''; stageName = ''; factors = []; componentDesign = null; query = ''; showSelected = false;
         kind = 'glm'; settings = structuredClone(defaults.glm); catalogue = null;
-        editingExisting = ''; revisionOf = ''; sourceFitId = ''; draftBaseline = ''; editorDirty = false; fitJobId = '';
+        editingExisting = ''; revisionOf = ''; sourceFitId = ''; draftBaseline = ''; editorDirty = false; fitJobId = ''; modelVariablesError = ''; modelVariablesDraftText = '';
     }
     function addAfter(model) {
         if (editorDirty) { pendingAction = () => addAfter(model); return; }
         source = model; sourceFitId = model ? wb?.stack_sources?.[model]?.source_fit_id || '' : '';
-        name = ''; stageName = ''; factors = []; query = ''; showSelected = false; catalogue = null;
+        name = ''; stageName = ''; factors = []; componentDesign = null; query = ''; showSelected = false; catalogue = null; modelVariablesError = ''; modelVariablesDraftText = '';
         kind = 'glm'; settings = structuredClone(defaults.glm);
-        notice = model ? `This model will use ${model}'s complete fitted score as its offset.` : '';
+        notice = '';
         modelNotice = ''; modelError = ''; refreshSuggested = false; editorOpen = true; editingExisting = ''; revisionOf = ''; setDraftBaseline();
     }
     function createAlternative(model) {
@@ -192,7 +246,7 @@
         source = parent; sourceFitId = parent ? wb?.stack_sources?.[parent]?.source_fit_id || '' : '';
         name = uniqueModelName(`${model} revised`); stageName = last?.name ? `${last.name} revised` : '';
         kind = last?.kind || 'glm';
-        factors = [...(last?.factors || last?.inputs || [])];
+        factors = [...(last?.factors || last?.inputs || [])]; componentDesign = structuredClone(last?.design || null);
         settings = structuredClone(last?.settings || defaults[kind]);
         stackFamily = original?.family || 'poisson';
         tweediePower = original?.tweedie_power ?? 1.5;
@@ -201,7 +255,7 @@
         notice = parent
             ? `New version starts from ${parent}. Its last addition was copied for editing.`
             : 'New standalone version copied its inputs for editing.';
-        modelNotice = ''; modelError = ''; refreshSuggested = false; editorOpen = true; editingExisting = ''; revisionOf = model; setDraftBaseline();
+        modelNotice = ''; modelError = ''; refreshSuggested = false; editorOpen = true; editingExisting = ''; revisionOf = model; modelVariablesError = ''; modelVariablesDraftText = ''; setDraftBaseline();
     }
     function uniqueModelName(base) {
         let proposed = base, number = 2;
@@ -227,7 +281,7 @@
         if (!model || !last) return;
         source = model.lineage?.parent_name || ''; sourceFitId = model.lineage?.parent_fit_id || '';
         name = selected; stageName = last.name || ''; kind = last.kind || 'glm';
-        factors = [...(last.factors || last.inputs || [])];
+        factors = [...(last.factors || last.inputs || [])]; componentDesign = structuredClone(last.design || null);
         settings = structuredClone(last.settings || defaults[kind]);
         catalogue = null; restoreSavedCatalogue(last); query = ''; showSelected = false;
         stackFamily = model.family || 'poisson'; tweediePower = model.tweedie_power ?? 1.5;
@@ -236,7 +290,7 @@
         modelError = ['failed', 'cancelled', 'stale'].includes(jobs[selected]?.status)
             ? jobs[selected]?.message || 'Fit did not complete.'
             : '';
-        refreshSuggested = false; setDraftBaseline();
+        refreshSuggested = false; modelVariablesError = ''; modelVariablesDraftText = ''; setDraftBaseline();
     }
     function selectedAction(action) {
         if (editorDirty) { pendingAction = action; return; }
@@ -288,15 +342,31 @@
     async function upload(event) {
         const file = event.currentTarget.files?.[0]; if (!file) return;
         busy = 'upload'; error = '';
-        try { catalogue = await uploadCatalogue(file, rev()); settings = { ...settings, source_path: catalogue.source_path, source_sha256: catalogue.source_sha256 }; }
+        try {
+            catalogue = await uploadCatalogue(file, rev());
+            settings = { ...settings, source_path: catalogue.source_path, source_sha256: catalogue.source_sha256, key: '' };
+            factors = []; componentDesign = null; modelVariablesError = ''; modelVariablesDraftText = '';
+        }
         catch (e) { error = e.message; } finally { busy = ''; }
+    }
+    function setCatalogueKey(value) {
+        settings = { ...settings, key: value };
+        if (value) {
+            factors = factors.filter((factor) => factor !== value);
+            if (componentDesign?.variables?.[value]) {
+                const variables = { ...componentDesign.variables };
+                delete variables[value];
+                componentDesign = { ...componentDesign, variables };
+            }
+        }
     }
     async function save(fitAfter = false) {
         busy = 'save'; modelError = ''; modelNotice = ''; refreshSuggested = false;
         const operationEpoch = ++requestEpoch;
         try {
             if (!name.trim() || (!editingExisting && wb.models[name])) throw new Error('Enter a new model name. Existing fitted models stay unchanged.');
-            if (!stageName.trim()) throw new Error('Name this model component.');
+            if (modelVariablesError) throw new Error('Fix the variable JSON before saving this model.');
+            if (modelVariablesDraftText) throw new Error('Apply the variable JSON before saving this model.');
             if (!factors.length || (kind === 'interaction' && factors.length !== 2)) throw new Error(kind === 'interaction' ? 'Choose exactly two factors.' : 'Choose at least one factor.');
             if (source && !jobs[source]?.applicable) throw new Error('Fit the model this one starts from first.');
             if (source && (!sourceFitId || !sourceInfo?.components?.length)) throw new Error('Refresh the fitted model before adding to it.');
@@ -306,7 +376,11 @@
                 if (factors.includes(settings.key) || factors.some((f) => !available.has(f))) throw new Error('Choose catalogue attributes present in the file, excluding its key.');
             }
             const base = source ? wb.models[source] : { family: stackFamily, link: 'log', target: wb.target, weight: wb.weight, offset: wb.offset, divide_target_by_weight: divideTargetByWeight, tweedie_power: tweediePower, base: 'modal', predictors: [], interactions: [], pair_stages: [], penalty: { alpha: 0.001, cv: null, n_alphas: 20, l1_ratio: 1 } };
-            const component = { component_id: crypto.randomUUID(), name: stageName.trim(), kind, factors: [...factors], settings: structuredClone(settings), amendments: [] };
+            // A new step shares the model name.  Older drafts can retain their
+            // existing internal final-step label while they are retried.
+            const finalStepName = editingExisting ? stageName.trim() : name.trim();
+            const effectiveComponentDesign = componentDesignSnapshot();
+            const component = { component_id: crypto.randomUUID(), name: finalStepName, kind, factors: [...factors], settings: structuredClone(settings), amendments: [], ...(effectiveComponentDesign ? { design: effectiveComponentDesign } : {}) };
             const fields = Object.fromEntries([
                 'family', 'link', 'target', 'weight', 'offset', 'divide_target_by_weight',
                 'predictors', 'penalty', 'tweedie_power', 'base', 'pair_method',
@@ -326,7 +400,7 @@
             onState(snapshot);
             if (operationEpoch !== requestEpoch) return;
             selected = name.trim(); result = null; editorDirty = false;
-            if (fitAfter) { editingExisting = selected; editorOpen = true; setDraftBaseline(); }
+            if (fitAfter) { stageName = finalStepName; editingExisting = selected; editorOpen = true; setDraftBaseline(); }
             else { editorOpen = false; editingExisting = ''; draftBaseline = ''; }
             await refresh();
             if (selected !== name.trim()) return;
@@ -510,35 +584,44 @@
                         {#if selectedTab === 'results'}<h2>Results</h2><p>{result?.summary?.components || components.length} model components · {result?.summary?.family || ''} · training A/E {result?.summary?.train_ae == null ? '—' : Number(result.summary.train_ae).toFixed(3)}</p><p class="help-text">Training results are shown here. Choose a holdout view from Diagnostics when you want an independent evaluation.</p><div class="stack-review-actions"><button onclick={() => onNavigate('diagnostics')}>Inspect actual versus expected</button><button onclick={() => onNavigate('tables')}>Inspect and amend tables</button></div>{:else}<h2>Settings</h2><p>These settings are fixed for this fitted model. Use Revise model to create a new version.</p><ol class="stack-components">{#each components as c, i}<li><strong>{c.name}</strong><span>{labels[c.kind]}</span><span>{(c.factors || c.inputs || []).join(', ')}</span><span>{i ? `After ${components[i - 1].name}` : 'Starting model'}</span><span>Fitted</span></li>{/each}</ol>{/if}
                     </section>{/if}
                     {/if}
-        {#if editorOpen}<section class="model-card model-editor"><div class="stack-form-heading"><div><div class="eyebrow">DRAFT MODEL</div><h2>{revisionOf ? `Revise ${revisionOf}` : source ? 'Add model after this' : editingExisting ? 'Edit draft model' : 'First model in the chain'}</h2><p>{source ? `This model is fitted after ${source}. ${source}'s complete fitted score is used as the offset.` : 'This is the first model in the chain, using the project’s data.'}</p></div><button onclick={() => { discardDraft(); }}>Discard changes</button></div>
-            <div class="form-grid"><label>Model name<input aria-label="Stacked model name" bind:value={name} /></label>
-                <label>Component type<select aria-label="Model component type" value={kind} onchange={(e) => changeKind(e.currentTarget.value)}>{#each Object.entries(labels).filter(([key]) => key !== 'legacy') as [key,label]}<option value={key}>{label}</option>{/each}</select></label>
-                <label>Component name<input aria-label="Model component name" bind:value={stageName} /></label></div>
-            <div class="editor-actions editor-actions-top"><button onclick={() => save(false)} disabled={!!busy}>Save draft</button><button class="primary" onclick={() => save(true)} disabled={!!busy}>Fit model</button></div>
-            {#if sourceInfo}<p class="help-text">Builds on <strong>{source}</strong> · complete model predictions as offset. Its complete fitted chain is kept: {sourceInfo.components.map((item) => item.name).join(' → ')}.</p>{/if}
-            <div class="form-grid"><label>Model family{#if source}<input aria-label="Stack model family" value={wb.models[source]?.family || ''} readonly />{:else}<select aria-label="Stack model family" bind:value={stackFamily}><option value="poisson">Poisson</option><option value="tweedie">Tweedie</option><option value="gaussian">Gaussian</option></select>{/if}</label>
-                <label>Link<input aria-label="Stack model link" value="Log" readonly /></label>
-                <label>Target<input aria-label="Stack model target" value={source ? wb.models[source]?.target || '' : wb.target || ''} readonly /></label>
-                <label>Weight or exposure<input aria-label="Stack model weight" value={source ? wb.models[source]?.weight || '' : wb.weight || ''} readonly /></label>
-                <label>External offset<input aria-label="Stack model offset" value={source ? wb.models[source]?.offset || '' : wb.offset || ''} readonly /></label>
-                {#if source && wb.models[source]?.family === 'tweedie'}<label>Tweedie power<input aria-label="Stack Tweedie power" value={wb.models[source]?.tweedie_power ?? ''} readonly /></label>{:else if !source && stackFamily === 'tweedie'}<label>Tweedie power<input aria-label="Stack Tweedie power" type="number" min="1.01" max="1.99" step=".05" bind:value={tweediePower} /></label>{/if}
-            </div>
-            <label class="stack-divide"><input aria-label="Divide target by weight" type="checkbox" checked={source ? Boolean(wb.models[source]?.divide_target_by_weight) : divideTargetByWeight} disabled={!!source} onchange={(e) => (divideTargetByWeight = e.currentTarget.checked)} />Divide target by weight when fitting unit outcomes</label>
-            <h3>{source ? 'Variables for this addition' : 'Variables for this model'}</h3><p class="help-text">{kind === 'catalogue' ? 'Upload a catalogue below, then choose its required attributes.' : kind === 'catboost' ? 'CatBoost uses raw columns. GLM uses the shared bands from Variables.' : 'GLM uses these selected variables with the project’s shared bands.'}</p>
-            {#if source}<p class="help-text">Already included in the offset: {sourceInfo?.components?.flatMap((c) => c.factors || c.inputs || []).join(', ') || 'the earlier model'}.</p>{/if}
-            <div class="selected-factors"><strong>Selected ({factors.length})</strong>{#if factors.length}<div>{#each factors.slice().sort((a, b) => a.localeCompare(b)) as factor}<button class="selected-factor" onclick={() => toggleFactor(factor)} aria-label={`Remove ${factor}`}>{factor} ×</button>{/each}</div>{:else}<span>Choose variables below.</span>{/if}</div>
-            <label>Available variables<input aria-label="Search model variables" placeholder="Search variables" bind:value={query} /></label>
-            <div class="stack-factors" role="group" aria-label="Model variables">{#each filtered as f}<label><input type="checkbox" checked={factors.includes(f)} onchange={() => toggleFactor(f)} />{f}</label>{/each}</div>
-            <p><button class="text-button" onclick={() => (showSelected = !showSelected)}>{showSelected ? 'Show matching variables' : 'Show selected only'}</button></p>
-            {#if kind === 'catalogue'}<h3>Full catalogue</h3><p>Upload the complete CSV or Parquet file, including unseen keys.</p><input type="file" accept=".csv,.parquet" aria-label="Upload catalogue" onchange={upload} disabled={!!busy} />
-                {#if catalogue}<p>{catalogue.filename} · {catalogue.rows} rows</p><label>Unique key<select aria-label="Catalogue key" bind:value={settings.key}><option value="">Choose key</option>{#each catalogue.columns as c}<option value={c.name || c}>{c.name || c}</option>{/each}</select></label><p>Select required catalogue attributes in Factors above.</p>
-                    <label>Missing-key fallback value (optional)<input aria-label="Missing key fallback" type="number" min="0.000001" step="any" value={settings.fallback ?? ''} onchange={(e) => (settings = { ...settings, fallback: e.currentTarget.value ? Number(e.currentTarget.value) : null })} /></label>{/if}
+        {#if editorOpen}<section class="model-card model-editor"><div class="stack-form-heading"><div><div class="eyebrow">DRAFT MODEL</div><h2>{revisionOf ? `Revise ${revisionOf}` : source ? 'Add model after this' : editingExisting ? 'Edit draft model' : 'First model in the chain'}</h2><p>{source ? `This model is fitted after ${source}.` : 'This is the first model in the chain, using the project’s data.'}</p></div><button onclick={() => { discardDraft(); }}>Discard changes</button></div>
+            <div class="form-grid"><label>Model name<input aria-label="Stacked model name" bind:value={name} readonly={!!editingExisting} /></label>
+                <label>Method<select aria-label="Model component type" value={kind} onchange={(e) => changeKind(e.currentTarget.value)}>{#each Object.entries(labels).filter(([key]) => key !== 'legacy') as [key,label]}<option value={key}>{label}</option>{/each}</select></label></div>
+            {#if sourceInfo}<p class="help-text">Models already fitted: {sourceInfo.components.map((item) => item.name).join(' → ')}.</p>{/if}
+            {#if source}
+                <section class="inherited-definition" aria-label="Inherited model definition">
+                    <h3>Inherited from {source}</h3>
+                    <dl>
+                        <div><dt>Outcome</dt><dd>{wb.models[source]?.target || '—'}, {wb.models[source]?.family || '—'} with {wb.models[source]?.link || 'log'} link</dd></div>
+                        <div><dt>Exposure</dt><dd>{wb.models[source]?.weight || 'None'}</dd></div>
+                        <div><dt>Training split</dt><dd>{splitDescription}</dd></div>
+                        <div><dt>Starting score</dt><dd>Complete score from {source}</dd></div>
+                    </dl>
+                    <p>{wb.models[source]?.divide_target_by_weight ? 'The outcome is divided by exposure before fitting.' : 'The outcome is fitted as recorded; it is not divided by exposure.'}</p>
+                </section>
+            {:else}
+                <div class="form-grid"><label>Model family<select aria-label="Stack model family" bind:value={stackFamily}><option value="poisson">Poisson</option><option value="tweedie">Tweedie</option><option value="gaussian">Gaussian</option></select></label>
+                    <label>Link<input aria-label="Stack model link" value="Log" readonly /></label>
+                    <label>Target<input aria-label="Stack model target" value={wb.target || ''} readonly /></label>
+                    <label>Weight or exposure<input aria-label="Stack model weight" value={wb.weight || ''} readonly /></label>
+                    <label>Training split<input aria-label="Stack model split" value={splitDescription} readonly /></label>
+                    <label>External offset<input aria-label="Stack model offset" value={wb.offset || ''} readonly /></label>
+                    {#if stackFamily === 'tweedie'}<label>Tweedie power<input aria-label="Stack Tweedie power" type="number" min="1.01" max="1.99" step=".05" bind:value={tweediePower} /></label>{/if}
+                </div>
+                <label class="stack-divide"><input aria-label="Divide target by weight" type="checkbox" checked={divideTargetByWeight} onchange={(e) => (divideTargetByWeight = e.currentTarget.checked)} />Divide target by weight when fitting unit outcomes</label>
             {/if}
+            {#if source}<p class="help-text">The starting score already includes: {sourceInfo?.components?.flatMap((c) => c.factors || c.inputs || []).join(', ') || 'the earlier model'}. Select it below if you want this model to make a further correction.</p>{/if}
+            {#if kind === 'catalogue'}<h3>Full catalogue</h3><p>Upload the complete CSV or Parquet file, including unseen keys.</p><input type="file" accept=".csv,.parquet" aria-label="Upload catalogue" onchange={upload} disabled={!!busy} />
+                {#if catalogue}<p>{catalogue.filename} · {catalogue.rows} rows</p><label>Unique key<select aria-label="Catalogue key" value={settings.key} onchange={(event) => setCatalogueKey(event.currentTarget.value)}><option value="">Choose key</option>{#each catalogue.columns as c}<option value={c.name || c}>{c.name || c}</option>{/each}</select></label><p>Select the attributes this lookup needs below.</p>
+                    <label>Missing-key fallback value (optional)<input aria-label="Missing key fallback" type="number" min="0.000001" step="any" value={settings.fallback ?? ''} onchange={(e) => (settings = { ...settings, fallback: e.currentTarget.value ? Number(e.currentTarget.value) : null })} /></label>
+                    <ModelVariables columns={catalogueAttributeColumns} {factors} design={componentDesign} inheritedDesign={{ defaults: wb.design?.defaults, variables: {} }} method="catboost" onChange={updateComponentVariables} onValidity={(message) => (modelVariablesError = message)} onDraftText={(text) => (modelVariablesDraftText = text)} />
+                {/if}
+            {:else}<ModelVariables columns={choices.map((name) => wb.columns.find((column) => column.name === name) || { name, numeric: false })} {factors} design={componentDesign} inheritedDesign={wb.design} method={kind === 'catboost' ? 'catboost' : 'glm'} onChange={updateComponentVariables} onValidity={(message) => (modelVariablesError = message)} onDraftText={(text) => (modelVariablesDraftText = text)} />{/if}
             <div class="form-grid">
                 {#if kind === 'glm'}<label>Alpha<input aria-label="GLM alpha" type="number" min="0" step="any" bind:value={settings.alpha} /></label><label>CV folds (optional)<input aria-label="GLM CV folds" type="number" min="2" value={settings.cv ?? ''} onchange={(e) => (settings = { ...settings, cv: e.currentTarget.value ? Number(e.currentTarget.value) : null, alpha: e.currentTarget.value ? null : 0.001 })} /></label><label>L1 ratio<input aria-label="GLM L1 ratio" type="number" min="0" max="1" step=".1" bind:value={settings.l1_ratio} /></label>
                 {:else if kind === 'interaction'}<label>CV folds<input aria-label="Pair CV folds" type="number" min="2" bind:value={settings.cv_folds} /></label><label>Trial time limit (minutes)<input aria-label="Pair time limit" type="number" min="1" bind:value={settings.time_limit_minutes} /></label><label>Trial iterations<input aria-label="Pair iterations" type="number" min="1" value={settings.candidates[0].iterations} onchange={(e) => (settings = { ...settings, candidates: [{ ...settings.candidates[0], iterations: Number(e.currentTarget.value) }] })} /></label>
                 {:else}<label>Iterations<input aria-label="CatBoost iterations" type="number" min="1" bind:value={settings.iterations} /></label><label>Depth<input aria-label="CatBoost depth" type="number" min="1" bind:value={settings.depth} /></label><label>Learning rate<input aria-label="CatBoost learning rate" type="number" min="0.0001" step="any" bind:value={settings.learning_rate} /></label><label>Trial time limit (minutes)<input aria-label="CatBoost time limit" type="number" min="1" bind:value={settings.time_limit_minutes} /></label>{/if}
-            </div><div class="editor-actions"><button onclick={() => save(false)} disabled={!!busy}>Save draft</button><button class="primary" onclick={() => save(true)} disabled={!!busy}>Fit model</button></div></section>{/if}
+            </div>{#if modelVariablesError}<p class="help-text validation-error">Fix the variable JSON before saving or fitting.</p>{:else if modelVariablesDraftText}<p class="help-text validation-error">Apply the variable JSON before saving or fitting.</p>{/if}<div class="editor-actions"><button onclick={() => save(false)} disabled={!!busy || !!modelVariablesError || !!modelVariablesDraftText}>Save draft</button><button class="primary" onclick={() => save(true)} disabled={!!busy || !!modelVariablesError || !!modelVariablesDraftText}>Fit model</button></div></section>{/if}
                 </div>
             </div>
         {/if}
@@ -563,8 +646,6 @@
     .stack-line { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin:12px 0; }
     .stack-components { padding-left:22px; }
     .stack-components li { display:grid; grid-template-columns: 1fr 1fr 2fr 1fr auto; gap:12px; border-top:1px solid #dae3db; padding:10px 4px; }
-    .stack-factors { max-height:220px; overflow:auto; border:1px solid #dae3db; padding:8px; margin:8px 0; display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:4px 12px; }
-    .stack-factors label { display:flex; align-items:center; gap:6px; }
     .stack-json { max-height:440px; overflow:auto; padding:12px; background:#f5f8f5; font-size:12px; }
     .stack-metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:12px; }
     .stack-metrics div, .stack-compare div { padding:12px; background:#f5f8f5; }
@@ -579,14 +660,14 @@
     .stack-diagnostic-controls { display:flex; flex-wrap:wrap; gap:12px; margin:12px 0; }
     .stack-diagnostic-controls label { display:grid; gap:5px; min-width:160px; }
     .stack-divide { display:flex; align-items:center; gap:8px; margin:10px 0; }
+    .inherited-definition { margin:14px 0; padding:13px 14px; border:1px solid #c7d7ca; border-left:4px solid #287550; background:#f7faf7; }.inherited-definition h3 { margin:0 0 10px; }.inherited-definition dl { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px 18px; margin:0; }.inherited-definition dt { color:#526e5d; font-size:11px; }.inherited-definition dd { margin:2px 0 0; font-size:13px; font-weight:600; overflow-wrap:anywhere; }.inherited-definition p { margin:10px 0 0; font-size:12px; color:#526e5d; }
     .stack-form-heading { display:flex; justify-content:space-between; gap:12px; align-items:start; }
-    .text-button { border:0; background:transparent; color:#154b35; text-decoration:underline; padding:0 3px; }
     .model-builder { display:grid; grid-template-columns:minmax(230px, 300px) minmax(0, 1fr); gap:18px; align-items:start; }
     .model-list { position:sticky; top:12px; border:1px solid #c7d7ca; border-radius:12px; padding:14px; background:#f7faf7; min-width:0; }
     .model-list-heading { display:flex; justify-content:space-between; align-items:start; gap:12px; }.model-list-heading h2 { margin:2px 0; }
     .model-list-items { display:grid; gap:6px; margin-top:12px; }.model-list-item { display:grid; gap:3px; width:100%; text-align:left; color:inherit; background:white; border:1px solid #d6e0d7; padding:9px; white-space:normal; }.model-list-item.active { border-color:#287550; box-shadow:inset 3px 0 #287550; }.model-list-item span { color:#245f43; font-size:12px; }.model-list-item small { color:#526e5d; overflow-wrap:anywhere; }.mobile-model-select { display:none; }
     .model-map { margin-top:14px; }.model-map :global(.model-flow) { margin:10px 0 0; padding:10px; }.model-map :global(.flow-heading) { display:none; }
-    .selected-workspace { min-width:0; }.selected-model-header { display:grid; gap:14px; }.selected-model-identity { display:grid; grid-template-columns:minmax(0, 1fr) auto; align-items:start; gap:12px; }.selected-model-identity h2 { margin:2px 0; overflow-wrap:anywhere; }.selected-model-header .model-state { border-radius:20px; padding:4px 9px; background:#eef2ee; white-space:nowrap; }.selected-model-header .fit-state { color:#1e6745; background:#e0f0e4; }.selected-model-context { width:100%; box-sizing:border-box; padding:12px 14px; border-left:3px solid #6e9478; background:#f5f8f5; }.selected-model-context.recovery { border-color:#a27944; background:#fff8ed; }.selected-model-context p { margin:0; }.selected-model-context p + p { margin-top:6px; }.fit-progress { color:#285c45; align-self:center; }.workspace-actions,.editor-actions,.result-tabs { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }.selected-model-actions { margin-top:0; }.recovery-consequence { margin:0; color:#526e5d; }.result-tabs { border-bottom:1px solid #dae3db; padding-bottom:10px; }.result-tabs button { background:transparent; border:0; color:#285c45; }.result-tabs button.tab-active { font-weight:bold; border-bottom:3px solid #287550; border-radius:0; }.selected-factors { margin:12px 0; padding:10px; border:1px solid #d6e0d7; background:#f7faf7; display:grid; gap:7px; }.selected-factors > div { display:flex; gap:5px; flex-wrap:wrap; }.selected-factor { font-size:12px; padding:3px 6px; }.empty-workspace { min-height:180px; }.model-editor { border-top:4px solid #287550; }
+    .selected-workspace { min-width:0; }.selected-model-header { display:grid; gap:14px; }.selected-model-identity { display:grid; grid-template-columns:minmax(0, 1fr) auto; align-items:start; gap:12px; }.selected-model-identity h2 { margin:2px 0; overflow-wrap:anywhere; }.selected-model-header .model-state { border-radius:20px; padding:4px 9px; background:#eef2ee; white-space:nowrap; }.selected-model-header .fit-state { color:#1e6745; background:#e0f0e4; }.selected-model-context { width:100%; box-sizing:border-box; padding:12px 14px; border-left:3px solid #6e9478; background:#f5f8f5; }.selected-model-context.recovery { border-color:#a27944; background:#fff8ed; }.selected-model-context p { margin:0; }.selected-model-context p + p { margin-top:6px; }.fit-progress { color:#285c45; align-self:center; }.workspace-actions,.editor-actions,.result-tabs { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }.selected-model-actions { margin-top:0; }.recovery-consequence { margin:0; color:#526e5d; }.result-tabs { border-bottom:1px solid #dae3db; padding-bottom:10px; }.result-tabs button { background:transparent; border:0; color:#285c45; }.result-tabs button.tab-active { font-weight:bold; border-bottom:3px solid #287550; border-radius:0; }.empty-workspace { min-height:180px; }.model-editor { border-top:4px solid #287550; }
     .draft-dialog-backdrop { position:fixed; inset:0; display:grid; place-items:center; background:rgb(20 35 25 / .35); z-index:20; padding:16px; }.draft-dialog { max-width:430px; background:white; padding:22px; border-radius:10px; box-shadow:0 6px 30px #2339; }.draft-dialog h2 { margin-top:0; }.draft-dialog div { display:flex; flex-wrap:wrap; gap:8px; }
     @media (max-width:900px) { .stack-components li { grid-template-columns:1fr 1fr; }.model-builder { grid-template-columns:1fr; }.model-list { position:static; }.model-list-items { display:none; }.mobile-model-select { display:grid; gap:5px; margin-top:12px; }.model-map { display:none; } }
     @media (max-width:430px) { .selected-model-identity { gap:8px; }.selected-model-header .model-state { font-size:12px; padding:4px 7px; }.selected-model-context { padding:10px; }.workspace-actions button { max-width:100%; white-space:normal; } }

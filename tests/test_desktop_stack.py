@@ -27,6 +27,32 @@ def _revision(client: TestClient) -> dict[str, object]:
     return {key: snapshot[key] for key in ("session_id", "revision")}
 
 
+def _component_design(name: str, *, kind: str, n_bins: int = 4) -> dict[str, object]:
+    """The complete saved definition emitted by the per-model editor."""
+    return {
+        "defaults": {
+            "n_bins": n_bins,
+            "min_level_share": 0.0025,
+            "null_indicator": True,
+            "max_integer_knots": 150,
+        },
+        "variables": {
+            name: {
+                "kind": kind,
+                "knots": "quantile",
+                "clamp": None,
+                "n_bins": n_bins,
+                "null_indicator": True,
+                "min_level_share": 0.0025,
+                "max_levels": None,
+                "levels": None,
+                "monotone": None,
+                "penalty_weight": 1.0,
+            }
+        },
+    }
+
+
 def test_stack_fit_diagnostics_and_catalogue_upload(tmp_path):
     rng = np.random.default_rng(882)
     raw = pl.DataFrame(
@@ -330,6 +356,242 @@ def test_catalogue_review_creates_named_checkpoint(tmp_path):
             text=True,
         )
         np.testing.assert_allclose(json.loads(executed.stdout), expected, rtol=1e-12)
+
+
+def test_stack_model_definition_is_local_and_cannot_tamper_with_parent(
+    tmp_path,
+) -> None:
+    rng = np.random.default_rng(903)
+    raw = pl.DataFrame(
+        {
+            "Claims": rng.poisson(0.3, 180),
+            "Exposure": np.ones(180),
+            "Age": rng.integers(18, 80, 180),
+            "Region": rng.choice(["A", "B", "C"], 180),
+            "PolicyId": np.arange(180),
+        }
+    )
+    project = Project(name="Local stack definitions")
+    project.data.roles = {
+        "Claims": "target",
+        "Exposure": "weight",
+        "Age": "predictor",
+        "Region": "predictor",
+        "PolicyId": "id",
+    }
+    project.data.split.mode = "random"
+
+    def wait_fit(client: TestClient, name: str) -> dict[str, object]:
+        deadline = time.monotonic() + 40
+        while time.monotonic() < deadline:
+            status = client.get("/api/jobs").json()[name]
+            if status["status"] not in ("queued", "running"):
+                return status
+            time.sleep(0.05)
+        raise AssertionError("Fit did not finish")
+
+    with TestClient(
+        create_app(project, raw, port=8820), base_url="http://127.0.0.1:8820"
+    ) as client:
+        client.headers["X-EasyGLM-Token"] = client.get("/api/session").json()["token"]
+        root = client.post(
+            "/api/models/save",
+            json={
+                **_revision(client),
+                "name": "Root",
+                "create": True,
+                "fields": {
+                    "family": "poisson",
+                    "link": "log",
+                    "target": "Claims",
+                    "weight": "Exposure",
+                    "components": [
+                        {
+                            "component_id": "root-age",
+                            "name": "Age",
+                            "kind": "glm",
+                            "factors": ["Age"],
+                            "settings": {"alpha": 0.01},
+                            "design": _component_design("Age", kind="step", n_bins=3),
+                        }
+                    ],
+                },
+            },
+        )
+        assert root.status_code == 200, root.text
+        assert (
+            client.post("/api/models/Root/fit", json=_revision(client)).status_code
+            == 202
+        )
+        assert wait_fit(client, "Root")["status"] == "complete"
+        workbench = client.get("/api/workbench").json()
+        source = workbench["stack_sources"]["Root"]
+        child_recipe = {
+            "component_id": "region",
+            "name": "Region",
+            "kind": "glm",
+            "factors": ["Region"],
+            "settings": {"alpha": 0.01},
+            "design": _component_design("Region", kind="categorical"),
+        }
+        saved = client.post(
+            "/api/models/save",
+            json={
+                **_revision(client),
+                "name": "Child",
+                "create": True,
+                "source_name": "Root",
+                "source_fit_id": source["source_fit_id"],
+                "fields": {
+                    "family": "poisson",
+                    "link": "log",
+                    "target": "Claims",
+                    "weight": "Exposure",
+                    "components": [*source["components"], child_recipe],
+                },
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        saved_project = client.get("/api/project").json()
+        reopened = Project.from_dict(saved_project)
+        assert reopened.models["Child"].components[-1].design == child_recipe["design"]
+        assert (
+            reopened.models["Child"].components[0].design
+            == source["components"][0]["design"]
+        )
+        assert reopened.design == project.design
+
+        for fields in (
+            {"target": "Age", "components": [*source["components"], child_recipe]},
+            {"weight": "Claims", "components": [*source["components"], child_recipe]},
+            {"offset": "Age", "components": [*source["components"], child_recipe]},
+            {"family": "gaussian", "components": [*source["components"], child_recipe]},
+            {"link": "logit", "components": [*source["components"], child_recipe]},
+        ):
+            rejected = client.post(
+                "/api/models/save",
+                json={
+                    **_revision(client),
+                    "name": "Tampered response",
+                    "create": True,
+                    "source_name": "Root",
+                    "source_fit_id": source["source_fit_id"],
+                    "fields": fields,
+                },
+            )
+            assert rejected.status_code == 422, rejected.text
+            assert client.get("/api/project").json() == saved_project
+
+        protected = dict(child_recipe)
+        protected.update(
+            factors=["PolicyId"],
+            design=_component_design("PolicyId", kind="categorical"),
+        )
+        rejected_protected = client.post(
+            "/api/models/save",
+            json={
+                **_revision(client),
+                "name": "Protected factor",
+                "create": True,
+                "source_name": "Root",
+                "source_fit_id": source["source_fit_id"],
+                "fields": {
+                    "family": "poisson",
+                    "link": "log",
+                    "target": "Claims",
+                    "weight": "Exposure",
+                    "components": [*source["components"], protected],
+                },
+            },
+        )
+        assert rejected_protected.status_code == 422
+        assert client.get("/api/project").json() == saved_project
+
+        catalogue = tmp_path / "vehicle.csv"
+        catalogue.write_text("PolicyId,VehicleGroup\n0,small\n1,large\n")
+        uploaded = client.post(
+            "/api/catalogues/upload",
+            params={"filename": catalogue.name, **_revision(client)},
+            headers={"Content-Type": "application/octet-stream"},
+            content=catalogue.read_bytes(),
+        )
+        assert uploaded.status_code == 200, uploaded.text
+        catalogue_recipe = {
+            "component_id": "vehicle-file",
+            "name": "Vehicle file",
+            "kind": "catalogue",
+            "factors": ["VehicleGroup"],
+            "settings": {
+                "key": "PolicyId",
+                "source_path": uploaded.json()["source_path"],
+                "source_sha256": uploaded.json()["source_sha256"],
+            },
+            "design": _component_design("VehicleGroup", kind="categorical"),
+        }
+        id_key = client.post(
+            "/api/models/save",
+            json={
+                **_revision(client),
+                "name": "Vehicle file",
+                "create": True,
+                "source_name": "Root",
+                "source_fit_id": source["source_fit_id"],
+                "fields": {
+                    "family": "poisson",
+                    "link": "log",
+                    "target": "Claims",
+                    "weight": "Exposure",
+                    "components": [*source["components"], catalogue_recipe],
+                },
+            },
+        )
+        assert id_key.status_code == 200, id_key.text
+        assert (
+            Project.from_dict(client.get("/api/project").json())
+            .models["Vehicle file"]
+            .components[-1]
+            .design
+            == catalogue_recipe["design"]
+        )
+        saved_project = client.get("/api/project").json()
+        control_key = dict(catalogue_recipe)
+        control_key["settings"] = {**catalogue_recipe["settings"], "key": "Claims"}
+        rejected_control_key = client.post(
+            "/api/models/save",
+            json={
+                **_revision(client),
+                "name": "Claim lookup",
+                "create": True,
+                "source_name": "Root",
+                "source_fit_id": source["source_fit_id"],
+                "fields": {
+                    "family": "poisson",
+                    "link": "log",
+                    "target": "Claims",
+                    "weight": "Exposure",
+                    "components": [*source["components"], control_key],
+                },
+            },
+        )
+        assert rejected_control_key.status_code == 422
+        assert client.get("/api/project").json() == saved_project
+
+        for top_level in (
+            {"n_bins": 7},
+            {"designs": {"Age": "categorical"}},
+            {"split": {"mode": "random"}},
+        ):
+            rejected = client.post(
+                "/api/models/save",
+                json={
+                    **_revision(client),
+                    "name": "Child",
+                    **top_level,
+                    "fields": {"components": [*source["components"], child_recipe]},
+                },
+            )
+            assert rejected.status_code == 422, rejected.text
+            assert client.get("/api/project").json() == saved_project
 
 
 def test_append_reuses_exact_stack_and_legacy_prefix(tmp_path):

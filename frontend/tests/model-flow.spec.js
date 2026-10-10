@@ -10,9 +10,8 @@ async function fitSingleModel(page) {
 async function fillDraft(page, { name, component, kind, variable }) {
     await page.getByLabel('Stacked model name').fill(name);
     await page.getByLabel('Model component type').selectOption(kind);
-    await page.getByLabel('Model component name').fill(component);
-    await page.getByRole('group', { name: 'Model variables' }).getByText(variable, { exact: true }).click();
-    await expect(page.getByText('Selected (1)', { exact: true })).toBeVisible();
+    await page.getByLabel(`Use ${variable}`).check();
+    await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
     if (kind === 'catboost') {
         await page.getByLabel('CatBoost iterations').fill('20');
         await page.getByLabel('CatBoost time limit').fill('1');
@@ -27,8 +26,8 @@ test('model builder fits a model where its settings are edited', async ({ page }
     await fitSingleModel(page);
     await page.getByRole('button', { name: 'Build a model in stages' }).click();
 
-    await page.getByRole('complementary', { name: 'Models' }).getByRole('button', { name: 'New standalone model', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'New standalone model', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Start a new model chain', exact: true }).first().click();
+    await expect(page.getByRole('heading', { name: 'First model in the chain', exact: true })).toBeVisible();
     await fillDraft(page, { name: 'Flow Root GLM', component: 'Root region', kind: 'glm', variable: 'Region' });
     let releaseJobsGate;
     const jobsGate = new Promise((resolve) => {
@@ -45,7 +44,7 @@ test('model builder fits a model where its settings are edited', async ({ page }
     await page.route('**/api/jobs', holdJobsRoute);
     await page.getByRole('button', { name: 'Fit model', exact: true }).first().click();
     await expect(page.getByRole('status').filter({ hasText: /Starting fit|Fitting:/ })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'New standalone model', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'First model in the chain', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Edit draft', exact: true })).toHaveCount(0);
     releaseJobsGate();
     await page.waitForTimeout(0);
@@ -75,7 +74,7 @@ test('model builder fits a model where its settings are edited', async ({ page }
     await page.setViewportSize({ width: 1332, height: 1225 });
 
     await page.getByRole('button', { name: 'Add model after this', exact: true }).click();
-    await expect(page.getByText("This model is fitted after Flow Root GLM. Flow Root GLM's complete fitted score is used as the offset.", { exact: true })).toBeVisible();
+    await expect(page.getByText('This model is fitted after Flow Root GLM.', { exact: true })).toBeVisible();
     await fillDraft(page, { name: 'Flow CatBoost', component: 'Vehicle correction', kind: 'catboost', variable: 'VehicleAge' });
     await page.getByRole('button', { name: 'Fit model', exact: true }).first().click();
     await expect(page.getByRole('heading', { name: 'Flow CatBoost', exact: true })).toBeVisible({ timeout: 60000 });
@@ -84,14 +83,13 @@ test('model builder fits a model where its settings are edited', async ({ page }
 
     await page.getByRole('button', { name: 'Revise model', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Revise Flow CatBoost', exact: true })).toBeVisible();
-    await expect(page.getByLabel('Model component name')).toHaveValue('Vehicle correction revised');
     await expect(page.getByLabel('Stacked model name')).toHaveValue('Flow CatBoost revised');
     await page.getByRole('button', { name: 'Save draft', exact: true }).first().click();
     await expect(page.getByText('Draft saved.', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Edit draft', exact: true }).click();
     await page.getByLabel('CatBoost iterations').fill('21');
     await page.getByLabel('Search model variables').fill('Region');
-    await page.getByRole('group', { name: 'Model variables' }).getByText('Region', { exact: true }).click();
+    await page.getByLabel('Use Region').check();
     await page.locator('.model-list-item').filter({ has: page.locator('strong', { hasText: 'Flow Root GLM' }) }).click();
     await expect(page.getByRole('dialog', { name: 'Unsaved draft' })).toBeVisible();
     await page.getByRole('button', { name: 'Keep editing', exact: true }).click();

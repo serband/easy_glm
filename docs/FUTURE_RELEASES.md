@@ -33,6 +33,9 @@ Implemented in Python and the workbench, with software, statistical and actuaria
 - Select variables independently for each stage from the starting data, including
   unassigned columns, without changing global roles. Search lists alphabetically
   and retain selected variables while filtering.
+- Define each model's variables through matching Table and JSON views. Store its
+  own GLM/interaction bands and raw CatBoost types. Downstream target, split and
+  response settings stay fixed; the preceding complete score supplies its offset.
 - Show named models in a visual flow. Extend a complete fitted model or create
   an alternative from the same parent, keeping earlier fits unchanged. Preserve
   those connections in project JSON and label historical parents explicitly.
@@ -49,9 +52,6 @@ No v0.5 commitment is implied.
 
 ## Later modelling work
 
-- **Per-stage numeric designs:** consider separate band overrides for GLM and
-  interaction-table stages. The current flow has independent variable selections
-  and fitting settings; numeric bands remain shared on Variables.
 - **Hierarchical rating factors:** let sparse vehicle variants borrow strength
   from model/make, occupations from occupation groups, and postcodes from larger
   areas. Show support and fallback rules; export leaf-level lookup files

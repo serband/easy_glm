@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 
 import numpy as np
 import polars as pl
@@ -14,7 +16,7 @@ from easy_glm.engine.models import (
     PairTableConfig,
     VariableConfig,
 )
-from easy_glm.workflow.catalogue import load_catalogue
+from easy_glm.workflow.catalogue import join_catalogue, load_catalogue
 from easy_glm.workflow.project import (
     ModelConfig,
     PairStageConfig,
@@ -22,8 +24,46 @@ from easy_glm.workflow.project import (
     VariableDesign,
 )
 from easy_glm.workflow.run import run_model
-from easy_glm.workflow.stack import amend_stack, fit_stack, stack_from_legacy
-from easy_glm.workflow.stack_types import ComponentRecipe, LookupScorer, StackScorer
+from easy_glm.workflow.stack import (
+    _cat_features_for_recipe,
+    _recipe_categorical,
+    amend_stack,
+    fit_stack,
+    raw_features,
+    stack_from_legacy,
+)
+from easy_glm.workflow.stack_types import (
+    ComponentArtifact,
+    ComponentRecipe,
+    ConstantScorer,
+    LookupScorer,
+    StackScorer,
+)
+
+
+def _local_design(*, n_bins: int, kind: str = "step") -> dict[str, object]:
+    return {
+        "defaults": {
+            "n_bins": n_bins,
+            "min_level_share": 0.0025,
+            "null_indicator": True,
+            "max_integer_knots": 150,
+        },
+        "variables": {
+            "x": {
+                "kind": kind,
+                "knots": "quantile",
+                "clamp": None,
+                "n_bins": n_bins,
+                "null_indicator": True,
+                "min_level_share": 0.0025,
+                "max_levels": None,
+                "levels": None,
+                "monotone": None,
+                "penalty_weight": 1.0,
+            }
+        },
+    }
 
 
 def _book() -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -166,6 +206,18 @@ def test_lookup_explicit_unknown_fallback() -> None:
     }
 
 
+def test_csv_numeric_catalogue_key_aligns_without_losing_leading_zero_keys() -> None:
+    experience = pl.DataFrame({"PolicyId": [1, 2]})
+    numeric_csv = pl.DataFrame({"PolicyId": ["1", "2"], "Group": ["A", "B"]})
+    joined = join_catalogue(experience, numeric_csv, "PolicyId", ("Group",))
+    assert joined.schema["PolicyId"] == pl.Int64
+    assert joined["Group"].to_list() == ["A", "B"]
+
+    leading_zero_csv = pl.DataFrame({"PolicyId": ["001", "002"], "Group": ["A", "B"]})
+    with pytest.raises(ValueError, match="different type"):
+        join_catalogue(experience, leading_zero_csv, "PolicyId", ("Group",))
+
+
 def test_gaussian_stack_requires_explicit_log_link() -> None:
     book, _ = _book()
     project = Project()
@@ -179,6 +231,166 @@ def test_gaussian_stack_requires_explicit_log_link() -> None:
     project.models["Gaussian"] = config
     with pytest.raises(ValueError, match="log link"):
         fit_stack(project, book, config)
+
+
+def test_component_design_is_local_and_legacy_serialization_stays_unchanged() -> None:
+    legacy = ComponentRecipe("legacy", "Legacy", "glm", ("x",), {"alpha": 0.01})
+    assert "design" not in legacy.to_dict()
+    project = Project()
+    project.models["Legacy"] = ModelConfig(components=[legacy])
+    assert "design" not in project.to_dict()["models"]["Legacy"]["components"][0]
+    stack = StackScorer("poisson", "log", "Claims", "Exposure", None, True, None)
+    stack.components.append(
+        ComponentArtifact(legacy, "", ConstantScorer(0.0), {"legacy": True})
+    )
+    expected = {
+        "format_version": 1,
+        "family": "poisson",
+        "link": "log",
+        "target": "Claims",
+        "weight": "Exposure",
+        "offset_col": None,
+        "divide_target_by_weight": True,
+        "tweedie_power": None,
+        "components": [
+            {
+                "recipe": {
+                    "component_id": "legacy",
+                    "name": "Legacy",
+                    "kind": "glm",
+                    "factors": ("x",),
+                    "settings": {"alpha": 0.01},
+                    "amendments": (),
+                },
+                "prefix_fingerprint": "",
+                "scorer": {"type": "constant", "log_value": 0.0},
+                "evidence": {"legacy": True},
+                "status": "current",
+            }
+        ],
+        "virtual_components": [],
+    }
+    assert stack.to_dict() == expected
+    assert (
+        stack.fingerprint()
+        == hashlib.sha256(
+            json.dumps(expected, sort_keys=True, default=str).encode()
+        ).hexdigest()
+    )
+    assert StackScorer.from_dict(expected).to_dict() == expected
+
+    recipe = ComponentRecipe(
+        "local", "Local", "glm", ("x",), {"alpha": 0.01}, design=_local_design(n_bins=3)
+    )
+    restored = ComponentRecipe.from_dict(recipe.to_dict())
+    assert restored.design == recipe.design
+    with pytest.raises(ValueError, match="selected factors"):
+        ComponentRecipe(
+            "bad",
+            "Bad",
+            "glm",
+            ("x",),
+            {"alpha": 0.01},
+            design={
+                **_local_design(n_bins=3),
+                "variables": {"other": _local_design(n_bins=3)["variables"]["x"]},
+            },
+        )
+    bad = recipe.to_dict()
+    bad["design"]["defaults"]["unexpected"] = True
+    with pytest.raises(ValueError, match="defaults"):
+        ComponentRecipe.from_dict(bad)
+    with pytest.raises(ValueError, match="duplicates"):
+        ComponentRecipe("duplicate", "Duplicate", "glm", ("x", "x"))
+
+
+def test_catboost_uses_local_type_override_or_raw_type_inference() -> None:
+    numeric = pl.DataFrame({"x": [1, 2]})
+    categorical_recipe = ComponentRecipe(
+        "cat",
+        "Cat",
+        "catboost",
+        ("x",),
+        design=_local_design(n_bins=3, kind="categorical"),
+    )
+    categorical = _recipe_categorical(categorical_recipe, numeric)
+    raw, indices = raw_features(numeric, categorical_recipe.factors, categorical)
+    assert indices == (0,)
+    assert raw[:, 0].tolist() == ["1", "2"]
+
+    strings = pl.DataFrame({"x": ["a", "b"]})
+    inferred_recipe = ComponentRecipe(
+        "inferred",
+        "Inferred",
+        "catboost",
+        ("x",),
+        design=_local_design(n_bins=3, kind=None),
+    )
+    assert _recipe_categorical(inferred_recipe, strings) == (0,)
+
+    # A saved legacy index cannot silently overrule the visible local choice.
+    numeric_recipe = ComponentRecipe(
+        "numeric",
+        "Numeric",
+        "catboost",
+        ("x",),
+        {"cat_features": [0]},
+        design=_local_design(n_bins=3, kind="step"),
+    )
+    assert _cat_features_for_recipe(numeric_recipe, numeric) == ()
+    legacy_recipe = ComponentRecipe(
+        "legacy", "Legacy", "catboost", ("x",), {"cat_features": [0]}
+    )
+    assert _cat_features_for_recipe(legacy_recipe, numeric) == (0,)
+
+
+def test_cumulative_glms_keep_their_own_numeric_bands() -> None:
+    rng = np.random.default_rng(19)
+    frame = pl.DataFrame(
+        {
+            "x": np.arange(180, dtype=float),
+            "Exposure": np.ones(180),
+            "Claims": rng.poisson(np.exp(-1.5 + np.arange(180) / 400)),
+        }
+    )
+    project = Project()
+    project.design.defaults.n_bins = 9  # Neither component may inherit this.
+    config = ModelConfig(
+        target="Claims",
+        weight="Exposure",
+        divide_target_by_weight=True,
+        family="poisson",
+        link="log",
+        components=[
+            ComponentRecipe(
+                "first",
+                "First",
+                "glm",
+                ("x",),
+                {"alpha": 0.01},
+                design=_local_design(n_bins=2),
+            ),
+            ComponentRecipe(
+                "second",
+                "Second",
+                "glm",
+                ("x",),
+                {"alpha": 0.01},
+                design=_local_design(n_bins=5),
+            ),
+        ],
+    )
+    project.models["Stack"] = config
+    run = fit_stack(project, frame, config, tuning=False)
+    first = run.stack.component("first").scorer.rate_model.variables["x"].table
+    second = run.stack.component("second").scorer.rate_model.variables["x"].table
+    assert (
+        len([row for row in first if not (row.from_ is None and row.to_ is None)]) == 2
+    )
+    assert (
+        len([row for row in second if not (row.from_ is None and row.to_ is None)]) == 5
+    )
+    assert project.design.defaults.n_bins == 9
 
 
 def test_legacy_pair_stages_remain_individually_inspectable() -> None:

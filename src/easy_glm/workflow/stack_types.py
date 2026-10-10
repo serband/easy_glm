@@ -15,6 +15,165 @@ import polars as pl
 
 from easy_glm.engine.rate_model import RateModel
 
+_DESIGN_DEFAULT_KEYS = {
+    "n_bins",
+    "min_level_share",
+    "null_indicator",
+    "max_integer_knots",
+}
+_VARIABLE_DESIGN_KEYS = {
+    "kind",
+    "knots",
+    "clamp",
+    "n_bins",
+    "null_indicator",
+    "min_level_share",
+    "max_levels",
+    "levels",
+    "monotone",
+    "penalty_weight",
+}
+
+
+def _finite_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+def validate_component_design(
+    design: Any, factors: tuple[str, ...]
+) -> dict[str, Any] | None:
+    """Validate a self-contained, component-local design snapshot.
+
+    It deliberately has the same JSON shape as ``Project.design``, but the
+    variable definitions may only describe factors fitted by this recipe.  The
+    project-wide design remains untouched.
+    """
+    if design is None:
+        return None
+    if not isinstance(design, dict) or set(design) != {"defaults", "variables"}:
+        raise ValueError("Component design needs only defaults and variables")
+    defaults = design["defaults"]
+    variables = design["variables"]
+    if not isinstance(defaults, dict) or set(defaults) != _DESIGN_DEFAULT_KEYS:
+        raise ValueError("Component design defaults are incomplete or invalid")
+    if not isinstance(variables, dict):
+        raise ValueError("Component design variables must be an object")
+    if not all(isinstance(name, str) and name for name in variables):
+        raise ValueError("Component design variable names must be non-empty strings")
+    outside = sorted(set(variables) - set(factors))
+    if outside:
+        raise ValueError(
+            "Component design may only define selected factors: " + ", ".join(outside)
+        )
+    if (
+        isinstance(defaults["n_bins"], bool)
+        or not isinstance(defaults["n_bins"], int)
+        or not 2 <= defaults["n_bins"] <= 200
+    ):
+        raise ValueError(
+            "Component design default n_bins must be an integer from 2 to 200"
+        )
+    if (
+        not _finite_number(defaults["min_level_share"])
+        or not 0 <= float(defaults["min_level_share"]) < 1
+    ):
+        raise ValueError("Component design default min_level_share must be in [0, 1)")
+    if not isinstance(defaults["null_indicator"], bool):
+        raise ValueError(
+            "Component design default null_indicator must be true or false"
+        )
+    if (
+        isinstance(defaults["max_integer_knots"], bool)
+        or not isinstance(defaults["max_integer_knots"], int)
+        or defaults["max_integer_knots"] < 1
+    ):
+        raise ValueError(
+            "Component design default max_integer_knots must be a positive integer"
+        )
+    for name, definition in variables.items():
+        if not isinstance(definition, dict) or set(definition) != _VARIABLE_DESIGN_KEYS:
+            raise ValueError(f"Component design for {name!r} is incomplete or invalid")
+        kind = definition["kind"]
+        if kind not in (None, "step", "linear", "continuous", "categorical"):
+            raise ValueError(f"Component design kind for {name!r} is invalid")
+        knots = definition["knots"]
+        if not (
+            knots in ("quantile", "integer")
+            or (
+                isinstance(knots, list)
+                and all(_finite_number(value) for value in knots)
+                and all(
+                    left < right for left, right in zip(knots, knots[1:], strict=False)
+                )
+            )
+        ):
+            raise ValueError(
+                f"Component design cuts for {name!r} must be increasing finite values"
+            )
+        clamp = definition["clamp"]
+        if clamp is not None and not (
+            isinstance(clamp, list)
+            and len(clamp) == 2
+            and all(_finite_number(value) for value in clamp)
+            and clamp[0] < clamp[1]
+        ):
+            raise ValueError(f"Component design clamp for {name!r} must be [low, high]")
+        n_bins = definition["n_bins"]
+        if n_bins is not None and (
+            isinstance(n_bins, bool)
+            or not isinstance(n_bins, int)
+            or not 2 <= n_bins <= 200
+        ):
+            raise ValueError(
+                f"Component design n_bins for {name!r} must be from 2 to 200"
+            )
+        if definition["null_indicator"] is not None and not isinstance(
+            definition["null_indicator"], bool
+        ):
+            raise ValueError(
+                f"Component design null_indicator for {name!r} must be true or false"
+            )
+        share = definition["min_level_share"]
+        if share is not None and (
+            not _finite_number(share) or not 0 <= float(share) < 1
+        ):
+            raise ValueError(
+                f"Component design min_level_share for {name!r} must be in [0, 1)"
+            )
+        maximum = definition["max_levels"]
+        if maximum is not None and (
+            isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1
+        ):
+            raise ValueError(
+                f"Component design max_levels for {name!r} must be positive"
+            )
+        levels = definition["levels"]
+        if levels is not None and (
+            not isinstance(levels, list)
+            or not all(isinstance(value, str) for value in levels)
+            or len(set(levels)) != len(levels)
+        ):
+            raise ValueError(
+                f"Component design levels for {name!r} must be distinct strings"
+            )
+        monotone = definition["monotone"]
+        if monotone not in (None, "increasing", "decreasing"):
+            raise ValueError(f"Component design monotone for {name!r} is invalid")
+        if monotone and kind == "categorical":
+            raise ValueError(
+                f"Component design categorical {name!r} cannot be monotone"
+            )
+        penalty = definition["penalty_weight"]
+        if not _finite_number(penalty) or float(penalty) < 0:
+            raise ValueError(
+                f"Component design penalty_weight for {name!r} must be nonnegative"
+            )
+    return copy.deepcopy(design)
+
 
 @dataclass(frozen=True)
 class ComponentRecipe:
@@ -24,20 +183,46 @@ class ComponentRecipe:
     factors: tuple[str, ...] = ()
     settings: dict[str, Any] = field(default_factory=dict)
     amendments: tuple[dict[str, Any], ...] = ()
+    #: Full effective per-component definitions.  ``None`` preserves legacy
+    #: project-wide design behaviour and is deliberately omitted on export.
+    design: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if not all(isinstance(value, str) and value.strip() for value in self.factors):
+            raise ValueError("Component factors must be non-empty strings")
+        if len(set(self.factors)) != len(self.factors):
+            raise ValueError("Component factors must not contain duplicates")
+        object.__setattr__(
+            self, "design", validate_component_design(self.design, self.factors)
+        )
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> ComponentRecipe:
+        if not isinstance(raw, dict):
+            raise ValueError("Component recipe must be an object")
+        raw_factors = raw.get("factors", ())
+        if not isinstance(raw_factors, (list, tuple)):
+            raise ValueError("Component factors must be a list")
+        if not isinstance(raw.get("settings", {}), dict):
+            raise ValueError("Component settings must be an object")
+        if not isinstance(raw.get("amendments", ()), (list, tuple)):
+            raise ValueError("Component amendments must be a list")
+        factors = tuple(raw_factors)
         return cls(
             component_id=str(raw["component_id"]),
             name=str(raw["name"]),
             kind=str(raw["kind"]),
-            factors=tuple(raw.get("factors", ())),
+            factors=factors,
             settings=dict(raw.get("settings", {})),
             amendments=tuple(raw.get("amendments", ())),
+            design=validate_component_design(raw.get("design"), factors),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        result = asdict(self)
+        if self.design is None:
+            result.pop("design")
+        return result
 
 
 @dataclass

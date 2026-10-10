@@ -1,16 +1,22 @@
 # EasyGLM handover
 
-**Snapshot: 9 October 2026.** Start here when taking over without the previous chat. Check Git and the current package registry before changing a status claim: this is a local snapshot, not proof of today's remote state.
+**Snapshot: 10 October 2026.** Start here when taking over without the previous chat. Check Git and the current package registry before changing a status claim: this is a local snapshot, not proof of today's remote state.
 
 ## Start in the right checkout
 
 | Purpose | Checkout and state |
 | --- | --- |
-| Current implementation | `/private/tmp/easyglm-visual-model-flow`, `codex/model-workspace-recovery`, based on Model builder revision `24a8131`; layout and recovery-state corrections are local |
+| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/model-variable-setup`, based on surviving `codex/model-step-naming` revision `ff39069`; includes the per-model variable editor and design snapshots |
 | User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
 | Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
 
 The current stack is **local branch work, unpushed and unreleased**. Its `pyproject.toml` still says `0.472`; that version string does not make the stack part of the public package. The primary workspace's `main` is older (`4eb8c8a`) and must not be used as a release baseline. Remote GitHub/PyPI status was not live-verified for this snapshot because network name resolution was unavailable. Do not reset, clean, switch, or prune the primary checkout. Inspect `git status`, branch, commit, and file paths before acting.
+
+On 10 October the previous `/private/tmp/easyglm-visual-model-flow` directory was
+absent. This checkout was created from its surviving committed branch. Earlier
+uncommitted changes must not be assumed recovered. The current model form has one
+name, a Method selector and Save/Fit after variable selection; these are covered
+by the current browser tests.
 
 The primary workspace carries a copy of this handover and selected guidance, but its code does **not** contain the current stack. Read `examples/stacked_models.md`, `docs/plans/STACKED_MODELS.md`, `docs/LLM_USAGE_GUIDE.md`, and the source/tests **in the implementation checkout**; the example and usage guide are absent from the primary workspace, while its untracked copy of the stack plan may differ from the implementation checkout. `examples/pricing_walkthrough.md` covers the earlier released pricing flow. The usage guide describes v0.472, not takeover. The locally available `v0.472` Git tag provides the release source for comparison (`git show v0.472:<path>` from the stack checkout); verify remote state separately when network access returns.
 
@@ -28,7 +34,9 @@ The stack branch implements an ordered multiplicative sequence of GLM, direct Ca
 
 **Current product work: the selected-model workspace.** The staged workbench has a compact model list and one workspace containing the selected model's factors, settings and fitting controls. **Fit model** saves the exact draft and starts fitting in one action; **Save draft** does not fit. Saved drafts reopen for editing. Fitted models open on Results, with read-only Settings and explicit **Add model after this** or **Revise model** actions. Revisions have new names and keep the same fitted parent. The model map is optional. Dirty drafts require Keep editing, Save draft or Discard changes when leaving them.
 
-Each component selects its own factors from safe predictor and unassigned source columns, with alphabetical search and a retained selected list. Global roles identify response, weight, ID, split and ignore. GLM and interaction-table bands remain shared through `Project.design`; independent per-component binning is future work. CatBoost uses raw inputs. A child's own complete fit can still be used as the next offset when its original incoming parent is unavailable; that missing parent blocks revision of just the last addition. If its own fit is missing, rebuilding creates a new named copy of the whole saved recipe. Fitted stack settings and fit endpoints reject in-place overwrite. Existing single-model workflows remain available. See `docs/MODEL_FLOW.md` for the user workflow.
+Each component selects its own factors from safe predictor and unassigned source columns. Its **Variables for this model** editor provides searchable alphabetical Table and JSON views. Global roles identify response, weight, ID, split and ignore; those controls cannot be changed in this editor. GLMs and interaction tables now store their own defaults, types and bands in optional `ComponentRecipe.design` snapshots. Direct CatBoost uses raw values and local categorical/numeric treatment. Legacy recipes without this field retain their previous project-design behaviour and serialize without the new field, preserving existing fingerprints. A child's target, weight, family, log link and split remain inherited; its offset is the complete fitted predecessor scorer. Model-save validation rejects changes to the response convention or frozen prefix and refuses edits to global bands through a stack-model save.
+
+A child's own complete fit can still be used as the next offset when its original incoming parent is unavailable; that missing parent blocks revision of just the last addition. If its own fit is missing, rebuilding creates a new named copy of the whole saved recipe. Fitted stack settings and fit endpoints reject in-place overwrite. Existing single-model workflows remain available. See `docs/MODEL_FLOW.md` for the user workflow.
 
 The 9 October correction separates ordinary drafts from saved setups that need recovery. **Needs a new fit** means the saved setup's exact earlier starting fit is unavailable; a currently fitted model with the same name is not a replacement for it. **Fit saved recipe as new model** fits the saved sequence from the beginning under a new name. **Cannot score** means the selected model's own fitted files are unavailable. A usable complete scorer remains **Fitted** even when its original starting fit is missing. The header shows identity, context and actions in separate rows; a read-only saved recipe shows the fitting order.
 
@@ -45,6 +53,18 @@ Known first-version boundaries: each named model scores a linear sequence; the d
 - `src/easy_glm/workflow/project.py`: global data roles/design, model configuration and JSON migration. `src/easy_glm/desktop/` plus `frontend/src/StackWorkbench.svelte` and `frontend/src/App.svelte`: workbench APIs and screens.
 - `tests/test_pricing_stack_api.py`, `test_stack_tuning.py`, `test_stack_exports.py`, `test_desktop_stack.py`: targeted stack tests; `frontend/tests/stack-visual.mjs` and `stack-legacy-append.mjs` are local browser review scripts, not a dedicated `playwright.stack.config.js` CI job.
 
+Fresh per-model definition checks on 10 October: **71 Python pricing/stack
+regressions**, **27 frontend unit tests** and **six browser scenarios** passed.
+The browser scenarios include root/child fitting with different cuts and factors,
+uploaded CSV catalogue fitting, draft recovery/retry, and bulk selection from
+500 available columns at desktop and 804px widths. Svelte check, Black, Ruff,
+mypy for all 48 checked source files, and the bundled frontend build passed.
+Independent software, adversarial and rendered pricing-actuary reviews closed
+their findings. CSV numeric join keys now align safely to numeric source IDs;
+leading-zero identifiers remain protected. These are local source checks; no
+fresh installed-wheel, GitHub CI, Windows or 5M-row run was performed for this
+change. Nothing was pushed or released.
+
 Earlier visual-flow checks on 8 October, before the selected-workspace redesign: **1,615 Python tests passed**, 1 skipped and 1 slow deselected; Black, Ruff and mypy passed. The new model-flow browser scenario, existing model-editing and interaction-reuse scenarios, all 18 frontend unit tests, Svelte check and static build passed. Both public walkthroughs completed all **48 Python blocks** against an installed wheel, including Excel and complete catalogue exports. Software, adversarial and pricing-actuary reviews closed their findings. These are local macOS checks, not a GitHub CI or Windows release check.
 
 Fresh selected-workspace checks on 8 October: the broad Python run recorded **1,614 passed**, 1 skipped, 1 slow deselected and one launcher failure while the frontend build replaced static assets. With the build finished, the desktop, model-flow and launcher suites passed **278 tests**, including that failed launcher check. The final missing-artifact guard then passed **276 tests** in those suites; two test fixtures needed the new availability field/completed-artifact contract and both closed in a **21-test** diagnostic/progress rerun. The focused stack/model-flow suite passed **8 tests**. Black, Ruff, mypy, all 18 frontend unit tests, Svelte check and the bundled static build passed. The selected-model browser scenario, both existing single-model scenarios, interaction-reuse scenario and all six Variables scenarios passed. Independent software, adversarial and pricing-actuary reviews closed their findings, including delayed fit status, draft recovery, missing artifacts and guarded mobile navigation.
@@ -55,7 +75,7 @@ Fresh recovery-workspace checks on 9 October: all **18 frontend unit tests**, Sv
 
 The prior build reported **1,605 passed, 1 skipped, 1 slow deselected** and **17 stack example Python blocks against an installed wheel**. Both totals are historical baselines for the redesign; they are not fresh validation of later changes. CI currently specifies Python 3.10–3.13 tests, Ruff, Black, mypy for `core`, `workflow`, and `pricing`, a Windows installed-wheel job, and frontend check/build plus existing Playwright suites. The source branch may have no CI run because it is unpushed.
 
-Use the implementation checkout as the working directory (`/private/tmp/easyglm-visual-model-flow` locally, or the fresh clone on another machine). Create **new** environments; do not use the broken `.venv` symlink. From that checkout:
+Use the implementation checkout as the working directory (`/private/tmp/easyglm-model-variable-setup` locally, or the fresh clone on another machine). Create **new** environments and verify their import paths. From that checkout:
 
 ```bash
 checkout=$(pwd -P)
@@ -80,6 +100,17 @@ if [ -L frontend/node_modules ] && [ ! -e frontend/node_modules ]; then unlink f
 ```
 
 If `.venv` is a real environment, preserve it and confirm its import path before browser tests; if it points elsewhere, use a clean clone rather than replacing it. Likewise inspect a real `frontend/node_modules` directory before `npm ci`, which replaces its contents. From `frontend/`, run `npm ci`, `npm run check`, `npm run build`, `node --test tests/*.test.js`, and `npx playwright install chromium` before the relevant config suites (for example, `npx playwright test --config playwright.models.config.js`). Those suites use bundled Chromium. The separate `tests/stack-visual.mjs` and `tests/stack-legacy-append.mjs` launch the Chrome channel and require an installed Chrome browser; `npx playwright install chrome` is an optional browser installation if it is absent. CI's workbench job also checks that rebuilt static assets match tracked files. `pytest -m slow` is the separate 5M-row memory budget.
+
+The per-model definition checks use these two configurations from `frontend/`:
+
+```bash
+npx playwright test --config playwright.model-variables.config.js
+npx playwright test --config playwright.model-variables-wide.config.js
+```
+
+The first covers root/child fitting, catalogue attributes and draft recovery. The
+second creates 500 available columns and checks bulk JSON selection, saved draft
+reopening, search and a narrow layout without horizontal table scrolling.
 
 For package acceptance, build and install a wheel into a **second new** environment. Keep this in the same shell as `check_dir` above:
 
@@ -123,15 +154,15 @@ The 30 September iCloud incident left recovery bundles/patches/manifests at `/Us
 This stack branch is unpushed. Check that all required changes are committed before creating a transfer bundle. The
 implementation checkout is a linked Git worktree: copying its directory or
 `.git` pointer alone will not transfer the repository. For local continuation,
-open `/private/tmp/easyglm-visual-model-flow` directly. For another machine, make a
+open `/private/tmp/easyglm-model-variable-setup` directly. For another machine, make a
 packet containing a Git bundle **and today's six guidance files**. This is a
 local backup/transfer operation, not a commit, push or release:
 
 ```bash
-source_checkout=/private/tmp/easyglm-visual-model-flow
-packet=/Users/serban/Documents/Projects/easy_glm/.internal/handover-20261004
+source_checkout=/private/tmp/easyglm-model-variable-setup
+packet=/Users/serban/Documents/Projects/easy_glm/.internal/handover-20261010
 mkdir -p "$packet/docs/plans"
-git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/model-workspace-recovery refs/tags/v0.472
+git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/model-variable-setup refs/tags/v0.472
 git -C "$source_checkout" bundle verify "$packet/easyglm.bundle"
 cp "$source_checkout/AGENTS.md" "$packet/AGENTS.md"
 cp "$source_checkout/docs/HANDOVER.md" "$packet/docs/HANDOVER.md"
@@ -141,8 +172,8 @@ cp "$source_checkout/docs/PRICING_WORKFLOW_BUILD.md" "$packet/docs/PRICING_WORKF
 cp "$source_checkout/docs/plans/STACKED_MODELS.md" "$packet/docs/plans/STACKED_MODELS.md"
 ```
 
-Check that the bundle contains the current `codex/model-workspace-recovery` commit
-(`git rev-parse codex/model-workspace-recovery`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
+Check that the bundle contains the current `codex/model-variable-setup` commit
+(`git rev-parse codex/model-variable-setup`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
 **new** directory with the stack branch selected, then copy the six guidance
 files into that clone and inspect `git status` before work. Keep the packet's
 directory structure; its docs are newer than the 30 September recovery bundle.
@@ -150,7 +181,7 @@ For example, with transferred packet and destination paths chosen by the
 operator:
 
 ```bash
-git clone --branch codex/model-workspace-recovery "$packet/easyglm.bundle" "$destination"
+git clone --branch codex/model-variable-setup "$packet/easyglm.bundle" "$destination"
 cp "$packet/AGENTS.md" "$destination/AGENTS.md"
 cp "$packet/docs/HANDOVER.md" "$destination/docs/HANDOVER.md"
 cp "$packet/docs/MODEL_FLOW.md" "$destination/docs/MODEL_FLOW.md"

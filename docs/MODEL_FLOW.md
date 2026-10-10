@@ -10,7 +10,7 @@ targets, weights, IDs, split columns, offsets and ignored columns are excluded.
 
 ## Fit a model
 
-1. Choose **New standalone model** and give it a name.
+1. Choose **Start a new model chain** and give the first model a name.
 2. Choose GLM or CatBoost, select its variables and set the fitting options.
 3. Click **Fit model**. This saves those settings and starts fitting.
 
@@ -18,9 +18,34 @@ targets, weights, IDs, split columns, offsets and ignored columns are excluded.
 editor. If you leave an unsaved draft, choose **Keep editing**, **Save draft** or
 **Discard changes**.
 
-Search the available variables to find a column. The selected variables stay
-visible and alphabetical while you search. GLMs and interaction tables use the
-shared numeric bands on **Variables**. Direct CatBoost models use raw columns.
+Each draft has a **Variables for this model** section. Use **Table** to search
+columns, select them, and change how this model uses them. The list is alphabetical.
+Use **JSON** to select and define many variables at once, then choose **Apply
+variable JSON**. Fix invalid entries before saving or fitting.
+
+GLMs and interaction tables have their own numeric bands: a default count,
+a count for one variable, or explicit cuts. Automatic cuts use training data.
+Project settings provide the initial defaults; saving the model stores its own
+copy. Later changes to project defaults do not change that saved definition.
+Direct CatBoost models use raw numeric or categorical values, without GLM bands.
+
+For example, this JSON selects three variables for this model and gives driver
+age fixed cuts:
+
+```json
+{
+  "defaults": {"n_bins": 8},
+  "variables": {
+    "DrivAge": {"kind": "step", "knots": [25, 35, 45, 55, 65]},
+    "VehAge": {"kind": "step", "n_bins": 6},
+    "Region": {"kind": "categorical"}
+  }
+}
+```
+
+Only columns listed under `variables` are selected. This JSON does not change
+project roles or the variable selections in other models. A project-wide ignored
+column remains unavailable in every model.
 
 ## Add a model after another model
 
@@ -28,6 +53,11 @@ Select a fitted model and click **Add model after this**. Choose the new additio
 variables and settings, then click **Fit model**. Its offset is the selected
 model's complete fitted score, including earlier interaction tables, catalogue
 files and applied amendments.
+
+The target, weight/exposure, family, log link and training/holdout split are
+inherited from the first model and shown read-only. The model offset is automatic;
+there is no column to choose or prediction array to supply. Any original external
+offset is already included in the complete preceding score.
 
 For example, fit a main GLM, add a vehicle CatBoost model after it, then add an
 occupation model after the vehicle model. The occupation model uses both earlier

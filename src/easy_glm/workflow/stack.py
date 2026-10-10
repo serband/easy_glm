@@ -19,7 +19,12 @@ from easy_glm.core.fit import GLMFit, fit_glm
 from easy_glm.core.tables import rate_tables, to_rate_model
 from easy_glm.engine.rate_model import RateModel
 
-from .catalogue import join_catalogue, load_catalogue, validate_catalogue
+from .catalogue import (
+    align_catalogue_key,
+    join_catalogue,
+    load_catalogue,
+    validate_catalogue,
+)
 from .pair_distillation import fit_catboost_pair_raw, fit_catboost_raw
 from .project import ModelConfig, Project
 from .stack_types import (
@@ -96,6 +101,50 @@ def raw_features(
     return np.column_stack(columns).astype(object), categorical
 
 
+def _project_for_recipe(project: Project, recipe: ComponentRecipe) -> Project:
+    """Return a private project view for one component's saved definitions."""
+    if recipe.design is None:
+        return project
+    raw = project.to_dict()
+    raw["design"] = copy.deepcopy(recipe.design)
+    return Project.from_dict(raw)
+
+
+def _recipe_categorical(
+    recipe: ComponentRecipe, frame: pl.DataFrame
+) -> tuple[int, ...] | None:
+    """CatBoost uses local type overrides without applying GLM binning."""
+    if recipe.design is None:
+        return None
+    return tuple(
+        index
+        for index, factor in enumerate(recipe.factors)
+        if (
+            recipe.design["variables"].get(factor, {}).get("kind") == "categorical"
+            or (
+                recipe.design["variables"].get(factor, {}).get("kind") is None
+                and frame[factor].dtype in (pl.String, pl.Categorical, pl.Enum)
+            )
+        )
+    )
+
+
+def _cat_features_for_recipe(
+    recipe: ComponentRecipe, frame: pl.DataFrame
+) -> tuple[int, ...] | None:
+    """Choose one authority for CatBoost's raw categorical columns.
+
+    A component-local definition is an explicit later user decision, so it
+    replaces the legacy ``settings.cat_features`` indexes.  Old recipes without
+    a definition retain those indexes exactly.
+    """
+    if recipe.design is not None:
+        return _recipe_categorical(recipe, frame)
+    if "cat_features" in recipe.settings:
+        return tuple(recipe.settings["cat_features"])
+    return None
+
+
 def _response(
     config: ModelConfig, frame: pl.DataFrame
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -164,6 +213,9 @@ def _new_stack(config: ModelConfig) -> StackScorer:
 
 
 def _check_prefix(config: ModelConfig, prefix: StackScorer) -> None:
+    resolved_link = config.link or (
+        "identity" if config.family == "gaussian" else "log"
+    )
     if (
         prefix.family,
         prefix.link,
@@ -174,7 +226,7 @@ def _check_prefix(config: ModelConfig, prefix: StackScorer) -> None:
         prefix.tweedie_power,
     ) != (
         config.family,
-        "log",
+        resolved_link,
         config.target,
         config.weight,
         config.offset,
@@ -198,8 +250,9 @@ def _fit_glm(
 
     dropped: list[str] = []
     factors = list(recipe.factors)
+    component_project = _project_for_recipe(project, recipe)
     spec = build_design(
-        project, train, factors, weight_col=config.weight, dropped=dropped
+        component_project, train, factors, weight_col=config.weight, dropped=dropped
     )
     settings = recipe.settings
     alpha = settings.get("alpha", config.penalty.alpha)
@@ -218,11 +271,11 @@ def _fit_glm(
         offset=offset,
         alpha=alpha,
         cv=cv,
-        cv_seed=project.data.split.seed,
+        cv_seed=component_project.data.split.seed,
         n_alphas=settings.get("n_alphas", config.penalty.n_alphas),
         l1_ratio=settings.get("l1_ratio", config.penalty.l1_ratio),
         min_alpha_ratio=settings.get("min_alpha_ratio", config.penalty.min_alpha_ratio),
-        monotone=monotone_for(project, replace(config, predictors=factors)),
+        monotone=monotone_for(component_project, replace(config, predictors=factors)),
         progress=progress,
         link="log",
     )
@@ -250,7 +303,7 @@ def _fit_catboost(
     raw, categorical = raw_features(
         train,
         recipe.factors,
-        tuple(settings["cat_features"]) if "cat_features" in settings else None,
+        _cat_features_for_recipe(recipe, train),
     )
     y, weight = _response(config, train)
     baseline = prefix.predict_unit(train)
@@ -308,6 +361,7 @@ def _fit_catalogue(
         raise ValueError("First-version catalogue fitting supports method='catboost'")
     key = str(settings["key"])
     master = load_catalogue(settings)
+    master = align_catalogue_key(train, master, key)
     validate_catalogue(master, key, recipe.factors)
     enriched = join_catalogue(train, master, key, recipe.factors)
     scorer, evidence = _fit_catboost(enriched, config, recipe, prefix)
@@ -353,6 +407,7 @@ def _fit_component(
         if recipe.kind == "catalogue":
             key = str(recipe.settings["key"])
             master = load_catalogue(recipe.settings)
+            master = align_catalogue_key(train, master, key)
             validate_catalogue(master, key, recipe.factors)
             join_catalogue(train, master, key, recipe.factors)
             table = master.with_columns(pl.lit(1.0).alias("multiplier"))
@@ -417,9 +472,10 @@ def _fit_component(
             b,
             min_weight_share=float(recipe.settings.get("min_weight_share", 0.001)),
         )
+        component_project = _project_for_recipe(project, recipe)
         axes = (
-            _axis(project, train, a, config.weight),
-            _axis(project, train, b, config.weight),
+            _axis(component_project, train, a, config.weight),
+            _axis(component_project, train, b, config.weight),
         )
         n_cells = len(axes[0].table) * len(axes[1].table)
         if n_cells > MAX_CELLS:

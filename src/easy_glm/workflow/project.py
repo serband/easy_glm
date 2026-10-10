@@ -1357,6 +1357,12 @@ class Project:
             if m["pair_stages"]:
                 m["pair_method"] = "sequential_catboost"
             m["adjustments"] = [_adjustment_to_dict(a) for a in m["adjustments"]]
+            # Component-local definitions were added after stack projects were
+            # already fingerprinted.  Preserve every old serialised form when
+            # a recipe still inherits the project-wide design.
+            for component in m.get("components", []):
+                if component.get("design") is None:
+                    component.pop("design", None)
             for snap in m.get("snapshots", []):
                 snap["adjustments"] = [
                     _adjustment_to_dict(a) for a in snap["adjustments"]

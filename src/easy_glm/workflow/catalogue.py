@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 from typing import Any
 
 import polars as pl
+
+_UNAMBIGUOUS_NUMERIC_KEY = re.compile(
+    r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$"
+)
 
 
 def restore_schema(frame: pl.DataFrame, schema: dict[str, str] | None) -> pl.DataFrame:
@@ -61,6 +66,35 @@ def validate_catalogue(
         raise ValueError(f"Catalogue key {key!r} has duplicates: {duplicates}")
 
 
+def align_catalogue_key(
+    frame: pl.DataFrame, table: pl.DataFrame, key: str
+) -> pl.DataFrame:
+    """Safely align a CSV catalogue key to a numeric experience key.
+
+    CSV is read as strings so identifiers such as ``001`` survive upload.  A
+    numeric experience key can nevertheless join a CSV whose values are plain
+    numeric literals.  Only those unambiguous literals are converted.  Values
+    with leading zeroes stay strings and retain the existing type-mismatch
+    error, rather than silently turning a meaningful ``001`` into ``1``.
+    """
+    if key not in frame.columns or key not in table.columns:
+        return table
+    experience_dtype = frame.schema[key]
+    catalogue_dtype = table.schema[key]
+    if experience_dtype == catalogue_dtype or not experience_dtype.is_numeric():
+        return table
+    if catalogue_dtype not in (pl.String, pl.Categorical, pl.Enum):
+        return table
+    values = table[key].cast(pl.String)
+    unambiguous = values.str.contains(_UNAMBIGUOUS_NUMERIC_KEY.pattern).fill_null(False)
+    if not bool(unambiguous.all()):
+        return table
+    try:
+        return table.with_columns(pl.col(key).cast(experience_dtype, strict=True))
+    except pl.exceptions.InvalidOperationError:
+        return table
+
+
 def join_catalogue(
     frame: pl.DataFrame,
     table: pl.DataFrame,
@@ -70,9 +104,10 @@ def join_catalogue(
     require_coverage: bool = True,
 ) -> pl.DataFrame:
     """Join selected master fields without changing row count or conflicting with history."""
-    validate_catalogue(table, key, attributes)
     if key not in frame.columns:
         raise ValueError(f"Experience missing catalogue key {key!r}")
+    table = align_catalogue_key(frame, table, key)
+    validate_catalogue(table, key, attributes)
     if frame.schema[key] != table.schema[key]:
         raise ValueError(
             f"Catalogue key {key!r} has a different type in experience and master"
