@@ -26,6 +26,12 @@ version for trivial documentation or copy edits.
    exercises realistic use. The builder fixes findings; the validator rechecks them.
    Repeat until the relevant checks close cleanly.
 
+For workbench layout changes, review the affected configured form at desktop and
+narrow widths. Check label placement, column edges, control heights, spacing,
+checkbox/help placement, and action alignment in the rendered page. State which
+screens and states were inspected. Passing functional tests or finding no overflow
+does not establish that a layout is aligned or usable.
+
 Choose available agents by capability and independence, without requiring a specific
 provider or model name. If independent review is unavailable, report that limitation.
 Do not edit the README unless expressly asked. Keep any requested changelog concise
@@ -36,7 +42,7 @@ and human-readable, and release only with explicit authorization.
 ## Current state
 
 Read `docs/HANDOVER.md` before work on the mixed model stack. The last known public
-release is v0.472. The current project model-plan work is on `codex/project-page-layout` in
+release is v0.472. The current project model-plan work is on `codex/configured-plan-form` in
 `/private/tmp/easyglm-model-variable-setup`, based on CatBoost tuning revision
 `c179422`. The user's primary checkout contains separate work. Verify the actual
 checkout and preserve its existing changes. Model-flow connections record how named

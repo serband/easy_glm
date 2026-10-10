@@ -272,9 +272,10 @@
                     stages are retained as saved versions. Editing one creates a revised plan and refits
                     that stage and those after it.
                 </p>{/if}
-            <div class="common-settings">
-                <label
-                    >Family<select
+            <div class="two-column-grid common-settings">
+                <label class="field">
+                    <span class="field-label">Family</span>
+                    <select
                         aria-label="Model family"
                         disabled={busy || adoptedRoot || (fittedCount && !revising)}
                         value={plan.family}
@@ -283,15 +284,20 @@
                                 family: event.currentTarget.value,
                                 link: plan.mode === 'sequential' ? 'log' : null,
                             })}
-                        ><option value="poisson">Poisson</option><option value="tweedie"
-                            >Tweedie</option
-                        ><option value="gaussian">Gaussian</option
-                        >{#if plan.mode === 'single'}<option value="gamma">Gamma</option><option
-                                value="inverse_gaussian">Inverse Gaussian</option
-                            ><option value="binomial">Binomial</option>{/if}</select
-                    ></label
-                ><label
-                    >Link<select
+                    >
+                        <option value="poisson">Poisson</option>
+                        <option value="tweedie">Tweedie</option>
+                        <option value="gaussian">Gaussian</option>
+                        {#if plan.mode === 'single'}
+                            <option value="gamma">Gamma</option>
+                            <option value="inverse_gaussian">Inverse Gaussian</option>
+                            <option value="binomial">Binomial</option>
+                        {/if}
+                    </select>
+                </label>
+                <label class="field">
+                    <span class="field-label">Link</span>
+                    <select
                         aria-label="Model link"
                         value={plan.mode === 'sequential' ? 'log' : plan.link || ''}
                         onchange={(event) =>
@@ -300,15 +306,23 @@
                             plan.mode === 'sequential' ||
                             adoptedRoot ||
                             (fittedCount && !revising)}
-                        >{#if plan.mode === 'single'}<option value="">Family default</option
-                            >{/if}<option value="log">Log</option
-                        >{#if plan.mode === 'single'}<option value="logit">Logit</option
-                            >{/if}</select
-                    ></label
-                >{#if plan.mode === 'sequential'}<p class="help-text">
-                        Staged models use a log link so scores can be multiplied.
-                    </p>{/if}{#if plan.family === 'tweedie'}<label
-                        >Tweedie power<input
+                    >
+                        {#if plan.mode === 'single'}<option value="">Family default</option>{/if}
+                        <option value="log">Log</option>
+                        {#if plan.mode === 'single'}<option value="logit">Logit</option>{/if}
+                    </select>
+                </label>
+            </div>
+            {#if plan.mode === 'sequential'}
+                <p class="help-text link-note">
+                    Staged models use a log link so scores can be multiplied.
+                </p>
+            {/if}
+            {#if plan.family === 'tweedie'}
+                <div class="two-column-grid tweedie-row">
+                    <label class="field">
+                        <span class="field-label">Tweedie power</span>
+                        <input
                             aria-label="Tweedie power"
                             type="number"
                             min="1.01"
@@ -318,42 +332,53 @@
                             onchange={(event) =>
                                 updatePlan({ tweedie_power: Number(event.currentTarget.value) })}
                             disabled={busy || adoptedRoot || (fittedCount && !revising)}
-                        /></label
-                    >{/if}<label
-                    ><input
-                        type="checkbox"
-                        disabled={busy || adoptedRoot || (fittedCount && !revising)}
-                        checked={plan.divide_target_by_weight}
-                        onchange={(event) =>
-                            updatePlan({ divide_target_by_weight: event.currentTarget.checked })}
-                    />
-                    Divide target by weight
-                    <span class="help-text">(use a unit response)</span></label
+                        />
+                    </label>
+                </div>
+            {/if}
+            <label class="checkbox-field">
+                <input
+                    type="checkbox"
+                    disabled={busy || adoptedRoot || (fittedCount && !revising)}
+                    checked={plan.divide_target_by_weight}
+                    onchange={(event) =>
+                        updatePlan({ divide_target_by_weight: event.currentTarget.checked })}
+                />
+                <span
+                    >Divide target by weight <span class="help-text">(use a unit response)</span
+                    ></span
                 >
-            </div>
+            </label>
             <ol class="stage-list">
-                {#each stages as item, index}<li>
-                        <label
-                            >Stage name<input
-                                aria-label={`Stage ${index + 1} name`}
-                                value={item.name}
-                                onchange={(event) =>
-                                    updateStage(index, { name: event.currentTarget.value })}
-                                disabled={busy || stageLocked(index)}
-                            /></label
-                        ><label
-                            >Method<select
-                                aria-label={`Stage ${index + 1} method`}
-                                value={item.kind}
-                                onchange={(event) => changeMethod(index, event.currentTarget.value)}
-                                disabled={busy || stageLocked(index)}
-                                ><option value="glm">GLM</option><option value="catboost"
-                                    >CatBoost</option
-                                ><option value="interaction">Interaction</option><option
-                                    value="catalogue">Catalogue</option
-                                ></select
-                            ></label
-                        >
+                {#each stages as item, index}
+                    <li>
+                        <div class="two-column-grid stage-fields">
+                            <label class="field">
+                                <span class="field-label">Stage name</span>
+                                <input
+                                    aria-label={`Stage ${index + 1} name`}
+                                    value={item.name}
+                                    onchange={(event) =>
+                                        updateStage(index, { name: event.currentTarget.value })}
+                                    disabled={busy || stageLocked(index)}
+                                />
+                            </label>
+                            <label class="field">
+                                <span class="field-label">Method</span>
+                                <select
+                                    aria-label={`Stage ${index + 1} method`}
+                                    value={item.kind}
+                                    onchange={(event) =>
+                                        changeMethod(index, event.currentTarget.value)}
+                                    disabled={busy || stageLocked(index)}
+                                >
+                                    <option value="glm">GLM</option>
+                                    <option value="catboost">CatBoost</option>
+                                    <option value="interaction">Interaction</option>
+                                    <option value="catalogue">Catalogue</option>
+                                </select>
+                            </label>
+                        </div>
                         <div class="stage-actions">
                             <button onclick={() => onNavigate('variables', item.component_id)}
                                 >Choose variables</button
@@ -376,21 +401,26 @@
                                     disabled={busy || stageLocked(index)}>Remove</button
                                 >{/if}
                         </div>
-                    </li>{/each}
+                    </li>
+                {/each}
             </ol>
-            <div class="plan-actions">
-                <label
-                    >Add stage<select aria-label="Add stage method" bind:value={newKind}
-                        ><option value="glm">GLM</option><option value="catboost">CatBoost</option
-                        ><option value="interaction">Interaction</option><option value="catalogue"
-                            >Catalogue</option
-                        ></select
-                    ></label
-                ><button onclick={() => addStage(newKind)} disabled={busy}
-                    >{plan.mode === 'single'
-                        ? 'Add a stage and build in stages'
-                        : 'Add stage'}</button
-                >
+            <div class="two-column-grid add-stage">
+                <label class="field">
+                    <span class="field-label">Method for next stage</span>
+                    <select aria-label="Add stage method" bind:value={newKind}>
+                        <option value="glm">GLM</option>
+                        <option value="catboost">CatBoost</option>
+                        <option value="interaction">Interaction</option>
+                        <option value="catalogue">Catalogue</option>
+                    </select>
+                </label>
+                <div class="add-stage-action">
+                    <button onclick={() => addStage(newKind)} disabled={busy}
+                        >{plan.mode === 'single'
+                            ? 'Add a stage and build in stages'
+                            : 'Add stage'}</button
+                    >
+                </div>
             </div>
         </section>
         <section class="model-card saved-versions">
@@ -411,15 +441,47 @@
     .plan-actions {
         display: flex;
         flex-wrap: wrap;
-        gap: 10px;
-        margin-top: 16px;
+        gap: 8px;
+        margin-top: 0;
+    }
+    .two-column-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+    }
+    .field {
+        display: grid;
+        gap: 8px;
+        min-width: 0;
+    }
+    .field-label {
+        display: block;
+    }
+    .field input,
+    .field select {
+        width: 100%;
+        min-width: 0;
+        height: 38px;
+        box-sizing: border-box;
     }
     .common-settings {
+        margin-top: 24px;
+    }
+    .tweedie-row,
+    .checkbox-field {
+        margin-top: 16px;
+    }
+    .configured-plan .link-note {
+        margin: 16px 0 0;
+    }
+    .checkbox-field {
         display: flex;
-        gap: 14px;
-        flex-wrap: wrap;
-        align-items: end;
-        margin: 16px 0;
+        align-items: center;
+        gap: 8px;
+    }
+    .checkbox-field input {
+        flex: none;
+        margin: 0;
     }
     .plan-header {
         display: flex;
@@ -460,31 +522,39 @@
     }
     .stage-list {
         padding-left: 0;
-        margin: 20px 0;
+        margin: 24px 0 0;
         list-style: none;
     }
     .stage-list li {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) 180px;
-        gap: 12px;
-        align-items: center;
-        border-top: 1px solid var(--line);
-        padding: 12px 0;
+        border-top: 1px solid var(--border);
+        padding: 16px 0;
     }
-    .stage-list li > label {
-        display: grid;
-        gap: 7px;
-        min-width: 0;
-    }
-    .stage-list li > label input,
-    .stage-list li > label select {
-        width: 100%;
+    .configured-plan .plan-actions button,
+    .stage-actions button,
+    .add-stage-action button {
+        min-height: 38px;
     }
     .stage-actions {
         display: flex;
-        gap: 5px;
         flex-wrap: wrap;
-        grid-column: 1 / -1;
+        gap: 8px;
+        margin-top: 16px;
+    }
+    .add-stage {
+        margin-top: 24px;
+    }
+    .add-stage-action {
+        display: flex;
+        align-items: end;
+    }
+    .add-stage-action button {
+        align-self: end;
+    }
+    .configured-plan + .saved-versions {
+        margin-top: 24px;
+    }
+    .plan-header .plan-actions {
+        align-self: start;
     }
     @media (max-width: 900px) {
         .plan-header {
@@ -493,9 +563,14 @@
         .plan-header .plan-actions {
             margin-top: 16px;
         }
-        .stage-list li {
+        .two-column-grid {
             grid-template-columns: 1fr;
-            gap: 5px;
+        }
+        .add-stage-action {
+            align-items: start;
+        }
+        .add-stage-action button {
+            align-self: start;
         }
         .route-actions {
             grid-template-columns: 1fr;

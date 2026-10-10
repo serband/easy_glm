@@ -6,7 +6,7 @@
 
 | Purpose | Checkout and state |
 | --- | --- |
-| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/project-page-layout`, following model-plan revision `09b171f`; defines the plan in Project & data, per-model variables in Variables, and ordered fitting in Model |
+| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/configured-plan-form`, following layout revision `e0fced7`; defines the plan in Project & data, per-model variables in Variables, and ordered fitting in Model |
 | User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
 | Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
 
@@ -96,6 +96,17 @@ designers reviewed rendered empty and staged pages at desktop and narrow widths;
 their layout findings were fixed. Svelte check/build and the five model-plan and
 four data-opening browser tests passed locally. No modelling or API changes,
 push, or release were made for this correction.
+
+The configured Model stages form received a further correction after user review:
+Family/Link, Stage name/Method and the next-stage controls now share a two-column
+grid, labels above fields and 38px control heights. Help text and the response
+checkbox occupy separate rows. Independent rendered reviews covered staged
+Poisson and Tweedie forms at desktop and 800px widths, plus a three-stage plan
+and its Variables navigation. The primary agent verified the user's configured
+Poisson form and adding a stage in an isolated project. Svelte check/build and all
+five model-plan browser tests passed. The single-model form was inspected in
+source and exercised by the browser tests, without a separate visual review.
+This correction changes presentation only; nothing was pushed or released.
 
 - `src/easy_glm/pricing/session.py`, `model.py`, `review.py`, `views.py`, `validation.py`, `persistence.py`, `excel.py`: public interactive setup, named checkpoints, edits, diagnostics, comparisons, save/load and Excel.
 - `src/easy_glm/workflow/stack_types.py`, `stack.py`, `stack_tuning.py`, `catalogue.py`: component recipes/artifacts, cumulative scoring and offsets, fold-aware tuning, catalogue validation and lookup.
