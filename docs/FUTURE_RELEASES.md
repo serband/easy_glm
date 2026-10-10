@@ -45,9 +45,19 @@ Implemented in Python and the workbench, with software, statistical and actuaria
   append a stage, or explicitly revise the fitted setup; preserve saved results
   and reuse only the exact unchanged fitted prefix. Adopt an existing complete
   scorer as a frozen starting point when continuing earlier work.
+- Plan named GLM, CatBoost and Catalogue models. Add optional interaction
+  tables inside a fitted GLM after residual review, rather than planning them
+  as separate models. Existing flat plans retain their saved order.
+- Fit interaction candidates separately, inspect their tables and training
+  evidence, then Keep or Discard. Pair-only variables do not become main effects.
+  The next table and named model use the complete accepted table scorer.
+- Preview and apply interaction-table amendments. Keep the accepted prefix
+  visible and refit affected later tables and models without refitting the
+  unchanged GLM. Preserve the earlier complete fitted version.
 - Identify the saved chain on Diagnostics and choose its final fit or the score
   after an individual model. A/E, lift and metrics include the earlier offsets;
-  grouped A/E uses factors available at that point in the chain.
+  grouped A/E uses factors available at that point in the chain. Within a GLM,
+  inspect the cumulative score through its main effects or an accepted table.
 - Default new CatBoost models and catalogue fits to training-only Optuna tuning,
   with a trial count or tuning-time budget. Keep manual settings available and
   show the selected settings or unchanged preceding model in Results.

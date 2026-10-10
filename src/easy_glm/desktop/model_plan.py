@@ -33,6 +33,8 @@ class PlanFitRef:
     stage_id: str
     model_name: str
     fit_id: str
+    model_id: str | None = None
+    prefix_fingerprint: str | None = None
 
 
 def _plan_problems(project: Project, plan: ModelPlan) -> list[str]:
@@ -52,7 +54,8 @@ def validate_model_plan(
     A future blank stage must never block fitting an earlier reviewed stage.
     """
     problems = _plan_problems(project, plan)
-    if through_count < 0 or through_count > len(plan.stages):
+    logical_count = plan.logical_model_count
+    if through_count < 0 or through_count > logical_count:
         problems.append("Choose a declared stage to fit")
     if through_count:
         if not project.target:
@@ -64,11 +67,20 @@ def validate_model_plan(
             weight=project.weight,
             offset=project.offset_column,
             divide_target_by_weight=plan.divide_target_by_weight,
-            components=deepcopy(plan.stages),
+            components=deepcopy(plan.physical_stages),
             tweedie_power=plan.tweedie_power,
         )
         candidates = stack_factor_stages(project, raw, prepared_columns, config)
-        for index, stage in enumerate(plan.stages[:through_count]):
+        physical = (
+            [
+                item
+                for model in plan.models[:through_count]
+                for item in model.physical_components
+            ]
+            if plan.is_logical_models_plan
+            else plan.stages[:through_count]
+        )
+        for index, stage in enumerate(physical):
             # An adopted root is an already fitted exact scorer; it has no new
             # factors to validate or refit.
             if index == 0 and plan.adopted_model_name is not None:
@@ -125,7 +137,7 @@ def _single_glm_config(project: Project, plan: ModelPlan, stage: Any) -> ModelCo
     )
     return ModelConfig(
         family=plan.family,
-        link=plan.link,
+        link=_materialised_plan_link(plan),
         target=project.target,
         weight=project.weight,
         offset=project.offset_column,
@@ -139,11 +151,25 @@ def _single_glm_config(project: Project, plan: ModelPlan, stage: Any) -> ModelCo
     )
 
 
+def _materialised_plan_link(plan: ModelPlan) -> str | None:
+    """Resolve the v2 Gaussian family default before creating a fit recipe.
+
+    A direct GLM treats a missing Gaussian link as log.  A multiplicative
+    stack must make that log link explicit, because an absent link there means
+    identity and is deliberately refused.  V2 plans therefore use the same
+    effective link whether a core is fitted directly or later extended with a
+    correction.  Legacy plan serialisation keeps its historical behaviour.
+    """
+    if plan.is_logical_models_plan and plan.family == "gaussian" and plan.link is None:
+        return "log"
+    return plan.link
+
+
 def materialise_plan_prefix(
     project: Project, plan: ModelPlan, count: int, name: str | None
 ) -> ModelConfig:
     """Turn one declared prefix into one immutable saved fit recipe."""
-    if count < 1 or count > len(plan.stages):
+    if count < 1 or count > plan.logical_model_count:
         raise ValueError("Choose a declared stage to fit")
     if name is not None:
         problem = validate_model_name(name, project.models)
@@ -176,6 +202,33 @@ def materialise_plan_prefix(
             tweedie_power=plan.tweedie_power,
             components=[*inherited, *deepcopy(plan.stages[1:count])],
         )
+    if plan.is_logical_models_plan:
+        selected = plan.models[:count]
+        components = [item for model in selected for item in model.physical_components]
+        if plan.adopted_root is not None:
+            # An adopted root is a frozen scorer, not an editable first stage.
+            # Its physical recipe is included only so the stack configuration
+            # agrees exactly with the frozen fit supplied to the worker.
+            components = [*plan.adopted_root.physical_prefix, *components]
+        # Retain the ordinary, exact single-GLM path until it gains an accepted
+        # interaction table.  A table then needs the native stack scorer.
+        if (
+            len(selected) == 1
+            and selected[0].core.kind == "glm"
+            and not selected[0].pair_corrections
+            and plan.adopted_root is None
+        ):
+            return _single_glm_config(project, plan, selected[0].core)
+        return ModelConfig(
+            family=plan.family,
+            link=_materialised_plan_link(plan),
+            target=project.target,
+            weight=project.weight,
+            offset=project.offset_column,
+            divide_target_by_weight=plan.divide_target_by_weight,
+            tweedie_power=plan.tweedie_power,
+            components=deepcopy(components),
+        )
     if plan.mode == "single" and plan.stages[0].kind == "glm":
         return _single_glm_config(project, plan, plan.stages[0])
     return ModelConfig(
@@ -190,9 +243,75 @@ def materialise_plan_prefix(
     )
 
 
+def materialise_plan_through_component(
+    project: Project,
+    plan: ModelPlan,
+    model_index: int,
+    through_component_id: str,
+    name: str | None = None,
+) -> ModelConfig:
+    """Compile an exact v2 checkpoint ending at one owned physical component.
+
+    Logical models may have a fitted core and several accepted pair tables.  A
+    revision can therefore retain a checkpoint through the core or an earlier
+    table while the remainder is explicitly waiting to be refitted.
+    """
+    if not plan.is_logical_models_plan:
+        raise ValueError(
+            "Partial checkpoints are available only for logical model plans"
+        )
+    if not 0 <= model_index < len(plan.models):
+        raise ValueError("Choose a declared model")
+    model = plan.models[model_index]
+    owned = list(model.physical_components)
+    position = next(
+        (
+            index
+            for index, component in enumerate(owned)
+            if component.component_id == through_component_id
+        ),
+        None,
+    )
+    if position is None:
+        raise ValueError("The checkpoint does not belong to this logical model")
+    if name is not None:
+        problem = validate_model_name(name, project.models)
+        if problem:
+            raise ValueError(problem)
+    components = [
+        component
+        for prior in plan.models[:model_index]
+        for component in prior.physical_components
+    ]
+    if plan.adopted_root is not None:
+        components = [*plan.adopted_root.physical_prefix, *components]
+    components.extend(owned[: position + 1])
+    if (
+        model_index == 0
+        and position == 0
+        and model.core.kind == "glm"
+        and plan.adopted_root is None
+    ):
+        return _single_glm_config(project, plan, model.core)
+    return ModelConfig(
+        family=plan.family,
+        link=_materialised_plan_link(plan),
+        target=project.target,
+        weight=project.weight,
+        offset=project.offset_column,
+        divide_target_by_weight=plan.divide_target_by_weight,
+        tweedie_power=plan.tweedie_power,
+        components=deepcopy(components),
+    )
+
+
 def plan_model_name(project: Project, plan: ModelPlan, count: int) -> str:
     base = project.name.strip() or "Model"
-    suffix = plan.stages[count - 1].name.strip()
+    suffix = (
+        plan.models[count - 1].name.strip()
+        if plan.is_logical_models_plan
+        else plan.stages[count - 1].name.strip()
+    )
     candidate = f"{base} — {suffix}"
     if candidate not in project.models:
         return candidate

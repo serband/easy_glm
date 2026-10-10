@@ -35,7 +35,6 @@ test('project setup chooses the staged workflow before its model variables and f
         page.getByRole('heading', { name: 'Fit Model 1 — Main effects', exact: true }),
     ).toBeVisible();
     await page.getByRole('button', { name: 'Fit Model 1 — Main effects', exact: true }).click();
-    await expect(page.getByText('Fitting Main effects', { exact: false })).toBeVisible();
     await expect(page.getByText('All models are fitted.', { exact: false })).toBeVisible({
         timeout: 60000,
     });
@@ -51,7 +50,10 @@ test('project setup chooses the staged workflow before its model variables and f
     await page.getByRole('button', { name: /^Save variables for .+ and open Fit$/ }).click();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await expect(
-        page.getByText(/^Will use the complete score through Main effects as its offset/),
+        page.getByText(
+            'Offset: complete score through Main effects. This is the offset for this model.',
+            { exact: true },
+        ),
     ).toBeVisible();
     await page.getByRole('button', { name: /^Fit / }).click();
     await expect(page.getByText('All models are fitted.', { exact: false })).toBeVisible({

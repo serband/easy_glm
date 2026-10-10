@@ -1,5 +1,6 @@
 <script>
     import { tick } from 'svelte';
+    import { isLogicalPlan, logicalModels, modelScopeLabel } from './modelPlan.js';
 
     export let api;
     export let state;
@@ -30,15 +31,34 @@
     }
     $: plan = localPlan || serverPlan;
     $: stages = plan?.stages || [];
+    $: logicalPlan = isLogicalPlan(plan);
+    $: models = logicalModels(plan);
     $: fittedCount = planState?.fit_refs?.length || 0;
-    $: adoptedRoot = Boolean(plan?.adopted_model_name);
+    $: v2AdoptedRoot = logicalPlan && Boolean(plan?.adopted_root);
+    $: legacyAdoptedRoot = !logicalPlan && Boolean(plan?.adopted_model_name);
+    $: adoptedRoot = v2AdoptedRoot || legacyAdoptedRoot;
+    $: adoptedModelName = plan?.adopted_root?.model_name || plan?.adopted_model_name || null;
     $: autosavePending = Boolean(autosaving || pendingAutosave);
-    $: stageLocks = stages.map(
-        (_, index) => (adoptedRoot && index === 0) || (index < fittedCount && !revising),
+    $: logicalModelStatuses = models.map((model) =>
+        (planState?.stage_statuses || []).find(
+            (item) =>
+                item.model_id === model.model_id || item.stage_id === model.core?.component_id,
+        ),
     );
-    function stage(kind, index, name = index === 0 ? 'Main effects' : `Model ${index + 1}`) {
+    $: stageLocks = logicalPlan
+        ? logicalModelStatuses.map((status, index) => status?.state === 'fitted' && !revising)
+        : stages.map(
+              (_, index) =>
+                  (legacyAdoptedRoot && index === 0) || (index < fittedCount && !revising),
+          );
+    function stage(
+        kind,
+        index,
+        name = index === 0 ? 'Main effects' : `Model ${index + 1}`,
+        componentId = crypto.randomUUID(),
+    ) {
         return {
-            component_id: crypto.randomUUID(),
+            component_id: componentId,
             name,
             kind,
             factors: [],
@@ -95,19 +115,28 @@
         : state?.setup?.assignments?.current_premium
           ? `log(${assignmentName(state.setup.assignments.current_premium)}) (derived from current premium)`
           : null;
-    function stageOffset(index, stageList, adoptedName, declaredExternalOffset) {
-        if (adoptedName && index === 0) return `Accepted saved scorer: ${adoptedName}.`;
+    function stageOffset(index, stageList, adoptedName, declaredExternalOffset, hasSeparateRoot) {
+        if (adoptedName && index === 0 && !hasSeparateRoot)
+            return `Accepted saved scorer: ${adoptedName}.`;
+        if (adoptedName && index === 0 && hasSeparateRoot)
+            return `Offset: complete score from ${adoptedName}.`;
         if (index === 0)
             return declaredExternalOffset
                 ? `Starts from project data. No earlier model. External offset: ${declaredExternalOffset}.`
                 : 'Starts from project data. No earlier model.';
-        const priorNames = stageList.slice(0, index).map((item) => item.name);
-        if (adoptedName) priorNames[0] = adoptedName;
+        const priorNames = [
+            ...(hasSeparateRoot && adoptedName ? [adoptedName] : []),
+            ...stageList
+                .slice(0, index)
+                .map((item) => (hasSeparateRoot ? modelScopeLabel(item) : item.name)),
+        ];
+        if (adoptedName && !hasSeparateRoot) priorNames[0] = adoptedName;
         return `Offset: complete score from ${priorNames.join(' → ')}.`;
     }
     function nextModelName() {
-        const names = new Set(stages.map((item) => item.name));
-        let number = stages.length + 1;
+        const items = logicalPlan ? models : stages;
+        const names = new Set(items.map((item) => item.name));
+        let number = items.length + 1;
         while (names.has(`Model ${number}`)) number += 1;
         return `Model ${number}`;
     }
@@ -166,10 +195,13 @@
     }
     function retryAutosave() {
         if (!localPlan || autosaving) return;
-        pendingAutosave = { plan: localPlan, operation: fittedCount && revising ? 'revise' : 'save' };
+        pendingAutosave = {
+            plan: localPlan,
+            operation: fittedCount && revising ? 'revise' : 'save',
+        };
         void flushAutosave();
     }
-    async function adopt(name) {
+    async function adopt(fitted) {
         if (!confirmDiscardStageDraft()) return;
         busy = true;
         error = '';
@@ -179,7 +211,17 @@
                     session_id: state.session_id,
                     revision: state.revision,
                     operation: 'adopt',
-                    adopt_model_name: name,
+                    adopt_model_name: fitted.name,
+                    plan: {
+                        format_version: 2,
+                        mode: 'sequential',
+                        family: fitted.family,
+                        link: fitted.link,
+                        tweedie_power: fitted.tweedie_power,
+                        divide_target_by_weight: fitted.divide_target_by_weight,
+                        models: [],
+                        adopted_root: null,
+                    },
                 }),
             );
         } catch (e) {
@@ -198,20 +240,34 @@
             return;
         starting = true;
         try {
-            await save('start', {
-                mode,
-                family: 'poisson',
-                link: 'log',
-                tweedie_power: 1.5,
-                divide_target_by_weight: Boolean(state?.setup?.assignments?.weight),
-                stages: [stage('glm', 0)],
-            }, true);
+            const modelId = crypto.randomUUID();
+            await save(
+                'start',
+                {
+                    mode,
+                    family: 'poisson',
+                    link: 'log',
+                    tweedie_power: 1.5,
+                    divide_target_by_weight: Boolean(state?.setup?.assignments?.weight),
+                    format_version: 2,
+                    models: [
+                        {
+                            model_id: modelId,
+                            name: 'Main effects',
+                            core: stage('glm', 0, 'Main effects', modelId),
+                            pair_corrections: [],
+                        },
+                    ],
+                },
+                true,
+            );
         } finally {
             starting = false;
         }
     }
     function stageLocked(index) {
-        return (adoptedRoot && index === 0) || (index < fittedCount && !revising);
+        if (logicalPlan) return Boolean(stageLocks[index]);
+        return (legacyAdoptedRoot && index === 0) || (index < fittedCount && !revising);
     }
     function updatePlan(patch, confirmed = false) {
         queueAutosave(
@@ -222,12 +278,33 @@
     }
     function updateStage(index, patch, confirmed = false) {
         if (stageLocked(index)) return;
-        queueAutosave({
-            ...plan,
-            stages: stages.map((item, itemIndex) =>
-                itemIndex === index ? { ...item, ...patch } : item,
-            ),
-        }, index < fittedCount ? 'revise' : 'save', confirmed);
+        if (logicalPlan) {
+            const nextModels = models.map((model, modelIndex) => {
+                if (modelIndex !== index) return model;
+                const name = patch.name ?? model.name;
+                return {
+                    ...model,
+                    name,
+                    core: { ...model.core, ...patch, name },
+                };
+            });
+            queueAutosave(
+                { ...plan, models: nextModels },
+                index < fittedCount ? 'revise' : 'save',
+                confirmed,
+            );
+            return;
+        }
+        queueAutosave(
+            {
+                ...plan,
+                stages: stages.map((item, itemIndex) =>
+                    itemIndex === index ? { ...item, ...patch } : item,
+                ),
+            },
+            index < fittedCount ? 'revise' : 'save',
+            confirmed,
+        );
     }
     function changeMethod(index, kind, confirmed = false) {
         const previous = stages[index];
@@ -246,12 +323,16 @@
                       ),
                   }
                 : previous.design;
-        updateStage(index, {
-            kind,
-            settings,
-            design,
-            ...(kind === 'catalogue' ? { factors: [] } : {}),
-        }, confirmed);
+        updateStage(
+            index,
+            {
+                kind,
+                settings,
+                design,
+                ...(kind === 'catalogue' ? { factors: [] } : {}),
+            },
+            confirmed,
+        );
     }
     function changeSelect(event, currentValue, apply) {
         if (!confirmDiscardStageDraft()) {
@@ -262,11 +343,27 @@
     }
     async function addStage() {
         if (!plan || busy || autosavePending || !confirmDiscardStageDraft()) return;
-        const nextPlan = {
-            ...plan,
-            mode: 'sequential',
-            stages: [...stages, stage('glm', stages.length, nextModelName())],
-        };
+        const modelId = crypto.randomUUID();
+        const modelName = nextModelName();
+        const nextPlan = logicalPlan
+            ? {
+                  ...plan,
+                  mode: 'sequential',
+                  models: [
+                      ...models,
+                      {
+                          model_id: modelId,
+                          name: modelName,
+                          core: stage('glm', models.length, modelName, modelId),
+                          pair_corrections: [],
+                      },
+                  ],
+              }
+            : {
+                  ...plan,
+                  mode: 'sequential',
+                  stages: [...stages, stage('glm', stages.length, nextModelName())],
+              };
         busy = true;
         error = '';
         try {
@@ -277,7 +374,9 @@
                 plan: nextPlan,
             });
             onChanged(saved);
-            const stageId = saved.plan?.stages?.at(-1)?.component_id;
+            const stageId = isLogicalPlan(saved.plan)
+                ? saved.plan.models?.at(-1)?.core?.component_id
+                : saved.plan?.stages?.at(-1)?.component_id;
             busy = false;
             await tick();
             await tick();
@@ -292,27 +391,28 @@
     }
     function moveStage(index, direction) {
         const target = index + direction;
-        if (target < 0 || target >= stages.length) return;
-        const next = [...stages];
-        [next[index], next[target]] = [next[target], next[index]];
+        const items = logicalPlan ? models : stages;
+        if (target < 0 || target >= items.length) return;
         if (stageLocked(index) || stageLocked(target)) return;
+        const next = [...items];
+        [next[index], next[target]] = [next[target], next[index]];
         queueAutosave(
-            { ...plan, stages: next },
+            logicalPlan ? { ...plan, models: next } : { ...plan, stages: next },
             Math.min(index, target) < fittedCount ? 'revise' : 'save',
         );
     }
     function removeStage(index) {
+        const items = logicalPlan ? models : stages;
         if (stageLocked(index)) return;
         if (
-            stages.length < 2 ||
-            !window.confirm(`Remove ${stages[index].name} from this working plan?`)
+            items.length < 2 ||
+            !window.confirm(`Remove ${items[index].name} from this working plan?`)
         )
             return;
         queueAutosave(
-            {
-                ...plan,
-                stages: stages.filter((_, itemIndex) => itemIndex !== index),
-            },
+            logicalPlan
+                ? { ...plan, models: items.filter((_, itemIndex) => itemIndex !== index) }
+                : { ...plan, stages: items.filter((_, itemIndex) => itemIndex !== index) },
             index < fittedCount ? 'revise' : 'save',
         );
     }
@@ -367,7 +467,7 @@
                 <ul>
                     {#each planState.history as fitted}<li>
                             {fitted.name}{#if fitted.can_adopt}<button
-                                    onclick={() => adopt(fitted.name)}
+                                    onclick={() => adopt(fitted)}
                                     disabled={busy}>Use as current plan</button
                                 >{:else}<span class="help-text"
                                     >This saved fit cannot be used as a log-link starting model.</span
@@ -411,8 +511,8 @@
             </div>
             {#if !(singleWorkflowManaged && plan.mode === 'single')}
                 {#if adoptedRoot}<div class="message">
-                        Existing fitted model: {plan.adopted_model_name}. It is an accepted scorer
-                        and cannot be changed here. Add a model to build on it, or start a new plan.
+                        Existing fitted model: {adoptedModelName}. It is an accepted scorer and
+                        cannot be changed here. Add a model to build on it, or start a new plan.
                     </div>{/if}{#if fittedCount}<p class="help-text">
                         {revising
                             ? 'You are revising the fitted prefix. Save revised plan to create the new version.'
@@ -532,37 +632,79 @@
                             >
                                 <option value="glm">GLM</option>
                                 <option value="catboost">CatBoost</option>
-                                <option value="interaction">Interaction</option>
+                                {#if stages[0]?.kind === 'interaction'}<option value="interaction"
+                                        >Interaction table</option
+                                    >{/if}
                                 <option value="catalogue">Catalogue</option>
                             </select>
                         </label>
                     </div>
                 {:else}
                     <ol class="stage-list">
-                        {#each stages as item, index}
-                            <li class="stage-card" id={`model-stage-${item.component_id}`}>
+                        {#if logicalPlan && v2AdoptedRoot}<li class="stage-card frozen-stage">
+                                <h3>Saved starting model</h3>
+                                <p class="stage-offset">
+                                    Accepted saved scorer. It is frozen and its complete saved score
+                                    is the offset for the next model.
+                                </p>
+                                <div class="two-column-grid stage-fields">
+                                    <label class="field">
+                                        <span class="field-label">Model name</span>
+                                        <input
+                                            value={adoptedModelName}
+                                            readonly
+                                            aria-label="Saved model name"
+                                        />
+                                    </label>
+                                    <label class="field">
+                                        <span class="field-label">Model type</span>
+                                        <input
+                                            value="Saved fitted model"
+                                            readonly
+                                            aria-label="Saved model type"
+                                        />
+                                    </label>
+                                </div>
+                                <div class="stage-footer">
+                                    <span class="selected-count"
+                                        >Saved fitted variables and tables are preserved</span
+                                    >
+                                </div>
+                            </li>{/if}
+                        {#each logicalPlan ? models : stages as item, index}
+                            {@const core = logicalPlan ? item.core : item}
+                            <li class="stage-card" id={`model-stage-${core.component_id}`}>
                                 <h3>Model {index + 1}</h3>
-                                <p class="stage-offset">{stageOffset(index, stages, plan.adopted_model_name, externalOffset)}</p>
+                                <p class="stage-offset">
+                                    {stageOffset(
+                                        index,
+                                        logicalPlan ? models : stages,
+                                        adoptedModelName,
+                                        externalOffset,
+                                        v2AdoptedRoot,
+                                    )}
+                                </p>
                                 <div class="two-column-grid stage-fields">
                                     <label class="field">
                                         <span class="field-label">Model name</span>
                                         <input
                                             aria-label={`Model ${index + 1} name`}
-                                            value={adoptedRoot && index === 0
-                                                ? plan.adopted_model_name
+                                            value={legacyAdoptedRoot && index === 0
+                                                ? adoptedModelName
                                                 : item.name}
-                                            readonly={adoptedRoot && index === 0}
+                                            readonly={legacyAdoptedRoot && index === 0}
                                             oninput={(event) =>
                                                 updateStage(index, {
                                                     name: event.currentTarget.value,
                                                 })}
                                             disabled={busy ||
-                                                (stageLocks[index] && !(adoptedRoot && index === 0))}
+                                                (stageLocks[index] &&
+                                                    !(legacyAdoptedRoot && index === 0))}
                                         />
                                     </label>
                                     <label class="field">
                                         <span class="field-label">Model type</span>
-                                        {#if adoptedRoot && index === 0}
+                                        {#if legacyAdoptedRoot && index === 0}
                                             <input
                                                 aria-label={`Model ${index + 1} type`}
                                                 value="Saved fitted model"
@@ -571,16 +713,23 @@
                                         {:else}
                                             <select
                                                 aria-label={`Model ${index + 1} type`}
-                                                value={item.kind}
+                                                value={core.kind}
                                                 onchange={(event) =>
-                                                    changeSelect(event, item.kind, () =>
-                                                        changeMethod(index, event.currentTarget.value, true),
+                                                    changeSelect(event, core.kind, () =>
+                                                        changeMethod(
+                                                            index,
+                                                            event.currentTarget.value,
+                                                            true,
+                                                        ),
                                                     )}
                                                 disabled={busy || stageLocks[index]}
                                             >
                                                 <option value="glm">GLM</option>
                                                 <option value="catboost">CatBoost</option>
-                                                <option value="interaction">Interaction table</option>
+                                                {#if core.kind === 'interaction'}<option
+                                                        value="interaction"
+                                                        >Interaction table</option
+                                                    >{/if}
                                                 <option value="catalogue">Catalogue</option>
                                             </select>
                                         {/if}
@@ -588,11 +737,15 @@
                                 </div>
                                 <div class="stage-footer">
                                     <span class="selected-count"
-                                        >{adoptedRoot && index === 0
+                                        >{legacyAdoptedRoot && index === 0
                                             ? 'Saved fitted variables are preserved'
-                                            : `${item.factors?.length || 0} variable${
-                                                  item.factors?.length === 1 ? '' : 's'
-                                              } selected`}</span
+                                            : `${core.factors?.length || 0} variable${
+                                                  core.factors?.length === 1 ? '' : 's'
+                                              } selected`}{#if logicalPlan && core.kind === 'glm'}
+                                            · {item.pair_corrections?.length || 0} accepted interaction
+                                            table{item.pair_corrections?.length === 1
+                                                ? ''
+                                                : 's'}{/if}</span
                                     >
                                     <span class="autosave-state" aria-live="polite"
                                         >{autosaving || pendingAutosave
@@ -605,8 +758,9 @@
                                             >{/if}</span
                                     >
                                     <div class="stage-actions">
-                                        {#if !modelsOnly && !(adoptedRoot && index === 0)}<button
-                                                onclick={() => onNavigate('variables', item.component_id)}
+                                        {#if !modelsOnly && !(legacyAdoptedRoot && index === 0)}<button
+                                                onclick={() =>
+                                                    onNavigate('variables', core.component_id)}
                                                 >Choose variables</button
                                             >{/if}{#if stages.length > 1}<button
                                                 aria-label={`Move ${item.name} up`}
@@ -626,7 +780,9 @@
                                                     stageLocks[index + 1]}>Down</button
                                             ><button
                                                 onclick={() => removeStage(index)}
-                                                disabled={busy || autosavePending || stageLocks[index]}>Remove</button
+                                                disabled={busy ||
+                                                    autosavePending ||
+                                                    stageLocks[index]}>Remove</button
                                             >{/if}
                                     </div>
                                 </div>
@@ -634,7 +790,9 @@
                         {/each}
                     </ol>
                     <div class="add-stage">
-                        <button onclick={addStage} disabled={busy || autosavePending}>Add model</button>
+                        <button onclick={addStage} disabled={busy || autosavePending}
+                            >Add model</button
+                        >
                     </div>
                 {/if}
             {/if}

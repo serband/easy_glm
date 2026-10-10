@@ -203,6 +203,21 @@ def fit_result(
                     raise ValueError("The frozen source fit identity changed.")
                 train, _holdout = train_holdout(frame, project.data.split)
                 prefix = stack_from_legacy(project, source_run)
+                # A v2 single-GLM plan deliberately retains the direct GLM fit
+                # until it gains its first accepted interaction.  At that point
+                # it is wrapped as the first native stack component without
+                # refitting or changing a single prediction.  The stable core
+                # recipe ID lets the added interaction bind to the planned
+                # physical order rather than the adapter's private ``legacy``
+                # label.
+                target_components = project.models[name].components
+                if (
+                    len(prefix.components) == 1
+                    and target_components
+                    and target_components[0].kind == "glm"
+                    and prefix.components[0].recipe.kind == "legacy"
+                ):
+                    prefix.components[0].recipe = target_components[0]
                 progress(
                     "Reusing the accepted starting scorer; fitting the new suffix…"
                 )

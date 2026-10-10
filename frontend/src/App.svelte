@@ -12,6 +12,12 @@
     import FeatureSelection from './FeatureSelection.svelte';
     import SplitSettings from './SplitSettings.svelte';
     import BinningSettings from './BinningSettings.svelte';
+    import {
+        canonicalPlanPayload,
+        isLogicalPlan,
+        logicalModels,
+        physicalStages,
+    } from './modelPlan.js';
     let comparison = '',
         modelContext = { fitted: [], selected: '', champion: null };
     let legacySelected = '';
@@ -83,7 +89,16 @@
         planFittingDirty = false,
         planVariablesReset = 0;
     $: fittedStageCount = planState?.fit_refs?.length || 0;
-    $: plannedStageCount = planState?.plan?.stages?.length || 0;
+    $: plannedStageCount = isLogicalPlan(planState?.plan)
+        ? logicalModels(planState.plan).length
+        : physicalStages(planState?.plan).length;
+    $: directSinglePlan = Boolean(
+        planState?.plan?.mode === 'single' &&
+        planState.plan.stages?.[0]?.kind === 'glm' &&
+        (!isLogicalPlan(planState.plan) ||
+            (!planState.plan.adopted_root &&
+                !(planState.plan.models?.[0]?.pair_corrections || []).length)),
+    );
     $: planFullyFitted = Boolean(
         planState?.plan && plannedStageCount && fittedStageCount >= plannedStageCount,
     );
@@ -168,8 +183,8 @@
                 ? 'Unsaved changes'
                 : stateSnapshot?.setup?.assignments?.target
                   ? fitted
-                    ? 'Locked after fit'
-                    : 'Ready'
+                      ? 'Locked after fit'
+                      : 'Ready'
                   : 'Needs attention',
             models: stages.length ? 'Saved' : 'Needs attention',
             variables: !selected
@@ -563,6 +578,11 @@
         return reconcilePending;
     }
     async function api(path, body, asFile = false) {
+        // The server adds `stages` as a read-only v2 display projection. Model-plan
+        // writes must retain the canonical `models` payload only.
+        if (path === 'model-plan' && body?.plan && isLogicalPlan(body.plan)) {
+            body = { ...body, plan: canonicalPlanPayload(body.plan) };
+        }
         if (differentProject)
             throw new Error(
                 'This address serves a different project. Download your kept draft before discarding and reloading.',
@@ -1233,7 +1253,11 @@
                     : '○'} Target and predictors</span
             >
             <span>{modelIsDefined ? '✓' : '○'} Model defined</span>
-            <span>{planFullyFitted || (!planState?.plan && resultsReady) ? '✓' : '○'} Model fitted{planState?.plan ? ` · ${fittedProgressLabel}` : ''}</span>
+            <span
+                >{planFullyFitted || (!planState?.plan && resultsReady) ? '✓' : '○'} Model fitted{planState?.plan
+                    ? ` · ${fittedProgressLabel}`
+                    : ''}</span
+            >
         </div>
         <div class="rail-bottom">
             <span class="status-dot"></span> Local session
@@ -1650,7 +1674,10 @@
                         {#if state?.columns.length}
                             <section class="loaded-dataset" aria-label="Current dataset">
                                 <span>Loaded:</span>
-                                <span class="source-filename" title={projectInfo?.data?.source?.path || ''}>
+                                <span
+                                    class="source-filename"
+                                    title={projectInfo?.data?.source?.path || ''}
+                                >
                                     {sourceFilename(projectInfo)}
                                 </span>
                                 <span>{countLabel(state.row_count, 'row')}</span>
@@ -1669,7 +1696,10 @@
                                 class:active={setupStep === key}
                                 aria-current={setupStep === key ? 'step' : undefined}
                                 onclick={() => selectSetupStep(key)}
-                            ><span>{index + 1}</span><span class="setup-step-label">{label}<small>{setupStepStatuses[key]}</small></span></button>
+                                ><span>{index + 1}</span><span class="setup-step-label"
+                                    >{label}<small>{setupStepStatuses[key]}</small></span
+                                ></button
+                            >
                         {/each}
                     </nav>
                 {/if}
@@ -1685,7 +1715,11 @@
                     </section>
                 {/if}
                 {#if state?.columns.length}
-                    <section id="setup-structure" hidden={setupStep !== 'structure'} aria-label="Model structure">
+                    <section
+                        id="setup-structure"
+                        hidden={setupStep !== 'structure'}
+                        aria-label="Model structure"
+                    >
                         <ProjectModelPlan
                             {api}
                             {state}
@@ -1703,10 +1737,16 @@
                         />
                     </section>
                     {#if !planState?.plan && state.models?.length}
-                        <section class="model-card legacy-model-compat" aria-label="Existing saved models">
+                        <section
+                            class="model-card legacy-model-compat"
+                            aria-label="Existing saved models"
+                        >
                             <div>
                                 <h2>Existing saved model{state.models.length === 1 ? '' : 's'}</h2>
-                                <p>These models predate model plans. You can still open and work with them.</p>
+                                <p>
+                                    These models predate model plans. You can still open and work
+                                    with them.
+                                </p>
                             </div>
                             <button onclick={() => navigate('model')}>Open saved model</button>
                         </section>
@@ -1719,13 +1759,20 @@
                                     class="primary"
                                     disabled={busy || dirty || differentProject || !!binningError}
                                     onclick={continueFromSharedColumns}
-                                >Continue to {planState?.plan?.mode === 'sequential' ? 'models' : 'variables'}</button>
+                                    >Continue to {planState?.plan?.mode === 'sequential'
+                                        ? 'models'
+                                        : 'variables'}</button
+                                >
                             </div>
                         {/if}
                     </section>
                     {#if planState?.plan}
                         {#if planState.plan.mode === 'sequential'}
-                            <section id="setup-models" hidden={setupStep !== 'models'} aria-label="Models">
+                            <section
+                                id="setup-models"
+                                hidden={setupStep !== 'models'}
+                                aria-label="Models"
+                            >
                                 <ProjectModelPlan
                                     {api}
                                     {state}
@@ -1735,14 +1782,23 @@
                                     {confirmDiscardStageDraft}
                                     showHistory={false}
                                     modelsOnly={true}
-                                    onNavigate={(_, stageId) => selectSetupStep('variables', stageId)}
+                                    onNavigate={(_, stageId) =>
+                                        selectSetupStep('variables', stageId)}
                                 />
                                 <div class="setup-continue">
-                                    <button class="primary" onclick={() => selectSetupStep('variables')}>Choose variables</button>
+                                    <button
+                                        class="primary"
+                                        onclick={() => selectSetupStep('variables')}
+                                        >Choose variables</button
+                                    >
                                 </div>
                             </section>
                         {/if}
-                        <section id="setup-variables" hidden={setupStep !== 'variables' && setupStep !== 'details'} aria-label="Variables">
+                        <section
+                            id="setup-variables"
+                            hidden={setupStep !== 'variables' && setupStep !== 'details'}
+                            aria-label="Variables"
+                        >
                             <PlanVariables
                                 {api}
                                 {state}
@@ -1755,7 +1811,8 @@
                                 onChanged={planChanged}
                                 onDirty={(value) => (planVariablesDirty = value)}
                                 onCreateRevision={beginPlanRevision}
-                                onStageChange={(stageId) => selectSetupStep('variables', stageId, false, true)}
+                                onStageChange={(stageId) =>
+                                    selectSetupStep('variables', stageId, false, true)}
                                 resetSignal={planVariablesReset}
                                 onSingleStepChange={(step) => {
                                     if (planState?.plan?.mode === 'single') {
@@ -1765,7 +1822,8 @@
                                 }}
                                 onSaved={(_, detail) => {
                                     if (planState?.plan?.mode === 'sequential') {
-                                        const next = planState?.plan?.stages?.[detail.stageIndex + 1];
+                                        const next =
+                                            planState?.plan?.stages?.[detail.stageIndex + 1];
                                         if (next) selectSetupStep('variables', next.component_id);
                                         else void navigate('model');
                                     } else void navigate('model');
@@ -1776,9 +1834,14 @@
                             class="model-card saved-versions-history"
                             hidden={setupStep !== 'variables' && setupStep !== 'details'}
                         >
-                            <summary>Saved fitted versions ({(planState?.history || []).length})</summary>
+                            <summary
+                                >Saved fitted versions ({(planState?.history || [])
+                                    .length})</summary
+                            >
                             {#if (planState?.history || []).length}
-                                <ul>{#each planState.history as fitted}<li>{fitted.name}</li>{/each}</ul>
+                                <ul>
+                                    {#each planState.history as fitted}<li>{fitted.name}</li>{/each}
+                                </ul>
                             {:else}<p>No fitted versions yet.</p>{/if}
                         </details>
                     {/if}
@@ -1855,13 +1918,14 @@
                             })();
                         } else if (target === 'project') void navigate('project');
                         else if (target === 'diagnostics') void navigate('diagnostics');
+                        else if (target === 'explore') void navigate('explore');
                     }}
                     onFitted={(name) => {
                         requestedPlanModel = name;
                         resultsReady = true;
                     }}
                 />{/if}
-            {#if state && draft && ((!planState?.plan && !stackMode && (view !== 'model' || state.models?.length)) || (planState?.plan?.mode === 'single' && planState.plan.stages[0]?.kind === 'glm' && ['diagnostics', 'compare', 'tables', 'export'].includes(view)))}{#key state.project_id}<ModelWorkbench
+            {#if state && draft && ((!planState?.plan && !stackMode && (view !== 'model' || state.models?.length)) || (directSinglePlan && ['diagnostics', 'compare', 'tables', 'export'].includes(view)))}{#key state.project_id}<ModelWorkbench
                         {api}
                         {state}
                         {view}
@@ -1879,7 +1943,7 @@
                             else legacySelected = '';
                         }}
                     />{/key}{/if}
-            {#if state && draft && ((!planState?.plan && stackMode) || (planState?.plan && !(planState.plan.mode === 'single' && planState.plan.stages[0]?.kind === 'glm') && ['diagnostics', 'compare', 'tables', 'export'].includes(view)))}{#key state.project_id}<StackWorkbench
+            {#if state && draft && ((!planState?.plan && stackMode) || (planState?.plan && !directSinglePlan && ['diagnostics', 'compare', 'tables', 'export'].includes(view)))}{#key state.project_id}<StackWorkbench
                         {api}
                         {state}
                         {view}

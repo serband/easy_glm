@@ -12,7 +12,9 @@ with the complete preceding score as their offset.
 | Model | Set fitting options and fit the next model in order. |
 | Diagnostics | Choose a fitted version, then inspect the complete final fit or the cumulative fit through an earlier model. |
 
-The project name identifies the work. Each model has one name and one method.
+The project name identifies the work. Each model has one name and one method:
+GLM, CatBoost or Catalogue. Interaction is not a planned model type. A GLM can
+start with main effects and later acquire separately reviewed interaction tables.
 There is no separate component-name field. The choice between one model and
 models in stages appears only in Project & data.
 
@@ -74,6 +76,30 @@ Navigation asks before discarding an unsaved draft and cancellation retains it.
 The Fit action names the model and its position. Eligibility in the order does
 not imply that an empty model is configured.
 
+## Interactions within a GLM
+
+Fit the main effects before choosing interactions. The fitted GLM's Interactions
+panel searches its current training residuals and starts a candidate for a
+selected pair. Eligible unassigned columns can be used in a pair without becoming
+main effects. Ignored, ID, response, weight and split columns remain excluded.
+
+Fitting a candidate leaves the accepted score unchanged. Review the fitted table
+and its training evidence, then Keep interaction or Discard candidate. The next
+pair uses the GLM and every accepted earlier table as its offset. Raw CatBoost
+teacher predictions are used to construct the candidate table, never as the
+offset for a later pair or model.
+
+Keeping a table creates a named fitted version. A revised table order or an
+upstream change requires new fits for the affected suffix. Historical versions
+remain available. A candidate records its exact source fit and cannot be kept
+after that source changes. Reload retains candidate setup separately from the
+accepted model.
+
+Diagnostics offers the complete accepted fit, each named model's cumulative
+score and the main-effects/interaction checkpoints within a GLM. These all
+include the incoming earlier models. Export uses the selected accepted checkpoint;
+an unfinished later model is not part of that export.
+
 ## Backend contract
 
 An optional `Project.model_plan` stores the current ordered setup. The existing
@@ -85,7 +111,14 @@ references and next eligible stage. Atomic revision-checked saves create, revise
 or adopt a plan. `POST /api/model-plan/fit-next` derives the starting score on the
 server; callers cannot supply a substitute parent or downstream response.
 
-Plans use project schema version 6. Plan IDs and fit references are issued by
+New plans use project schema version 7 and model-plan format 2. Each entry stores
+one core recipe and, for a GLM, its ordered accepted pair corrections. Execution
+flattens these into the existing scorer's physical sequence. The API's model list
+and fitted counts refer to named models, not the number of physical pieces.
+Legacy flat plans retain schema version 6 and their original ordering; loading
+does not infer which GLM owns an old interaction.
+
+Plan IDs and fit references are issued by
 the server and persisted with the setup. A reference is applicable only when its
 artifact and exact materialised configuration still match. A renamed or revised
 plan cannot silently bind another historical fit. Catalogue sources must be
@@ -105,7 +138,11 @@ holdout is used only for explicit evaluation.
 Walk through a new GLM → vehicle CatBoost → occupation CatBoost plan with different
 variables for every model. Then append a model after fitting, revise an upstream
 model, reopen the plan, start a new plan and inspect the retained fitted version.
-Check Table/JSON selection with 500 variables and a narrow browser window.
+Check Table/JSON selection with 500 variables and a narrow browser window. Add
+two pairs inside a fitted GLM, Keep/Discard separate candidates, reload during
+review and try to Keep after changing the source. Check that the next named
+model offsets the accepted tables and that a GLM with no interactions can still
+continue to that model.
 
 Verify exact predecessor offsets, immutable earlier predictions, protected shared
 controls, legacy import, stale requests, cancellation/retry, catalogue scoring,

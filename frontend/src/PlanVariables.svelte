@@ -1,6 +1,7 @@
 <script>
     import { tick } from 'svelte';
     import ModelVariables from './ModelVariables.svelte';
+    import { isLogicalPlan, logicalModels, modelSourceLabel } from './modelPlan.js';
     export let api;
     export let uploadCatalogue;
     export let state;
@@ -28,11 +29,21 @@
     let catalogue = null;
     $: plan = planState?.plan || null;
     $: stages = plan?.stages || [];
+    $: logicalPlan = isLogicalPlan(plan);
+    $: models = logicalModels(plan);
     $: singleMode = plan?.mode === 'single';
     $: if (!selectedStageId && stages.length) selectedStageId = stages[0].component_id;
     $: stageIndex = stages.findIndex((stage) => stage.component_id === selectedStageId);
     $: current = stageIndex >= 0 ? stages[stageIndex] : null;
-    $: adoptedStarter = Boolean(plan?.adopted_model_name) && stageIndex === 0;
+    $: logicalModelIndex = logicalPlan
+        ? models.findIndex((model) => model.core?.component_id === current?.component_id)
+        : stageIndex;
+    $: adoptedStarter = !logicalPlan && Boolean(plan?.adopted_model_name) && stageIndex === 0;
+    $: incomingScore = logicalPlan
+        ? modelSourceLabel(plan, logicalModelIndex)
+        : stageIndex
+          ? `This stage uses the complete score through ${stages[stageIndex - 1]?.name} as its offset.`
+          : 'This first stage starts from the shared data.';
     $: sourceKey = JSON.stringify({
         current: current || null,
         response: plan
@@ -220,19 +231,29 @@
         const stagesNext = stages.map((item) =>
             item.component_id === working.component_id ? working : item,
         );
+        const basePlan = singleMode ? workingPlan : plan;
+        const nextPlan = logicalPlan
+            ? {
+                  ...basePlan,
+                  models: (basePlan.models || []).map((model) =>
+                      model.core?.component_id === working.component_id
+                          ? { ...model, name: working.name, core: working }
+                          : model,
+                  ),
+              }
+            : { ...basePlan, stages: stagesNext };
         try {
             const result = await api('model-plan', {
                 session_id: state.session_id,
                 revision: state.revision,
                 operation: isFitted ? 'revise' : 'save',
-                plan: {
-                    ...(singleMode ? workingPlan : plan),
-                    stages: stagesNext,
-                },
+                plan: nextPlan,
             });
             const savedPlan = result.plan || workingPlan || plan;
             const savedStage =
                 savedPlan.stages?.find((item) => item.component_id === working.component_id) ||
+                savedPlan.models?.find((model) => model.core?.component_id === working.component_id)
+                    ?.core ||
                 working;
             working = structuredClone(savedStage);
             workingPlan = structuredClone(savedPlan);
@@ -293,7 +314,9 @@
                     {#if adoptedStarter}
                         Model {stageIndex + 1} of {stages.length} · Saved fitted model · {plan.adopted_model_name}
                     {:else}
-                        Model {stageIndex + 1} of {stages.length} · {working?.name || current?.name || 'Unnamed model'} · {methodLabel(working?.kind || current?.kind)}
+                        Model {stageIndex + 1} of {stages.length} · {working?.name ||
+                            current?.name ||
+                            'Unnamed model'} · {methodLabel(working?.kind || current?.kind)}
                     {/if}
                 </p>
                 <p>
@@ -301,9 +324,7 @@
                         ? 'Choose the factors and their treatment for this model.'
                         : adoptedStarter
                           ? 'The complete saved scorer and its variable definitions are preserved.'
-                          : stageIndex
-                            ? `This stage uses the complete score through ${stages[stageIndex - 1]?.name} as its offset.`
-                            : 'This first stage starts from the shared data.'}
+                          : incomingScore}
                 </p>
             </div>
             {#if !adoptedStarter}<strong>{working?.factors?.length || 0} selected</strong>{/if}
@@ -347,18 +368,17 @@
                     >
                         {#each stages as item, index}
                             <option value={item.component_id}
-                                >Model {index + 1} of {stages.length} · {index === 0 && plan.adopted_model_name
+                                >Model {index + 1} of {stages.length} · {index === 0 &&
+                                plan.adopted_model_name
                                     ? plan.adopted_model_name
                                     : item.name}</option
                             >
                         {/each}
                     </select>
                 </label>
-                {#if current && stageIndex > 0}
+                {#if current && (stageIndex > 0 || (logicalPlan && plan?.adopted_root))}
                     <p class="help-text">
-                        This stage automatically offsets the complete score through {stages[
-                            stageIndex - 1
-                        ].name}.
+                        {incomingScore}
                     </p>
                 {/if}
             </section>
@@ -374,8 +394,8 @@
             </div>
         {:else if locked}
             <div class="message">
-                This stage is already fitted. Create a revised plan to change it while retaining
-                the fitted version.
+                This stage is already fitted. Create a revised plan to change it while retaining the
+                fitted version.
                 <button onclick={onCreateRevision}>Create revised plan</button>
             </div>
         {/if}
@@ -452,9 +472,9 @@
                                     onchange={(event) => changeMethod(event.currentTarget.value)}
                                     ><option value="glm">GLM</option><option value="catboost"
                                         >CatBoost</option
-                                    ><option value="interaction">Interaction</option><option
-                                        value="catalogue">Catalogue</option
-                                    ></select
+                                    >{#if working.kind === 'interaction'}<option value="interaction"
+                                            >Interaction table</option
+                                        >{/if}<option value="catalogue">Catalogue</option></select
                                 ></label
                             >
                             <label
@@ -533,13 +553,20 @@
                                 >Change model details</button
                             >
                         </div>{/if}
-                    <div class:single-treatment={singleMode && embedded && singleStep === 'treatment'}>
+                    <div
+                        class:single-treatment={singleMode &&
+                            embedded &&
+                            singleStep === 'treatment'}
+                    >
                         {#key singleMode && embedded ? singleStep : working.kind}
                             <ModelVariables
                                 {columns}
                                 factors={working.factors || []}
                                 design={working.design}
-                                inheritedDesign={{ defaults: planState?.design_defaults, variables: {} }}
+                                inheritedDesign={{
+                                    defaults: planState?.design_defaults,
+                                    variables: {},
+                                }}
                                 method={working.kind === 'catalogue' ? 'catboost' : working.kind}
                                 treatmentOnly={singleMode && embedded && singleStep === 'treatment'}
                                 showHeading={false}

@@ -1,5 +1,7 @@
 <script>
     import { onDestroy, onMount } from 'svelte';
+    import CoreInteractions from './CoreInteractions.svelte';
+    import { isLogicalPlan, logicalModels, modelSourceLabel } from './modelPlan.js';
     export let api;
     export let state;
     export let planState = null;
@@ -14,13 +16,52 @@
         settingsKey = '',
         pollCancelled = false,
         pollGeneration = 0,
-        settingsBaseline = '';
+        settingsBaseline = '',
+        selectedReviewModelId = '',
+        interactionPanel = null;
     $: plan = planState?.plan || null;
+    $: logicalPlan = isLogicalPlan(plan);
+    $: plannedModels = logicalModels(plan);
     $: statuses = planState?.stage_statuses || [];
+    $: modelStatuses = Object.fromEntries(
+        plannedModels.map((model) => [
+            model.model_id,
+            statuses.find(
+                (item) =>
+                    item.model_id === model.model_id ||
+                    item.stage_id === model.model_id ||
+                    item.stage_id === model.core?.component_id,
+            ),
+        ]),
+    );
+    $: fittedGlms = plannedModels.filter(
+        (model) => model.core?.kind === 'glm' && Boolean(modelStatuses[model.model_id]?.fit),
+    );
+    $: if (
+        !selectedReviewModelId ||
+        !fittedGlms.some((model) => model.model_id === selectedReviewModelId)
+    )
+        selectedReviewModelId = fittedGlms[0]?.model_id || '';
+    $: reviewModel = fittedGlms.find((model) => model.model_id === selectedReviewModelId) || null;
+    $: reviewModelIndex = plannedModels.findIndex(
+        (model) => model.model_id === reviewModel?.model_id,
+    );
+    $: reviewStatus = reviewModel ? modelStatuses[reviewModel.model_id] : null;
+    $: reviewFitName = reviewStatus?.fit?.model_name || reviewModel?.name || '';
+    function manageInteractions(model) {
+        selectedReviewModelId = model.model_id;
+        requestAnimationFrame(() =>
+            document
+                .getElementById('glm-interaction-review')
+                ?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+        );
+    }
     $: fittingStage = statuses.find((item) => item.state === 'fitting') || null;
     $: next = statuses.find((item) => item.stage_id === planState?.next_stage_id) || null;
     $: nextIndex = next ? statuses.indexOf(next) : -1;
-    $: stage = plan?.stages?.find((item) => item.component_id === next?.stage_id);
+    $: stage = logicalPlan
+        ? plannedModels.find((model) => model.model_id === next?.stage_id)?.core || null
+        : plan?.stages?.find((item) => item.component_id === next?.stage_id);
     $: predecessor = nextIndex > 0 ? statuses[nextIndex - 1] : null;
     $: stageKey = JSON.stringify({
         plan_id: plan?.plan_id,
@@ -147,18 +188,32 @@
         }
     }
     async function saveSettings() {
-        const stages = plan.stages.map((item) =>
-            item.component_id === stage.component_id
-                ? { ...item, settings: settingsForSave() }
-                : item,
-        );
+        const settings = settingsForSave();
+        const nextPlan = logicalPlan
+            ? {
+                  ...plan,
+                  models: (plan.models || []).map((model) =>
+                      model.core?.component_id === stage.component_id
+                          ? { ...model, core: { ...model.core, settings } }
+                          : model,
+                  ),
+              }
+            : {
+                  ...plan,
+                  stages: plan.stages.map((item) =>
+                      item.component_id === stage.component_id ? { ...item, settings } : item,
+                  ),
+              };
         const saved = await api('model-plan', {
             session_id: state.session_id,
             revision: state.revision,
             operation: 'save',
-            plan: { ...plan, stages },
+            plan: nextPlan,
         });
-        workingSettings = structuredClone(saved.plan.stages[nextIndex].settings || {});
+        const savedStage = saved.plan.stages?.find(
+            (item) => item.component_id === stage.component_id,
+        );
+        workingSettings = structuredClone(savedStage?.settings || settings);
         settingsBaseline = JSON.stringify(workingSettings);
         onChanged(saved);
         return saved;
@@ -192,6 +247,23 @@
             busy = false;
         }
     }
+    async function fitRemainingInteractions() {
+        if (!reviewStatus || reviewStatus.state !== 'needs_refit' || polling) return;
+        busy = true;
+        error = '';
+        try {
+            const started = await api('model-plan/fit-next', {
+                session_id: state.session_id,
+                revision: state.revision,
+            });
+            onChanged(started.snapshot || (await api('model-plan')));
+            waitForFit(reviewStatus.stage_id, started.model_name || reviewFitName);
+        } catch (e) {
+            error = e.message;
+        } finally {
+            busy = false;
+        }
+    }
 </script>
 
 <section class="plan-fitting workflow-page" aria-label="Fit model plan">
@@ -213,6 +285,7 @@
             <ol class="fit-stages" aria-label="Model fit order">
                 {#each statuses as item, index}<li
                         class:fitted={item.state === 'fitted'}
+                        class:needs-refit={item.state === 'needs_refit'}
                         class:current={item.stage_id === next?.stage_id}
                     >
                         <div>
@@ -237,7 +310,9 @@
                                       ? 'Fit in progress.'
                                       : item.stage_id === next?.stage_id
                                         ? index
-                                            ? `Will use the complete score through ${predecessor?.name} as its offset.`
+                                            ? logicalPlan
+                                                ? `${modelSourceLabel(plan, index)} This is the offset for this model.`
+                                                : `Will use the complete score through ${predecessor?.name} as its offset.`
                                             : 'Uses the project data and outcome.'
                                         : 'Waiting for the earlier stage.'}
                             </p>
@@ -255,6 +330,32 @@
                                         onNavigate('diagnostics');
                                     }}>Inspect {item.name}</button
                                 >
+                                {#if logicalPlan && plan?.models?.find((model) => model.core?.component_id === item.stage_id)?.core?.kind === 'glm'}
+                                    <button
+                                        onclick={() =>
+                                            manageInteractions(
+                                                plan.models.find(
+                                                    (model) =>
+                                                        model.core?.component_id === item.stage_id,
+                                                ),
+                                            )}>Manage interactions</button
+                                    >
+                                {/if}
+                            {:else if item.state === 'needs_refit'}
+                                {#if item.stage_id === reviewModel?.model_id}
+                                    <button
+                                        onclick={() => {
+                                            onFitted(item.fit?.model_name || item.name);
+                                            onNavigate('diagnostics');
+                                        }}>Inspect {item.name}</button
+                                    >
+                                    <button
+                                        class="primary"
+                                        onclick={fitRemainingInteractions}
+                                        disabled={busy || polling}
+                                        >Fit remaining interaction tables</button
+                                    >
+                                {/if}
                             {:else if item.state !== 'fitting'}
                                 <button onclick={() => onNavigate('variables', item.stage_id)}
                                     >Edit variables</button
@@ -263,6 +364,78 @@
                         </div>
                     </li>{/each}
             </ol>
+            {#if logicalPlan && fittedGlms.length}
+                <section
+                    id="glm-interaction-review"
+                    class="model-card glm-review"
+                    aria-label="GLM review"
+                >
+                    <div class="review-heading">
+                        <div>
+                            <h2>Review a fitted GLM</h2>
+                            <p>
+                                Now reviewing {reviewModel?.name || 'this GLM'}. {reviewModelIndex >
+                                0
+                                    ? modelSourceLabel(plan, reviewModelIndex)
+                                    : 'Starts from project data.'} Inspect the accepted score, then add
+                                an interaction only when it is useful.
+                            </p>
+                        </div>
+                        {#if fittedGlms.length > 1}<label
+                                >GLM<select
+                                    aria-label="GLM to review"
+                                    bind:value={selectedReviewModelId}
+                                    >{#each fittedGlms as item}<option value={item.model_id}
+                                            >{item.name}</option
+                                        >{/each}</select
+                                ></label
+                            >{/if}
+                    </div>
+                    {#if reviewModel}
+                        <div class="review-actions">
+                            <button
+                                onclick={() => {
+                                    onFitted(reviewFitName);
+                                    onNavigate('diagnostics');
+                                }}>Check A/E</button
+                            >
+                            <button onclick={() => interactionPanel?.runSearch('factors')}
+                                >Find missing variables</button
+                            >
+                            <button onclick={() => interactionPanel?.runSearch('interactions')}
+                                >Find interactions</button
+                            >
+                        </div>
+                        <CoreInteractions
+                            bind:this={interactionPanel}
+                            {api}
+                            {state}
+                            {planState}
+                            model={reviewModel}
+                            {onChanged}
+                        />
+                        {#if plannedModels.findIndex((item) => item.model_id === reviewModel.model_id) < plannedModels.length - 1}
+                            <button
+                                class="primary continue-model"
+                                onclick={() =>
+                                    onNavigate(
+                                        'variables',
+                                        plannedModels[
+                                            plannedModels.findIndex(
+                                                (item) => item.model_id === reviewModel.model_id,
+                                            ) + 1
+                                        ].core.component_id,
+                                    )}
+                                >Continue to {plannedModels[
+                                    plannedModels.findIndex(
+                                        (item) => item.model_id === reviewModel.model_id,
+                                    ) + 1
+                                ].name}</button
+                            >
+                        {/if}
+                    {/if}
+                </section>
+            {/if}
             {#if error}<div class="message error" role="alert">{error}</div>{/if}
             {#if fittingStage}<div class="message">
                     <strong>Fitting {fittingStage.name}</strong> · {fittingStage.message ||
@@ -283,7 +456,7 @@
                     </p>
                     {#if nextProblem}<div class="message setup-needed" role="status">
                             <p>{nextProblem}</p>
-                            <button onclick={() => onNavigate('variables', next.stage_id)}
+                            <button onclick={() => onNavigate('variables', stage.component_id)}
                                 >Choose variables for {next.name}</button
                             >
                         </div>{/if}
@@ -814,6 +987,43 @@
         .fit-next button {
             width: 100%;
             margin-top: 10px;
+        }
+    }
+    .glm-review {
+        margin-top: 24px;
+    }
+    .review-heading {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: start;
+    }
+    .review-heading h2 {
+        margin: 0;
+    }
+    .review-heading p {
+        margin: 8px 0 0;
+    }
+    .review-heading label {
+        display: grid;
+        gap: 7px;
+        min-width: 180px;
+    }
+    .review-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 18px 0;
+    }
+    .continue-model {
+        margin-top: 16px;
+    }
+    @media (max-width: 900px) {
+        .review-heading {
+            flex-direction: column;
+        }
+        .review-heading label {
+            width: 100%;
         }
     }
 </style>

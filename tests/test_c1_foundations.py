@@ -236,7 +236,7 @@ class TestProjectFormat:
 
     def test_v1_project_loads_and_is_migrated(self):
         back = Project.from_dict(self._v1())
-        assert back.version == PROJECT_VERSION == 6
+        assert back.version == PROJECT_VERSION
         assert back.to_dict()["version"] == 2
         assert back.models["m"].target == "y"
 

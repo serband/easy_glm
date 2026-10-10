@@ -102,7 +102,7 @@ test('a catalogue stage exposes uploaded attributes but not its selected key', a
         (response) =>
             response.url().endsWith('/api/model-plan') &&
             response.request().method() === 'POST' &&
-            response.request().postDataJSON()?.plan?.stages?.length === 2,
+            response.request().postDataJSON()?.plan?.models?.length === 2,
     );
     await page.getByRole('button', { name: 'Add model', exact: true }).click();
     await addedStage;
@@ -110,13 +110,13 @@ test('a catalogue stage exposes uploaded attributes but not its selected key', a
         (response) =>
             response.url().endsWith('/api/model-plan') &&
             response.request().method() === 'POST' &&
-            response.request().postDataJSON()?.plan?.stages?.[1]?.kind === 'catalogue',
+            response.request().postDataJSON()?.plan?.models?.[1]?.core?.kind === 'catalogue',
     );
     await page.getByLabel('Model 2 type').selectOption('catalogue');
     const catalogueResponse = await savedCatalogueStage;
     const catalogueBody = await catalogueResponse.json();
     expect(catalogueResponse.ok(), JSON.stringify(catalogueBody)).toBe(true);
-    expect(catalogueBody.plan.stages[1].kind).toBe('catalogue');
+    expect(catalogueBody.plan.models[1].core.kind).toBe('catalogue');
     await chooseStageVariables(page, 1);
     await expect(page.getByRole('heading', { name: 'Full catalogue', exact: true })).toBeVisible();
     await page.getByLabel('Upload catalogue').setInputFiles({

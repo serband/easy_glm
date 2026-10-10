@@ -20,7 +20,9 @@ from easy_glm.workflow.diagnostics import (
     totals,
     unit_values,
 )
+from easy_glm.workflow.model_plan import ModelPlan
 from easy_glm.workflow.prep import train_holdout
+from easy_glm.workflow.project import Project
 from easy_glm.workflow.stack_types import LookupScorer, StackScorer
 
 
@@ -74,8 +76,102 @@ def _metrics(
     }
 
 
-def diagnostic_scopes(stack: StackScorer) -> list[dict[str, Any]]:
+def _saved_plan(run: Any, saved_plan: ModelPlan | None = None) -> ModelPlan | None:
+    """Read the plan snapshot attached to this fitted run, never live state."""
+    if saved_plan is not None:
+        return saved_plan
+    snapshot = getattr(run, "project_snapshot", None)
+    if isinstance(snapshot, ModelPlan):
+        return snapshot
+    if isinstance(snapshot, Project):
+        return snapshot.model_plan
+    if isinstance(snapshot, dict):
+        try:
+            return Project.from_dict(snapshot).model_plan
+        except (TypeError, ValueError):
+            # An old or partial saved artifact still has exact physical
+            # components.  Its safe presentation is the existing legacy list.
+            return None
+    return None
+
+
+def _component_detail(component: Any) -> dict[str, Any]:
+    return {
+        "id": component.recipe.component_id,
+        "name": component.name,
+        "kind": component.kind,
+        "factors": list(component.factors),
+    }
+
+
+def _logical_diagnostic_scopes(
+    stack: StackScorer, plan: ModelPlan
+) -> list[dict[str, Any]] | None:
+    """Group a v2 saved physical stack by its saved named-model ownership.
+
+    A plan can be edited after fitting.  We use it only when its saved IDs are
+    a prefix-exact match for this stack; otherwise the physical saved recipes
+    below are the only honest labels available.
+    """
+    if not plan.is_logical_models_plan or plan.adopted_root is not None:
+        return None
+    components = stack.diagnostic_components()
+    expected = list(plan.physical_stages)
+    actual_ids = [component.recipe.component_id for component in components]
+    expected_ids = [component.component_id for component in expected]
+    if not actual_ids or actual_ids != expected_ids[: len(actual_ids)]:
+        return None
+
+    by_id = {component.recipe.component_id: component for component in components}
+    scopes: list[dict[str, Any]] = []
+    included: list[str] = []
+    cursor = 0
+    for model in plan.models:
+        physical = model.physical_components
+        model_ids = [component.component_id for component in physical]
+        if expected_ids[cursor : cursor + len(model_ids)] != model_ids:
+            return None
+        if cursor + len(model_ids) > len(actual_ids):
+            break
+        for index, recipe in enumerate(physical):
+            component = by_id[recipe.component_id]
+            included.append(component.name)
+            final = cursor + index == len(actual_ids) - 1
+            if index == 0 and model.core.kind == "glm":
+                label = f"Main effects — {model.name}"
+                checkpoint = "main_effects"
+            elif index == 0:
+                label = f"After {model.name}"
+                checkpoint = "model"
+            elif index == len(physical) - 1:
+                label = f"After {model.name} ({len(model.pair_corrections)} tables)"
+                checkpoint = "model"
+            else:
+                label = f"{model.name} + {component.name}"
+                checkpoint = "interaction"
+            scopes.append(
+                {
+                    "id": "" if final else recipe.component_id,
+                    "label": label,
+                    "included_models": list(included),
+                    "component": _component_detail(component),
+                    "logical_model_id": model.model_id,
+                    "logical_model_name": model.name,
+                    "checkpoint": checkpoint,
+                }
+            )
+        cursor += len(physical)
+    return scopes if scopes else None
+
+
+def diagnostic_scopes(
+    stack: StackScorer, saved_plan: ModelPlan | None = None
+) -> list[dict[str, Any]]:
     """Describe the saved physical checkpoints available for diagnostics."""
+    if saved_plan is not None:
+        logical = _logical_diagnostic_scopes(stack, saved_plan)
+        if logical is not None:
+            return logical
     components = stack.diagnostic_components()
     if not components:
         return []
@@ -86,12 +182,7 @@ def diagnostic_scopes(stack: StackScorer) -> list[dict[str, Any]]:
         raise ValueError("Saved diagnostic stages have duplicate component IDs.")
     scopes = []
     for index, component in enumerate(components):
-        detail = {
-            "id": component.recipe.component_id,
-            "name": component.name,
-            "kind": component.kind,
-            "factors": list(component.factors),
-        }
+        detail = _component_detail(component)
         included = [item.name for item in components[: index + 1]]
         if index == len(components) - 1:
             # The final score is selected by omitting ``through``.  Giving it
@@ -118,10 +209,10 @@ def diagnostic_scopes(stack: StackScorer) -> list[dict[str, Any]]:
 
 
 def _diagnostic_scope(
-    stack: StackScorer, through: str | None
+    stack: StackScorer, through: str | None, saved_plan: ModelPlan | None = None
 ) -> tuple[dict[str, Any], StackScorer]:
     """Resolve one public scope to its exact saved scorer prefix."""
-    scopes = diagnostic_scopes(stack)
+    scopes = diagnostic_scopes(stack, saved_plan)
     if not scopes:
         raise ValueError("This fitted stack has no diagnostic stages.")
     selected = "" if through is None else through
@@ -171,7 +262,12 @@ def _review_variables(
 
 
 def stack_result(
-    project: Any, frame: pl.DataFrame, run: Any, notices: list[str] | None = None
+    project: Any,
+    frame: pl.DataFrame,
+    run: Any,
+    notices: list[str] | None = None,
+    *,
+    saved_plan: ModelPlan | None = None,
 ) -> dict[str, Any]:
     """Describe a fitted stack using only the training portfolio."""
     train, _holdout = train_holdout(frame, project.data.split)
@@ -216,6 +312,7 @@ def stack_result(
             }
         )
         prefix.append(item.name)
+    plan = _saved_plan(run, saved_plan)
     return {
         "stack": True,
         "components": components,
@@ -230,7 +327,7 @@ def stack_result(
         },
         "metrics": {"train": metrics},
         "lift": {"train": lift_table(actual, expected, weight).to_dicts()},
-        "diagnostic_scopes": diagnostic_scopes(run.stack),
+        "diagnostic_scopes": diagnostic_scopes(run.stack, plan),
         "review_variables": _review_variables(
             project, run.config, train, run.stack.enrich(train)
         ),
@@ -251,6 +348,7 @@ def stack_diagnostics(
     subset: str,
     variable: str | None = None,
     through: str | None = None,
+    saved_plan: ModelPlan | None = None,
 ) -> dict[str, Any]:
     train, holdout = train_holdout(frame, project.data.split)
     if subset not in {"train", "holdout"}:
@@ -258,7 +356,8 @@ def stack_diagnostics(
     selected = train if subset == "train" else holdout
     if selected.is_empty():
         raise ValueError(f"No {subset} rows are available.")
-    scope, scorer = _diagnostic_scope(run.stack, through)
+    plan = _saved_plan(run, saved_plan)
+    scope, scorer = _diagnostic_scope(run.stack, through, plan)
     enriched = scorer.enrich(selected)
     prediction = scorer.predict_unit(selected)
     actual, expected, weight = totals(selected, run.config, prediction)
@@ -266,7 +365,7 @@ def stack_diagnostics(
         "subset": subset,
         "saved_model": run.name,
         "scope": scope,
-        "diagnostic_scopes": diagnostic_scopes(run.stack),
+        "diagnostic_scopes": diagnostic_scopes(run.stack, plan),
         "review_variables": _review_variables(project, run.config, selected, enriched),
         "metrics": _metrics(run, selected, scorer),
         "lift": lift_table(actual, expected, weight).to_dicts(),

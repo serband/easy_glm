@@ -588,6 +588,25 @@ def _apply_amendments(scorer: Any, amendments: tuple[dict[str, Any], ...]) -> No
                     "Lookup amendment produced nonpositive/nonfinite multipliers"
                 )
             scorer.table = scorer.table.with_columns(pl.Series("multiplier", values))
+        elif isinstance(scorer, RateModelScorer) and operation in {"cap", "round"}:
+            # An interaction component is represented by a one-table
+            # RateModelScorer.  Apply a deployment-wide cap/round to its
+            # explicitly fitted cells, leaving unsupported cells at their
+            # neutral 1.0 fallback.  Keeping this here makes a saved amendment
+            # replayable whenever a later suffix is refitted.
+            for table in scorer.rate_model.pair_tables:
+                for cell in list(table.cells):
+                    value = cell.relativity
+                    if operation == "cap":
+                        if edit.get("lower") is not None:
+                            value = max(value, float(edit["lower"]))
+                        if edit.get("upper") is not None:
+                            value = min(value, float(edit["upper"]))
+                    else:
+                        value = round(value, int(edit["decimals"]))
+                    scorer.rate_model.update_pair_cell(
+                        table.stage_id, cell.axis_a_row, cell.axis_b_row, value
+                    )
         elif isinstance(scorer, RateModelScorer) and operation == "set_pair_cell":
             required = ("axis_a_from", "axis_a_to", "axis_b_from", "axis_b_to")
             if any(name not in edit for name in required):
@@ -893,7 +912,13 @@ def stack_from_legacy(project: Project, run: Any) -> StackScorer:
         raise ValueError(
             "The preceding model and recipe disagree about the external offset"
         )
-    stack = _new_stack(cfg)
+    # ``None`` means the GLM family default.  ``link_for`` resolves a Gaussian
+    # GLM default to log, whereas the native stack deliberately treats a
+    # missing Gaussian link as identity and refuses it.  An already fitted
+    # rate model tells us the actual link, so use that immutable fact when
+    # adapting it into a frozen multiplicative prefix.  Do not mutate ``cfg``
+    # or rewrite the saved recipe while doing so.
+    stack = _new_stack(replace(cfg, link=run.rate_model.metadata.link))
     recipe = ComponentRecipe(
         "legacy",
         "Accepted legacy scorer",

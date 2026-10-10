@@ -60,7 +60,10 @@ test('numbered models keep their type, variables and cumulative offsets', async 
     await page.getByRole('button', { name: /^Save variables for .+ and open Fit$/ }).click();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await expect(
-        page.getByText(/^Will use the complete score through Main effects as its offset/),
+        page.getByText(
+            'Offset: complete score through Main effects. This is the offset for this model.',
+            { exact: true },
+        ),
     ).toBeVisible();
     await expect(page.getByLabel('Optuna trials')).toHaveValue('8');
     await page.getByLabel('Optuna trials').fill('1');

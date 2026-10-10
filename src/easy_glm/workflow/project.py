@@ -144,7 +144,7 @@ def safe_filename(name: str, fallback: str = "model") -> str:
     return cleaned[:80] if re.search(r"\w", cleaned) else fallback
 
 
-PROJECT_VERSION = 6  # v6 adds an optional editable workbench model plan
+PROJECT_VERSION = 7  # v7 adds the explicit logical-model plan format
 
 ROLES = (
     "target",
@@ -1368,23 +1368,32 @@ class Project:
     # -- (de)serialisation ---------------------------------------------
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
+        # ``asdict`` sees the compatibility ``ModelPlan.stages`` projection.
+        # The plan itself owns its wire format: v1 preserves stages, while v2
+        # writes only its logical named models.
+        if self.model_plan is not None:
+            d["model_plan"] = self.model_plan.to_dict()
         # Keep ordinary legacy projects readable by version-2 installations.
         d["version"] = (
-            6
-            if self.model_plan is not None
+            7
+            if self.model_plan is not None and self.model_plan.is_logical_models_plan
             else (
-                5
-                if any(m.lineage is not None for m in self.models.values())
+                6
+                if self.model_plan is not None
                 else (
-                    4
-                    if any(m.components for m in self.models.values())
+                    5
+                    if any(m.lineage is not None for m in self.models.values())
                     else (
-                        3
-                        if any(
-                            m.pair_method == "sequential_catboost" or m.pair_stages
-                            for m in self.models.values()
+                        4
+                        if any(m.components for m in self.models.values())
+                        else (
+                            3
+                            if any(
+                                m.pair_method == "sequential_catboost" or m.pair_stages
+                                for m in self.models.values()
+                            )
+                            else 2
                         )
-                        else 2
                     )
                 )
             )

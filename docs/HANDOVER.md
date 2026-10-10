@@ -6,7 +6,7 @@
 
 | Purpose | Checkout and state |
 | --- | --- |
-| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/guided-project-setup`, based on `cf82987`; guided setup in Project & data, with ordered fitting in Model |
+| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/core-model-interactions`, based on `34815d5`; named models in Project & data, with interactions owned by a GLM |
 | User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
 | Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
 
@@ -14,8 +14,9 @@ The current stack is **local branch work, unpushed and unreleased**. Its `pyproj
 
 On 10 October the previous `/private/tmp/easyglm-visual-model-flow` directory was
 absent. This checkout was created from its surviving committed branch. Earlier
-uncommitted changes must not be assumed recovered. The current plan has one name and method per stage. The previous selected-model
-builder is a historical baseline, not the current screen layout.
+uncommitted changes must not be assumed recovered. The current plan has one name
+and method per model. The previous selected-model builder is a historical
+baseline, not the current screen layout.
 
 The primary workspace carries a copy of this handover and selected guidance, but its code does **not** contain the current stack. Read `examples/stacked_models.md`, `docs/plans/STACKED_MODELS.md`, `docs/LLM_USAGE_GUIDE.md`, and the source/tests **in the implementation checkout**; the example and usage guide are absent from the primary workspace, while its untracked copy of the stack plan may differ from the implementation checkout. `examples/pricing_walkthrough.md` covers the earlier released pricing flow. The usage guide describes v0.472, not takeover. The locally available `v0.472` Git tag provides the release source for comparison (`git show v0.472:<path>` from the stack checkout); verify remote state separately when network access returns.
 
@@ -31,7 +32,20 @@ The stack branch implements an ordered multiplicative sequence of GLM, direct Ca
 
 `PricingSession` and named `PricingModel` objects provide short public calls (`fit_glm`, `fit_catboost`, `fit_interaction`, `fit_catalogue`, `ae`, `compare`, `edit_rates`, `export_lookup`, `save`/`load`). The workbench has a stacked-model path and component inspection, comparison, amendment, and export views. Named fits are detached; append and amendment create new models. The Python example demonstrates GLM → two pair tables → vehicle → reviewed vehicle → occupation → postcode, then a separate CatBoost → GLM candidate. Catalogue fitting pins the full supplied key/attribute table, scores keys without training rows, checks joins/coverage, and exports an **incremental component** file. A catalogue-first file is a full unit prediction only when there is no external baseline; otherwise the external offset remains separate in the complete scorer. Missing keys error by default unless an explicit fallback is chosen.
 
-**Current product work: guided project setup.** **Project & data** shows one
+**Current product work: interactions within named GLMs.** New plans define
+GLM, CatBoost or Catalogue models. Interaction is no longer a new model type in
+planning. A fitted GLM owns optional interaction tables added after residual
+review. Candidate setup and fitting are separate from acceptance; only Keep
+updates the GLM's accepted output and a downstream model's offset. Each later
+pair uses the complete preceding table scorer, including amendments. New plans
+write model-plan format 2 and project schema 7; existing flat plans keep format
+1/schema 6 without inferred ownership or automatic regrouping. A sole GLM with
+no tables retains its direct fitting and scoring path. Nested tables are
+compiled to the existing native stack engine; earlier public pair APIs remain
+unchanged. Read `docs/MODEL_FLOW.md` and
+`docs/plans/PROJECT_MODEL_WORKFLOW.md` for the workbench workflow.
+
+**Guided project setup.** **Project & data** shows one
 setup section at a time, with a step strip and a compact summary of the loaded
 data, target, weight and split. Open data, choose **Single model** or **Build in
 stages**, then apply shared column assignments. Single-model setup continues
@@ -51,7 +65,7 @@ first model. Fitted settings lock immediately; revisions are explicit. The step
 strip reports the current plan's fitted count rather than borrowing the status of
 a historical fit. Unsaved shared assignments, variables and fitting options are
 protected when navigating. Saving variables advances to the next model or opens
-Fit without a false discard prompt. No API or project-format migration is needed.
+Fit without a false discard prompt. Existing saved plans remain supported.
 
 **Add model** appends a GLM card named **Model N** and focuses its type. It does
 not open the variables editor. Each card shows its complete preceding offset
@@ -108,13 +122,44 @@ A child's own complete fit can still be used as the next offset when its origina
 
 The 9 October correction separates ordinary drafts from saved setups that need recovery. **Needs a new fit** means the saved setup's exact earlier starting fit is unavailable; a currently fitted model with the same name is not a replacement for it. **Fit saved recipe as new model** fits the saved sequence from the beginning under a new name. **Cannot score** means the selected model's own fitted files are unavailable. A usable complete scorer remains **Fitted** even when its original starting fit is missing. The header shows identity, context and actions in separate rows; a read-only saved recipe shows the fitting order.
 
-`ModelConfig.lineage` records the parent name, fit identity, settings key and prefix fingerprint. It is provenance, excluded from fit/cache hashes; the complete ordered component recipe remains the scorer. Projects with a model plan write schema version 6; lineage-only projects write version 5, and older projects without either retain their prior serialized version. `Project.model_plan` contains server-issued plan IDs and exact stage-fit references. Imported references are checked against the actual saved recipe and artifact; equal-looking recipes do not select unrelated historical fits. An appended candidate requires an exact applicable parent artifact and unchanged frozen prefix. Changing a parent does not mutate its existing children. Missing or changed artifacts produce historical links; an explicit full rebuild fits the whole saved recipe afresh and remains marked historical after job restore. Scope validation runs on save and fit, including imported projects, and protects response/control fields against catalogue-name collisions.
+`ModelConfig.lineage` records the parent name, fit identity, settings key and prefix fingerprint. It is provenance, excluded from fit/cache hashes; the complete ordered component recipe remains the scorer. New logical plans write schema version 7; old flat plans write version 6; lineage-only projects write version 5, and older projects without either retain their prior serialized version. `Project.model_plan` contains server-issued plan IDs and exact fit references. Logical references identify the named model and its accepted through-component checkpoint. Imported references are checked against the actual saved recipe and artifact; equal-looking recipes do not select unrelated historical fits. An appended candidate requires an exact applicable parent artifact and unchanged frozen prefix. Changing a parent does not mutate its existing children. Missing or changed artifacts produce historical links; an explicit full rebuild fits the whole saved recipe afresh and remains marked historical after job restore. Scope validation runs on save and fit, including imported projects, and protects response/control fields against catalogue-name collisions.
 
-The Model builder work is local, unpushed and unreleased. Fresh validation for this redesign is recorded below; the earlier visual-flow results are a separate baseline. Keep discovery on training data, label in-sample and CV evidence accurately, and display holdout results only on explicit request. Table changes need preview then apply and a clear choice to retain or refit later components. A/E and searches must use the accepted complete scorer; earlier named fits must remain unchanged.
+The Model builder work is local, unpushed and unreleased. Fresh validation for this redesign is recorded below; the earlier visual-flow results are a separate baseline. Keep discovery on training data, label in-sample and CV evidence accurately, and display holdout results only on explicit request. Owned interaction-table changes need preview then apply; affected later tables and models require refitting. The existing generic stack amendment API retains its separate explicit policy. A/E and searches must use the accepted complete scorer; earlier named fits must remain unchanged.
 
 Known first-version boundaries: each named model scores a linear sequence; the diagram can show alternatives but does not combine two parent models; one-key, user-supplied catalogues; no arbitrary imported estimators, automatic hierarchical credibility, geographic smoothing, or mixed-stack HTML report. A direct CatBoost component requires its saved model artifact to score and cannot be represented exactly by GLM rate tables alone. Confirm any further limit in code before asserting it.
 
 ## Source map and checks
+
+**GLM-owned interaction tables, 10 October.** New plans offer GLM, CatBoost and
+Catalogue models. Candidate interaction tables belong to a fitted GLM and have
+separate Fit, Keep and Discard actions. Independent rendered design and pricing
+actuary reviews passed the planning, residual search, table review, acceptance,
+amendment and downstream-refit workflow. Desktop and narrow layouts were reviewed.
+The adversarial review verified source-bound acceptance, immutable fitted
+checkpoints, failed/cancelled suffix retries and duplicate-fit prevention.
+
+The broad Python source run passed **1,683 tests**, with one skipped and one slow
+test deselected. Subsequent fixes for direct Gaussian/default-link and
+binomial/logit plans passed **63 focused Python tests** and a separate **five-test
+Gaussian/binomial review**. The reviewer also checked logit diagnostics and export,
+and confirmed that a non-log single model cannot acquire multiplicative
+interactions. Black, Ruff, mypy (39 source files), all **30 frontend unit tests**,
+Svelte check and the bundled build passed.
+
+Fresh browser checks passed **15 model-plan** and **seven core-interaction**
+scenarios. The same validation cycle also passed **seven guided-setup** and
+**five model-variable/flow** scenarios. The core checks cover candidate discard,
+training-only search, two accepted tables after reload, amendment/refitting,
+legacy plans and adopted roots. The public pricing walkthrough ran unchanged
+against the source. Separate numerical checks confirmed the second pair offsets
+the amended first lookup table, and that exported accepted scorer predictions
+match training predictions to 1e-13 while an unfinished later model is excluded.
+
+The user's existing preview retained its exact legacy plan, shared assignments,
+50,000 rows and 13 columns after restart. The new-plan review preview is separate.
+These are local macOS source checks. Windows, installed-wheel release checks,
+GitHub CI and the separate 5M-row budget were not run for this change. Nothing
+was pushed or released. Earlier records below are historical baselines.
 
 **Guided-setup correction, 10 October.** This revision replaces the long combined
 setup page with focused steps. Independent source review covered draft handling,
@@ -360,7 +405,7 @@ local backup/transfer operation, not a commit, push or release:
 source_checkout=/private/tmp/easyglm-model-variable-setup
 packet=/Users/serban/Documents/Projects/easy_glm/.internal/handover-20261010
 mkdir -p "$packet/docs/plans"
-git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/guided-project-setup refs/tags/v0.472
+git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/core-model-interactions refs/tags/v0.472
 git -C "$source_checkout" bundle verify "$packet/easyglm.bundle"
 cp "$source_checkout/AGENTS.md" "$packet/AGENTS.md"
 cp "$source_checkout/docs/HANDOVER.md" "$packet/docs/HANDOVER.md"
@@ -371,8 +416,8 @@ cp "$source_checkout/docs/plans/STACKED_MODELS.md" "$packet/docs/plans/STACKED_M
 cp "$source_checkout/docs/plans/PROJECT_MODEL_WORKFLOW.md" "$packet/docs/plans/PROJECT_MODEL_WORKFLOW.md"
 ```
 
-Check that the bundle contains the current `codex/guided-project-setup` commit
-(`git rev-parse codex/guided-project-setup`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
+Check that the bundle contains the current `codex/core-model-interactions` commit
+(`git rev-parse codex/core-model-interactions`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
 **new** directory with the stack branch selected, then copy the seven guidance
 files into that clone and inspect `git status` before work. Keep the packet's
 directory structure; its docs are newer than the 30 September recovery bundle.
@@ -380,7 +425,7 @@ For example, with transferred packet and destination paths chosen by the
 operator:
 
 ```bash
-git clone --branch codex/guided-project-setup "$packet/easyglm.bundle" "$destination"
+git clone --branch codex/core-model-interactions "$packet/easyglm.bundle" "$destination"
 cp "$packet/AGENTS.md" "$destination/AGENTS.md"
 cp "$packet/docs/HANDOVER.md" "$destination/docs/HANDOVER.md"
 cp "$packet/docs/MODEL_FLOW.md" "$destination/docs/MODEL_FLOW.md"

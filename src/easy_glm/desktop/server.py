@@ -12,6 +12,7 @@ import pickle
 import secrets
 import shutil
 import threading
+import time
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import replace
@@ -34,6 +35,14 @@ from easy_glm.desktop.binning import (
     binning_setup,
     validate_changed_linear_binning,
 )
+from easy_glm.desktop.core_interactions import (
+    all_candidates,
+    candidates_for,
+    public_candidate,
+    remove_candidate,
+    replace_candidate,
+)
+from easy_glm.desktop.core_search import discover as discover_core_residuals
 from easy_glm.desktop.exploration import ExplorationCache
 from easy_glm.desktop.exports import ExportRequest, export_attachment
 from easy_glm.desktop.feature_selection import (
@@ -54,6 +63,7 @@ from easy_glm.desktop.model_plan import (
     ModelPlanEdit,
     PlanFitRef,
     materialise_plan_prefix,
+    materialise_plan_through_component,
     plan_model_name,
     validate_model_plan,
 )
@@ -78,7 +88,7 @@ from easy_glm.desktop.splits import (
     split_values,
 )
 from easy_glm.workflow.explore import univariate
-from easy_glm.workflow.model_plan import ModelPlan, new_plan_id
+from easy_glm.workflow.model_plan import AdoptedRoot, ModelPlan, new_plan_id
 from easy_glm.workflow.prep import apply_variables
 from easy_glm.workflow.project import (
     SINGLE_ROLES,
@@ -118,6 +128,36 @@ class StackAmendEdit(Revision):
     refit_later: bool = False
     new_name: str | None = None
     fit_id: str | None = None
+
+
+class CoreInteractionCreate(Revision):
+    """One unaccepted interaction candidate under a named GLM core."""
+
+    model_id: str = Field(min_length=1)
+    a: str = Field(min_length=1)
+    b: str = Field(min_length=1)
+    settings: dict[str, Any] = Field(default_factory=dict)
+    design: dict[str, Any] | None = None
+
+
+class CoreInteractionCandidateEdit(Revision):
+    candidate_id: str = Field(min_length=1)
+
+
+class CoreInteractionRecipeEdit(Revision):
+    """A mutation of an already accepted table identified in the URL."""
+
+
+class CoreInteractionMove(CoreInteractionRecipeEdit):
+    before_component_id: str | None = None
+
+
+class CoreSearchEdit(Revision):
+    action: Literal["factors", "interactions"]
+    n_bins: int = Field(default=8, ge=2, le=50)
+    min_expected: float = Field(default=3.0, gt=0)
+    min_cell_share: float = Field(default=0.0, ge=0, lt=1)
+    top: int = Field(default=20, ge=1, le=200)
 
 
 def _file_sha256(path: Path) -> str:
@@ -272,33 +312,359 @@ def create_app(
     # intentionally never reconstructed by comparing old saved recipes: a new
     # chain with identical settings must start cleanly.
     plan_attempts: dict[tuple[str, str], PlanFitRef] = {}
-    plan_refs: list[PlanFitRef] = [
-        PlanFitRef(
-            current.model_plan.plan_id,
-            item["stage_id"],
-            item["model_name"],
-            item["fit_id"],
+
+    def _plan_ref_from_saved(plan: ModelPlan, item: dict[str, str]) -> PlanFitRef:
+        if plan.is_logical_models_plan:
+            return PlanFitRef(
+                plan.plan_id,
+                item["through_component_id"],
+                item["model_name"],
+                item["fit_id"],
+                model_id=item["model_id"],
+                prefix_fingerprint=item["prefix_fingerprint"],
+            )
+        return PlanFitRef(
+            plan.plan_id, item["stage_id"], item["model_name"], item["fit_id"]
         )
+
+    plan_refs: list[PlanFitRef] = [
+        _plan_ref_from_saved(current.model_plan, item)
         for item in (current.model_plan.fit_refs if current.model_plan else [])
     ]
 
+    def _logical_models(plan: ModelPlan) -> list[Any]:
+        """Read v2 logical models while leaving imported v1 plans untouched."""
+        models = getattr(plan, "models", None)
+        if isinstance(models, list):
+            return models
+        return []
+
+    def _logical_model(plan: ModelPlan, model_id: str) -> Any:
+        for model in _logical_models(plan):
+            if getattr(model, "model_id", None) == model_id:
+                return model
+        raise ValueError("Choose a model in the current plan.")
+
+    def _core_recipe(model: Any) -> ComponentRecipe:
+        core = getattr(model, "core", None)
+        if not isinstance(core, ComponentRecipe):
+            raise ValueError("This imported plan does not use the core-model workflow.")
+        if core.kind != "glm":
+            raise ValueError("Only a GLM can own interaction tables.")
+        return core
+
+    def _pair_recipes(model: Any) -> list[ComponentRecipe]:
+        pairs = getattr(model, "pair_corrections", [])
+        return list(pairs) if isinstance(pairs, list | tuple) else []
+
+    def _core_source_ref(plan: ModelPlan, model: Any) -> PlanFitRef:
+        """The exact accepted scorer through this GLM's current pair table."""
+        component_ids = {
+            _core_recipe(model).component_id,
+            *(item.component_id for item in _pair_recipes(model)),
+        }
+        for ref in reversed(plan_refs):
+            if (
+                ref.plan_id == plan.plan_id
+                and ref.stage_id in component_ids
+                and (ref.model_id is None or ref.model_id == model.model_id)
+            ):
+                return ref
+        raise ValueError("Fit this model's main effects before adding an interaction.")
+
+    def _checkpoint_for_pair_prefix(
+        plan: ModelPlan, model: Any, pairs: tuple[ComponentRecipe, ...]
+    ) -> PlanFitRef:
+        """Locate the immutable historical checkpoint through an unchanged prefix."""
+        from dataclasses import replace as dataclass_replace
+
+        index = plan.models.index(model)
+        temporary = deepcopy(plan)
+        prefix_model = dataclass_replace(model, pair_corrections=pairs)
+        temporary.models[index] = prefix_model
+        temporary.stages = [
+            component
+            for item in temporary.models
+            for component in item.physical_components
+        ]
+        through = pairs[-1].component_id if pairs else prefix_model.core.component_id
+        expected = materialise_plan_through_component(
+            current, temporary, index, through
+        )
+        for name, config in reversed(list(current.models.items())):
+            status = jobs.status(current).get(name, {})
+            if not status.get("applicable"):
+                continue
+            if config != expected and replace(config, lineage=None) != expected:
+                continue
+            try:
+                fingerprint = scorer_fingerprint(fitted_prefix(name))
+            except (KeyError, OSError, ValueError):
+                continue
+            return PlanFitRef(
+                plan.plan_id,
+                through,
+                name,
+                status["id"],
+                model_id=model.model_id,
+                prefix_fingerprint=fingerprint,
+            )
+        raise ValueError("The frozen checkpoint before this table is unavailable.")
+
+    def _candidate_entry(candidate_id: str) -> dict[str, Any]:
+        entry = next(
+            (
+                item
+                for item in all_candidates(current)
+                if item.get("candidate_id") == candidate_id
+            ),
+            None,
+        )
+        if entry is None:
+            raise ValueError("This interaction candidate is unavailable.")
+        return entry
+
+    def _candidate_is_current(entry: dict[str, Any]) -> bool:
+        """A reviewed table may only be kept against its exact frozen source."""
+        source_name = entry.get("source_model_name")
+        source_fit_id = entry.get("source_fit_id")
+        if not isinstance(source_name, str) or not isinstance(source_fit_id, str):
+            return False
+        try:
+            plan = current.model_plan
+            if plan is None:
+                return False
+            source_ref = _core_source_ref(plan, _logical_model(plan, entry["model_id"]))
+            if (
+                source_ref.model_name != source_name
+                or source_ref.fit_id != source_fit_id
+                or source_ref.stage_id != entry.get("source_through_component_id")
+            ):
+                return False
+            source = jobs.artifact(current, source_name)
+            return source.name == source_fit_id and scorer_fingerprint(
+                fitted_prefix(source_name)
+            ) == entry.get("source_fingerprint")
+        except (KeyError, OSError, ValueError):
+            return False
+
+    def _pair_table_payload(stack: Any, component_id: str) -> dict[str, Any] | None:
+        """Return the actual fitted cells of one native interaction table."""
+        from easy_glm.core.excel import pair_table_frames
+        from easy_glm.desktop.fit_worker import json_safe
+        from easy_glm.workflow.stack_types import RateModelScorer
+
+        component = stack.component(component_id)
+        if not isinstance(component.scorer, RateModelScorer):
+            return None
+        frame = pair_table_frames(component.scorer.rate_model).get(component_id)
+        if frame is None:
+            return None
+        rows = frame.to_dicts()
+        # ``fitted`` is the established table-review field used by the
+        # workbench chart.  Keep ``relativity`` too: it is the exported pair
+        # table column and remains useful in a raw table download.
+        for row in rows:
+            row["fitted"] = row["relativity"]
+        return json_safe(
+            {
+                "columns": [*frame.columns, "fitted"],
+                "rows": rows,
+                "total": frame.height,
+                "stage_id": component_id,
+            }
+        )
+
+    def core_interaction_view(model_id: str) -> dict[str, Any]:
+        """One logical core plus its accepted tables and isolated candidates."""
+        plan = current.model_plan
+        if plan is None:
+            raise ValueError("Define the model plan first.")
+        model = _logical_model(plan, model_id)
+        core = _core_recipe(model)
+        prepared = apply_variables(raw, current.data)
+        groups = pair_candidate_groups(current, raw, set(prepared.columns))
+        candidates = []
+        for candidate in candidates_for(current, model_id):
+            item = public_candidate(candidate)
+            if item.get("status") in {"draft", "review"} and not _candidate_is_current(
+                candidate
+            ):
+                item["status"] = "needs_rebuild"
+                item["message"] = "The accepted source changed; rebuild this candidate."
+            candidates.append(item)
+        source: dict[str, Any] | None = None
+        accepted_tables: dict[str, dict[str, Any]] = {}
+        accepted_through: str | None = None
+        try:
+            reference = _core_source_ref(plan, model)
+            source = {
+                "model_name": reference.model_name,
+                "fit_id": reference.fit_id,
+                "fingerprint": scorer_fingerprint(fitted_prefix(reference.model_name)),
+            }
+            accepted_through = reference.stage_id
+            _saved, _frame, fitted = stack_artifact(reference.model_name)
+            if getattr(fitted, "stack", None) is not None:
+                for pair in _pair_recipes(model):
+                    table = _pair_table_payload(fitted.stack, pair.component_id)
+                    if table is not None:
+                        accepted_tables[pair.component_id] = table
+        except (KeyError, OSError, ValueError):
+            pass
+        return {
+            "model_id": model_id,
+            "name": getattr(model, "name", core.name),
+            "core": core.to_dict(),
+            "pair_corrections": [item.to_dict() for item in _pair_recipes(model)],
+            "pair_statuses": [
+                {
+                    "component_id": pair.component_id,
+                    "state": (
+                        "fitted"
+                        if accepted_through is not None
+                        and index
+                        <= next(
+                            (
+                                position
+                                for position, item in enumerate(_pair_recipes(model))
+                                if item.component_id == accepted_through
+                            ),
+                            -1,
+                        )
+                        else "needs_refit"
+                    ),
+                }
+                for index, pair in enumerate(_pair_recipes(model))
+            ],
+            "accepted_through_component_id": accepted_through,
+            "accepted_tables": accepted_tables,
+            "source": source,
+            "eligible": {
+                "main": [name for name in core.factors if name in prepared.columns],
+                "other": groups["predictors"] + groups["unassigned"],
+            },
+            "candidates": candidates,
+        }
+
     def persist_plan_refs() -> None:
         if current.model_plan is not None:
-            current.model_plan.fit_refs = [
-                {
-                    "stage_id": item.stage_id,
-                    "model_name": item.model_name,
-                    "fit_id": item.fit_id,
-                }
-                for item in plan_refs
-                if item.plan_id == current.model_plan.plan_id
-            ]
+            if current.model_plan.is_logical_models_plan:
+                current.model_plan.fit_refs = [
+                    {
+                        "model_id": item.model_id or item.stage_id,
+                        "through_component_id": item.stage_id,
+                        "model_name": item.model_name,
+                        "fit_id": item.fit_id,
+                        "prefix_fingerprint": item.prefix_fingerprint or "unknown",
+                    }
+                    for item in plan_refs
+                    if item.plan_id == current.model_plan.plan_id
+                ]
+            else:
+                current.model_plan.fit_refs = [
+                    {
+                        "stage_id": item.stage_id,
+                        "model_name": item.model_name,
+                        "fit_id": item.fit_id,
+                    }
+                    for item in plan_refs
+                    if item.plan_id == current.model_plan.plan_id
+                ]
 
     def complete_fit(job: dict[str, Any], result: dict[str, Any]) -> None:
         nonlocal revision
         with lock, jobs.lock:
             name = job["name"]
             if jobs.jobs.get(name) is not job or job["cancel"]:
+                return
+            candidate_id = job.get("core_interaction_candidate_id")
+            if isinstance(candidate_id, str):
+                # Candidate jobs deliberately have no entry in ``current.models``.
+                # Publishing their result through the ordinary model collection
+                # would make a never-reviewed table appear in A/E, export and
+                # downstream offsets.  Keep only an explicitly labelled review
+                # payload until the user chooses Keep.
+                try:
+                    entry = _candidate_entry(candidate_id)
+                except ValueError:
+                    job.update(status="stale", message="Candidate was discarded.")
+                    return
+                if not _candidate_is_current(entry):
+                    entry.update(
+                        status="needs_rebuild",
+                        message="The accepted source changed while this candidate fitted.",
+                    )
+                    replace_candidate(current, entry)
+                    job.update(status="stale", message=entry["message"])
+                    revision += 1
+                    return
+                source_result = jobs.result(current, entry["source_model_name"])
+                source_metrics = source_result.get("metrics", {})
+                candidate_metrics = result.get("metrics", {})
+                component_evidence = next(
+                    (
+                        component.get("evidence", {})
+                        for component in reversed(result.get("components", []))
+                        if component.get("id")
+                        == ComponentRecipe.from_dict(entry["recipe"]).component_id
+                    ),
+                    {},
+                )
+                no_change = bool(component_evidence.get("no_change"))
+                candidate_recipe = ComponentRecipe.from_dict(entry["recipe"])
+                reviewed_table = None
+                if not no_change:
+                    # Candidate artifacts deliberately have no entry in
+                    # ``current.models``.  Read this exact private job file,
+                    # rather than going through the public scorer accessor.
+                    artifact = Path(jobs.folder.name) / job["id"] / "fit.pkl"
+                    with artifact.open("rb") as handle:
+                        candidate_fit = pickle.load(handle)
+                    if getattr(candidate_fit, "stack", None) is not None:
+                        reviewed_table = _pair_table_payload(
+                            candidate_fit.stack, candidate_recipe.component_id
+                        )
+                entry.update(
+                    {
+                        "status": "no_change" if no_change else "review",
+                        "message": (
+                            "This candidate made no fitted change."
+                            if no_change
+                            else "Candidate table is ready to review."
+                        ),
+                        "review": {
+                            # Both figures use training rows only.  The
+                            # incumbent is the exact frozen accepted scorer,
+                            # rather than the bare GLM that started the chain.
+                            "incumbent_train": deepcopy(
+                                source_metrics.get("train", source_metrics)
+                            ),
+                            "candidate_train": deepcopy(
+                                candidate_metrics.get("train", candidate_metrics)
+                            ),
+                            "metrics": deepcopy(candidate_metrics),
+                            # Native stacks do not use the legacy
+                            # ``result['pair_tables']`` shape.  Extract the
+                            # reviewed component's actual cells so the table
+                            # is visible before Keep.
+                            "pair_tables": (
+                                {candidate_recipe.component_id: reviewed_table}
+                                if reviewed_table is not None
+                                else {}
+                            ),
+                            "component_evidence": deepcopy(component_evidence),
+                            "warnings": deepcopy(result.get("warnings", [])),
+                        },
+                    }
+                )
+                replace_candidate(current, entry)
+                job.update(
+                    status="complete",
+                    message=entry["message"],
+                    result=result,
+                )
+                revision += 1
                 return
             if job["key"] != model_key(current, name):
                 job.update(
@@ -342,6 +708,28 @@ def create_app(
                 ),
                 result=result,
             )
+            if job.get("model_plan_id") == (
+                current.model_plan.plan_id if current.model_plan else None
+            ):
+                model_id = job.get("model_plan_model_id")
+                through = job.get("model_plan_through_component_id")
+                if isinstance(model_id, str) and isinstance(through, str):
+                    fingerprint = fitted_scorer_fingerprint(name)
+                    for index, ref in enumerate(plan_refs):
+                        if (
+                            ref.plan_id == current.model_plan.plan_id
+                            and ref.model_id == model_id
+                        ):
+                            plan_refs[index] = PlanFitRef(
+                                ref.plan_id,
+                                through,
+                                name,
+                                job["id"],
+                                model_id=model_id,
+                                prefix_fingerprint=fingerprint,
+                            )
+                            break
+                    persist_plan_refs()
             jobs.remember_complete(name)
 
     jobs.on_complete = complete_fit
@@ -395,6 +783,86 @@ def create_app(
             fitted.rate_model = rate_model_for(current, fitted)
         return stack_from_legacy(current, fitted)
 
+    def fitted_scorer_fingerprint(name: str) -> str:
+        """Fingerprint an accepted scorer, including a direct non-log GLM.
+
+        A direct binomial/logit GLM is a valid single logical model, but it is
+        not a multiplicative offset source.  It still needs a durable plan
+        reference for diagnostics and export.  Use its exact reviewed rate
+        model for that reference; only an append needs ``fitted_prefix`` and
+        its log-link stack adapter.
+        """
+        source = jobs.artifact(current, name)
+        with (source / "fit.pkl").open("rb") as handle:
+            fitted = pickle.load(handle)  # private fitted artifact
+        if fitted.name != name:
+            raise ValueError("The source fit identity does not match its model.")
+        if fitted.stack is None:
+            from easy_glm.workflow.run import rate_model_for
+
+            fitted = deepcopy(fitted)
+            fitted.rate_model = rate_model_for(current, fitted)
+            if fitted.rate_model.metadata.link != "log":
+                return scorer_fingerprint(fitted.rate_model)
+        return scorer_fingerprint(fitted_prefix(name))
+
+    def logical_ref_status(
+        plan: ModelPlan, index: int, model: Any
+    ) -> dict[str, Any] | None:
+        """Read one valid v2 logical checkpoint, including a partial one."""
+        ref = next(
+            (
+                item
+                for item in reversed(plan_refs)
+                if item.plan_id == plan.plan_id and item.model_id == model.model_id
+            ),
+            None,
+        )
+        if ref is None:
+            return None
+        job = jobs.status(current).get(ref.model_name, {})
+        if job.get("id") != ref.fit_id:
+            return None
+        try:
+            expected = materialise_plan_through_component(
+                current, plan, index, ref.stage_id, None
+            )
+        except ValueError:
+            return None
+        actual = current.models.get(ref.model_name)
+        if actual is None or (
+            actual != expected and replace(actual, lineage=None) != expected
+        ):
+            return None
+        if job.get("status") not in {"complete", "queued", "running"}:
+            return None
+        fingerprint: str | None = None
+        if job.get("status") == "complete":
+            if not job.get("applicable"):
+                return None
+            try:
+                fingerprint = fitted_scorer_fingerprint(ref.model_name)
+            except (KeyError, OSError, ValueError):
+                return None
+            if (
+                ref.prefix_fingerprint is not None
+                and ref.prefix_fingerprint != fingerprint
+            ):
+                return None
+        return {
+            "model_id": model.model_id,
+            "stage_id": ref.stage_id,
+            "through_component_id": ref.stage_id,
+            "stage_name": model.name,
+            "model_name": ref.model_name,
+            "fit_id": ref.fit_id,
+            "prefix_fingerprint": fingerprint or ref.prefix_fingerprint,
+            "job_status": job.get("status"),
+            "complete_model": (
+                ref.stage_id == model.physical_components[-1].component_id
+            ),
+        }
+
     def plan_ref_state(
         plan: ModelPlan | None = None,
     ) -> tuple[list[dict[str, Any]], PlanFitRef | None]:
@@ -405,6 +873,36 @@ def create_app(
         statuses = jobs.status(current)
         completed: list[dict[str, Any]] = []
         pending: PlanFitRef | None = None
+        if plan.is_logical_models_plan:
+            for index, model in enumerate(plan.models):
+                status = logical_ref_status(plan, index, model)
+                if status is None:
+                    break
+                if status["job_status"] in {"queued", "running"}:
+                    pending = PlanFitRef(
+                        plan.plan_id,
+                        status["stage_id"],
+                        status["model_name"],
+                        status["fit_id"],
+                        model_id=model.model_id,
+                        prefix_fingerprint=status["prefix_fingerprint"],
+                    )
+                    break
+                if not status["complete_model"]:
+                    # A saved frozen prefix is valid, but this logical model
+                    # still has pair tables to refit after a remove/reorder.
+                    attempt = plan_attempts.get(
+                        (plan.plan_id, model.physical_components[-1].component_id)
+                    )
+                    if attempt is not None:
+                        attempt_job = statuses.get(attempt.model_name, {})
+                        if attempt_job.get("id") == attempt.fit_id and attempt_job.get(
+                            "status"
+                        ) in {"queued", "running"}:
+                            pending = attempt
+                    break
+                completed.append(status)
+            return completed, pending
         for index, stage in enumerate(plan.stages):
             ref = next(
                 (
@@ -474,29 +972,106 @@ def create_app(
                 safe_columns = [[] for _stage in plan.stages]
         refs, pending = plan_ref_state(plan)
         ref_by_stage = {item["stage_id"]: item for item in refs}
+        ref_by_model = {item.get("model_id"): item for item in refs}
+        partial_by_model = (
+            {
+                model.model_id: status
+                for index, model in enumerate(plan.models)
+                if (status := logical_ref_status(plan, index, model)) is not None
+                and not status["complete_model"]
+                and status["job_status"] == "complete"
+            }
+            if plan is not None and plan.is_logical_models_plan
+            else {}
+        )
         statuses: list[dict[str, Any]] = []
         next_stage_id: str | None = None
-        for stage in plan.stages if plan else []:
-            ref = ref_by_stage.get(stage.component_id)
+        displayed = (
+            [model.core for model in plan.models]
+            if plan is not None and plan.is_logical_models_plan
+            else (plan.stages if plan else [])
+        )
+        for displayed_index, stage in enumerate(displayed):
+            logical_model = (
+                plan.models[displayed_index]
+                if plan is not None and plan.is_logical_models_plan
+                else None
+            )
+            display_id = (
+                logical_model.model_id
+                if logical_model is not None
+                else stage.component_id
+            )
+            ref = (
+                ref_by_model.get(display_id)
+                if logical_model is not None
+                else ref_by_stage.get(stage.component_id)
+            )
             if ref is not None:
                 state, message, fit = "fitted", "Fitted", ref
-            elif pending is not None and pending.stage_id == stage.component_id:
+            elif logical_model is not None and display_id in partial_by_model:
+                partial = partial_by_model[display_id]
+                through_index = next(
+                    index
+                    for index, component in enumerate(logical_model.physical_components)
+                    if component.component_id == partial["through_component_id"]
+                )
+                remaining = len(logical_model.physical_components) - 1 - through_index
+                through_name = logical_model.physical_components[through_index].name
+                if pending is not None and pending.model_id == display_id:
+                    state, message, fit = (
+                        "fitting",
+                        "Fitting the remaining interaction tables; accepted "
+                        + through_name
+                        + " remains available for review.",
+                        {
+                            **partial,
+                            "pending_model_name": pending.model_name,
+                            "pending_fit_id": pending.fit_id,
+                        },
+                    )
+                else:
+                    state, message, fit = (
+                        "needs_refit",
+                        "Accepted through "
+                        + through_name
+                        + f"; refit {remaining} remaining interaction table"
+                        + ("s" if remaining != 1 else ""),
+                        partial,
+                    )
+                    if next_stage_id is None and pending is None:
+                        next_stage_id = display_id
+            elif pending is not None and (
+                (logical_model is not None and pending.model_id == display_id)
+                or (logical_model is None and pending.stage_id == stage.component_id)
+            ):
                 state, message, fit = (
                     "fitting",
                     "Fit in progress",
                     {
-                        "stage_id": stage.component_id,
+                        "stage_id": display_id,
                         "model_name": pending.model_name,
                         "fit_id": pending.fit_id,
                     },
                 )
             elif next_stage_id is None and pending is None:
                 state, message, fit = "ready", "Ready to fit", None
-                next_stage_id = stage.component_id
+                next_stage_id = display_id
+            elif partial_by_model:
+                state, message, fit = (
+                    "needs_refit",
+                    "Refit the earlier model's remaining interaction tables first",
+                    None,
+                )
             else:
                 state, message, fit = "waiting", "Fit the earlier stage first", None
+            attempt_key = (
+                logical_model.physical_components[-1].component_id
+                if logical_model is not None
+                else stage.component_id
+            )
             attempt_ref = (
-                plan_attempts.get((plan.plan_id, stage.component_id)) if plan else None
+                plan_attempts.get((plan.plan_id, attempt_key)) if plan else None
             )
             attempt_job = (
                 jobs.status(current).get(attempt_ref.model_name, {})
@@ -515,9 +1090,22 @@ def create_app(
             )
             statuses.append(
                 {
-                    "stage_id": stage.component_id,
-                    "name": stage.name,
+                    "stage_id": display_id,
+                    "model_id": display_id if logical_model is not None else None,
+                    "through_component_id": (
+                        ref.get("through_component_id")
+                        if ref is not None
+                        else stage.component_id
+                    ),
+                    "name": (
+                        logical_model.name if logical_model is not None else stage.name
+                    ),
                     "kind": stage.kind,
+                    "pair_count": (
+                        len(logical_model.pair_corrections)
+                        if logical_model is not None
+                        else 0
+                    ),
                     "state": state,
                     "message": message,
                     "fit": fit,
@@ -530,6 +1118,13 @@ def create_app(
                 "components": [item.name for item in config.components],
                 "fit_id": job.get("id"),
                 "status": job.get("status"),
+                # Adoption creates a new v2 plan from this frozen scorer.
+                # The browser must use its actual response convention rather
+                # than guessing a family or link for the child plan.
+                "family": config.family,
+                "link": config.link,
+                "tweedie_power": config.tweedie_power,
+                "divide_target_by_weight": config.divide_target_by_weight,
                 "can_adopt": config.family in {"poisson", "tweedie", "gaussian"}
                 and config.link in {None, "log"},
             }
@@ -565,9 +1160,20 @@ def create_app(
             for attribute in stage.factors:
                 if attribute in dtype_by_name:
                     schema_at_stage[attribute] = dtype_by_name[attribute]
+        plan_payload = plan.to_dict() if plan is not None else None
+        if (
+            plan is not None
+            and plan.is_logical_models_plan
+            and plan_payload is not None
+        ):
+            # Existing setup clients consume ``stages``.  Keep that display
+            # projection logical: interaction tables are nested under their GLM,
+            # never another planned model card.
+            plan_payload["stages"] = [model.core.to_dict() for model in plan.models]
         return {
-            "plan": plan.to_dict() if plan is not None else None,
+            "plan": plan_payload,
             "fit_refs": refs,
+            "partial_fit_refs": list(partial_by_model.values()),
             "stage_statuses": statuses,
             "safe_columns": safe_columns,
             "safe_column_details": safe_column_details,
@@ -1079,12 +1685,7 @@ def create_app(
             current, raw = loaded, loaded_raw
             plan_attempts.clear()
             plan_refs = [
-                PlanFitRef(
-                    loaded.model_plan.plan_id,
-                    item["stage_id"],
-                    item["model_name"],
-                    item["fit_id"],
-                )
+                _plan_ref_from_saved(loaded.model_plan, item)
                 for item in (loaded.model_plan.fit_refs if loaded.model_plan else [])
             ]
             catalogue_sources.clear()
@@ -1287,6 +1888,7 @@ def create_app(
         nonlocal current, revision, plan_refs
         with lock:
             check_revision(edit)
+            minted_adopted_root = False
             if edit.plan is None and edit.operation != "adopt":
                 raise HTTPException(422, "Choose a model structure to save.")
             try:
@@ -1299,35 +1901,109 @@ def create_app(
                         raise ValueError(
                             "The saved model has no applicable fitted result."
                         )
-                    stage_recipe = ComponentRecipe(
-                        component_id="adopted-root",
-                        name=edit.adopt_model_name,
-                        kind="glm",
-                        factors=tuple(source.predictors),
-                        settings={
-                            "alpha": source.penalty.alpha,
-                            "cv": source.penalty.cv,
-                            "n_alphas": source.penalty.n_alphas,
-                            "l1_ratio": source.penalty.l1_ratio,
-                            "min_alpha_ratio": source.penalty.min_alpha_ratio,
-                            "base": source.base,
-                        },
-                        design=deepcopy(source.design),
+                    # An old client sends no plan and retains the v1 Adopt
+                    # saved model flow.  A new logical-model client supplies
+                    # its empty/named v2 plan; the server deliberately mints
+                    # the adopted source identity instead of trusting it from
+                    # the browser.
+                    requested = (
+                        ModelPlan.from_dict(edit.plan)
+                        if edit.plan is not None
+                        else None
                     )
-                    plan = ModelPlan(
-                        mode="sequential",
-                        family=source.family,
-                        link=source.link,
-                        tweedie_power=source.tweedie_power,
-                        divide_target_by_weight=source.divide_target_by_weight,
-                        stages=[stage_recipe],
-                        adopted_model_name=edit.adopt_model_name,
-                    )
+                    if requested is not None and requested.is_logical_models_plan:
+                        if requested.adopted_root is not None:
+                            raise ValueError(
+                                "Only Adopt saved model may choose an adopted source."
+                            )
+                        if (
+                            requested.family,
+                            requested.link,
+                            requested.tweedie_power,
+                            requested.divide_target_by_weight,
+                        ) != (
+                            source.family,
+                            source.link,
+                            source.tweedie_power,
+                            source.divide_target_by_weight,
+                        ):
+                            raise ValueError(
+                                "An adopted scorer keeps its family, link, Tweedie power and response scale."
+                            )
+                        source_stack = fitted_prefix(edit.adopt_model_name)
+                        plan = ModelPlan(
+                            format_version=2,
+                            mode=requested.mode,
+                            family=requested.family,
+                            link=requested.link,
+                            tweedie_power=requested.tweedie_power,
+                            divide_target_by_weight=requested.divide_target_by_weight,
+                            models=deepcopy(requested.models),
+                            adopted_root=AdoptedRoot(
+                                model_name=edit.adopt_model_name,
+                                fit_id=status["id"],
+                                scorer_fingerprint=scorer_fingerprint(source_stack),
+                                physical_prefix=tuple(
+                                    deepcopy(component.recipe)
+                                    for component in source_stack.components
+                                    if component.recipe.kind != "baseline"
+                                ),
+                            ),
+                        )
+                        minted_adopted_root = True
+                    else:
+                        # Keep the established Adopt saved model flow as v1;
+                        # opening an old project must not silently regroup it.
+                        if requested is not None:
+                            raise ValueError(
+                                "An adopted model plan must use the logical v2 format."
+                            )
+
+                        stage_recipe = ComponentRecipe(
+                            component_id="adopted-root",
+                            name=edit.adopt_model_name,
+                            kind="glm",
+                            factors=tuple(source.predictors),
+                            settings={
+                                "alpha": source.penalty.alpha,
+                                "cv": source.penalty.cv,
+                                "n_alphas": source.penalty.n_alphas,
+                                "l1_ratio": source.penalty.l1_ratio,
+                                "min_alpha_ratio": source.penalty.min_alpha_ratio,
+                                "base": source.base,
+                            },
+                            design=deepcopy(source.design),
+                        )
+                        plan = ModelPlan(
+                            mode="sequential",
+                            family=source.family,
+                            link=source.link,
+                            tweedie_power=source.tweedie_power,
+                            divide_target_by_weight=source.divide_target_by_weight,
+                            stages=[stage_recipe],
+                            adopted_model_name=edit.adopt_model_name,
+                        )
                 else:
                     plan = ModelPlan.from_dict(edit.plan or {})
                 # The browser cannot select a plan identity, references, or an
                 # arbitrary adopted source.  Only the adopt operation creates it.
                 old = current.model_plan
+                if (
+                    plan.is_logical_models_plan
+                    and plan.adopted_root is not None
+                    and not (
+                        minted_adopted_root
+                        or (
+                            old is not None
+                            and old.is_logical_models_plan
+                            and old.adopted_root == plan.adopted_root
+                            and edit.operation in {"save", "revise"}
+                        )
+                    )
+                ):
+                    raise ValueError(
+                        "Only Adopt saved model may choose an adopted source."
+                    )
                 if plan.adopted_model_name is not None and not (
                     edit.operation == "adopt"
                     or (
@@ -1386,13 +2062,31 @@ def create_app(
                     )
                     keep = 0
                     if root_same and old is not None:
-                        for _ref in old_refs:
-                            if (
-                                keep >= len(plan.stages)
-                                or plan.stages[keep] != old.stages[keep]
-                            ):
-                                break
-                            keep += 1
+                        if plan.is_logical_models_plan and old.is_logical_models_plan:
+                            if plan.adopted_root != old.adopted_root:
+                                keep = 0
+                            else:
+                                for ref in old_refs:
+                                    if keep >= len(plan.models) or keep >= len(
+                                        old.models
+                                    ):
+                                        break
+                                    old_model = old.models[keep]
+                                    new_model = plan.models[keep]
+                                    if (
+                                        old_model != new_model
+                                        or ref.get("model_id") != old_model.model_id
+                                    ):
+                                        break
+                                    keep += 1
+                        else:
+                            for _ref in old_refs:
+                                if (
+                                    keep >= len(plan.stages)
+                                    or plan.stages[keep] != old.stages[keep]
+                                ):
+                                    break
+                                keep += 1
                     plan.plan_id = new_plan_id()
                     plan_refs = [
                         PlanFitRef(
@@ -1400,18 +2094,24 @@ def create_app(
                             ref["stage_id"],
                             ref["model_name"],
                             ref["fit_id"],
+                            model_id=ref.get("model_id"),
+                            prefix_fingerprint=ref.get("prefix_fingerprint"),
                         )
                         for ref in old_refs[:keep]
                     ]
                 elif edit.operation == "adopt":
-                    plan_refs = [
-                        PlanFitRef(
-                            plan.plan_id,
-                            plan.stages[0].component_id,
-                            plan.adopted_model_name or "",
-                            status["id"],
-                        )
-                    ]
+                    plan_refs = (
+                        []
+                        if plan.is_logical_models_plan
+                        else [
+                            PlanFitRef(
+                                plan.plan_id,
+                                plan.stages[0].component_id,
+                                plan.adopted_model_name or "",
+                                status["id"],
+                            )
+                        ]
+                    )
                 else:
                     if old is not None:
                         plan.plan_id = old.plan_id
@@ -1429,16 +2129,25 @@ def create_app(
                             old.divide_target_by_weight,
                         )
                         if pending is not None and (
-                            root_changed or plan.stages != old.stages
+                            root_changed
+                            or (
+                                plan.models != old.models
+                                if plan.is_logical_models_plan
+                                and old.is_logical_models_plan
+                                else plan.stages != old.stages
+                            )
                         ):
                             raise ValueError(
                                 "A stage is fitting. Wait for it or start a new chain."
                             )
-                        if old_refs and (
-                            root_changed
-                            or plan.stages[: len(old_refs)]
+                        frozen_prefix_changed = (
+                            plan.models[: len(old_refs)] != old.models[: len(old_refs)]
+                            if plan.is_logical_models_plan
+                            and old.is_logical_models_plan
+                            else plan.stages[: len(old_refs)]
                             != old.stages[: len(old_refs)]
-                        ):
+                        )
+                        if old_refs and (root_changed or frozen_prefix_changed):
                             raise ValueError(
                                 "A fitted stage is frozen. Choose Revise model plan to start a new version."
                             )
@@ -1466,7 +2175,7 @@ def create_app(
         with lock:
             check_revision(edit)
             plan = current.model_plan
-            if plan is None or not plan.stages:
+            if plan is None or not plan.logical_model_count:
                 raise HTTPException(422, "Define at least one model stage first.")
             try:
                 refs, pending = plan_ref_state(plan)
@@ -1477,30 +2186,91 @@ def create_app(
                     raise ValueError(
                         "The adopted scorer is unavailable. Adopt the saved model again."
                     )
-                if count > len(plan.stages):
+                if count > plan.logical_model_count:
                     raise ValueError("Every declared stage is already fitted.")
                 prepared = apply_variables(raw, current.data)
                 validate_model_plan(
                     current, plan, raw, set(prepared.columns), through_count=count
                 )
-                validate_plan_catalogues(plan.stages[:count], require_source=True)
+                physical_prefix = (
+                    [
+                        component
+                        for model in plan.models[:count]
+                        for component in model.physical_components
+                    ]
+                    if plan.is_logical_models_plan
+                    else plan.stages[:count]
+                )
+                validate_plan_catalogues(physical_prefix, require_source=True)
                 name = plan_model_name(current, plan, count)
                 config = materialise_plan_prefix(current, plan, count, name)
                 candidate = deepcopy(current)
                 candidate.models[name] = config
                 source_path: Path | None = None
                 source_name: str | None = None
-                if refs:
-                    previous = refs[-1]
-                    source_name = previous["model_name"]
+                logical = (
+                    plan.models[count - 1] if plan.is_logical_models_plan else None
+                )
+                partial_ref = (
+                    next(
+                        (
+                            item
+                            for item in reversed(plan_refs)
+                            if item.plan_id == plan.plan_id
+                            and item.model_id == logical.model_id
+                        ),
+                        None,
+                    )
+                    if logical is not None
+                    else None
+                )
+                source_ref: dict[str, Any] | PlanFitRef | None = (
+                    partial_ref
+                    if partial_ref is not None
+                    else (refs[-1] if refs else None)
+                )
+                if (
+                    source_ref is None
+                    and plan.is_logical_models_plan
+                    and plan.adopted_root is not None
+                ):
+                    adopted = plan.adopted_root
+                    source_job = jobs.status(current).get(adopted.model_name, {})
+                    if source_job.get("id") != adopted.fit_id or not source_job.get(
+                        "applicable"
+                    ):
+                        raise ValueError(
+                            "The adopted scorer is unavailable. Adopt the saved model again."
+                        )
+                    source_ref = {
+                        "model_name": adopted.model_name,
+                        "fit_id": adopted.fit_id,
+                        "prefix_fingerprint": adopted.scorer_fingerprint,
+                    }
+                if isinstance(source_ref, PlanFitRef):
+                    source_ref = {
+                        "model_name": source_ref.model_name,
+                        "fit_id": source_ref.fit_id,
+                        "prefix_fingerprint": source_ref.prefix_fingerprint,
+                    }
+                if source_ref is not None:
+                    source_name = source_ref["model_name"]
                     source_path = jobs.artifact(current, source_name)
                     source_stack = fitted_prefix(source_name)
+                    expected_fingerprint = source_ref.get("prefix_fingerprint")
+                    if (
+                        expected_fingerprint is not None
+                        and scorer_fingerprint(source_stack) != expected_fingerprint
+                    ):
+                        raise ValueError(
+                            "The recorded starting checkpoint is no longer available."
+                        )
                     config.lineage = ModelLineage(
                         parent_name=source_name,
-                        parent_fit_id=previous["fit_id"],
+                        parent_fit_id=source_ref["fit_id"],
                         parent_key=model_key(current, source_name),
                         parent_prefix_fingerprint=scorer_fingerprint(source_stack),
-                        prefix_length=len(refs),
+                        prefix_length=len(source_stack.components),
                     )
                     candidate.models[name] = config
                 job = jobs.start(
@@ -1512,17 +2282,39 @@ def create_app(
                 )
                 # Bind this queued worker to precisely this still-current plan.
                 jobs.jobs[name]["model_plan_id"] = plan.plan_id
-                jobs.jobs[name]["model_plan_stage_id"] = plan.stages[
-                    count - 1
-                ].component_id
-                stage_id = plan.stages[count - 1].component_id
-                plan_refs = [
-                    item
-                    for item in plan_refs
-                    if not (item.plan_id == plan.plan_id and item.stage_id == stage_id)
-                ]
-                issued_ref = PlanFitRef(plan.plan_id, stage_id, name, job["id"])
-                plan_refs.append(issued_ref)
+                stage_id = (
+                    logical.physical_components[-1].component_id
+                    if logical is not None
+                    else plan.stages[count - 1].component_id
+                )
+                jobs.jobs[name]["model_plan_stage_id"] = stage_id
+                if logical is not None:
+                    jobs.jobs[name]["model_plan_model_id"] = logical.model_id
+                    jobs.jobs[name]["model_plan_through_component_id"] = stage_id
+                issued_ref = PlanFitRef(
+                    plan.plan_id,
+                    stage_id,
+                    name,
+                    job["id"],
+                    model_id=logical.model_id if logical is not None else None,
+                    prefix_fingerprint="pending" if logical is not None else None,
+                )
+                if partial_ref is None:
+                    plan_refs = [
+                        item
+                        for item in plan_refs
+                        if not (
+                            item.plan_id == plan.plan_id
+                            and (
+                                (
+                                    logical is not None
+                                    and item.model_id == logical.model_id
+                                )
+                                or (logical is None and item.stage_id == stage_id)
+                            )
+                        )
+                    ]
+                    plan_refs.append(issued_ref)
                 plan_attempts[(plan.plan_id, stage_id)] = issued_ref
                 current = candidate
                 persist_plan_refs()
@@ -1530,7 +2322,12 @@ def create_app(
                 return {
                     "job": job,
                     "model_name": name,
-                    "stage_id": plan.stages[count - 1].component_id,
+                    # v2 UI addresses one logical model card, whereas the
+                    # worker/ref is pinned to its final physical component.
+                    # Returning the physical ID here made the client poll a
+                    # status that it never renders (notably a sole GLM whose
+                    # model_id differs from its core component_id).
+                    "stage_id": logical.model_id if logical is not None else stage_id,
                     "snapshot": {
                         **plan_view(),
                         "revision": revision,
@@ -1538,6 +2335,706 @@ def create_app(
                     },
                 }
             except (ValueError, TypeError, KeyError, OSError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/core-models/{model_id}/interactions")
+    def core_interactions(model_id: str) -> dict[str, Any]:
+        """Accepted tables and separately persisted candidate drafts for one GLM."""
+        with lock:
+            try:
+                return {
+                    **core_interaction_view(model_id),
+                    "session_id": session_id,
+                    "revision": revision,
+                }
+            except (ValueError, KeyError, OSError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/core-models/{model_id}/search")
+    def search_core_residuals(model_id: str, edit: CoreSearchEdit) -> dict[str, Any]:
+        """Search training residuals from one exact accepted logical checkpoint.
+
+        This route deliberately does not alter roles, selected main effects or
+        interaction candidates.  Discovery is a question about the scorer the
+        actuary has accepted so far; deciding to add a factor or table remains
+        a separate explicit action.
+        """
+        with lock:
+            check_revision(edit)
+            try:
+                plan = current.model_plan
+                if plan is None:
+                    raise ValueError("Define the model plan first.")
+                model = _logical_model(plan, model_id)
+                source = _core_source_ref(plan, model)
+                saved, frame, fitted = stack_artifact(source.model_name)
+                if source.fit_id != jobs.artifact(current, source.model_name).name:
+                    raise ValueError(
+                        "The accepted model changed. Refresh before searching."
+                    )
+                result = discover_core_residuals(
+                    saved,
+                    frame,
+                    fitted,
+                    action=edit.action,
+                    main_factors=_core_recipe(model).factors,
+                    accepted_pairs=[pair.factors for pair in _pair_recipes(model)],
+                    n_bins=edit.n_bins,
+                    min_expected=edit.min_expected,
+                    min_cell_share=edit.min_cell_share,
+                    top=edit.top,
+                )
+                return {
+                    **result,
+                    "model_id": model_id,
+                    "source_model_name": source.model_name,
+                    "source_fit_id": source.fit_id,
+                    "through_component_id": source.stage_id,
+                    "session_id": session_id,
+                    "revision": revision,
+                }
+            except (ValueError, KeyError, OSError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/core-models/{model_id}/interactions")
+    def create_core_interaction(
+        model_id: str, edit: CoreInteractionCreate
+    ) -> dict[str, Any]:
+        """Create a draft only.  It has no effect on any accepted score."""
+        nonlocal current, revision
+        with lock:
+            check_revision(edit)
+            if edit.model_id != model_id:
+                raise HTTPException(
+                    422, "The interaction model does not match the URL."
+                )
+            try:
+                plan = current.model_plan
+                if plan is None:
+                    raise ValueError("Define the model plan first.")
+                model = _logical_model(plan, model_id)
+                if edit.a == edit.b:
+                    raise ValueError(
+                        "Choose two different variables for an interaction."
+                    )
+                prepared = apply_variables(raw, current.data)
+                groups = pair_candidate_groups(current, raw, set(prepared.columns))
+                eligible = set(groups["predictors"] + groups["unassigned"])
+                if edit.a not in eligible or edit.b not in eligible:
+                    raise ValueError(
+                        "Interaction variables must be predictor or unassigned source columns."
+                    )
+                existing = {frozenset(item.factors) for item in _pair_recipes(model)}
+                if frozenset((edit.a, edit.b)) in existing:
+                    raise ValueError(
+                        "This interaction is already accepted for the model."
+                    )
+                source = _core_source_ref(plan, model)
+                source_path = jobs.artifact(current, source.model_name)
+                if source_path.name != source.fit_id:
+                    raise ValueError(
+                        "The accepted model changed. Refresh before adding a pair."
+                    )
+                candidate_id = secrets.token_urlsafe(12)
+                recipe = ComponentRecipe(
+                    f"{model_id}:pair:{candidate_id}",
+                    f"{edit.a} × {edit.b}",
+                    "interaction",
+                    (edit.a, edit.b),
+                    {"tune": True, **deepcopy(edit.settings)},
+                    design=deepcopy(edit.design),
+                )
+                entry = {
+                    "candidate_id": candidate_id,
+                    "model_id": model_id,
+                    "a": edit.a,
+                    "b": edit.b,
+                    "recipe": recipe.to_dict(),
+                    "source_model_name": source.model_name,
+                    "source_fit_id": source.fit_id,
+                    "source_through_component_id": source.stage_id,
+                    "source_fingerprint": scorer_fingerprint(
+                        fitted_prefix(source.model_name)
+                    ),
+                    "status": "draft",
+                    "message": "Not included in the accepted score.",
+                    "created_at": str(time.time_ns()),
+                }
+                replace_candidate(current, entry)
+                revision += 1
+                return {
+                    **core_interaction_view(model_id),
+                    "candidate": public_candidate(entry),
+                    "session_id": session_id,
+                    "revision": revision,
+                }
+            except (ValueError, KeyError, OSError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    @app.post(
+        "/api/core-models/{model_id}/interactions/{candidate_id}/fit", status_code=202
+    )
+    def fit_core_interaction(
+        model_id: str, candidate_id: str, edit: CoreInteractionCandidateEdit
+    ) -> dict[str, Any]:
+        """Fit one candidate against the exact accepted source scorer.
+
+        The temporary worker job is intentionally not a saved project model.
+        Its artefact is reachable only through this candidate until Keep.
+        """
+        nonlocal revision
+        with lock:
+            check_revision(edit)
+            if edit.candidate_id != candidate_id:
+                raise HTTPException(
+                    422, "The interaction candidate does not match the URL."
+                )
+            try:
+                entry = _candidate_entry(candidate_id)
+                if entry.get("model_id") != model_id:
+                    raise ValueError("This candidate belongs to a different model.")
+                if entry.get("status") not in {"draft", "needs_rebuild", "failed"}:
+                    raise ValueError(
+                        "This candidate is already fitting or ready for review."
+                    )
+                if not _candidate_is_current(entry):
+                    entry.update(
+                        status="needs_rebuild",
+                        message="The accepted source changed; create a fresh candidate.",
+                    )
+                    replace_candidate(current, entry)
+                    revision += 1
+                    raise ValueError(entry["message"])
+                plan = current.model_plan
+                assert plan is not None
+                source_name = entry["source_model_name"]
+                if source_name not in current.models:
+                    raise ValueError(
+                        "The accepted source configuration is unavailable."
+                    )
+                recipe = ComponentRecipe.from_dict(entry["recipe"])
+                # A private worker name means the candidate cannot become a
+                # default result, export or downstream offset by accident.
+                job_name = f"__interaction_candidate__{candidate_id}"
+                candidate_project = deepcopy(current)
+                candidate_plan = candidate_project.model_plan
+                assert candidate_plan is not None
+                candidate_index = next(
+                    index
+                    for index, item in enumerate(candidate_plan.models)
+                    if item.model_id == model_id
+                )
+                candidate_plan.models[candidate_index] = replace(
+                    candidate_plan.models[candidate_index],
+                    pair_corrections=(
+                        *candidate_plan.models[candidate_index].pair_corrections,
+                        recipe,
+                    ),
+                )
+                candidate_plan.stages = [
+                    component
+                    for item in candidate_plan.models
+                    for component in item.physical_components
+                ]
+                # Compile from the logical plan.  This keeps the accepted
+                # checkpoint configuration identical to the normal plan-fit
+                # path after Keep, including a direct GLM's one-time native
+                # stack wrapping when it gains its first interaction.
+                candidate_cfg = materialise_plan_prefix(
+                    candidate_project,
+                    candidate_plan,
+                    candidate_index + 1,
+                    job_name,
+                )
+                candidate_project.models[job_name] = candidate_cfg
+                source_path = jobs.artifact(current, source_name)
+                job = jobs.start(
+                    candidate_project,
+                    raw.clone(),
+                    job_name,
+                    source_fit=source_path,
+                    frozen_source_name=source_name,
+                )
+                jobs.jobs[job_name]["core_interaction_candidate_id"] = candidate_id
+                entry.update(
+                    {
+                        "status": "fitting",
+                        "message": "Fitting on training rows against the accepted scorer.",
+                        "job_name": job_name,
+                        "job_id": job["id"],
+                    }
+                )
+                replace_candidate(current, entry)
+                revision += 1
+                return {
+                    "job": job,
+                    "candidate": public_candidate(entry),
+                    "session_id": session_id,
+                    "revision": revision,
+                }
+            except (ValueError, KeyError, OSError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/core-models/{model_id}/interactions/{candidate_id}/discard")
+    def discard_core_interaction(
+        model_id: str, candidate_id: str, edit: CoreInteractionCandidateEdit
+    ) -> dict[str, Any]:
+        nonlocal revision
+        with lock:
+            check_revision(edit)
+            try:
+                entry = _candidate_entry(candidate_id)
+                if entry.get("model_id") != model_id:
+                    raise ValueError("This candidate belongs to a different model.")
+                job_name = entry.get("job_name")
+                if isinstance(job_name, str):
+                    jobs.cancel(job_name, "Interaction candidate discarded")
+                remove_candidate(current, candidate_id)
+                revision += 1
+                return {
+                    **core_interaction_view(model_id),
+                    "session_id": session_id,
+                    "revision": revision,
+                }
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/core-models/{model_id}/interactions/{candidate_id}/accept")
+    def accept_core_interaction(
+        model_id: str, candidate_id: str, edit: CoreInteractionCandidateEdit
+    ) -> dict[str, Any]:
+        """Promote the exact reviewed candidate artifact into a new checkpoint."""
+        nonlocal current, revision, plan_refs
+        with lock, jobs.lock:
+            check_revision(edit)
+            try:
+                entry = _candidate_entry(candidate_id)
+                if entry.get("model_id") != model_id:
+                    raise ValueError("This candidate belongs to a different model.")
+                if entry.get("status") != "review":
+                    raise ValueError(
+                        "Fit and review this interaction before keeping it."
+                    )
+                if not _candidate_is_current(entry):
+                    entry.update(
+                        status="needs_rebuild",
+                        message="The accepted source changed; this reviewed table cannot be kept.",
+                    )
+                    replace_candidate(current, entry)
+                    revision += 1
+                    raise ValueError(entry["message"])
+                job_name = entry.get("job_name")
+                job_id = entry.get("job_id")
+                if not isinstance(job_name, str) or not isinstance(job_id, str):
+                    raise ValueError("The reviewed candidate fit is unavailable.")
+                job = jobs.jobs.get(job_name)
+                if (
+                    job is None
+                    or job.get("id") != job_id
+                    or job.get("status") != "complete"
+                ):
+                    raise ValueError("The reviewed candidate fit is unavailable.")
+                source = Path(jobs.folder.name) / job_id
+                if not (source / "fit.pkl").is_file():
+                    raise ValueError("The reviewed candidate artifact is unavailable.")
+                plan = current.model_plan
+                if plan is None:
+                    raise ValueError("The model plan is unavailable.")
+                model = _logical_model(plan, model_id)
+                recipe = ComponentRecipe.from_dict(entry["recipe"])
+                # A neutral candidate is review evidence, not an accepted table.
+                with (source / "fit.pkl").open("rb") as handle:
+                    fitted = pickle.load(handle)
+                if fitted.stack is None or not fitted.stack.components:
+                    raise ValueError("The reviewed interaction scorer is unavailable.")
+                final_component = fitted.stack.components[-1]
+                if final_component.recipe.component_id != recipe.component_id:
+                    raise ValueError(
+                        "The reviewed artifact does not match this candidate."
+                    )
+                if final_component.evidence.get("no_change"):
+                    entry.update(
+                        status="no_change",
+                        message="This candidate made no fitted change.",
+                    )
+                    replace_candidate(current, entry)
+                    revision += 1
+                    raise ValueError(entry["message"])
+
+                # ``PlannedModel`` is frozen so replace just this nested value;
+                # older accepted checkpoints and every downstream recipe stay
+                # intact.  They become a stale suffix through their mismatched
+                # immutable prefix, never by mutating their scorer.
+                from dataclasses import replace as dataclass_replace
+
+                updated_model = dataclass_replace(
+                    model,
+                    pair_corrections=(*model.pair_corrections, recipe),
+                )
+                plan.models = [
+                    updated_model if item.model_id == model_id else item
+                    for item in plan.models
+                ]
+                plan.stages = [
+                    component
+                    for item in plan.models
+                    for component in item.physical_components
+                ]
+                candidate_project = deepcopy(current)
+                candidate_project.model_plan = plan
+                accepted_index = plan.models.index(updated_model) + 1
+                accepted_name = plan_model_name(current, plan, accepted_index)
+                accepted_cfg = materialise_plan_prefix(
+                    candidate_project, plan, accepted_index, accepted_name
+                )
+                candidate_project.models[accepted_name] = accepted_cfg
+
+                # Re-label the same private artifact rather than re-fitting or
+                # reconstructing it.  This is the exact reviewed scorer.
+                fitted.name = accepted_name
+                fitted.config = accepted_cfg
+                fitted.project_snapshot = candidate_project.to_dict()
+                with (source / "fit.pkl").open("wb") as handle:
+                    pickle.dump(fitted, handle, protocol=5)
+                accepted_fingerprint = scorer_fingerprint(fitted.stack)
+                job["name"] = accepted_name
+                job["key"] = model_key(candidate_project, accepted_name)
+                job["project"] = deepcopy(candidate_project)
+                job.pop("core_interaction_candidate_id", None)
+                jobs.jobs.pop(job_name, None)
+                jobs.jobs[accepted_name] = job
+                jobs.last_complete[accepted_name] = deepcopy(job)
+
+                through = recipe.component_id
+                changed_index = plan.models.index(updated_model)
+                affected = {item.model_id for item in plan.models[changed_index:]}
+                plan_refs = [
+                    item
+                    for item in plan_refs
+                    if not (item.plan_id == plan.plan_id and item.model_id in affected)
+                ]
+                plan_refs.append(
+                    PlanFitRef(
+                        plan.plan_id,
+                        through,
+                        accepted_name,
+                        job_id,
+                        model_id=model_id,
+                        prefix_fingerprint=accepted_fingerprint,
+                    )
+                )
+                current = candidate_project
+                # Restore the now-updated logical plan into the accepted project.
+                current.model_plan = plan
+                persist_plan_refs()
+                remove_candidate(current, candidate_id)
+                revision += 1
+                return {
+                    **core_interaction_view(model_id),
+                    "accepted": {
+                        "model_name": accepted_name,
+                        "fit_id": job_id,
+                        "through_component_id": through,
+                    },
+                    "needs_refit": [
+                        item.name for item in plan.models[changed_index + 1 :]
+                    ],
+                    "session_id": session_id,
+                    "revision": revision,
+                }
+            except (ValueError, KeyError, OSError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/core-models/{model_id}/interactions/{component_id}/remove")
+    def remove_accepted_core_interaction(
+        model_id: str, component_id: str, edit: CoreInteractionRecipeEdit
+    ) -> dict[str, Any]:
+        """Revise a GLM's working recipe without altering historical scorers."""
+        nonlocal revision, plan_refs
+        with lock:
+            check_revision(edit)
+            try:
+                plan = current.model_plan
+                if plan is None:
+                    raise ValueError("The model plan is unavailable.")
+                model = _logical_model(plan, model_id)
+                original_pairs = tuple(model.pair_corrections)
+                removed_index = next(
+                    (
+                        index
+                        for index, pair in enumerate(original_pairs)
+                        if pair.component_id == component_id
+                    ),
+                    None,
+                )
+                if removed_index is None:
+                    raise ValueError("Choose an accepted interaction table.")
+                prefix_ref = _checkpoint_for_pair_prefix(
+                    plan, model, original_pairs[:removed_index]
+                )
+                retained = tuple(
+                    pair for pair in original_pairs if pair.component_id != component_id
+                )
+                from dataclasses import replace as dataclass_replace
+
+                revised = dataclass_replace(model, pair_corrections=retained)
+                changed_index = plan.models.index(model)
+                plan.models = [
+                    revised if item.model_id == model_id else item
+                    for item in plan.models
+                ]
+                plan.stages = [
+                    component
+                    for item in plan.models
+                    for component in item.physical_components
+                ]
+                # The source before the removed table is already an immutable
+                # scored checkpoint.  Keep that prefix and invalidate only the
+                # removed-table suffix and later logical models.
+                affected = {item.model_id for item in plan.models[changed_index:]}
+                plan_refs = [
+                    item
+                    for item in plan_refs
+                    if not (item.plan_id == plan.plan_id and item.model_id in affected)
+                ]
+                plan_refs.append(prefix_ref)
+                persist_plan_refs()
+                revision += 1
+                return {
+                    **core_interaction_view(model_id),
+                    "needs_refit": [item.name for item in plan.models[changed_index:]],
+                    "session_id": session_id,
+                    "revision": revision,
+                }
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/core-models/{model_id}/interactions/{component_id}/move")
+    def move_accepted_core_interaction(
+        model_id: str, component_id: str, edit: CoreInteractionMove
+    ) -> dict[str, Any]:
+        """Reorder tables by creating a revised, explicitly-unfitted suffix."""
+        nonlocal revision, plan_refs
+        with lock:
+            check_revision(edit)
+            try:
+                plan = current.model_plan
+                if plan is None:
+                    raise ValueError("The model plan is unavailable.")
+                model = _logical_model(plan, model_id)
+                original_pairs = tuple(model.pair_corrections)
+                pairs = list(original_pairs)
+                moved = next(
+                    (pair for pair in pairs if pair.component_id == component_id), None
+                )
+                if moved is None:
+                    raise ValueError("Choose an accepted interaction table.")
+                pairs.remove(moved)
+                if edit.before_component_id is None:
+                    pairs.append(moved)
+                else:
+                    index = next(
+                        (
+                            i
+                            for i, pair in enumerate(pairs)
+                            if pair.component_id == edit.before_component_id
+                        ),
+                        None,
+                    )
+                    if index is None:
+                        raise ValueError(
+                            "Choose another accepted interaction as the destination."
+                        )
+                    pairs.insert(index, moved)
+                first_changed = next(
+                    (
+                        index
+                        for index, (before, after) in enumerate(
+                            zip(original_pairs, pairs, strict=True)
+                        )
+                        if before.component_id != after.component_id
+                    ),
+                    len(pairs),
+                )
+                if first_changed == len(pairs):
+                    raise ValueError("This move does not change the table order.")
+                prefix_ref = _checkpoint_for_pair_prefix(
+                    plan, model, original_pairs[:first_changed]
+                )
+                from dataclasses import replace as dataclass_replace
+
+                revised = dataclass_replace(model, pair_corrections=tuple(pairs))
+                changed_index = plan.models.index(model)
+                plan.models = [
+                    revised if item.model_id == model_id else item
+                    for item in plan.models
+                ]
+                plan.stages = [
+                    component
+                    for item in plan.models
+                    for component in item.physical_components
+                ]
+                affected = {item.model_id for item in plan.models[changed_index:]}
+                plan_refs = [
+                    item
+                    for item in plan_refs
+                    if not (item.plan_id == plan.plan_id and item.model_id in affected)
+                ]
+                plan_refs.append(prefix_ref)
+                persist_plan_refs()
+                revision += 1
+                return {
+                    **core_interaction_view(model_id),
+                    "needs_refit": [item.name for item in plan.models[changed_index:]],
+                    "session_id": session_id,
+                    "revision": revision,
+                }
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    def _amended_pair_checkpoint(
+        model_id: str, component_id: str, edit: StackAmendEdit
+    ) -> tuple[ModelPlan, Any, Any, Any, dict[str, Any], int]:
+        """Preview an accepted pair edit and return its exact new prefix.
+
+        ``amend_stack`` intentionally leaves later components in place for a
+        generic stack preview.  A core-table amendment is different: its later
+        pair tables are no longer fitted against the amended source.  Publish
+        only the scorer through the amended table, then let the normal staged
+        fit re-create that suffix.
+        """
+        plan = current.model_plan
+        if plan is None:
+            raise ValueError("The model plan is unavailable.")
+        model = _logical_model(plan, model_id)
+        pair_index = next(
+            (
+                index
+                for index, pair in enumerate(_pair_recipes(model))
+                if pair.component_id == component_id
+            ),
+            None,
+        )
+        if pair_index is None:
+            raise ValueError("Choose an accepted interaction table.")
+        source = _core_source_ref(plan, model)
+        saved, frame, fitted, amended, detail = preview_stack_amendment(
+            source.model_name, component_id, edit
+        )
+        amended_recipe = next(
+            (
+                recipe
+                for recipe in amended.config.components
+                if recipe.component_id == component_id
+            ),
+            None,
+        )
+        if amended_recipe is None:
+            raise ValueError("The amended interaction table is unavailable.")
+        updated_pairs = list(model.pair_corrections)
+        updated_pairs[pair_index] = amended_recipe
+        revised_model = replace(model, pair_corrections=tuple(updated_pairs))
+        revised_plan = deepcopy(plan)
+        model_index = plan.models.index(model)
+        revised_plan.models[model_index] = revised_model
+        revised_plan.stages = [
+            component
+            for item in revised_plan.models
+            for component in item.physical_components
+        ]
+        # Keep exactly the amended prefix.  The untouched suffix remains in
+        # the working plan, but has no accepted fit reference until refitted.
+        partial_config = materialise_plan_through_component(
+            current, revised_plan, model_index, component_id
+        )
+        amended = replace(
+            amended,
+            config=partial_config,
+            stack=amended.stack.prefix_through(component_id),
+        )
+        return revised_plan, saved, frame, amended, detail, model_index
+
+    @app.post("/api/core-models/{model_id}/interactions/{component_id}/preview")
+    def preview_accepted_core_interaction(
+        model_id: str, component_id: str, edit: StackAmendEdit
+    ) -> dict[str, Any]:
+        """Preview cap/rounding for a table without changing its checkpoint."""
+        with lock:
+            check_revision(edit)
+            try:
+                _plan, _saved, _frame, _amended, detail, _index = (
+                    _amended_pair_checkpoint(model_id, component_id, edit)
+                )
+                return {
+                    "preview": detail,
+                    "model_id": model_id,
+                    "component_id": component_id,
+                    "session_id": session_id,
+                    "revision": revision,
+                }
+            except (ValueError, KeyError, OSError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/core-models/{model_id}/interactions/{component_id}/apply")
+    def apply_accepted_core_interaction(
+        model_id: str, component_id: str, edit: StackAmendEdit
+    ) -> dict[str, Any]:
+        """Publish an amended pair prefix and invalidate only its suffix."""
+        nonlocal current, revision, plan_refs
+        from easy_glm.desktop.fit_worker import json_safe
+        from easy_glm.desktop.stack_views import stack_result
+        from easy_glm.workflow.project import validate_model_name
+
+        with lock:
+            check_revision(edit)
+            try:
+                if not edit.new_name:
+                    raise ValueError("Name the reviewed model checkpoint.")
+                plan, saved, frame, amended, detail, changed_index = (
+                    _amended_pair_checkpoint(model_id, component_id, edit)
+                )
+                problem = validate_model_name(edit.new_name, current.models)
+                if problem:
+                    raise ValueError(problem)
+                candidate = deepcopy(current)
+                candidate.model_plan = plan
+                candidate.models[edit.new_name] = amended.config
+                amended.name = edit.new_name
+                amended.project_snapshot = candidate.to_dict()
+                result = json_safe(stack_result(candidate, frame, amended))
+                published = jobs.publish_stack(
+                    candidate, raw.clone(), edit.new_name, amended, result
+                )
+                fingerprint = scorer_fingerprint(amended.stack)
+                changed_model = plan.models[changed_index]
+                affected = {item.model_id for item in plan.models[changed_index:]}
+                plan_refs = [
+                    item
+                    for item in plan_refs
+                    if not (item.plan_id == plan.plan_id and item.model_id in affected)
+                ]
+                plan_refs.append(
+                    PlanFitRef(
+                        plan.plan_id,
+                        component_id,
+                        edit.new_name,
+                        published["id"],
+                        model_id=changed_model.model_id,
+                        prefix_fingerprint=fingerprint,
+                    )
+                )
+                current = candidate
+                persist_plan_refs()
+                revision += 1
+                return {
+                    **core_interaction_view(model_id),
+                    "job": published,
+                    "preview": detail,
+                    "needs_refit": [item.name for item in plan.models[changed_index:]],
+                    "session_id": session_id,
+                    "revision": revision,
+                }
+            except (ValueError, KeyError, OSError) as exc:
                 raise HTTPException(422, str(exc)) from exc
 
     @app.post("/api/models/save")
@@ -1900,13 +3397,25 @@ def create_app(
                 source = jobs.artifact(current, name)
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
-            saved, saved_raw = deepcopy(current), raw.clone()
+            # The result has to be inspected against the project that fitted
+            # it.  The live workbench may have since moved a table, renamed a
+            # stage or changed bands.  Reusing ``current`` here made a saved
+            # checkpoint silently borrow those later settings.
+            saved_raw = raw.clone()
         with (source / "fit.pkl").open("rb") as handle:
             fitted = pickle.load(handle)  # private artifact from our fit worker
         if fitted.name != name:
             raise HTTPException(
                 409, "The fitted artifact does not match the selected model."
             )
+        snapshot = getattr(fitted, "project_snapshot", None)
+        if isinstance(snapshot, dict):
+            saved = Project.from_dict(snapshot)
+        else:
+            # Older artifacts predate snapshots.  Keep their established
+            # behaviour, but make the fallback explicit rather than claiming
+            # that it is an immutable historical reconstruction.
+            saved = deepcopy(current)
         from easy_glm.workflow.prep import prepare
 
         frame = prepare(saved, saved_raw)
@@ -1917,7 +3426,7 @@ def create_app(
             # Expose a compatible single scorer for stack inspection without
             # changing its fitted artifact or the ordinary single-model result.
             fitted.rate_model = rate_model_for(saved, fitted)
-            fitted.config = saved.models[name]
+            fitted.config = saved.models.get(name, fitted.config)
             try:
                 fitted.stack = stack_from_legacy(saved, fitted)
             except ValueError as exc:
@@ -2124,7 +3633,7 @@ def create_app(
         from easy_glm.workflow.diagnostics import totals
         from easy_glm.workflow.prep import train_holdout
         from easy_glm.workflow.stack import amend_stack
-        from easy_glm.workflow.stack_types import LookupScorer
+        from easy_glm.workflow.stack_types import LookupScorer, RateModelScorer
 
         with lock:
             check_revision(edit)
@@ -2133,9 +3642,14 @@ def create_app(
                 raise ValueError("The fitted model changed. Preview this edit again.")
         saved, frame, fitted = stack_artifact(name)
         component = fitted.stack.component(component_id)
-        if not isinstance(component.scorer, LookupScorer):
+        is_lookup = isinstance(component.scorer, LookupScorer)
+        is_pair = (
+            isinstance(component.scorer, RateModelScorer)
+            and component.recipe.kind == "interaction"
+        )
+        if not (is_lookup or is_pair):
             raise ValueError(
-                "Caps and rounding are available for catalogue lookup files."
+                "Caps and rounding are available for catalogue and interaction tables."
             )
         if edit.operation == "cap":
             if edit.lower is None and edit.upper is None:
@@ -2164,17 +3678,30 @@ def create_app(
             decimals=edit.decimals,
             refit_later=False,
         )
-        old_table = component.scorer.table
-        new_table = amended.stack.component(component_id).scorer.table
-        old_values = old_table["multiplier"].cast(pl.Float64).to_numpy()
-        new_values = new_table["multiplier"].cast(pl.Float64).to_numpy()
+        if is_lookup:
+            old_table = component.scorer.table
+            new_table = amended.stack.component(component_id).scorer.table
+            old_values = old_table["multiplier"].cast(pl.Float64).to_numpy()
+            new_values = new_table["multiplier"].cast(pl.Float64).to_numpy()
+            keys = old_table[component.scorer.key].to_list()
+        else:
+            old_pair = component.scorer.rate_model.get_pair_table(component_id)
+            new_pair = amended.stack.component(
+                component_id
+            ).scorer.rate_model.get_pair_table(component_id)
+            old_values = np.asarray(
+                [cell.relativity for cell in old_pair.cells], dtype=float
+            )
+            new_values = np.asarray(
+                [cell.relativity for cell in new_pair.cells], dtype=float
+            )
+            keys = [f"{cell.axis_a_row}, {cell.axis_b_row}" for cell in old_pair.cells]
         _actual, old_expected, _weight = totals(
             train, fitted.config, fitted.predict(train)
         )
         _actual, new_expected, _weight = totals(
             train, amended.config, amended.predict(train)
         )
-        key = component.scorer.key
         changed = np.flatnonzero(~np.isclose(old_values, new_values, rtol=0, atol=0))
         detail = {
             "component_id": component_id,
@@ -2183,7 +3710,7 @@ def create_app(
             "expected_after": float(new_expected.sum()),
             "sample_rows": [
                 {
-                    "key": old_table[key][int(index)],
+                    "key": keys[int(index)],
                     "before": float(old_values[index]),
                     "after": float(new_values[index]),
                 }
