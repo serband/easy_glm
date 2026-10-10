@@ -12,11 +12,14 @@ async function openFrenchMotorExample(page) {
     if (await page.getByRole('checkbox', { name: /Replace this session/ }).count()) {
         await page.getByRole('checkbox', { name: /Replace this session/ }).check();
     }
-    const loaded = page.waitForResponse((response) => response.url().endsWith('/api/project/open') && response.request().method() === 'POST');
+    const loaded = page.waitForResponse(
+        (response) =>
+            response.url().endsWith('/api/project/open') && response.request().method() === 'POST',
+    );
     await page.getByRole('button', { name: 'Load example', exact: true }).click();
     expect((await loaded).ok()).toBe(true);
     await expect(page.getByRole('button', { name: 'Load example', exact: true })).toBeDisabled();
-    await expect(page.getByRole('heading', { name: 'Project model plan' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Model structure' })).toBeVisible();
 }
 
 async function planFitRefs(page) {
@@ -36,7 +39,9 @@ async function chooseAndFitFirstGlm(page, variable = 'DriverAge') {
     await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await page.getByRole('button', { name: /Fit .+/ }).click();
-    await expect(page.getByText('Fitted and kept as a saved version.')).toBeVisible({ timeout: 120000 });
+    await expect(page.getByText('Fitted and kept as a saved version.')).toBeVisible({
+        timeout: 120000,
+    });
 }
 
 async function openBinaryData(page) {
@@ -51,8 +56,16 @@ async function openBinaryData(page) {
         mimeType: 'text/csv',
         buffer: Buffer.from(rows.join('\n')),
     });
-    await page.getByRole('checkbox', { name: 'Replace this session. I have saved any work I want to keep.' }).check();
-    const loaded = page.waitForResponse((response) => response.url().includes('/api/project/upload?') && response.request().method() === 'POST');
+    await page
+        .getByRole('checkbox', {
+            name: 'Replace this session. I have saved any work I want to keep.',
+        })
+        .check();
+    const loaded = page.waitForResponse(
+        (response) =>
+            response.url().includes('/api/project/upload?') &&
+            response.request().method() === 'POST',
+    );
     await page.getByRole('button', { name: 'Open data', exact: true }).click();
     expect((await loaded).ok()).toBe(true);
     await expect(page.getByRole('button', { name: 'Open data', exact: true })).toBeDisabled();
@@ -63,7 +76,9 @@ async function openBinaryData(page) {
     await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
 }
 
-test('single-model links are restricted to scorers that can be diagnosed and exported', async ({ page }) => {
+test('single-model links are restricted to scorers that can be diagnosed and exported', async ({
+    page,
+}) => {
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
 
@@ -80,7 +95,9 @@ test('single-model links are restricted to scorers that can be diagnosed and exp
             'content-type': 'application/json',
             'X-EasyGLM-Token': session.token,
         };
-        const current = await fetch('/api/model-plan', { headers }).then((response) => response.json());
+        const current = await fetch('/api/model-plan', { headers }).then((response) =>
+            response.json(),
+        );
         const response = await fetch('/api/model-plan', {
             method: 'POST',
             headers,
@@ -115,10 +132,14 @@ test('a single binomial logit model can be inspected and exported', async ({ pag
     await page.getByRole('button', { name: 'Diagnostics', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Actual versus expected' })).toBeVisible();
     await page.getByRole('button', { name: 'Export', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Download scorer (.easyglm)', exact: true })).toBeEnabled();
+    await expect(
+        page.getByRole('button', { name: 'Download scorer (.easyglm)', exact: true }),
+    ).toBeEnabled();
 });
 
-test('diagnostics opens the latest staged fit and lets the actuary inspect an earlier prefix', async ({ page }) => {
+test('diagnostics opens the latest staged fit and lets the actuary inspect an earlier prefix', async ({
+    page,
+}) => {
     await openFrenchMotorExample(page);
     await startPlan(page, 'Build in stages');
     await chooseAndFitFirstGlm(page, 'DrivAge');
@@ -126,12 +147,18 @@ test('diagnostics opens the latest staged fit and lets the actuary inspect an ea
 
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await page.getByRole('button', { name: /Add .*stage/ }).click();
-    await page.getByLabel('Stage 2 name').locator('xpath=ancestor::li').getByRole('button', { name: 'Choose variables', exact: true }).click();
+    await page
+        .getByLabel('Stage 2 name')
+        .locator('xpath=ancestor::li')
+        .getByRole('button', { name: 'Choose variables', exact: true })
+        .click();
     await page.getByLabel('Use DrivAge').check();
     await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await page.getByRole('button', { name: /Fit .+/ }).click();
-    await expect(page.getByText('Fitted and kept as a saved version.')).toHaveCount(2, { timeout: 120000 });
+    await expect(page.getByText('Fitted and kept as a saved version.')).toHaveCount(2, {
+        timeout: 120000,
+    });
     const [savedFirst, latest] = await planFitRefs(page);
     expect(savedFirst).toBe(first);
     expect(latest).toBeTruthy();

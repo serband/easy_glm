@@ -192,28 +192,31 @@
 </script>
 
 <section class="model-plan" aria-label="Model plan">
-    <div class="heading">
-        <div>
-            <div class="eyebrow">MODEL PLAN</div>
-            <h1>Project model plan</h1>
-            <p>Choose the modelling route here. Variables and fitting follow this plan.</p>
-        </div>
-    </div>
     {#if error}<div class="message error" role="alert">{error}</div>{/if}
     {#if !plan}
         <section class="model-card start-plan">
-            <h2>How will you build this model?</h2>
-            <p>Choose once for this working plan. Saved fitted models are kept separately.</p>
-            <div class="plan-actions">
-                <button class="primary" disabled={busy} onclick={() => start('single')}
-                    >Single model</button
-                ><button class="primary" disabled={busy} onclick={() => start('sequential')}
-                    >Build in stages</button
+            <h2>Model structure</h2>
+            <p>Choose how this model will be built. Variables and fitting follow this choice.</p>
+            <div class="route-actions">
+                <button
+                    class="route-choice"
+                    aria-label="Single model"
+                    disabled={busy}
+                    onclick={() => start('single')}
                 >
+                    <span>Single model</span>
+                    <small>Fit one model using the project data.</small>
+                </button>
+                <button
+                    class="route-choice"
+                    aria-label="Build in stages"
+                    disabled={busy}
+                    onclick={() => start('sequential')}
+                >
+                    <span>Build in stages</span>
+                    <small>Fit models in sequence, each building on the score before it.</small>
+                </button>
             </div>
-            <p class="help-text">
-                Next, set the shared roles and then choose variables for each stage.
-            </p>
         </section>
         {#if (planState?.history || []).length}<section class="model-card saved-versions">
                 <h2>Use a saved fitted version</h2>
@@ -233,7 +236,7 @@
                 </ul>
             </section>{/if}
     {:else}
-        <section class="model-card">
+        <section class="model-card configured-plan">
             <div class="plan-header">
                 <div>
                     <h2>{plan.mode === 'single' ? 'Single model' : 'Model stages'}</h2>
@@ -403,7 +406,7 @@
 
 <style>
     .model-plan {
-        max-width: 980px;
+        width: 100%;
     }
     .plan-actions {
         display: flex;
@@ -424,13 +427,44 @@
         gap: 16px;
         align-items: start;
     }
+    .route-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 20px;
+    }
+    .route-choice {
+        display: grid;
+        min-height: 112px;
+        padding: 18px;
+        border-color: #cbd8d2;
+        background: #fff;
+        text-align: left;
+        white-space: normal;
+        align-content: start;
+        gap: 8px;
+    }
+    .route-choice:hover {
+        background: #f5faf7;
+        border-color: #548f7b;
+    }
+    .route-choice span {
+        color: var(--text);
+        font-size: 16px;
+        font-weight: 650;
+    }
+    .route-choice small {
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.5;
+    }
     .stage-list {
         padding-left: 24px;
         margin: 20px 0;
     }
     .stage-list li {
         display: grid;
-        grid-template-columns: 1fr auto auto;
+        grid-template-columns: minmax(0, 1fr) 180px;
         gap: 12px;
         align-items: center;
         border-top: 1px solid var(--line);
@@ -440,14 +474,21 @@
         display: flex;
         gap: 5px;
         flex-wrap: wrap;
+        grid-column: 1 / -1;
     }
-    @media (max-width: 620px) {
+    @media (max-width: 900px) {
         .plan-header {
             display: block;
+        }
+        .plan-header .plan-actions {
+            margin-top: 16px;
         }
         .stage-list li {
             grid-template-columns: 1fr;
             gap: 5px;
+        }
+        .route-actions {
+            grid-template-columns: 1fr;
         }
     }
 </style>

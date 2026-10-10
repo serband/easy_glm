@@ -1362,24 +1362,27 @@
                     {:else}<div class="loading">Opening local data…</div>{/if}
                 </div>
             {/if}
-            <section hidden={view !== 'project'} class="workflow-page">
+            <section hidden={view !== 'project'} class="workflow-page project-page">
                 <div class="heading">
                     <div>
                         <h1>Project & data</h1>
                         <p>Open your own data, continue a saved project or try an example.</p>
+                        {#if state?.columns.length}
+                            <section class="loaded-dataset" aria-label="Current dataset">
+                                <span>Loaded:</span>
+                                <span
+                                    class="source-filename"
+                                    title={projectInfo?.data?.source?.path || ''}
+                                >
+                                    {sourceFilename(projectInfo)}
+                                </span>
+                                <span>{countLabel(state.row_count, 'row')}</span>
+                                <span>{countLabel(state.columns.length, 'column')}</span>
+                            </section>
+                        {/if}
                     </div>
                 </div>
                 {#if projectError}<p role="alert">{projectError}</p>{/if}
-                {#if state?.columns.length}
-                    <section class="loaded-dataset" aria-label="Current dataset">
-                        <strong>Loaded:</strong>
-                        <span class="source-filename" title={projectInfo?.data?.source?.path || ''}>
-                            {sourceFilename(projectInfo)}
-                        </span>
-                        <span>· {countLabel(state.row_count, 'row')}</span>
-                        <span>· {countLabel(state.columns.length, 'column')}</span>
-                    </section>
-                {/if}
                 {#if state}<ProjectOpen
                         {api}
                         upload={uploadProject}
@@ -1498,12 +1501,18 @@
         flex-wrap: wrap;
         align-items: baseline;
         gap: 4px 8px;
-        margin: -8px 0 22px;
+        margin: 12px 0 0;
         color: var(--muted);
         font-size: 14px;
     }
-    .loaded-dataset strong {
+    .loaded-dataset span:first-child {
         color: var(--text);
+        font-weight: 600;
+    }
+    .loaded-dataset span:nth-child(n + 3)::before {
+        content: '·';
+        color: #a5aea9;
+        margin-right: 8px;
     }
     .source-filename {
         overflow-wrap: anywhere;
