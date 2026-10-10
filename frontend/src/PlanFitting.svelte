@@ -5,13 +5,16 @@
     export let planState = null;
     export let onChanged = () => {};
     export let onFitted = () => {};
+    export let onNavigate = () => {};
+    export let onDirty = () => {};
     let error = '',
         busy = false,
         polling = false,
         workingSettings = {},
         settingsKey = '',
         pollCancelled = false,
-        pollGeneration = 0;
+        pollGeneration = 0,
+        settingsBaseline = '';
     $: plan = planState?.plan || null;
     $: statuses = planState?.stage_statuses || [];
     $: fittingStage = statuses.find((item) => item.state === 'fitting') || null;
@@ -26,8 +29,32 @@
     });
     $: if (stage && stageKey !== settingsKey && !busy) {
         workingSettings = structuredClone(stage.settings || {});
+        settingsBaseline = JSON.stringify(workingSettings);
         settingsKey = stageKey;
     }
+    $: settingsDirty = Boolean(stage && JSON.stringify(workingSettings) !== settingsBaseline);
+    $: onDirty(settingsDirty);
+    function setupProblem(model) {
+        if (model?.kind === 'catalogue') {
+            return !model.settings?.source_path || !model.settings?.key
+                ? 'Upload the catalogue and choose its join key in Variables.'
+                : '';
+        }
+        if (model?.kind === 'interaction' && model.factors?.length !== 2)
+            return 'Choose two variables for this interaction in Variables.';
+        return model && !model.factors?.length
+            ? 'Choose variables for this model before fitting.'
+            : '';
+    }
+    $: nextProblem = setupProblem(stage);
+    $: fittedCount = statuses.filter((item) => item.state === 'fitted').length;
+    $: completeOffset =
+        nextIndex > 0
+            ? statuses
+                  .slice(0, nextIndex)
+                  .map((item) => item.name)
+                  .join(' → ')
+            : '';
     function setSettings(patch) {
         workingSettings = { ...workingSettings, ...patch };
     }
@@ -100,6 +127,7 @@
     onDestroy(() => {
         pollCancelled = true;
         pollGeneration += 1;
+        onDirty(false);
     });
     async function cancelFit() {
         const name = fittingStage?.fit?.model_name || fittingStage?.last_attempt?.model_name;
@@ -118,23 +146,40 @@
             busy = false;
         }
     }
-    async function fit() {
-        if (!next || !stage || polling) return;
+    async function saveSettings() {
+        const stages = plan.stages.map((item) =>
+            item.component_id === stage.component_id
+                ? { ...item, settings: settingsForSave() }
+                : item,
+        );
+        const saved = await api('model-plan', {
+            session_id: state.session_id,
+            revision: state.revision,
+            operation: 'save',
+            plan: { ...plan, stages },
+        });
+        workingSettings = structuredClone(saved.plan.stages[nextIndex].settings || {});
+        settingsBaseline = JSON.stringify(workingSettings);
+        onChanged(saved);
+        return saved;
+    }
+    async function saveWithoutFit() {
         busy = true;
         error = '';
         try {
-            const stages = plan.stages.map((item) =>
-                item.component_id === stage.component_id
-                    ? { ...item, settings: settingsForSave() }
-                    : item,
-            );
-            const saved = await api('model-plan', {
-                session_id: state.session_id,
-                revision: state.revision,
-                operation: 'save',
-                plan: { ...plan, stages },
-            });
-            onChanged(saved);
+            await saveSettings();
+        } catch (e) {
+            error = e.message;
+        } finally {
+            busy = false;
+        }
+    }
+    async function fit() {
+        if (!next || !stage || polling || nextProblem) return;
+        busy = true;
+        error = '';
+        try {
+            const saved = await saveSettings();
             const started = await api('model-plan/fit-next', {
                 session_id: state.session_id,
                 revision: saved.revision,
@@ -152,35 +197,38 @@
 <section class="plan-fitting workflow-page" aria-label="Fit model plan">
     <div class="heading">
         <div>
-            <div class="eyebrow">MODEL PLAN</div>
-            <h1>Fit the model plan</h1>
+            <h1>Fit models</h1>
             <p>
-                Fit each planned stage in order. This page saves the next stage's fitting settings
-                and starts its fit.
+                {plan?.mode === 'single'
+                    ? 'Fit the model you defined in Project & data.'
+                    : 'Fit the models in order. Each later model uses all preceding fitted predictions as its offset.'}
             </p>
         </div>
+        <button onclick={() => onNavigate('models')}>Edit model setup</button>
     </div>
     {#if !plan}<section class="model-card">
             <p>Start a model plan in Project & data before fitting.</p>
         </section>
     {:else}<section class="model-card">
-            <ol class="fit-stages">
+            <ol class="fit-stages" aria-label="Model fit order">
                 {#each statuses as item, index}<li
                         class:fitted={item.state === 'fitted'}
                         class:current={item.stage_id === next?.stage_id}
                     >
                         <div>
                             <strong>{index + 1}. {item.name}</strong><small
-                                >{plan?.stages?.[index]?.kind === 'glm'
-                                    ? 'GLM'
-                                    : plan?.stages?.[index]?.kind === 'catboost'
-                                      ? 'CatBoost'
-                                      : plan?.stages?.[index]?.kind === 'catalogue'
-                                        ? 'Catalogue'
-                                        : 'Interaction'} · {(plan?.stages?.[index]?.factors || [])
-                                    .length
-                                    ? (plan?.stages?.[index]?.factors || []).join(', ')
-                                    : 'No variables selected'}</small
+                                >{plan.adopted_model_name && index === 0
+                                    ? 'Saved fitted model · accepted variables preserved'
+                                    : plan?.stages?.[index]?.kind === 'glm'
+                                      ? 'GLM'
+                                      : plan?.stages?.[index]?.kind === 'catboost'
+                                        ? 'CatBoost'
+                                        : plan?.stages?.[index]?.kind === 'catalogue'
+                                          ? 'Catalogue'
+                                          : 'Interaction'}{#if !(plan.adopted_model_name && index === 0)}
+                                    · {(plan?.stages?.[index]?.factors || []).length
+                                        ? (plan?.stages?.[index]?.factors || []).join(', ')
+                                        : 'No variables selected'}{/if}</small
                             >
                             <p>
                                 {item.state === 'fitted'
@@ -194,7 +242,25 @@
                                         : 'Waiting for the earlier stage.'}
                             </p>
                         </div>
-                        <span>{item.message}</span>
+                        <div class="stage-actions">
+                            <span
+                                >{item.state === 'ready' && setupProblem(plan?.stages?.[index])
+                                    ? 'Variables needed'
+                                    : item.message}</span
+                            >
+                            {#if item.state === 'fitted'}
+                                <button
+                                    onclick={() => {
+                                        onFitted(item.fit?.model_name || item.name);
+                                        onNavigate('diagnostics');
+                                    }}>Inspect {item.name}</button
+                                >
+                            {:else if item.state !== 'fitting'}
+                                <button onclick={() => onNavigate('variables', item.stage_id)}
+                                    >Edit variables</button
+                                >
+                            {/if}
+                        </div>
                     </li>{/each}
             </ol>
             {#if error}<div class="message error" role="alert">{error}</div>{/if}
@@ -209,7 +275,23 @@
                         .last_attempt.message || 'Fit did not complete. You can retry this stage.'}
                 </div>{/if}
             {#if next && stage}<section class="fit-settings">
-                    <h2>Settings for {next.name}</h2>
+                    <h2>Fit Model {nextIndex + 1} — {next.name}</h2>
+                    <p>
+                        {completeOffset
+                            ? `Offset: complete predictions from ${completeOffset}.`
+                            : 'Starts from the project data and shared response.'}
+                    </p>
+                    {#if nextProblem}<div class="message setup-needed" role="status">
+                            <p>{nextProblem}</p>
+                            <button onclick={() => onNavigate('variables', next.stage_id)}
+                                >Choose variables for {next.name}</button
+                            >
+                        </div>{/if}
+                    <p class="settings-state" role="status">
+                        {settingsDirty
+                            ? 'Unsaved fitting settings. Save them below, or fit to save and run.'
+                            : 'Fitting settings saved.'}
+                    </p>
                     {#if stage.kind === 'glm'}<fieldset class="mode-choice">
                             <legend>Penalty selection</legend><label
                                 class:chosen={(workingSettings.penalty_method ||
@@ -585,20 +667,42 @@
                                 /></label
                             >{/if}{/if}
                     <div class="fit-next">
-                        <div><p>Saving these settings starts this fit.</p></div>
-                        <button class="primary" onclick={fit} disabled={busy || polling}
+                        <button
+                            onclick={saveWithoutFit}
+                            disabled={busy || polling || !settingsDirty}
+                            >Save fitting settings</button
+                        >
+                        <button
+                            class="primary"
+                            onclick={fit}
+                            disabled={busy || polling || !!nextProblem}
                             >{busy
                                 ? 'Starting fit…'
                                 : polling
                                   ? 'Fitting…'
-                                  : `Fit ${next.name}`}</button
+                                  : `Fit Model ${nextIndex + 1} — ${next.name}`}</button
                         >
                     </div>
                 </section>{:else if fittingStage}<div class="message">
                     Fitting is in progress. This page will refresh when it completes.
                 </div>{:else}<div class="message">
-                    All stages are fitted. Use Diagnostics to inspect each saved prefix and the full
-                    model.
+                    All models are fitted.
+                    <button
+                        class="primary"
+                        onclick={() => {
+                            onFitted(statuses.at(-1)?.fit?.model_name || '');
+                            onNavigate('diagnostics');
+                        }}>Inspect complete model</button
+                    >
+                </div>{/if}
+            {#if fittedCount && next}<div class="fit-progress" role="status">
+                    <span>{fittedCount} of {statuses.length} models fitted.</span>
+                    <button
+                        onclick={() => {
+                            onFitted(statuses[fittedCount - 1]?.fit?.model_name || '');
+                            onNavigate('diagnostics');
+                        }}>Inspect fitted models</button
+                    >
                 </div>{/if}
         </section>{/if}
 </section>
@@ -649,9 +753,31 @@
         margin: 4px 0 0;
         color: var(--muted);
     }
+    .fit-stages small {
+        display: block;
+        margin-top: 6px;
+        color: var(--muted);
+    }
     .fit-stages span {
         white-space: nowrap;
         color: var(--muted);
+    }
+    .stage-actions {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 8px;
+    }
+    .setup-needed,
+    .settings-state {
+        flex-basis: 100%;
+    }
+    .fit-progress {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-top: 20px;
     }
     .fit-stages .fitted span {
         color: var(--green);

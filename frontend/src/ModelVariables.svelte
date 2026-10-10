@@ -13,6 +13,7 @@
     export let inheritedDesign = null;
     export let method = 'glm';
     export let selectionOnly = false;
+    export let treatmentOnly = false;
     export let showHeading = true;
     export let onChange = () => {};
     export let onValidity = () => {};
@@ -36,7 +37,7 @@
     $: columnByName = new Map(eligible.map((column) => [column.name, column]));
     $: chosen = new Set(factors);
     $: displayed = eligible.filter((column) =>
-        selectedOnly
+        treatmentOnly || selectedOnly
             ? chosen.has(column.name)
             : column.name.toLowerCase().includes(search.toLowerCase()),
     );
@@ -278,12 +279,12 @@
             class:active={tab === 'table'}
             onclick={() => (tab = 'table')}>Table</button
         >
-        <button
-            role="tab"
-            aria-selected={tab === 'json'}
-            class:active={tab === 'json'}
-            onclick={() => (tab = 'json')}>JSON</button
-        >
+        {#if !treatmentOnly}<button
+                role="tab"
+                aria-selected={tab === 'json'}
+                class:active={tab === 'json'}
+                onclick={() => (tab = 'json')}>JSON</button
+            >{/if}
     </div>
     {#if tab === 'table'}
         {#if !selectionOnly && method === 'glm'}
@@ -320,17 +321,19 @@
                     bind:value={search}
                 />
             </label>
-            <button class="text-button" onclick={() => (selectedOnly = !selectedOnly)}
-                >{selectedOnly ? 'Show matching variables' : 'Show selected only'}</button
-            >
+            {#if !treatmentOnly}<button
+                    class="text-button"
+                    onclick={() => (selectedOnly = !selectedOnly)}
+                    >{selectedOnly ? 'Show matching variables' : 'Show selected only'}</button
+                >{/if}
         </div>
         <div class="variables-scroll">
-            <table class:selectionOnly>
+            <table class:selectionOnly class:treatmentOnly>
                 <thead
                     ><tr
-                        ><th>Use</th><th>Variable</th>{#if !selectionOnly}<th
-                                >How this model uses it</th
-                            ><th>Settings</th>{/if}</tr
+                        >{#if !treatmentOnly}<th>Use</th>{/if}<th>Variable</th
+                        >{#if !selectionOnly}<th>How this model uses it</th><th>Settings</th
+                            >{/if}</tr
                     ></thead
                 >
                 <tbody>
@@ -338,14 +341,14 @@
                         {@const selected = chosen.has(column.name)}
                         {@const local = effectiveDesign(column.name)}
                         <tr class:selected>
-                            <td
-                                ><input
-                                    aria-label={`Use ${column.name}`}
-                                    type="checkbox"
-                                    checked={selected}
-                                    onchange={() => toggle(column.name)}
-                                /></td
-                            >
+                            {#if !treatmentOnly}<td
+                                    ><input
+                                        aria-label={`Use ${column.name}`}
+                                        type="checkbox"
+                                        checked={selected}
+                                        onchange={() => toggle(column.name)}
+                                    /></td
+                                >{/if}
                             <td
                                 ><strong>{column.name}</strong><small
                                     >{column.numeric ? 'Numeric' : 'Categorical'}</small
@@ -590,7 +593,9 @@
         width: 26%;
     }
     .variables-scroll table.selectionOnly th:nth-child(2),
-    .variables-scroll table.selectionOnly td:nth-child(2) {
+    .variables-scroll table.selectionOnly td:nth-child(2),
+    .variables-scroll table.treatmentOnly th:first-child,
+    .variables-scroll table.treatmentOnly td:first-child {
         width: auto;
     }
     .variables-scroll th {

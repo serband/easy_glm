@@ -1,4 +1,5 @@
 <script>
+    import { tick } from 'svelte';
     import ModelVariables from './ModelVariables.svelte';
     export let api;
     export let uploadCatalogue;
@@ -10,9 +11,15 @@
     export let revisionIntent = false;
     export let onSharedSetup = () => {};
     export let embedded = false;
+    export let singleStep = 'selection';
+    export let onSingleStepChange = () => {};
+    export let onSaved = () => {};
+    export let onCreateRevision = () => {};
+    export let onStageChange = () => {};
+    export let resetSignal = 0;
+    let resetSeen = 0;
     let working = null;
     let workingPlan = null;
-    let singleStep = 'selection';
     let baseline = '';
     let jsonDraft = '';
     let validity = '';
@@ -80,6 +87,16 @@
         (planState?.safe_columns?.[stageIndex] || []).map(
             (name) => state?.columns?.find((entry) => entry.name === name) || { name, dtype: '' },
         );
+    function methodLabel(kind) {
+        return (
+            {
+                glm: 'GLM',
+                catboost: 'CatBoost',
+                interaction: 'Interaction table',
+                catalogue: 'Catalogue',
+            }[kind] || kind
+        );
+    }
     function typedColumn(column) {
         const name = column.name || column;
         return {
@@ -101,6 +118,10 @@
                   .filter((column) => (column.name || column) !== working?.settings?.key)
                   .map(typedColumn)
             : sourceColumns.map(typedColumn);
+    function setSingleStep(next) {
+        singleStep = next;
+        onSingleStepChange(next);
+    }
     function change(next) {
         working = { ...working, ...next };
     }
@@ -226,6 +247,11 @@
             });
             jsonDraft = '';
             onChanged(result);
+            // Let the parent receive the cleared dirty state before it navigates to Fit.
+            await tick();
+            onDirty(false);
+            await tick();
+            onSaved(result, { stageIndex, stageId: working.component_id });
         } catch (e) {
             error = e.message;
         } finally {
@@ -238,6 +264,11 @@
         baseline = sourceKey;
         jsonDraft = '';
         validity = '';
+        error = '';
+    }
+    $: if (resetSignal !== resetSeen) {
+        resetSeen = resetSignal;
+        discard();
     }
 </script>
 
@@ -258,6 +289,13 @@
                           ? `Saved variables for ${plan.adopted_model_name}`
                           : `Variables for ${current?.name || 'this stage'}`}
                 </h2>
+                <p class="model-variable-context">
+                    {#if adoptedStarter}
+                        Model {stageIndex + 1} of {stages.length} · Saved fitted model · {plan.adopted_model_name}
+                    {:else}
+                        Model {stageIndex + 1} of {stages.length} · {working?.name || current?.name || 'Unnamed model'} · {methodLabel(working?.kind || current?.kind)}
+                    {/if}
+                </p>
                 <p>
                     {singleMode
                         ? 'Choose the factors and their treatment for this model.'
@@ -294,7 +332,7 @@
                 class="stage-picker"
             >
                 <label>
-                    Model stage
+                    Model
                     <select
                         aria-label="Model stage"
                         value={selectedStageId}
@@ -304,11 +342,12 @@
                                 return;
                             }
                             selectedStageId = event.currentTarget.value;
+                            onStageChange(selectedStageId);
                         }}
                     >
                         {#each stages as item, index}
                             <option value={item.component_id}
-                                >{index + 1}. {index === 0 && plan.adopted_model_name
+                                >Model {index + 1} of {stages.length} · {index === 0 && plan.adopted_model_name
                                     ? plan.adopted_model_name
                                     : item.name}</option
                             >
@@ -335,8 +374,9 @@
             </div>
         {:else if locked}
             <div class="message">
-                This stage is already fitted. Go to Project &amp; data and choose Create revised
-                plan before changing it.
+                This stage is already fitted. Create a revised plan to change it while retaining
+                the fitted version.
+                <button onclick={onCreateRevision}>Create revised plan</button>
             </div>
         {/if}
         {#if working && working.kind === 'catalogue'}
@@ -390,7 +430,7 @@
                         onDraftText={(value) => (jsonDraft = value)}
                     />
                     <div class="step-actions">
-                        <button class="primary" onclick={() => (singleStep = 'details')}
+                        <button class="primary" onclick={() => setSingleStep('details')}
                             >Continue to model details</button
                         >
                     </div>
@@ -402,9 +442,7 @@
                             <label
                                 ><span>Model name</span><input
                                     aria-label="Model name"
-                                    value={working.name}
-                                    onchange={(event) =>
-                                        change({ name: event.currentTarget.value })}
+                                    bind:value={working.name}
                                 /></label
                             >
                             <label
@@ -480,32 +518,37 @@
                             ></label
                         >
                         <div class="step-actions">
-                            <button onclick={() => (singleStep = 'selection')}
+                            <button onclick={() => setSingleStep('selection')}
                                 >Back to factor selection</button
-                            ><button class="primary" onclick={() => (singleStep = 'treatment')}
+                            ><button class="primary" onclick={() => setSingleStep('treatment')}
                                 >Continue to variable treatment</button
                             >
                         </div>
                     </section>
                 {:else}
                     {#if singleMode && embedded}<div class="step-summary">
-                            <button class="text-button" onclick={() => (singleStep = 'selection')}
+                            <button class="text-button" onclick={() => setSingleStep('selection')}
                                 >Change selected factors</button
-                            ><button class="text-button" onclick={() => (singleStep = 'details')}
+                            ><button class="text-button" onclick={() => setSingleStep('details')}
                                 >Change model details</button
                             >
                         </div>{/if}
-                    <ModelVariables
-                        {columns}
-                        factors={working.factors || []}
-                        design={working.design}
-                        inheritedDesign={{ defaults: planState?.design_defaults, variables: {} }}
-                        method={working.kind === 'catalogue' ? 'catboost' : working.kind}
-                        showHeading={false}
-                        onChange={change}
-                        onValidity={(value) => (validity = value)}
-                        onDraftText={(value) => (jsonDraft = value)}
-                    />
+                    <div class:single-treatment={singleMode && embedded && singleStep === 'treatment'}>
+                        {#key singleMode && embedded ? singleStep : working.kind}
+                            <ModelVariables
+                                {columns}
+                                factors={working.factors || []}
+                                design={working.design}
+                                inheritedDesign={{ defaults: planState?.design_defaults, variables: {} }}
+                                method={working.kind === 'catalogue' ? 'catboost' : working.kind}
+                                treatmentOnly={singleMode && embedded && singleStep === 'treatment'}
+                                showHeading={false}
+                                onChange={change}
+                                onValidity={(value) => (validity = value)}
+                                onDraftText={(value) => (jsonDraft = value)}
+                            />
+                        {/key}
+                    </div>
                 {/if}
             </fieldset>
             {#if !(singleMode && embedded && singleStep !== 'treatment')}<div class="plan-save">
@@ -514,8 +557,10 @@
                         >{busy
                             ? 'Saving…'
                             : singleMode && embedded
-                              ? 'Save model setup'
-                              : 'Save model variables'}</button
+                              ? `Save ${working?.name || 'model'} setup and open Fit`
+                              : stageIndex < stages.length - 1
+                                ? `Save variables for ${working?.name || 'this model'} and continue`
+                                : `Save variables for ${working?.name || 'this model'} and open Fit`}</button
                     >
                 </div>{/if}
         {/if}
@@ -538,6 +583,11 @@
     }
     .embedded-heading p {
         margin: 8px 0 0;
+    }
+    .embedded-heading .model-variable-context {
+        color: #45695a;
+        font-size: 13px;
+        font-weight: 600;
     }
     .embedded-heading strong {
         white-space: nowrap;

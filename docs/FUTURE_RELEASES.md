@@ -40,8 +40,8 @@ Implemented in Python and the workbench, with software, statistical and actuaria
   an alternative from the same parent, keeping earlier fits unchanged. Preserve
   those connections in project JSON and label historical parents explicitly.
 - Define the single/staged plan, names, methods and order in Project & data.
-  Assign shared roles and configure each model's variables in the same page;
-  fit in order on Model. Change the working model structure,
+  Follow focused setup steps for shared roles, numbered models and independent
+  Table/JSON variable editors; fit in order on Model with named Fit actions. Change the working model structure,
   append a stage, or explicitly revise the fitted setup; preserve saved results
   and reuse only the exact unchanged fitted prefix. Adopt an existing complete
   scorer as a frozen starting point when continuing earlier work.

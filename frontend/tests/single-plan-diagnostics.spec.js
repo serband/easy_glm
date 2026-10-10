@@ -6,17 +6,22 @@ useFreshModelPlanProject(test);
 test('a planned Single model shows holdout A/E only after it is selected', async ({ page }) => {
     await page.goto('/');
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await page
+        .getByRole('navigation', { name: 'Project setup steps' })
+        .getByRole('button', { name: /Model structure/ })
+        .click();
     await page.getByRole('button', { name: 'Single model', exact: true }).click();
+    await page.getByRole('button', { name: 'Continue to variables', exact: true }).click();
 
     await page.getByLabel(/^Use (DriverAge|DrivAge)$/).check();
     await page.getByRole('button', { name: 'Continue to model details', exact: true }).click();
+    await page.getByRole('button', { name: 'Continue to variable treatment', exact: true }).click();
     await page
-        .getByRole('button', { name: 'Continue to variable treatment', exact: true })
+        .getByRole('button', { name: 'Save Main effects setup and open Fit', exact: true })
         .click();
-    await page.getByRole('button', { name: 'Save model setup', exact: true }).click();
 
     await page.getByRole('button', { name: 'Model', exact: true }).click();
-    await page.getByRole('button', { name: 'Fit Main effects', exact: true }).click();
+    await page.getByRole('button', { name: 'Fit Model 1 — Main effects', exact: true }).click();
     await expect(page.getByText('Fitted and kept as a saved version.')).toBeVisible({
         timeout: 120000,
     });

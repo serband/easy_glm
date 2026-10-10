@@ -21,12 +21,18 @@ treatment. For models in stages, define the shared response convention and the
 named methods in order, then choose variables and treatment separately for each
 stage. There is no separate Variables sidebar page.
 
-Each model has a numbered card with **Model name**, **Model type**, its incoming
-offset and its own **Choose variables** action. **Add model** appends a new GLM
-card and focuses its type without opening the variables editor. There is no
-separate type selector for a model that has not yet been added. Later cards name
-the complete preceding sequence they offset. An adopted starter displays its
-exact saved name and **Saved fitted model**, with its accepted scorer locked.
+Project setup presents one active panel and a clickable navigation strip.
+Staged setup follows Data → Structure → Shared columns → Models → Variables →
+Fit. Single-model setup puts factor selection before Model details and variable
+treatment. Earlier steps can be revisited; unfinished future models do not block
+fitting an earlier configured model.
+
+The Models panel contains numbered cards with **Model name**, **Model type** and
+the complete incoming offset. **Add model** appends a GLM card and focuses its
+type. Variables has the only per-model selector and editor. Save a model's
+variables before advancing; canceled navigation retains the draft. An adopted
+starter displays its exact saved name and frozen scorer. It cannot be edited.
+Optional predictor checks and feature selection are on Explore.
 
 The response, weight/exposure, split and source data are shared. They cannot be
 overridden for a downstream model. Each model has its own selected variables,
@@ -38,7 +44,7 @@ columns cannot become model factors.
 The current plan is editable setup. Fitted versions are saved results and remain
 unchanged when the plan changes.
 
-- Change model structure opens the route chooser. Choosing a route and confirming
+- Model structure in the setup strip opens the route chooser. Choosing a route and confirming
   replaces the working setup and selection; Keep current plan cancels unchanged.
   Saved fitted versions remain available in history.
 - Add a model appends to the current plan. It does not require all future models
@@ -59,6 +65,14 @@ Fitting saves the exact current options and starts the next eligible model in on
 action. Model 3 cannot be fitted before models 1 and 2. Failures and cancelled
 jobs leave a retryable plan. A late response from an earlier job cannot replace a
 newer plan or selection.
+
+Structure changes are saved automatically, with visible saving/saved/error
+state and ordered requests. Rapid name/type edits must reach the server together.
+Shared roles keep explicit Preview/Apply; model variables keep explicit Save.
+Fitting options are marked when unsaved and can be saved without fitting.
+Navigation asks before discarding an unsaved draft and cancellation retains it.
+The Fit action names the model and its position. Eligibility in the order does
+not imply that an empty model is configured.
 
 ## Backend contract
 

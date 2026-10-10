@@ -1,13 +1,18 @@
 import { test, expect } from '@playwright/test';
 
+const setupSteps = (page) => page.getByRole('navigation', { name: 'Project setup steps' });
+const setupStep = (page, name) => setupSteps(page).getByRole('button', { name: new RegExp(name) });
+
 async function startPlan(page, mode) {
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await setupStep(page, 'Model structure').click();
     await page.getByRole('button', { name: mode, exact: true }).click();
 }
 
 async function openFrenchMotorExample(page) {
     await page.goto('/');
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await setupStep(page, 'Data').click();
     await page.getByRole('radio', { name: 'Example dataset', exact: true }).check();
     if (await page.getByRole('checkbox', { name: /Replace this session/ }).count()) {
         await page.getByRole('checkbox', { name: /Replace this session/ }).check();
@@ -18,7 +23,7 @@ async function openFrenchMotorExample(page) {
     );
     await page.getByRole('button', { name: 'Load example', exact: true }).click();
     expect((await loaded).ok()).toBe(true);
-    await expect(page.getByRole('button', { name: 'Load example', exact: true })).toBeDisabled();
+    await expect(setupStep(page, 'Model structure')).toHaveAttribute('aria-current', 'step');
     await expect(page.getByRole('heading', { name: 'Model structure' })).toBeVisible();
 }
 
@@ -34,9 +39,12 @@ async function planFitRefs(page) {
 }
 
 async function chooseAndFitFirstStageGlm(page, variable = 'DriverAge') {
-    await page.getByRole('button', { name: 'Choose variables', exact: true }).first().click();
+    await page.getByRole('button', { name: 'Continue to models', exact: true }).click();
+    await page.getByRole('button', { name: 'Choose variables', exact: true }).click();
     await page.getByLabel(`Use ${variable}`).check();
-    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
+    await page
+        .getByRole('button', { name: 'Save variables for Main effects and open Fit', exact: true })
+        .click();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await page.getByRole('button', { name: /Fit .+/ }).click();
     await expect(page.getByText('Fitted and kept as a saved version.')).toBeVisible({
@@ -45,8 +53,7 @@ async function chooseAndFitFirstStageGlm(page, variable = 'DriverAge') {
 }
 
 async function chooseSingleVariables(page, variable = 'DriverAge') {
-    const choose = page.getByRole('button', { name: 'Choose variables', exact: true });
-    if (await choose.count()) await choose.click();
+    await page.getByRole('button', { name: 'Continue to variables', exact: true }).click();
     await page.getByLabel(`Use ${variable}`).check();
     await page.getByRole('button', { name: 'Continue to model details', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Model details', exact: true })).toBeVisible();
@@ -54,7 +61,9 @@ async function chooseSingleVariables(page, variable = 'DriverAge') {
 
 async function saveSingleSetup(page) {
     await page.getByRole('button', { name: 'Continue to variable treatment', exact: true }).click();
-    await page.getByRole('button', { name: 'Save model setup', exact: true }).click();
+    await page
+        .getByRole('button', { name: 'Save Main effects setup and open Fit', exact: true })
+        .click();
 }
 
 async function openBinaryData(page) {
@@ -63,7 +72,8 @@ async function openBinaryData(page) {
         rows.push(`${index % 3 === 0 ? 1 : 0},${20 + (index % 55)}`);
     await page.goto('/');
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
-    await page.getByText('Own data', { exact: true }).click();
+    await setupStep(page, 'Data').click();
+    await page.getByRole('radio', { name: 'Own data', exact: true }).check();
     await page.locator('input[type="file"]').setInputFiles({
         name: 'binary_claims.csv',
         mimeType: 'text/csv',
@@ -81,7 +91,7 @@ async function openBinaryData(page) {
     );
     await page.getByRole('button', { name: 'Open data', exact: true }).click();
     expect((await loaded).ok()).toBe(true);
-    await expect(page.getByRole('button', { name: 'Open data', exact: true })).toBeDisabled();
+    await expect(setupStep(page, 'Model structure')).toHaveAttribute('aria-current', 'step');
     await page.getByRole('button', { name: 'Single model', exact: true }).click();
     await page.getByLabel('Role for Claim').selectOption('target');
     await page.getByLabel('Role for DriverAge').selectOption('predictor');
@@ -129,7 +139,9 @@ test('single-model links are restricted to scorers that can be diagnosed and exp
     await saveSingleSetup(page);
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await page.getByRole('button', { name: /Fit .+/ }).click();
-    await expect(page.getByText('Fitted and kept as a saved version.')).toBeVisible({ timeout: 120000 });
+    await expect(page.getByText('Fitted and kept as a saved version.')).toBeVisible({
+        timeout: 120000,
+    });
 
     await page.getByRole('button', { name: 'Diagnostics', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Actual versus expected' })).toBeVisible();
@@ -148,7 +160,9 @@ test('a single binomial logit model can be inspected and exported', async ({ pag
     await saveSingleSetup(page);
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await page.getByRole('button', { name: /Fit .+/ }).click();
-    await expect(page.getByText('Fitted and kept as a saved version.')).toBeVisible({ timeout: 120000 });
+    await expect(page.getByText('Fitted and kept as a saved version.')).toBeVisible({
+        timeout: 120000,
+    });
     await page.getByRole('button', { name: 'Diagnostics', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Actual versus expected' })).toBeVisible();
     await page.getByRole('button', { name: 'Export', exact: true }).click();
@@ -166,14 +180,14 @@ test('diagnostics opens the latest staged fit and lets the actuary inspect an ea
     const [first] = await planFitRefs(page);
 
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await setupStep(page, 'Models').click();
     await page.getByRole('button', { name: 'Add model', exact: true }).click();
-    await page
-        .getByLabel('Model 2 name')
-        .locator('xpath=ancestor::li')
-        .getByRole('button', { name: 'Choose variables', exact: true })
-        .click();
+    await page.getByRole('button', { name: 'Choose variables', exact: true }).click();
+    await page.getByLabel('Model stage').selectOption({ label: 'Model 2 of 2 · Model 2' });
     await page.getByLabel('Use DrivAge').check();
-    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
+    await page
+        .getByRole('button', { name: 'Save variables for Model 2 and open Fit', exact: true })
+        .click();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await page.getByRole('button', { name: /Fit .+/ }).click();
     await expect(page.getByText('Fitted and kept as a saved version.')).toHaveCount(2, {
@@ -229,20 +243,26 @@ test('an adopted saved scorer is locked while an appended model can define its o
     await page.reload();
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
 
-    await expect(page.getByText(`Existing fitted model: ${savedModel}`)).toBeVisible();
+    await setupStep(page, 'Models').click();
+    await expect(page.getByText(new RegExp(`Existing fitted model: ${savedModel}`))).toBeVisible();
     await expect(page.getByLabel('Model 1 name')).toHaveValue(savedModel);
     await expect(page.getByLabel('Model 1 name')).toHaveAttribute('readonly', '');
     await expect(page.getByLabel('Model 1 type')).toHaveValue('Saved fitted model');
     await expect(page.getByLabel('Model 1 type')).toHaveAttribute('readonly', '');
+    await setupStep(page, 'Models').click();
     await page.getByRole('button', { name: 'Add model', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Project & data', exact: true })).toBeVisible();
     await expect(page.getByLabel('Model 2 name')).toBeVisible();
-    await page
-        .getByLabel('Model 2 name')
-        .locator('xpath=ancestor::li')
-        .getByRole('button', { name: 'Choose variables', exact: true })
-        .click();
+    await page.getByRole('button', { name: 'Choose variables', exact: true }).click();
+    await page.getByLabel('Model stage').selectOption({ label: 'Model 2 of 2 · Model 2' });
     await page.getByLabel('Use VehAge').check();
-    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
+    await page
+        .getByRole('button', { name: 'Save variables for Model 2 and open Fit', exact: true })
+        .click();
+    await expect(page.getByRole('heading', { name: 'Fit models', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await setupStep(page, 'Variables').click();
+    await page.getByLabel('Model stage').selectOption({ label: 'Model 2 of 2 · Model 2' });
+    await expect(page.getByLabel('Use VehAge')).toBeChecked();
     await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
 });

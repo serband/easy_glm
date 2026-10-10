@@ -11,15 +11,31 @@
     export let showHistory = true;
     export let singleWorkflowManaged = false;
     export let routeChoiceOnly = false;
+    export let modelsOnly = false;
     export let onCancelNewPlan = () => {};
     let error = '',
         busy = false,
         starting = false,
         revising = false;
-    $: plan = planState?.plan || null;
+    let localPlan = null,
+        pendingAutosave = null,
+        autosaving = false,
+        autosaveError = '',
+        sourceSignature = '';
+    $: serverPlan = planState?.plan || null;
+    $: serverSignature = serverPlan ? JSON.stringify(serverPlan) : '';
+    $: if (serverSignature !== sourceSignature && !autosaving && !pendingAutosave) {
+        localPlan = serverPlan ? structuredClone(serverPlan) : null;
+        sourceSignature = serverSignature;
+    }
+    $: plan = localPlan || serverPlan;
     $: stages = plan?.stages || [];
     $: fittedCount = planState?.fit_refs?.length || 0;
     $: adoptedRoot = Boolean(plan?.adopted_model_name);
+    $: autosavePending = Boolean(autosaving || pendingAutosave);
+    $: stageLocks = stages.map(
+        (_, index) => (adoptedRoot && index === 0) || (index < fittedCount && !revising),
+    );
     function stage(kind, index, name = index === 0 ? 'Main effects' : `Model ${index + 1}`) {
         return {
             component_id: crypto.randomUUID(),
@@ -79,15 +95,14 @@
         : state?.setup?.assignments?.current_premium
           ? `log(${assignmentName(state.setup.assignments.current_premium)}) (derived from current premium)`
           : null;
-    function stageOffset(index) {
-        if (adoptedRoot && index === 0)
-            return `Accepted saved scorer: ${plan.adopted_model_name}.`;
+    function stageOffset(index, stageList, adoptedName, declaredExternalOffset) {
+        if (adoptedName && index === 0) return `Accepted saved scorer: ${adoptedName}.`;
         if (index === 0)
-            return externalOffset
-                ? `Starts from project data. No earlier model. External offset: ${externalOffset}.`
+            return declaredExternalOffset
+                ? `Starts from project data. No earlier model. External offset: ${declaredExternalOffset}.`
                 : 'Starts from project data. No earlier model.';
-        const priorNames = stages.slice(0, index).map((item) => item.name);
-        if (adoptedRoot) priorNames[0] = plan.adopted_model_name;
+        const priorNames = stageList.slice(0, index).map((item) => item.name);
+        if (adoptedName) priorNames[0] = adoptedName;
         return `Offset: complete score from ${priorNames.join(' → ')}.`;
     }
     function nextModelName() {
@@ -96,8 +111,8 @@
         while (names.has(`Model ${number}`)) number += 1;
         return `Model ${number}`;
     }
-    async function save(operation, nextPlan) {
-        if (!confirmDiscardStageDraft()) return;
+    async function save(operation, nextPlan, confirmed = false) {
+        if (!confirmed && !confirmDiscardStageDraft()) return;
         busy = true;
         error = '';
         try {
@@ -114,6 +129,45 @@
         } finally {
             busy = false;
         }
+    }
+    async function flushAutosave() {
+        if (autosaving || !pendingAutosave) return;
+        const next = pendingAutosave;
+        pendingAutosave = null;
+        autosaving = true;
+        autosaveError = '';
+        try {
+            const saved = await api('model-plan', {
+                session_id: state.session_id,
+                revision: state.revision,
+                operation: next.operation,
+                plan: next.plan,
+            });
+            sourceSignature = JSON.stringify(saved.plan);
+            localPlan = pendingAutosave?.plan || structuredClone(saved.plan);
+            onChanged(saved);
+        } catch (e) {
+            autosaveError = e.message;
+            error = e.message;
+        } finally {
+            autosaving = false;
+            if (pendingAutosave) {
+                await tick();
+                void flushAutosave();
+            }
+        }
+    }
+    function queueAutosave(nextPlan, operation = 'save', confirmed = false) {
+        if (!confirmed && !confirmDiscardStageDraft()) return;
+        localPlan = nextPlan;
+        pendingAutosave = { plan: nextPlan, operation };
+        autosaveError = '';
+        void flushAutosave();
+    }
+    function retryAutosave() {
+        if (!localPlan || autosaving) return;
+        pendingAutosave = { plan: localPlan, operation: fittedCount && revising ? 'revise' : 'save' };
+        void flushAutosave();
     }
     async function adopt(name) {
         if (!confirmDiscardStageDraft()) return;
@@ -151,7 +205,7 @@
                 tweedie_power: 1.5,
                 divide_target_by_weight: Boolean(state?.setup?.assignments?.weight),
                 stages: [stage('glm', 0)],
-            });
+            }, true);
         } finally {
             starting = false;
         }
@@ -159,20 +213,23 @@
     function stageLocked(index) {
         return (adoptedRoot && index === 0) || (index < fittedCount && !revising);
     }
-    function updatePlan(patch) {
-        if (!confirmDiscardStageDraft()) return;
-        save(fittedCount && revising ? 'revise' : 'save', { ...plan, ...patch });
+    function updatePlan(patch, confirmed = false) {
+        queueAutosave(
+            { ...plan, ...patch },
+            fittedCount && revising ? 'revise' : 'save',
+            confirmed,
+        );
     }
-    function updateStage(index, patch) {
-        if (stageLocked(index) || !confirmDiscardStageDraft()) return;
-        save(index < fittedCount ? 'revise' : 'save', {
+    function updateStage(index, patch, confirmed = false) {
+        if (stageLocked(index)) return;
+        queueAutosave({
             ...plan,
             stages: stages.map((item, itemIndex) =>
                 itemIndex === index ? { ...item, ...patch } : item,
             ),
-        });
+        }, index < fittedCount ? 'revise' : 'save', confirmed);
     }
-    function changeMethod(index, kind) {
+    function changeMethod(index, kind, confirmed = false) {
         const previous = stages[index];
         const settings = stage(kind, index).settings;
         const design =
@@ -194,7 +251,7 @@
             settings,
             design,
             ...(kind === 'catalogue' ? { factors: [] } : {}),
-        });
+        }, confirmed);
     }
     function changeSelect(event, currentValue, apply) {
         if (!confirmDiscardStageDraft()) {
@@ -204,7 +261,7 @@
         apply();
     }
     async function addStage() {
-        if (!plan || busy || !confirmDiscardStageDraft()) return;
+        if (!plan || busy || autosavePending || !confirmDiscardStageDraft()) return;
         const nextPlan = {
             ...plan,
             mode: 'sequential',
@@ -238,20 +295,26 @@
         if (target < 0 || target >= stages.length) return;
         const next = [...stages];
         [next[index], next[target]] = [next[target], next[index]];
-        if (stageLocked(index) || stageLocked(target) || !confirmDiscardStageDraft()) return;
-        save(Math.min(index, target) < fittedCount ? 'revise' : 'save', { ...plan, stages: next });
+        if (stageLocked(index) || stageLocked(target)) return;
+        queueAutosave(
+            { ...plan, stages: next },
+            Math.min(index, target) < fittedCount ? 'revise' : 'save',
+        );
     }
     function removeStage(index) {
-        if (stageLocked(index) || !confirmDiscardStageDraft()) return;
+        if (stageLocked(index)) return;
         if (
             stages.length < 2 ||
             !window.confirm(`Remove ${stages[index].name} from this working plan?`)
         )
             return;
-        save(index < fittedCount ? 'revise' : 'save', {
-            ...plan,
-            stages: stages.filter((_, itemIndex) => itemIndex !== index),
-        });
+        queueAutosave(
+            {
+                ...plan,
+                stages: stages.filter((_, itemIndex) => itemIndex !== index),
+            },
+            index < fittedCount ? 'revise' : 'save',
+        );
     }
 </script>
 
@@ -366,10 +429,13 @@
                             value={plan.family}
                             onchange={(event) =>
                                 changeSelect(event, plan.family, () =>
-                                    updatePlan({
-                                        family: event.currentTarget.value,
-                                        link: plan.mode === 'sequential' ? 'log' : null,
-                                    }),
+                                    updatePlan(
+                                        {
+                                            family: event.currentTarget.value,
+                                            link: plan.mode === 'sequential' ? 'log' : null,
+                                        },
+                                        true,
+                                    ),
                                 )}
                         >
                             <option value="poisson">Poisson</option>
@@ -389,7 +455,7 @@
                             value={plan.mode === 'sequential' ? 'log' : plan.link || ''}
                             onchange={(event) =>
                                 changeSelect(event, plan.link, () =>
-                                    updatePlan({ link: event.currentTarget.value || null }),
+                                    updatePlan({ link: event.currentTarget.value || null }, true),
                                 )}
                             disabled={busy ||
                                 plan.mode === 'sequential' ||
@@ -448,9 +514,9 @@
                             <input
                                 aria-label="Model name"
                                 value={stages[0]?.name || ''}
-                                onchange={(event) =>
+                                oninput={(event) =>
                                     updateStage(0, { name: event.currentTarget.value })}
-                                disabled={busy || stageLocked(0)}
+                                disabled={busy || stageLocks[0]}
                             />
                         </label>
                         <label class="field">
@@ -460,9 +526,9 @@
                                 value={stages[0]?.kind || 'glm'}
                                 onchange={(event) =>
                                     changeSelect(event, stages[0]?.kind, () =>
-                                        changeMethod(0, event.currentTarget.value),
+                                        changeMethod(0, event.currentTarget.value, true),
                                     )}
-                                disabled={busy || stageLocked(0)}
+                                disabled={busy || stageLocks[0]}
                             >
                                 <option value="glm">GLM</option>
                                 <option value="catboost">CatBoost</option>
@@ -476,7 +542,7 @@
                         {#each stages as item, index}
                             <li class="stage-card" id={`model-stage-${item.component_id}`}>
                                 <h3>Model {index + 1}</h3>
-                                <p class="stage-offset">{stageOffset(index)}</p>
+                                <p class="stage-offset">{stageOffset(index, stages, plan.adopted_model_name, externalOffset)}</p>
                                 <div class="two-column-grid stage-fields">
                                     <label class="field">
                                         <span class="field-label">Model name</span>
@@ -486,12 +552,12 @@
                                                 ? plan.adopted_model_name
                                                 : item.name}
                                             readonly={adoptedRoot && index === 0}
-                                            onchange={(event) =>
+                                            oninput={(event) =>
                                                 updateStage(index, {
                                                     name: event.currentTarget.value,
                                                 })}
                                             disabled={busy ||
-                                                (stageLocked(index) && !(adoptedRoot && index === 0))}
+                                                (stageLocks[index] && !(adoptedRoot && index === 0))}
                                         />
                                     </label>
                                     <label class="field">
@@ -508,9 +574,9 @@
                                                 value={item.kind}
                                                 onchange={(event) =>
                                                     changeSelect(event, item.kind, () =>
-                                                        changeMethod(index, event.currentTarget.value),
+                                                        changeMethod(index, event.currentTarget.value, true),
                                                     )}
-                                                disabled={busy || stageLocked(index)}
+                                                disabled={busy || stageLocks[index]}
                                             >
                                                 <option value="glm">GLM</option>
                                                 <option value="catboost">CatBoost</option>
@@ -528,27 +594,39 @@
                                                   item.factors?.length === 1 ? '' : 's'
                                               } selected`}</span
                                     >
+                                    <span class="autosave-state" aria-live="polite"
+                                        >{autosaving || pendingAutosave
+                                            ? 'Saving…'
+                                            : autosaveError
+                                              ? 'Could not save'
+                                              : 'Saved'}{#if autosaveError}<button
+                                                class="text-button"
+                                                onclick={retryAutosave}>Retry save</button
+                                            >{/if}</span
+                                    >
                                     <div class="stage-actions">
-                                        {#if !(adoptedRoot && index === 0)}<button
+                                        {#if !modelsOnly && !(adoptedRoot && index === 0)}<button
                                                 onclick={() => onNavigate('variables', item.component_id)}
                                                 >Choose variables</button
                                             >{/if}{#if stages.length > 1}<button
                                                 aria-label={`Move ${item.name} up`}
                                                 onclick={() => moveStage(index, -1)}
                                                 disabled={busy ||
+                                                    autosavePending ||
                                                     index === 0 ||
-                                                    stageLocked(index) ||
-                                                    stageLocked(index - 1)}>Up</button
+                                                    stageLocks[index] ||
+                                                    stageLocks[index - 1]}>Up</button
                                             ><button
                                                 aria-label={`Move ${item.name} down`}
                                                 onclick={() => moveStage(index, 1)}
                                                 disabled={busy ||
+                                                    autosavePending ||
                                                     index === stages.length - 1 ||
-                                                    stageLocked(index) ||
-                                                    stageLocked(index + 1)}>Down</button
+                                                    stageLocks[index] ||
+                                                    stageLocks[index + 1]}>Down</button
                                             ><button
                                                 onclick={() => removeStage(index)}
-                                                disabled={busy || stageLocked(index)}>Remove</button
+                                                disabled={busy || autosavePending || stageLocks[index]}>Remove</button
                                             >{/if}
                                     </div>
                                 </div>
@@ -556,7 +634,7 @@
                         {/each}
                     </ol>
                     <div class="add-stage">
-                        <button onclick={addStage} disabled={busy}>Add model</button>
+                        <button onclick={addStage} disabled={busy || autosavePending}>Add model</button>
                     </div>
                 {/if}
             {/if}
@@ -695,6 +773,13 @@
     .selected-count {
         color: var(--muted);
         font-size: 13px;
+    }
+    .autosave-state {
+        color: var(--muted);
+        font-size: 13px;
+    }
+    .autosave-state .text-button {
+        margin-left: 6px;
     }
     .configured-plan .plan-actions button,
     .stage-actions button {

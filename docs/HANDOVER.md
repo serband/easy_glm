@@ -6,7 +6,7 @@
 
 | Purpose | Checkout and state |
 | --- | --- |
-| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/explicit-model-stages`, following consolidated setup revision `6b15bbb`; consolidated setup in Project & data, with ordered fitting in Model |
+| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/guided-project-setup`, based on `cf82987`; guided setup in Project & data, with ordered fitting in Model |
 | User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
 | Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
 
@@ -31,17 +31,27 @@ The stack branch implements an ordered multiplicative sequence of GLM, direct Ca
 
 `PricingSession` and named `PricingModel` objects provide short public calls (`fit_glm`, `fit_catboost`, `fit_interaction`, `fit_catalogue`, `ae`, `compare`, `edit_rates`, `export_lookup`, `save`/`load`). The workbench has a stacked-model path and component inspection, comparison, amendment, and export views. Named fits are detached; append and amendment create new models. The Python example demonstrates GLM → two pair tables → vehicle → reviewed vehicle → occupation → postcode, then a separate CatBoost → GLM candidate. Catalogue fitting pins the full supplied key/attribute table, scores keys without training rows, checks joins/coverage, and exports an **incremental component** file. A catalogue-first file is a full unit prediction only when there is no external baseline; otherwise the external offset remains separate in the complete scorer. Missing keys error by default unless an explicit fallback is chosen.
 
-**Current product work: consolidated project setup.** In **Project & data**, open
-data, choose **Single model** or **Build in stages**, and assign the shared column
-roles. For a single model, choose predictors before model details and treatment.
-For models in stages, define the shared response convention and the named methods
-in numbered cards using **Model name** and **Model type**, then select variables
-separately for each stage using its searchable
-Table/JSON editor. **Variables** is no longer a sidebar destination. **Model**
-contains fitting options and the next eligible Fit action. The plan can start
-with one model and be extended later. Blank future stages do not block fitting
-the configured first stage. The navigation change reuses the existing role and
-model-plan API contracts; it does not require a project-format migration.
+**Current product work: guided project setup.** **Project & data** shows one
+setup section at a time, with a step strip and a compact summary of the loaded
+data, target, weight and split. Open data, choose **Single model** or **Build in
+stages**, then apply shared column assignments. Single-model setup continues
+through variable selection, model details and treatment of the selected factors.
+Staged setup continues through numbered model names/types and independent
+variable selection for each model. Each variable editor names its model and
+complete incoming offset. The strip supports returning to earlier steps; reload
+resumes incomplete setup, and the URL identifies the current model editor.
+**Variables** is no longer a sidebar destination. Predictor screening remains
+under **Explore**.
+
+**Model** is the fitting page. It shows the complete ordered sequence and a
+named action, such as **Fit Model 2 — Vehicle**. Fitting options can be saved
+without starting a fit. A model with no variables is labelled **Variables needed**
+and links to its editor. Blank future models do not prevent fitting the configured
+first model. Fitted settings lock immediately; revisions are explicit. The step
+strip reports the current plan's fitted count rather than borrowing the status of
+a historical fit. Unsaved shared assignments, variables and fitting options are
+protected when navigating. Saving variables advances to the next model or opens
+Fit without a false discard prompt. No API or project-format migration is needed.
 
 **Add model** appends a GLM card named **Model N** and focuses its type. It does
 not open the variables editor. Each card shows its complete preceding offset
@@ -50,8 +60,7 @@ with its accepted scorer locked. There is no separate next-model type selector.
 Appending or saving downstream variables preserves the adopted source and exact
 fit reference; replacing that source or editing its frozen recipe is rejected.
 
-The current plan is separate from immutable saved fitted versions. **Change
-model structure** opens the Single model / Build in stages chooser. Choosing a
+The current plan is separate from immutable saved fitted versions. **Model structure** in the setup strip opens the Single model / Build in stages chooser. Choosing a
 route and confirming replaces the working setup and exact fitted references;
 **Keep current plan** returns without changes. Saved fitted versions are kept.
 **Create revised plan** explicitly unlocks fitted setup: unchanged earlier fits
@@ -106,6 +115,22 @@ The Model builder work is local, unpushed and unreleased. Fresh validation for t
 Known first-version boundaries: each named model scores a linear sequence; the diagram can show alternatives but does not combine two parent models; one-key, user-supplied catalogues; no arbitrary imported estimators, automatic hierarchical credibility, geographic smoothing, or mixed-stack HTML report. A direct CatBoost component requires its saved model artifact to score and cannot be represented exactly by GLM rate tables alone. Confirm any further limit in code before asserting it.
 
 ## Source map and checks
+
+**Guided-setup correction, 10 October.** This revision replaces the long combined
+setup page with focused steps. Independent source review covered draft handling,
+queued name/type saves and Svelte reactivity for offsets, fitted locks and step
+statuses. Rendered design review covered 1373px and 797px widths. A separate
+pricing-actuary reviewer configured independent factors, fitted a single GLM and
+a GLM → Vehicle CatBoost sequence, and inspected named cumulative training A/E.
+The focused Python model-plan suite passed **23 tests**, and the frontend unit
+suite passed **27 tests**. The final frontend build passed Svelte checking with
+no errors or warnings. **28 browser tests** passed: 15 model-plan/shared-role
+scenarios, seven guided-navigation scenarios, five model-variable/flow scenarios
+and one 500-variable scenario. These include real catalogue fitting, table review,
+protected drafts and replacing data followed by reload. Independent design,
+source, adversarial and pricing-actuary reviews closed their findings. These are
+local source checks, not release validation.
+
 
 **Numbered-model correction, 10 October.** The model list now keeps the current
 name, type, variable action and cumulative offset together. Appending keeps the
@@ -335,7 +360,7 @@ local backup/transfer operation, not a commit, push or release:
 source_checkout=/private/tmp/easyglm-model-variable-setup
 packet=/Users/serban/Documents/Projects/easy_glm/.internal/handover-20261010
 mkdir -p "$packet/docs/plans"
-git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/explicit-model-stages refs/tags/v0.472
+git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/guided-project-setup refs/tags/v0.472
 git -C "$source_checkout" bundle verify "$packet/easyglm.bundle"
 cp "$source_checkout/AGENTS.md" "$packet/AGENTS.md"
 cp "$source_checkout/docs/HANDOVER.md" "$packet/docs/HANDOVER.md"
@@ -346,8 +371,8 @@ cp "$source_checkout/docs/plans/STACKED_MODELS.md" "$packet/docs/plans/STACKED_M
 cp "$source_checkout/docs/plans/PROJECT_MODEL_WORKFLOW.md" "$packet/docs/plans/PROJECT_MODEL_WORKFLOW.md"
 ```
 
-Check that the bundle contains the current `codex/explicit-model-stages` commit
-(`git rev-parse codex/explicit-model-stages`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
+Check that the bundle contains the current `codex/guided-project-setup` commit
+(`git rev-parse codex/guided-project-setup`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
 **new** directory with the stack branch selected, then copy the seven guidance
 files into that clone and inspect `git status` before work. Keep the packet's
 directory structure; its docs are newer than the 30 September recovery bundle.
@@ -355,7 +380,7 @@ For example, with transferred packet and destination paths chosen by the
 operator:
 
 ```bash
-git clone --branch codex/explicit-model-stages "$packet/easyglm.bundle" "$destination"
+git clone --branch codex/guided-project-setup "$packet/easyglm.bundle" "$destination"
 cp "$packet/AGENTS.md" "$destination/AGENTS.md"
 cp "$packet/docs/HANDOVER.md" "$destination/docs/HANDOVER.md"
 cp "$packet/docs/MODEL_FLOW.md" "$destination/docs/MODEL_FLOW.md"

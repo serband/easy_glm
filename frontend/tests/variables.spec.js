@@ -3,22 +3,19 @@ import { useFreshModelPlanProject } from './model-plan-fixture.helpers.js';
 
 useFreshModelPlanProject(test);
 
+const setupSteps = (page) => page.getByRole('navigation', { name: 'Project setup steps' });
+const setupStep = (page, name) => setupSteps(page).getByRole('button', { name: new RegExp(name) });
+
 async function startPlan(page, route = 'Build in stages') {
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
-    let routeButton = page.getByRole('button', { name: route, exact: true });
-    const replacing = !(await routeButton.count());
-    if (replacing) {
-        await page.getByRole('button', { name: 'Change model structure', exact: true }).click();
-        await expect(page.getByRole('heading', { name: 'Start a new plan', exact: true })).toBeVisible();
-        routeButton = page.getByRole('button', { name: route, exact: true });
-    }
+    await setupStep(page, 'Model structure').click();
+    const routeButton = page.getByRole('button', { name: route, exact: true });
     await expect(routeButton).toBeEnabled({ timeout: 15000 });
     const saved = page.waitForResponse(
         (response) =>
             response.url().endsWith('/api/model-plan') && response.request().method() === 'POST',
         { timeout: 15000 },
     );
-    if (replacing) page.once('dialog', (dialog) => dialog.accept());
     await routeButton.click();
     const savedResponse = await saved;
     expect(savedResponse.ok()).toBe(true);
@@ -42,12 +39,12 @@ async function modelPlan(page) {
 test('a legacy Variables bookmark opens Project & data at the model setup', async ({ page }) => {
     await page.goto('/?view=variables');
 
-    await expect(page).toHaveURL(/\?view=project#model-setup$/);
+    await expect(page).toHaveURL(/view=project.*setup=structure/);
     await expect(page.getByRole('heading', { name: 'Project & data', exact: true })).toBeVisible();
     await expect(page.getByRole('navigation', { name: 'Workbench' }).getByRole('button', {
         name: /^Variables/,
     })).toHaveCount(0);
-    await expect(page.getByRole('region', { name: 'Model setup' })).toBeVisible();
+    await expect(setupStep(page, 'Model structure')).toHaveAttribute('aria-current', 'step');
     await expect(page.getByRole('button', { name: 'Single model', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Build in stages', exact: true })).toBeVisible();
 });
@@ -75,6 +72,7 @@ test('starting a route wins over a delayed initial model-plan read', async ({ pa
     });
     await page.goto('/');
     await expect.poll(() => Boolean(initialResponse)).toBe(true);
+    await setupStep(page, 'Model structure').click();
     const routeButton = page.getByRole('button', { name: 'Build in stages', exact: true });
     await expect(routeButton).toBeEnabled();
     const saved = page.waitForResponse(
@@ -93,21 +91,23 @@ test('a new plan deliberately chooses a different route before replacing the cur
 }) => {
     await page.goto('/');
     await startPlan(page, 'Single model');
-    await expect(page.getByRole('heading', { name: 'Single model', exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'Change model structure', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Start a new plan', exact: true })).toBeVisible();
+    await expect(setupStep(page, 'Variables')).toBeVisible();
+    await setupStep(page, 'Model structure').click();
+    await expect(page.getByRole('button', { name: 'Single model', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Keep current plan', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Single model', exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'Change model structure', exact: true }).click();
+    await expect(setupStep(page, 'Variables')).toBeVisible();
+    await setupStep(page, 'Model structure').click();
     page.once('dialog', (dialog) => dialog.accept());
     await page.getByRole('button', { name: 'Build in stages', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Model stages', exact: true })).toBeVisible();
+    await expect(setupStep(page, 'Shared columns')).toHaveAttribute('aria-current', 'step');
     await expect(page.getByRole('region', { name: 'Shared column assignments' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Models' })).toBeHidden();
+    await expect(setupStep(page, 'Models')).toBeVisible();
 
-    await page.getByRole('button', { name: 'Change model structure', exact: true }).click();
+    await setupStep(page, 'Model structure').click();
     page.once('dialog', (dialog) => dialog.accept());
     await page.getByRole('button', { name: 'Single model', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Single model', exact: true })).toBeVisible();
+    await expect(setupStep(page, 'Variables')).toBeVisible();
 });
 
 test('shared assignments use Table and JSON once, while stages keep independent factors', async ({
@@ -129,12 +129,16 @@ test('shared assignments use Table and JSON once, while stages keep independent 
     await expect(shared.getByLabel('Role for Claims', { exact: true })).toHaveValue('target');
     await expect(shared.getByLabel('Role for Exposure', { exact: true })).toHaveValue('weight');
 
-    await page.getByRole('button', { name: 'Choose variables', exact: true }).first().click();
+    await page.getByRole('button', { name: 'Continue to models', exact: true }).click();
+    await page.getByRole('button', { name: 'Choose variables', exact: true }).click();
     await page.getByLabel('Use DriverAge').check();
-    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
-
+    await page.getByRole('button', { name: 'Save variables for Main effects and open Fit', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Fit models', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await setupStep(page, 'Models').click();
     await page.getByRole('button', { name: 'Add model', exact: true }).click();
-    await page.getByRole('button', { name: 'Choose variables', exact: true }).nth(1).click();
+    await page.getByRole('button', { name: 'Choose variables', exact: true }).click();
+    await page.getByLabel('Model stage').selectOption({ label: 'Model 2 of 2 · Model 2' });
     await expect(page.getByText(/complete score through Main effects as its offset/)).toBeVisible();
     await page.getByRole('tab', { name: 'JSON', exact: true }).click();
     await page.getByLabel('Model variables JSON').fill(JSON.stringify({
@@ -142,7 +146,7 @@ test('shared assignments use Table and JSON once, while stages keep independent 
     }));
     await page.getByRole('button', { name: 'Apply variable JSON', exact: true }).click();
     await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
+    await page.getByRole('button', { name: 'Save variables for Model 2 and open Fit', exact: true }).click();
 
     const plan = await modelPlan(page);
     expect(plan.plan.stages[0].factors).toEqual(['DriverAge']);
@@ -182,6 +186,7 @@ test('shared role drafts remain browser-local, validate atomically, and persist 
     await shared.getByRole('button', { name: 'Apply changes', exact: true }).click();
     await expect(shared.getByRole('status')).toContainText('Settings applied');
     await page.reload();
+    await expect(setupStep(page, 'Shared columns')).toHaveAttribute('aria-current', 'step');
     await expect(shared.getByLabel('Name for DriverAge', { exact: true })).toHaveValue('Age');
 
     await shared.getByRole('button', { name: 'Variables JSON', exact: true }).click();
@@ -247,15 +252,17 @@ test('a fitted plan locks shared assignments until an explicit revision preserve
 }) => {
     await page.goto('/');
     await startPlan(page, 'Single model');
+    await setupStep(page, 'Variables').click();
     await page.getByLabel('Use DriverAge').check();
     await page.getByRole('button', { name: 'Continue to model details', exact: true }).click();
     await page.getByRole('button', { name: 'Continue to variable treatment', exact: true }).click();
-    await page.getByRole('button', { name: 'Save model setup', exact: true }).click();
+    await page.getByRole('button', { name: 'Save Main effects setup and open Fit', exact: true }).click();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await page.getByRole('button', { name: /^Fit / }).click();
     await expect(page.getByText('Fitted and kept as a saved version.')).toBeVisible({ timeout: 120000 });
 
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await setupStep(page, 'Shared columns').click();
     const shared = page.getByRole('region', { name: 'Shared column assignments' });
     await expect(shared.getByText(/^Shared assignments are locked/)).toBeVisible();
     await expect(shared.getByLabel('Role for Claims', { exact: true })).toBeDisabled();
@@ -264,6 +271,7 @@ test('a fitted plan locks shared assignments until an explicit revision preserve
     page.once('dialog', (dialog) => dialog.accept());
     await shared.getByRole('button', { name: 'Revise shared assignments', exact: true }).click();
     await expect(shared.getByLabel('Role for Claims', { exact: true })).toBeEnabled();
-    await expect(page.getByText('Saved fitted versions')).toBeVisible();
     expect((await modelPlan(page)).history).toHaveLength(1);
+    await setupStep(page, 'Variables').click();
+    await expect(page.getByText('Saved fitted versions', { exact: false })).toBeVisible();
 });

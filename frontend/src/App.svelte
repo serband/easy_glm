@@ -77,12 +77,132 @@
         requestedPlanModel = '',
         focusModelSetup = false,
         planRefreshEpoch = 0,
-        choosingNewPlan = false;
+        choosingNewPlan = false,
+        setupStep = 'data',
+        singleVariableStep = 'selection',
+        planFittingDirty = false,
+        planVariablesReset = 0;
+    $: fittedStageCount = planState?.fit_refs?.length || 0;
+    $: plannedStageCount = planState?.plan?.stages?.length || 0;
+    $: planFullyFitted = Boolean(
+        planState?.plan && plannedStageCount && fittedStageCount >= plannedStageCount,
+    );
+    $: fittedProgressLabel = planState?.plan
+        ? planFullyFitted
+            ? 'Fitted'
+            : `${fittedStageCount} of ${plannedStageCount} fitted`
+        : resultsReady
+          ? 'Fitted'
+          : 'Not fitted';
     $: sharedSetupLocked = Boolean(planState?.fit_refs?.length);
     $: planHasSelectedFactors = Boolean(
         planState?.plan?.stages?.some((stage) => stage.factors?.length),
     );
-    $: modelIsDefined = Boolean(state?.models?.length || planState?.plan);
+    $: modelIsDefined = Boolean(state?.models?.length || planHasSelectedFactors);
+    $: setupSteps = !planState?.plan
+        ? [
+              ['data', 'Data'],
+              ['structure', 'Model structure'],
+              ...(state?.models?.length ? [['shared', 'Shared columns']] : []),
+          ]
+        : planState.plan.mode === 'single'
+          ? [
+                ['data', 'Data'],
+                ['structure', 'Model structure'],
+                ['shared', 'Shared columns'],
+                ['variables', 'Variables'],
+                ['details', 'Model details'],
+                ['fit', 'Fit'],
+            ]
+          : [
+                ['data', 'Data'],
+                ['structure', 'Model structure'],
+                ['shared', 'Shared columns'],
+                ['models', 'Models'],
+                ['variables', 'Variables'],
+                ['fit', 'Fit'],
+            ];
+    $: contextTarget = state?.setup?.assignments?.target
+        ? state.setup.renames?.[state.setup.assignments.target] || state.setup.assignments.target
+        : '';
+    $: contextWeight = state?.setup?.assignments?.weight
+        ? state.setup.renames?.[state.setup.assignments.weight] || state.setup.assignments.weight
+        : '';
+    $: responseContext = !contextTarget
+        ? ''
+        : !planState?.plan
+          ? contextTarget
+          : planState.plan.divide_target_by_weight && contextWeight
+            ? `${contextTarget} / ${contextWeight}`
+            : contextWeight
+              ? `${contextTarget} · weight: ${contextWeight}`
+              : contextTarget;
+    $: splitContext = state?.setup?.assignments?.split
+        ? `${state.setup.renames?.[state.setup.assignments.split] || state.setup.assignments.split}: ${state.setup.split?.train_value} is training`
+        : state?.setup?.split?.mode === 'random'
+          ? `${Math.round(100 * (state.setup.split.fraction ?? 0.7))}% training`
+          : '';
+    function setupStepStatusesFor(planSnapshot, stateSnapshot, hasUnsavedRoles, ready) {
+        const plan = planSnapshot?.plan;
+        const stages = plan?.stages || [];
+        const fitted = planSnapshot?.fit_refs?.length || 0;
+        const selected = stages.filter((stage) => stage.factors?.length).length;
+        const fullyFitted = Boolean(plan && stages.length && fitted >= stages.length);
+        const fitStatus = plan
+            ? fullyFitted
+                ? 'Fitted'
+                : fitted
+                  ? `${fitted} of ${stages.length} fitted`
+                  : selected
+                    ? 'Ready to fit'
+                    : 'Needs attention'
+            : ready
+              ? 'Fitted'
+              : selected
+                ? 'Ready to fit'
+                : 'Needs attention';
+        return {
+            data: stateSnapshot?.columns?.length ? 'Complete' : 'Needs attention',
+            structure: plan ? 'Saved' : 'Needs attention',
+            shared: hasUnsavedRoles
+                ? 'Unsaved changes'
+                : stateSnapshot?.setup?.assignments?.target
+                  ? fitted
+                    ? 'Locked after fit'
+                    : 'Ready'
+                  : 'Needs attention',
+            models: stages.length ? 'Saved' : 'Needs attention',
+            variables: !selected
+                ? 'Needs attention'
+                : selected === stages.length
+                  ? 'Ready'
+                  : `Partly configured (${selected} of ${stages.length})`,
+            details: stages[0]?.kind ? 'Saved' : 'Needs attention',
+            fit: fitStatus,
+        };
+    }
+    $: setupStepStatuses = setupStepStatusesFor(planState, state, dirty, resultsReady);
+    function firstIncompleteSetupStep() {
+        const currentPlan = planState?.plan;
+        if (!currentPlan) return state?.columns?.length ? 'structure' : 'data';
+        if (!state?.setup?.assignments?.target) return 'shared';
+        const stages = currentPlan.stages || [];
+        if (currentPlan.mode === 'sequential' && !stages.length) return 'models';
+        const firstBlank = stages.find((stage) => !stage.factors?.length);
+        if (firstBlank) {
+            planStageId = firstBlank.component_id;
+            return 'variables';
+        }
+        if (currentPlan.mode === 'single') return 'details';
+        return 'fit';
+    }
+    function continueFromSharedColumns() {
+        if (dirty) {
+            notice = 'Preview and apply shared column changes before continuing.';
+            return;
+        }
+        selectSetupStep(planState?.plan?.mode === 'sequential' ? 'models' : 'variables');
+    }
     async function refreshPlan() {
         if (!state?.columns?.length) {
             planState = null;
@@ -110,8 +230,13 @@
         // A successful save supersedes any older initial/background plan read.
         planRefreshEpoch += 1;
         planState = next;
+        const wasChoosingNewPlan = choosingNewPlan;
         choosingNewPlan = false;
         if (next?.revision != null && state) state = { ...state, revision: next.revision };
+        if (next?.plan && (wasChoosingNewPlan || setupStep === 'structure')) {
+            setupStep = 'shared';
+            writeSetupLocation('shared', '', true);
+        }
         const stages = next?.plan?.stages || [];
         if (!stages.some((stage) => stage.component_id === planStageId))
             planStageId = stages[0]?.component_id || '';
@@ -119,7 +244,7 @@
         if (latest) {
             requestedPlanModel = latest;
             resultsReady = true;
-        } else resultsReady = Boolean(next?.history?.length);
+        } else resultsReady = Boolean(!next?.plan && next?.history?.length);
         if (!(next?.fit_refs || []).length) planRevisionIntent = false;
     }
     async function reviseSharedAssignments() {
@@ -157,16 +282,89 @@
             '';
         requestedPlanModel = latest?.components?.length ? latest.name : '';
     }
+    function writeSetupLocation(next, stageId = planStageId, replace = false) {
+        const url = new URL(window.location.href);
+        url.searchParams.set('view', 'project');
+        url.searchParams.set('setup', next);
+        if (next === 'variables' && stageId) url.searchParams.set('stage', stageId);
+        else url.searchParams.delete('stage');
+        const method = replace ? 'replaceState' : 'pushState';
+        window.history[method]({}, '', `${url.pathname}?${url.searchParams}${url.hash}`);
+    }
+    function selectSetupStep(next, stageId = '', fromHistory = false, skipVariableGuard = false) {
+        const staysInSingleVariableWorkflow =
+            planState?.plan?.mode === 'single' &&
+            ['variables', 'details'].includes(setupStep) &&
+            ['variables', 'details'].includes(next);
+        const changesVariableStage =
+            next === 'variables' && Boolean(stageId) && stageId !== planStageId;
+        if (
+            !skipVariableGuard &&
+            planVariablesDirty &&
+            (next !== setupStep || changesVariableStage) &&
+            !staysInSingleVariableWorkflow
+        ) {
+            if (!window.confirm('Discard unsaved variable changes?')) {
+                if (fromHistory) {
+                    writeSetupLocation(setupStep, planStageId, true);
+                }
+                return false;
+            }
+            planVariablesDirty = false;
+            planVariablesReset += 1;
+        }
+        if (next === 'fit') {
+            void navigate('model');
+            return true;
+        }
+        if (stageId) planStageId = stageId;
+        if (next === 'details') singleVariableStep = 'details';
+        if (next === 'variables' && planState?.plan?.mode === 'single')
+            singleVariableStep = 'selection';
+        setupStep = next;
+        if (!fromHistory) writeSetupLocation(next, planStageId);
+        requestAnimationFrame(() =>
+            document.getElementById(`setup-${next}`)?.scrollIntoView({ block: 'start' }),
+        );
+    }
+    function restoreSetupStepFromLocation() {
+        const search = new URLSearchParams(window.location.search);
+        const requested = search.get('setup');
+        const requestedStageId = search.get('stage') || '';
+        const stageId = planState?.plan?.stages?.some(
+            (stage) => stage.component_id === requestedStageId,
+        )
+            ? requestedStageId
+            : '';
+        if (requested && setupSteps.some(([key]) => key === requested))
+            selectSetupStep(requested, stageId, true);
+    }
     async function navigate(next) {
         // Variable definitions now belong to Project & data. Keep old bookmarks and
         // links from Explore and Model working while taking the user to the setup.
         if (next === 'variables') {
             next = 'project';
+            setupStep = planState?.plan ? 'variables' : 'structure';
+            if (planState?.plan?.mode === 'single') singleVariableStep = 'selection';
+            writeSetupLocation(setupStep, planState?.plan ? planStageId : '', true);
             focusModelSetup = true;
         }
-        if (planVariablesDirty && next !== view) {
+        if (planFittingDirty && view === 'model' && next !== view) {
+            if (!window.confirm('Leave with unsaved fit settings?')) return;
+            planFittingDirty = false;
+        }
+        if (next === 'model' && dirty) {
+            notice = 'Preview and apply shared column changes before opening Fit.';
+            if (view === 'project') {
+                setupStep = 'shared';
+                writeSetupLocation('shared', '', true);
+            }
+            return false;
+        }
+        if (planVariablesDirty && next !== view && next !== 'project') {
             if (!window.confirm('Discard unsaved stage-variable changes?')) return;
             planVariablesDirty = false;
+            planVariablesReset += 1;
         }
         if (stackMode && stackDraftDirty && next !== view) {
             requestStackNavigation(next);
@@ -190,7 +388,7 @@
         view = next;
         if (next === 'project' && focusModelSetup) {
             requestAnimationFrame(() => {
-                document.getElementById('model-setup')?.scrollIntoView({ block: 'start' });
+                document.getElementById(`setup-${setupStep}`)?.scrollIntoView({ block: 'start' });
                 focusModelSetup = false;
             });
         }
@@ -203,12 +401,19 @@
                 projectError = e.message;
             }
         }
+        return true;
     }
     function confirmDiscardStageDraft() {
         if (!planVariablesDirty) return true;
         if (!window.confirm('Discard unsaved model-variable changes?')) return false;
         planVariablesDirty = false;
+        planVariablesReset += 1;
         return true;
+    }
+    function beginPlanRevision() {
+        if (!planState?.fit_refs?.length) return;
+        if (!confirmDiscardStageDraft()) return;
+        planRevisionIntent = true;
     }
     function requestMobilePage(event) {
         const next = event.currentTarget.value;
@@ -763,6 +968,7 @@
             reset();
             notice = '';
             await refreshPlan();
+            setupStep = firstIncompleteSetupStep();
             projectInfo = null;
             projectError = '';
             try {
@@ -808,6 +1014,8 @@
         token = '';
         serverSession = opened.session_id;
         view = 'project';
+        setupStep = opened.columns?.length ? 'structure' : 'data';
+        writeSetupLocation(setupStep, '', true);
         busy = true;
         try {
             await bootstrap();
@@ -970,15 +1178,24 @@
             const initialView = new URLSearchParams(window.location.search).get('view');
             if (initialView === 'variables') {
                 await navigate('variables');
+                const setup = planState?.plan ? 'variables' : 'structure';
+                setupStep = setup;
                 window.history.replaceState(
                     {},
                     '',
-                    `${window.location.pathname}?view=project#model-setup`,
+                    `${window.location.pathname}?view=project&setup=${setup}`,
                 );
             } else if (Object.hasOwn(pageTitles, initialView)) await navigate(initialView);
+            restoreSetupStepFromLocation();
         } catch (e) {
             error = e.message;
         }
+        const onPopState = () => {
+            if (new URLSearchParams(window.location.search).get('view') === 'project')
+                restoreSetupStepFromLocation();
+        };
+        window.addEventListener('popstate', onPopState);
+        return () => window.removeEventListener('popstate', onPopState);
     });
 </script>
 
@@ -1016,7 +1233,7 @@
                     : '○'} Target and predictors</span
             >
             <span>{modelIsDefined ? '✓' : '○'} Model defined</span>
-            <span>{resultsReady ? '✓' : '○'} Model fitted</span>
+            <span>{planFullyFitted || (!planState?.plan && resultsReady) ? '✓' : '○'} Model fitted{planState?.plan ? ` · ${fittedProgressLabel}` : ''}</span>
         </div>
         <div class="rail-bottom">
             <span class="status-dot"></span> Local session
@@ -1063,7 +1280,7 @@
                 >
                     <div class="heading">
                         <div>
-                            <h2>Shared data setup</h2>
+                            <h2>Shared columns</h2>
                             <p>
                                 Set the response, exposure or weight, ID and train/test split once.
                                 Ignore removes a column from every model picker and search.
@@ -1421,25 +1638,6 @@
                                     </p>
                                 </section>
                             {/if}
-                            <VariableScreening
-                                {api}
-                                {state}
-                                setup={draft}
-                                context={screeningContext}
-                                active={view === 'project'}
-                                disabled={busy || differentProject}
-                                prepare={prepareScreening}
-                                onRemove={removeScreenedPredictors}
-                            />
-                            <FeatureSelection
-                                {api}
-                                {state}
-                                setup={draft}
-                                context={screeningContext}
-                                disabled={busy || differentProject || !!binningError}
-                                prepare={prepareScreening}
-                                onChange={stageFeatureSelection}
-                            />
                         </fieldset>
                     {:else}<div class="loading">Opening local data…</div>{/if}
                 </section>
@@ -1448,160 +1646,141 @@
                 <div class="heading">
                     <div>
                         <h1>Project & data</h1>
-                        <p>Open your own data, continue a saved project or try an example.</p>
+                        <p>Set up the data and model before fitting.</p>
                         {#if state?.columns.length}
                             <section class="loaded-dataset" aria-label="Current dataset">
                                 <span>Loaded:</span>
-                                <span
-                                    class="source-filename"
-                                    title={projectInfo?.data?.source?.path || ''}
-                                >
+                                <span class="source-filename" title={projectInfo?.data?.source?.path || ''}>
                                     {sourceFilename(projectInfo)}
                                 </span>
                                 <span>{countLabel(state.row_count, 'row')}</span>
                                 <span>{countLabel(state.columns.length, 'column')}</span>
+                                {#if responseContext}<span>{responseContext}</span>{/if}
+                                {#if splitContext}<span>{splitContext}</span>{/if}
                             </section>
                         {/if}
                     </div>
                 </div>
                 {#if projectError}<p role="alert">{projectError}</p>{/if}
-                {#if state}<ProjectOpen
-                        {api}
-                        upload={uploadProject}
-                        {state}
-                        onOpened={projectOpened}
-                        onReconnect={reconnectForOpen}
-                    />{/if}
                 {#if state?.columns.length}
-                    {#if !planState?.plan || choosingNewPlan}
-                        <section id="model-setup" aria-label="Model setup">
-                            <ProjectModelPlan
+                    <nav class="setup-step-nav" aria-label="Project setup steps">
+                        {#each setupSteps as [key, label], index}
+                            <button
+                                class:active={setupStep === key}
+                                aria-current={setupStep === key ? 'step' : undefined}
+                                onclick={() => selectSetupStep(key)}
+                            ><span>{index + 1}</span><span class="setup-step-label">{label}<small>{setupStepStatuses[key]}</small></span></button>
+                        {/each}
+                    </nav>
+                {/if}
+                {#if state}
+                    <section id="setup-data" hidden={setupStep !== 'data'}>
+                        <ProjectOpen
+                            {api}
+                            upload={uploadProject}
+                            {state}
+                            onOpened={projectOpened}
+                            onReconnect={reconnectForOpen}
+                        />
+                    </section>
+                {/if}
+                {#if state?.columns.length}
+                    <section id="setup-structure" hidden={setupStep !== 'structure'} aria-label="Model structure">
+                        <ProjectModelPlan
+                            {api}
+                            {state}
+                            {planState}
+                            onChanged={planChanged}
+                            onRevisionIntent={() => (planRevisionIntent = true)}
+                            {confirmDiscardStageDraft}
+                            showHistory={false}
+                            routeChoiceOnly={Boolean(planState?.plan)}
+                            onCancelNewPlan={() => {
+                                choosingNewPlan = false;
+                                setupStep = 'shared';
+                                writeSetupLocation('shared', '', true);
+                            }}
+                        />
+                    </section>
+                    {#if !planState?.plan && state.models?.length}
+                        <section class="model-card legacy-model-compat" aria-label="Existing saved models">
+                            <div>
+                                <h2>Existing saved model{state.models.length === 1 ? '' : 's'}</h2>
+                                <p>These models predate model plans. You can still open and work with them.</p>
+                            </div>
+                            <button onclick={() => navigate('model')}>Open saved model</button>
+                        </section>
+                    {/if}
+                    <section id="setup-shared" hidden={setupStep !== 'shared'}>
+                        {@render sharedDataSetup()}
+                        {#if !sharedSetupLocked}
+                            <div class="setup-continue">
+                                <button
+                                    class="primary"
+                                    disabled={busy || dirty || differentProject || !!binningError}
+                                    onclick={continueFromSharedColumns}
+                                >Continue to {planState?.plan?.mode === 'sequential' ? 'models' : 'variables'}</button>
+                            </div>
+                        {/if}
+                    </section>
+                    {#if planState?.plan}
+                        {#if planState.plan.mode === 'sequential'}
+                            <section id="setup-models" hidden={setupStep !== 'models'} aria-label="Models">
+                                <ProjectModelPlan
+                                    {api}
+                                    {state}
+                                    {planState}
+                                    onChanged={planChanged}
+                                    onRevisionIntent={() => (planRevisionIntent = true)}
+                                    {confirmDiscardStageDraft}
+                                    showHistory={false}
+                                    modelsOnly={true}
+                                    onNavigate={(_, stageId) => selectSetupStep('variables', stageId)}
+                                />
+                                <div class="setup-continue">
+                                    <button class="primary" onclick={() => selectSetupStep('variables')}>Choose variables</button>
+                                </div>
+                            </section>
+                        {/if}
+                        <section id="setup-variables" hidden={setupStep !== 'variables' && setupStep !== 'details'} aria-label="Variables">
+                            <PlanVariables
                                 {api}
                                 {state}
                                 {planState}
+                                {uploadCatalogue}
+                                bind:selectedStageId={planStageId}
+                                bind:singleStep={singleVariableStep}
+                                revisionIntent={planRevisionIntent}
+                                embedded={true}
                                 onChanged={planChanged}
-                                onRevisionIntent={() => (planRevisionIntent = true)}
-                                {confirmDiscardStageDraft}
-                                showHistory={false}
-                                routeChoiceOnly={choosingNewPlan}
-                                onCancelNewPlan={() => {
-                                    choosingNewPlan = false;
+                                onDirty={(value) => (planVariablesDirty = value)}
+                                onCreateRevision={beginPlanRevision}
+                                onStageChange={(stageId) => selectSetupStep('variables', stageId, false, true)}
+                                resetSignal={planVariablesReset}
+                                onSingleStepChange={(step) => {
+                                    if (planState?.plan?.mode === 'single') {
+                                        setupStep = step === 'selection' ? 'variables' : 'details';
+                                        writeSetupLocation(setupStep);
+                                    }
+                                }}
+                                onSaved={(_, detail) => {
+                                    if (planState?.plan?.mode === 'sequential') {
+                                        const next = planState?.plan?.stages?.[detail.stageIndex + 1];
+                                        if (next) selectSetupStep('variables', next.component_id);
+                                        else void navigate('model');
+                                    } else void navigate('model');
                                 }}
                             />
                         </section>
-                        {#if !choosingNewPlan && state.models?.length}
-                            <section
-                                class="model-card legacy-model-compat"
-                                aria-label="Existing saved models"
-                            >
-                                <div>
-                                    <h2>
-                                        Existing saved model{state.models.length === 1 ? '' : 's'}
-                                    </h2>
-                                    <p>
-                                        This project contains model{state.models.length === 1
-                                            ? ''
-                                            : 's'}
-                                        created before model plans. Open one to inspect or continue working
-                                        with it. Shared assignments below still apply to the project data.
-                                    </p>
-                                </div>
-                                <button onclick={() => navigate('model')}>Open saved model</button>
-                            </section>
-                            {@render sharedDataSetup()}
-                        {/if}
-                    {:else}
-                        <section
-                            class="model-card plan-route-summary"
-                            aria-label="Selected model structure"
+                        <details
+                            class="model-card saved-versions-history"
+                            hidden={setupStep !== 'variables' && setupStep !== 'details'}
                         >
-                            <div>
-                                <h2>
-                                    {planState.plan.mode === 'single'
-                                        ? 'Single model'
-                                        : 'Build in stages'}
-                                </h2>
-                                <p>
-                                    {planState.plan.mode === 'single'
-                                        ? 'One model will be fitted from the shared data.'
-                                        : 'Each later stage offsets the complete score from the stage before it.'}
-                                </p>
-                            </div>
-                            <button
-                                onclick={() => {
-                                    if (confirmDiscardStageDraft()) choosingNewPlan = true;
-                                }}>Change model structure</button
-                            >
-                        </section>
-                        {@render sharedDataSetup()}
-                        <section id="model-setup" aria-label="Model setup">
-                            {#if planState.plan.mode === 'single'}
-                                <PlanVariables
-                                    {api}
-                                    {state}
-                                    {planState}
-                                    {uploadCatalogue}
-                                    bind:selectedStageId={planStageId}
-                                    revisionIntent={planRevisionIntent}
-                                    embedded={true}
-                                    onChanged={planChanged}
-                                    onDirty={(value) => (planVariablesDirty = value)}
-                                />
-                                <ProjectModelPlan
-                                    {api}
-                                    {state}
-                                    {planState}
-                                    onChanged={planChanged}
-                                    onRevisionIntent={() => (planRevisionIntent = true)}
-                                    {confirmDiscardStageDraft}
-                                    showHistory={false}
-                                    singleWorkflowManaged={true}
-                                />
-                            {:else}
-                                <ProjectModelPlan
-                                    {api}
-                                    {state}
-                                    {planState}
-                                    onChanged={planChanged}
-                                    onRevisionIntent={() => (planRevisionIntent = true)}
-                                    {confirmDiscardStageDraft}
-                                    showHistory={false}
-                                    onNavigate={(_, stageId) => {
-                                        planStageId = stageId;
-                                        document.getElementById('stage-variables')?.scrollIntoView({
-                                            behavior: 'smooth',
-                                            block: 'start',
-                                        });
-                                    }}
-                                />
-                                <PlanVariables
-                                    {api}
-                                    {state}
-                                    {planState}
-                                    {uploadCatalogue}
-                                    bind:selectedStageId={planStageId}
-                                    revisionIntent={planRevisionIntent}
-                                    embedded={true}
-                                    onChanged={planChanged}
-                                    onDirty={(value) => (planVariablesDirty = value)}
-                                />
-                            {/if}
-                            <details class="model-card saved-versions-history">
-                                <summary
-                                    >Saved fitted versions ({(planState?.history || [])
-                                        .length})</summary
-                                >
-                                {#if (planState?.history || []).length}
-                                    <ul>
-                                        {#each planState.history as fitted}<li>
-                                                {fitted.name}
-                                            </li>{/each}
-                                    </ul>
-                                {:else}
-                                    <p>No fitted versions yet.</p>
-                                {/if}
-                            </details>
-                        </section>
+                            <summary>Saved fitted versions ({(planState?.history || []).length})</summary>
+                            {#if (planState?.history || []).length}
+                                <ul>{#each planState.history as fitted}<li>{fitted.name}</li>{/each}</ul>
+                            {:else}<p>No fitted versions yet.</p>{/if}
+                        </details>
                     {/if}
                 {/if}
             </section>
@@ -1613,7 +1792,27 @@
                             requestColumn={exploreRequest}
                             onNavigate={navigate}
                             onReconnect={reconnectForOpen}
-                        />{/key}{/if}
+                        />{/key}
+                    <VariableScreening
+                        {api}
+                        {state}
+                        setup={draft}
+                        context={screeningContext}
+                        active={view === 'explore'}
+                        disabled={busy || differentProject}
+                        prepare={prepareScreening}
+                        onRemove={removeScreenedPredictors}
+                    />
+                    <FeatureSelection
+                        {api}
+                        {state}
+                        setup={draft}
+                        context={screeningContext}
+                        disabled={busy || differentProject || !!binningError}
+                        prepare={prepareScreening}
+                        onChange={stageFeatureSelection}
+                    />
+                {/if}
             </section>
             {#if view === 'export' && ((!stackMode && !planState?.plan) || (planState?.plan?.mode === 'single' && planState.plan.stages[0]?.kind === 'glm'))}<ExportPanel
                     {api}
@@ -1639,6 +1838,24 @@
                     {state}
                     {planState}
                     onChanged={planChanged}
+                    onDirty={(value) => (planFittingDirty = value)}
+                    onNavigate={(target, stageId) => {
+                        if (target === 'variables' || target === 'models') {
+                            void (async () => {
+                                await navigate('project');
+                                if (view !== 'project') return;
+                                selectSetupStep(
+                                    target === 'variables'
+                                        ? 'variables'
+                                        : planState?.plan?.mode === 'single'
+                                          ? 'details'
+                                          : 'models',
+                                    stageId,
+                                );
+                            })();
+                        } else if (target === 'project') void navigate('project');
+                        else if (target === 'diagnostics') void navigate('diagnostics');
+                    }}
                     onFitted={(name) => {
                         requestedPlanModel = name;
                         resultsReady = true;
@@ -1730,14 +1947,59 @@
         gap: 16px;
         margin-bottom: 24px;
     }
-    .plan-route-summary h2,
-    .plan-route-summary p,
     .legacy-model-compat h2,
     .legacy-model-compat p {
         margin-top: 0;
     }
     .mobile-page-selector {
         display: none;
+    }
+    .setup-step-nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 24px 0;
+    }
+    .setup-step-nav button {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        min-height: 46px;
+        padding: 7px 12px;
+        text-align: left;
+    }
+    .setup-step-label {
+        display: grid;
+        gap: 1px;
+    }
+    .setup-step-label small {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 400;
+    }
+    .setup-step-nav button > span:first-child {
+        display: grid;
+        width: 20px;
+        height: 20px;
+        place-items: center;
+        border-radius: 999px;
+        background: #e3ebe6;
+        font-size: 12px;
+        font-weight: 700;
+    }
+    .setup-step-nav button.active {
+        border-color: #156347;
+        background: #e6f2eb;
+        color: #123e2d;
+    }
+    .setup-step-nav button.active > span:first-child {
+        background: #156347;
+        color: white;
+    }
+    .setup-continue {
+        display: flex;
+        justify-content: flex-end;
+        margin: 16px 0 24px;
     }
 
     .variable-random-split {
@@ -1781,11 +2043,9 @@
         }
     }
     @media (max-width: 760px) {
-        .plan-route-summary,
         .legacy-model-compat {
             display: block;
         }
-        .plan-route-summary button,
         .legacy-model-compat button {
             margin-top: 16px;
         }

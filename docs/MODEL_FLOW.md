@@ -2,6 +2,7 @@
 
 Set up the model in **Project & data**, then fit it on **Model**.
 
+Use the setup navigation in **Project & data** to work on one decision at a time.
 Open data and choose **Single model** or **Build in stages**. Assign the target,
 weight/exposure, ID, train/test split and any ignored columns. These assignments
 apply to the whole project. If the data has a split column, choose its training
@@ -11,9 +12,9 @@ For a single model, choose its predictors, then define its method, family/link
 and variable treatment. For models in stages, define the shared response
 convention, then set **Model name** and **Model type** in each numbered card.
 Types are GLM, CatBoost, interaction table or catalogue lookup. Each card shows
-the complete preceding score it will use as its offset. Choose variables
-separately for each stage. The
-models run in the order shown. You can add another model later; you do not need
+the complete preceding score it will use as its offset. Continue to **Variables**
+to choose factors separately for each model. The models run in the order shown.
+You can add another model later; you do not need
 to decide the entire sequence before fitting.
 
 Every model uses the same starting data, response, weight/exposure and
@@ -24,7 +25,8 @@ the currently supported Poisson, Tweedie or Gaussian family.
 
 ## Choose variables
 
-Stay in **Project & data** and choose the model you want to configure. Its Table
+Open the **Variables** setup step and choose the model you want to configure.
+Its position, name, method and incoming offset identify the model being edited. Its Table
 and JSON views define only that model's variables. Search the alphabetical list,
 select factors and set their treatment. Targets, weights, IDs, split columns,
 offsets and ignored columns cannot become factors.
@@ -34,6 +36,11 @@ count for a particular variable, or explicit cut points. Automatic cuts use
 training data. Each model keeps its own definitions. CatBoost uses raw numeric
 or categorical values. A catalogue model also needs its complete lookup file
 and join key.
+
+Save variables for this model before moving to the next model. A single model
+starts with factor selection; its method and variable treatment follow under
+**Model details**. The JSON editor changes only the named model, while **Shared
+column roles JSON** changes project assignments.
 
 For example, this JSON selects three variables and gives driver age fixed cuts:
 
@@ -55,10 +62,14 @@ cannot be changed separately in a later stage.
 
 ## Fit in order
 
-Open **Model**. The list shows each model's variables, fit status and preceding
-offset. Set the next model's fitting options, then click its **Fit** button.
-That action saves the options and starts fitting. Fit the first model before
-the second, then the second before the third.
+Continue to **Model**. The list shows each model's variables, fit status and
+preceding offset. Set the next model's fitting options, then click **Fit Model
+1 — Main effects**, for example. That action saves the options and starts
+fitting. **Save fitting settings** keeps the options without running a fit.
+Unsaved options are labelled and leaving the page asks before discarding them.
+Fit the first model before the second, then the second before the third. A blank
+future model does not prevent fitting the configured first model. A model with
+missing variables takes you back to its Variables editor.
 
 New CatBoost models and catalogues default to **Optuna tuning** on training
 folds. Choose a trial count or tuning time. **Manual settings** fits the entered
@@ -75,11 +86,9 @@ as well as the completed candidates.
 
 These actions are in **Project & data**:
 
-- **Add model** appends a numbered card with GLM selected. Set the new card's
-  name and type, then click its **Choose variables** button. Adding a card leaves
-  you in the model list. Choose **Build in stages** when a later model will use
-  the current
-  model's score as its offset.
+- **Add model** in **Models** appends a numbered card with GLM selected. Set its
+  name and type, then open **Variables** and select that model. Choose **Build
+  in stages** when a later model will use the current model's score as its offset.
 - **Create revised plan** lets you change a fitted model. That model and the
   models after it need fitting again. An unchanged earlier prefix can be reused.
 - **Change model structure** returns to the Single model / Build in stages
@@ -91,8 +100,13 @@ unlocking its target, weight and split assignments. Applying those changes
 requires fitting again from the first stage. The original recipes are kept;
 their old fits do not match the revised shared assignments.
 
-Unfitted stages can be edited, moved or removed directly. Fitted versions stay
-unchanged when you revise the working plan.
+Unfitted models can be edited, moved or removed directly. Fitted versions stay
+unchanged when you revise the working plan. Saved model names and types are
+shown consistently in setup, Variables and Model. Failed structure saves remain
+visible for correction or retry.
+
+Predictor screening and one-way feature selection remain optional tools on
+**Explore**; they are separate from required setup.
 
 ## Inspect and export
 
