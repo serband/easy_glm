@@ -1,14 +1,24 @@
 import { test, expect } from '@playwright/test';
+import { saveLegacyGlm } from './legacy-models.helpers.js';
 
 test('diagnostic searches and table preview/apply/undo preserve the fit', async ({ page }) => {
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     const button = (name) => page.getByRole('button', { name, exact: true });
     await page.goto('/');
+    await saveLegacyGlm(page, `Imported legacy ${Date.now()}`, [
+        'DriverAge',
+        'VehicleAge',
+        'Region',
+        'AnnualMileage',
+    ]);
+    await page.reload();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await page.getByLabel('Role for AnnualMileage', { exact: true }).selectOption('unassigned');
     await button('Preview changes').click();
     await button('Apply changes').click();
     await button('Model').click();
+    await page.getByLabel('Model selection', { exact: true }).selectOption('__new__');
     await button('Create model').click();
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible();
@@ -109,7 +119,8 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await button('Apply adjustment').click();
     await expect(page.getByLabel('Relativity row 2', { exact: true })).not.toHaveValue('2.1');
     await page.getByLabel('Adjustment method', { exact: true }).selectOption('cap');
-    await page.getByLabel('Relativity cap').fill('1.1');
+    await page.getByLabel('Relativity cap').fill('0.5');
+    await page.getByLabel('Relativity cap').press('Tab');
     await expect(button('Apply adjustment')).toBeEnabled();
     await expect(page.getByText('Preview · not applied', { exact: true })).toBeVisible();
     await button('Discard preview').click();

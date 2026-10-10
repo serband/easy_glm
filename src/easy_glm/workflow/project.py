@@ -22,6 +22,7 @@ from uuid import uuid4
 
 from easy_glm.engine.models import INTERACTION_SEP
 
+from .model_plan import ModelPlan
 from .stack_types import ComponentRecipe, validate_catboost_tuning_settings
 
 
@@ -143,7 +144,7 @@ def safe_filename(name: str, fallback: str = "model") -> str:
     return cleaned[:80] if re.search(r"\w", cleaned) else fallback
 
 
-PROJECT_VERSION = 5  # v5 adds optional visual model-flow provenance
+PROJECT_VERSION = 6  # v6 adds an optional editable workbench model plan
 
 ROLES = (
     "target",
@@ -450,6 +451,9 @@ class ModelConfig:
     offset: str | None = None
     divide_target_by_weight: bool = False
     predictors: list[str] = field(default_factory=list)
+    #: A staged-plan root may deliberately promote an unassigned raw column
+    #: for this one model without changing the shared Variables roles.
+    allow_unassigned_factors: bool = False
     penalty: Penalty = field(default_factory=Penalty)
     monotone: dict[str, str] = field(default_factory=dict)
     interactions: list[Interaction] = field(default_factory=list)
@@ -457,6 +461,9 @@ class ModelConfig:
     pair_time_limit_minutes: float = 15.0
     pair_stages: list[PairStageConfig] = field(default_factory=list)
     components: list[ComponentRecipe] = field(default_factory=list)
+    #: Private, per-model copy of the band definitions used for this fit.
+    #: It keeps later Variables edits from changing an already named model.
+    design: dict[str, Any] | None = None
     base: str = "modal"
     base_rate_override: float | None = None
     adjustments: list[Adjustment] = field(default_factory=list)
@@ -611,6 +618,9 @@ class Project:
     data: DataConfig = field(default_factory=DataConfig)
     design: DesignConfig = field(default_factory=DesignConfig)
     models: dict[str, ModelConfig] = field(default_factory=dict)
+    #: The editable workbench recipe.  Saved fits stay in ``models`` and are
+    #: intentionally not changed when this plan changes.
+    model_plan: ModelPlan | None = None
     champion: str | None = None
     exploration: dict[str, Any] = field(
         default_factory=lambda: {"leakage": {"ignored": [], "acknowledged": []}}
@@ -934,6 +944,10 @@ class Project:
         """Return a list of problems (empty = valid). With ``columns`` (the
         prepared data's columns) every column reference is checked too."""
         problems: list[str] = []
+        if self.model_plan is not None:
+            from .model_plan import structural_problems
+
+            problems.extend(structural_problems(self.model_plan, FAMILIES))
         if columns is not None:
             problems.extend(self.missing_columns(columns, model))
         if self.data.split.mode == "random" and not str(self.data.split.column).strip():
@@ -1050,13 +1064,21 @@ class Project:
                 and cfg.pair_method == "legacy_glm"
             ):
                 problems.append(f"{name}: no predictors")
+            if cfg.design is not None:
+                try:
+                    from .stack_types import validate_component_design
+
+                    validate_component_design(cfg.design, tuple(cfg.predictors))
+                except ValueError as exc:
+                    problems.append(f"{name}: {exc}")
             if cfg.components:
-                if cfg.family not in (
-                    "poisson",
-                    "tweedie",
-                    "gaussian",
-                ) or cfg.link not in (
-                    ("log",) if cfg.family == "gaussian" else (None, "log")
+                single_glm_component = (
+                    len(cfg.components) == 1 and cfg.components[0].kind == "glm"
+                )
+                if not single_glm_component and (
+                    cfg.family not in ("poisson", "tweedie", "gaussian")
+                    or cfg.link
+                    not in (("log",) if cfg.family == "gaussian" else (None, "log"))
                 ):
                     problems.append(
                         f"{name}: stacks require Poisson, Tweedie or Gaussian with log link"
@@ -1108,7 +1130,15 @@ class Project:
                             problems.append(
                                 f"{name}: component {item.name!r} uses response/weight/offset as predictors: {forbidden}"
                             )
-            bad = [p for p in cfg.predictors if self.data.roles.get(p) != "predictor"]
+            bad = [
+                p
+                for p in cfg.predictors
+                if self.data.roles.get(p) != "predictor"
+                and not (
+                    cfg.allow_unassigned_factors
+                    and self.data.roles.get(p) in (None, "unassigned")
+                )
+            ]
             if bad:
                 problems.append(f"{name}: not predictor-role columns: {bad}")
             if cfg.penalty.alpha is None and cfg.penalty.cv is None:
@@ -1340,22 +1370,32 @@ class Project:
         d = asdict(self)
         # Keep ordinary legacy projects readable by version-2 installations.
         d["version"] = (
-            5
-            if any(m.lineage is not None for m in self.models.values())
+            6
+            if self.model_plan is not None
             else (
-                4
-                if any(m.components for m in self.models.values())
+                5
+                if any(m.lineage is not None for m in self.models.values())
                 else (
-                    3
-                    if any(
-                        m.pair_method == "sequential_catboost" or m.pair_stages
-                        for m in self.models.values()
+                    4
+                    if any(m.components for m in self.models.values())
+                    else (
+                        3
+                        if any(
+                            m.pair_method == "sequential_catboost" or m.pair_stages
+                            for m in self.models.values()
+                        )
+                        else 2
                     )
-                    else 2
                 )
             )
         )
+        if self.model_plan is None:
+            d.pop("model_plan", None)
         for m in d["models"].values():
+            if m.get("design") is None:
+                m.pop("design", None)
+            if not m.get("allow_unassigned_factors", False):
+                m.pop("allow_unassigned_factors", None)
             if m.get("lineage") is None:
                 m.pop("lineage", None)
             if m["pair_stages"]:
@@ -1402,6 +1442,8 @@ class Project:
             filters=list(d.get("filters", [])),
             split=_build(Split, d.get("split", {}), "data.split"),
         )
+        plan_raw = raw.get("model_plan")
+        plan = ModelPlan.from_dict(plan_raw) if plan_raw is not None else None
         g = raw.get("design", {})
         _warn_unknown(g, {f.name for f in fields(DesignConfig)}, "design")
         design = DesignConfig(
@@ -1552,6 +1594,7 @@ class Project:
             data=data,
             design=design,
             models=models,
+            model_plan=plan,
             champion=raw.get("champion"),
             exploration=exploration,
         )

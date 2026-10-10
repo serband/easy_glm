@@ -2,6 +2,9 @@
     import { onMount } from 'svelte';
     import ModelWorkbench from './ModelWorkbench.svelte';
     import StackWorkbench from './StackWorkbench.svelte';
+    import ProjectModelPlan from './ProjectModelPlan.svelte';
+    import PlanVariables from './PlanVariables.svelte';
+    import PlanFitting from './PlanFitting.svelte';
     import ExportPanel from './ExportPanel.svelte';
     import ProjectOpen from './ProjectOpen.svelte';
     import ExplorePanel from './ExplorePanel.svelte';
@@ -12,7 +15,7 @@
     let comparison = '',
         modelContext = { fitted: [], selected: '', champion: null };
     let legacySelected = '';
-    let view = 'variables',
+    let view = 'project',
         resultsReady = false;
     let stackMode = false;
     let workflowModeChosen = false;
@@ -67,7 +70,51 @@
     };
     let projectInfo = null,
         projectError = '';
+    let planState = null,
+        planStageId = '',
+        planVariablesDirty = false,
+        planRevisionIntent = false,
+        showSharedSetup = false,
+        requestedPlanModel = '';
+    async function refreshPlan() {
+        if (!state?.columns?.length) {
+            planState = null;
+            return;
+        }
+        const generation = `${state.session_id}:${state.revision}`;
+        try {
+            const fresh = await api('model-plan');
+            if (`${state?.session_id}:${state?.revision}` === generation) planChanged(fresh);
+        } catch (e) {
+            if (`${state?.session_id}:${state?.revision}` === generation) {
+                error = `Cannot read the current model plan. ${e.message}`;
+            }
+        }
+    }
+    function planChanged(next) {
+        planState = next;
+        if (next?.revision != null && state) state = { ...state, revision: next.revision };
+        const stages = next?.plan?.stages || [];
+        if (!stages.some((stage) => stage.component_id === planStageId))
+            planStageId = stages[0]?.component_id || '';
+        const latest = next?.fit_refs?.at(-1)?.model_name;
+        if (latest) {
+            requestedPlanModel = latest;
+            resultsReady = true;
+        } else resultsReady = Boolean(next?.history?.length);
+        if (!(next?.fit_refs || []).length) planRevisionIntent = false;
+    }
+    function restoreSavedSelection() {
+        if (planState?.plan) return;
+        const latest = planState?.history?.at(-1);
+        legacySelected = latest && !latest.components?.length ? latest.name : '';
+        requestedPlanModel = latest?.components?.length ? latest.name : '';
+    }
     async function navigate(next) {
+        if (planVariablesDirty && next !== view) {
+            if (!window.confirm('Discard unsaved stage-variable changes?')) return;
+            planVariablesDirty = false;
+        }
         if (stackMode && stackDraftDirty && next !== view) {
             requestStackNavigation(next);
             return;
@@ -88,6 +135,7 @@
             }
         }
         view = next;
+        if (['project', 'variables', 'model'].includes(next)) await refreshPlan();
         if (next === 'project' || next === 'export') {
             try {
                 projectInfo = await api('project');
@@ -335,7 +383,9 @@
         if (!token) await bootstrap();
         const query = new URLSearchParams({ ...body, filename: file.name });
         const response = await fetch('/api/catalogues/upload?' + query, {
-            method: 'POST', cache: 'no-store', credentials: 'same-origin',
+            method: 'POST',
+            cache: 'no-store',
+            credentials: 'same-origin',
             headers: { 'Content-Type': 'application/octet-stream', 'X-EasyGLM-Token': token },
             body: file,
         });
@@ -637,9 +687,16 @@
             state = fresh;
             workflowModeChosen = false;
             stackMode = false;
+            planState = null;
+            requestedPlanModel = '';
+            resultsReady = false;
+            showSharedSetup = false;
+            planRevisionIntent = false;
             differentProject = false;
             reset();
             notice = '';
+            await refreshPlan();
+            restoreSavedSelection();
             if (!state.columns.length) await navigate('project');
         } catch (e) {
             error = e.message;
@@ -657,6 +714,7 @@
         state = opened;
         workflowModeChosen = false;
         stackMode = false;
+        planState = null;
         differentProject = false;
         reset();
         notice = '';
@@ -666,6 +724,8 @@
         scrollTop = 0;
         previewScroll = 0;
         comparison = '';
+        legacySelected = '';
+        requestedPlanModel = '';
         modelContext = { fitted: [], selected: '', champion: null };
         resultsReady = false;
         projectInfo = null;
@@ -673,7 +733,7 @@
         exploreRequest = { name: '', id: 0 };
         token = '';
         serverSession = opened.session_id;
-        view = kind === 'example' ? 'project' : 'variables';
+        view = 'project';
         busy = true;
         try {
             await bootstrap();
@@ -687,7 +747,8 @@
             state = fresh;
             reset();
             notice = '';
-            await navigate(kind === 'example' ? 'project' : 'variables');
+            await navigate('project');
+            restoreSavedSelection();
         } catch (e) {
             error = 'Data loaded. Reconnect to continue. ' + e.message;
             throw new Error(error);
@@ -865,7 +926,9 @@
             <strong>Setup progress</strong>
             <span>{state?.columns.length ? '✓' : '○'} Data loaded</span>
             <span
-                >{state?.setup.assignments.target && (state?.setup.roles.predictor.length || (stackMode && (modelContext?.fitted?.length || modelContext?.selected)))
+                >{state?.setup.assignments.target &&
+                (state?.setup.roles.predictor.length ||
+                    (stackMode && (modelContext?.fitted?.length || modelContext?.selected)))
                     ? '✓'
                     : '○'} Target and predictors</span
             >
@@ -887,7 +950,8 @@
                 <button class="quiet" onclick={download} disabled={!state}>Export project</button>
             </div>
         </header>
-        <label class="mobile-page-selector">Page
+        <label class="mobile-page-selector"
+            >Page
             <select aria-label="Page" value={view} onchange={requestMobilePage}>
                 {#each Object.entries(pageTitles) as [key, title]}
                     <option
@@ -900,348 +964,404 @@
             </select>
         </label>
         <main>
-            <div hidden={view !== 'variables'}>
-                <div class="heading">
-                    <div>
-                        <div class="eyebrow">PORTFOLIO SETUP</div>
-                        <h1>Variables</h1>
-                        <p>
-                            Choose the target and predictors. Numeric values measure an amount;
-                            categorical values identify a group.
-                        </p>
-                    </div>
-                    <div class="dataset-meta">
-                        <strong>{state?.row_count.toLocaleString() || '—'}</strong> rows<span
-                        ></span><strong>{state?.columns.length || '—'}</strong> variables
-                    </div>
-                </div>
-                <div class="session-note">
-                    Edits are held in this session. Export applied settings before stopping the
-                    server. Source files are unchanged.
-                </div>
-                {#if error}<div class="message error" role="alert">
-                        <span>{error}</span><button onclick={reconnect} disabled={busy}
-                            >Reconnect</button
+            {#if error && ['project', 'variables'].includes(view)}<div
+                    class="message error"
+                    role="alert"
+                >
+                    <span>{error}</span><button onclick={reconnect} disabled={busy}
+                        >Reconnect</button
+                    >
+                    {#if draft}<button onclick={downloadDraft}>Download draft</button><button
+                            onclick={reload}
+                            disabled={busy}>Discard draft and reload</button
+                        >{/if}
+                </div>{/if}
+            {#if planState?.plan && view === 'variables' && !showSharedSetup}
+                <PlanVariables
+                    {api}
+                    {state}
+                    {planState}
+                    {uploadCatalogue}
+                    bind:selectedStageId={planStageId}
+                    revisionIntent={planRevisionIntent}
+                    onChanged={planChanged}
+                    onDirty={(value) => (planVariablesDirty = value)}
+                    onSharedSetup={() => (showSharedSetup = true)}
+                />
+            {:else}
+                {#if planState?.plan && view === 'variables' && showSharedSetup}<div
+                        class="session-note"
+                    >
+                        Editing shared data roles and split. <button
+                            onclick={() => (showSharedSetup = false)}>Back to stage setup</button
                         >
-                        {#if draft}<button onclick={downloadDraft}>Download draft</button><button
-                                onclick={reload}
-                                disabled={busy}>Discard draft and reload</button
-                            >{/if}
                     </div>{/if}
-                {#if notice}<div class="message" role="status">{notice}</div>{/if}
-                {#if state && draft}
-                    <div class="role-summary">
-                        {#each counts as item}<button
-                                class:chosen={roleFilter === item.role}
-                                onclick={() => {
-                                    roleFilter = roleFilter === item.role ? 'all' : item.role;
-                                    scrollTop = 0;
-                                }}
-                                ><span class="dot {item.role}"></span>{item.role.replaceAll(
-                                    '_',
-                                    ' ',
-                                )}<b>{item.count}</b></button
-                            >{/each}
+                <div hidden={view !== 'variables'}>
+                    <div class="heading">
+                        <div>
+                            <div class="eyebrow">PORTFOLIO SETUP</div>
+                            <h1>Variables</h1>
+                            <p>
+                                Choose the target and predictors. Numeric values measure an amount;
+                                categorical values identify a group.
+                            </p>
+                        </div>
+                        <div class="dataset-meta">
+                            <strong>{state?.row_count.toLocaleString() || '—'}</strong> rows<span
+                            ></span><strong>{state?.columns.length || '—'}</strong> variables
+                        </div>
                     </div>
-                    <fieldset disabled={busy} class="edit-fieldset">
-                        <section class="editor-card">
-                            <div class="toolbar">
-                                <div class="segmented">
-                                    <button
-                                        class:active={tab === 'table'}
-                                        onclick={() => switchTab('table')}>Table</button
-                                    ><button
-                                        class:active={tab === 'json'}
-                                        onclick={() => switchTab('json')}>Variables JSON</button
-                                    >
-                                </div>
-                                <span class="edit-status"
-                                    >{dirty ? 'Unapplied changes' : 'All changes applied'}</span
-                                >
-                                <div class="spacer"></div>
-                                <button onclick={reset} disabled={busy}>Reset</button><button
-                                    class="primary"
-                                    onclick={review}
-                                    disabled={busy || differentProject || !!binningError}
-                                    >Preview changes</button
-                                >
-                            </div>
-                            {#if reviewing}<p class="preview-feedback" role="status">Checking variable changes…</p>
-                            {:else if preview?.changes.length === 0}<div class="preview-feedback" role="status">
-                                    No variable changes to apply. Your current settings are ready for a model.
-                                    <button type="button" onclick={() => navigate('model')}>Continue to Model</button>
-                                </div>
-                            {:else if preview?.changes.length}<p class="preview-feedback" role="status">
-                                    {preview.changes.length} changes ready to review.
-                                </p>{/if}
-                            {#if preview?.changes.length}<section class="preview-card" id="variable-preview">
-                                    <div class="preview-title">
-                                        <strong>{preview.changes.length} variable changes</strong
+                    <div class="session-note">
+                        Edits are held in this session. Export applied settings before stopping the
+                        server. Source files are unchanged.
+                    </div>
+                    {#if notice}<div class="message" role="status">{notice}</div>{/if}
+                    {#if state && draft}
+                        <div class="role-summary">
+                            {#each counts as item}<button
+                                    class:chosen={roleFilter === item.role}
+                                    onclick={() => {
+                                        roleFilter = roleFilter === item.role ? 'all' : item.role;
+                                        scrollTop = 0;
+                                    }}
+                                    ><span class="dot {item.role}"></span>{item.role.replaceAll(
+                                        '_',
+                                        ' ',
+                                    )}<b>{item.count}</b></button
+                                >{/each}
+                        </div>
+                        <fieldset disabled={busy} class="edit-fieldset">
+                            <section class="editor-card">
+                                <div class="toolbar">
+                                    <div class="segmented">
+                                        <button
+                                            class:active={tab === 'table'}
+                                            onclick={() => switchTab('table')}>Table</button
                                         ><button
-                                            class="primary"
-                                            disabled={busy || differentProject || !!binningError}
-                                            onclick={apply}>Apply changes</button
+                                            class:active={tab === 'json'}
+                                            onclick={() => switchTab('json')}>Variables JSON</button
                                         >
                                     </div>
-                                    <div
-                                        class="preview-list"
-                                        onscroll={(e) => (previewScroll = e.currentTarget.scrollTop)}
+                                    <span class="edit-status"
+                                        >{dirty ? 'Unapplied changes' : 'All changes applied'}</span
                                     >
+                                    <div class="spacer"></div>
+                                    <button onclick={reset} disabled={busy}>Reset</button><button
+                                        class="primary"
+                                        onclick={review}
+                                        disabled={busy || differentProject || !!binningError}
+                                        >Preview changes</button
+                                    >
+                                </div>
+                                {#if reviewing}<p class="preview-feedback" role="status">
+                                        Checking variable changes…
+                                    </p>
+                                {:else if preview?.changes.length === 0}<div
+                                        class="preview-feedback"
+                                        role="status"
+                                    >
+                                        No variable changes to apply. Your current settings are
+                                        ready for a model.
+                                        <button type="button" onclick={() => navigate('model')}
+                                            >Continue to Model</button
+                                        >
+                                    </div>
+                                {:else if preview?.changes.length}<p
+                                        class="preview-feedback"
+                                        role="status"
+                                    >
+                                        {preview.changes.length} changes ready to review.
+                                    </p>{/if}
+                                {#if preview?.changes.length}<section
+                                        class="preview-card"
+                                        id="variable-preview"
+                                    >
+                                        <div class="preview-title">
+                                            <strong
+                                                >{preview.changes.length} variable changes</strong
+                                            ><button
+                                                class="primary"
+                                                disabled={busy ||
+                                                    differentProject ||
+                                                    !!binningError}
+                                                onclick={apply}>Apply changes</button
+                                            >
+                                        </div>
                                         <div
-                                            style:height={preview.changes.length * 34 + 'px'}
-                                            style:position="relative"
+                                            class="preview-list"
+                                            onscroll={(e) =>
+                                                (previewScroll = e.currentTarget.scrollTop)}
                                         >
                                             <div
-                                                style:position="absolute"
-                                                style:width="100%"
-                                                style:transform={'translateY(' + previewStart * 34 + 'px)'}
+                                                style:height={preview.changes.length * 34 + 'px'}
+                                                style:position="relative"
                                             >
-                                                {#each preview.changes.slice(previewStart, previewStart + 18) as change}
-                                                    <div class="preview-change">
-                                                        <b>{change['raw column']}</b><span
-                                                            >{change.name}</span
-                                                        ><span>{change.role}</span><span
-                                                            >{change.type}</span
+                                                <div
+                                                    style:position="absolute"
+                                                    style:width="100%"
+                                                    style:transform={'translateY(' +
+                                                        previewStart * 34 +
+                                                        'px)'}
+                                                >
+                                                    {#each preview.changes.slice(previewStart, previewStart + 18) as change}
+                                                        <div class="preview-change">
+                                                            <b>{change['raw column']}</b><span
+                                                                >{change.name}</span
+                                                            ><span>{change.role}</span><span
+                                                                >{change.type}</span
+                                                            >
+                                                        </div>
+                                                    {/each}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        {#each preview.notices as item}<p>{item[1]}</p>{/each}
+                                    </section>{/if}
+                                {#if tab === 'table'}
+                                    <div class="filterbar">
+                                        <input
+                                            class="search"
+                                            aria-label="Search variables"
+                                            placeholder="Search source columns…"
+                                            bind:value={query}
+                                            oninput={() => (scrollTop = 0)}
+                                        /><select
+                                            aria-label="Filter roles"
+                                            bind:value={roleFilter}
+                                            onchange={() => (scrollTop = 0)}
+                                            ><option value="all">All roles</option
+                                            >{#each roles as role}<option value={role}
+                                                    >{role.replaceAll('_', ' ')}</option
+                                                >{/each}</select
+                                        ><span>{filtered.length} variables</span>
+                                    </div>
+                                    <div class="table-head grid-row">
+                                        <span>SOURCE COLUMN</span><span>DISPLAY NAME</span><span
+                                            >ROLE</span
+                                        ><span>VARIABLE TYPE</span><span>SOURCE TYPE</span>
+                                    </div>
+                                    <div
+                                        class="virtual-table"
+                                        role="region"
+                                        aria-label="Variable settings"
+                                        onscroll={(e) => (scrollTop = e.currentTarget.scrollTop)}
+                                    >
+                                        <div
+                                            style:height={rowOffsets.at(-1) + 'px'}
+                                            class="virtual-space"
+                                        >
+                                            <div
+                                                class="virtual-rows"
+                                                style:transform={'translateY(' +
+                                                    rowOffsets[start] +
+                                                    'px)'}
+                                            >
+                                                {#each visible as column (column.name)}<div>
+                                                        <div
+                                                            class="grid-row data-row"
+                                                            data-column={column.name}
                                                         >
-                                                    </div>
-                                                {/each}
+                                                            <button
+                                                                class="column-name"
+                                                                title="Explore this variable"
+                                                                onclick={() => {
+                                                                    exploreRequest = {
+                                                                        name:
+                                                                            state.setup.renames[
+                                                                                column.name
+                                                                            ] || column.name,
+                                                                        id: exploreRequest.id + 1,
+                                                                    };
+                                                                    void navigate('explore');
+                                                                }}>{column.name}</button
+                                                            ><input
+                                                                aria-label={'Name for ' +
+                                                                    column.name}
+                                                                value={draft.renames[column.name] ||
+                                                                    column.name}
+                                                                onchange={(e) =>
+                                                                    setName(
+                                                                        column.name,
+                                                                        e.currentTarget.value,
+                                                                    )}
+                                                            /><select
+                                                                aria-label={'Role for ' +
+                                                                    column.name}
+                                                                value={getRole(
+                                                                    column.name,
+                                                                    roleMap,
+                                                                )}
+                                                                onchange={(e) =>
+                                                                    setRole(
+                                                                        column.name,
+                                                                        e.currentTarget.value,
+                                                                    )}
+                                                                >{#each roles as role}<option
+                                                                        value={role}
+                                                                        >{role.replaceAll(
+                                                                            '_',
+                                                                            ' ',
+                                                                        )}</option
+                                                                    >{/each}</select
+                                                            ><select
+                                                                aria-label={'Type for ' +
+                                                                    column.name}
+                                                                value={getType(
+                                                                    column.name,
+                                                                    typeMap,
+                                                                )}
+                                                                onchange={(e) =>
+                                                                    setType(
+                                                                        column.name,
+                                                                        e.currentTarget.value,
+                                                                    )}
+                                                                >{#each types as type}<option
+                                                                        value={type}
+                                                                        >{type === 'auto'
+                                                                            ? 'Infer from data'
+                                                                            : type === 'numeric'
+                                                                              ? 'Numeric'
+                                                                              : 'Categorical'}</option
+                                                                    >{/each}</select
+                                                            ><span class="dtype"
+                                                                >{column.dtype}</span
+                                                            >
+                                                        </div>
+                                                        {#if getRole(column.name, roleMap) === 'split'}
+                                                            <SplitSettings
+                                                                {api}
+                                                                {state}
+                                                                setup={draft}
+                                                                disabled={busy || differentProject}
+                                                                onchange={(next) => {
+                                                                    draft = next;
+                                                                    touch();
+                                                                }}
+                                                            />
+                                                        {/if}
+                                                    </div>{/each}
                                             </div>
                                         </div>
                                     </div>
-                                    {#each preview.notices as item}<p>{item[1]}</p>{/each}
-                                </section>{/if}
-                            {#if tab === 'table'}
-                                <div class="filterbar">
-                                    <input
-                                        class="search"
-                                        aria-label="Search variables"
-                                        placeholder="Search source columns…"
-                                        bind:value={query}
-                                        oninput={() => (scrollTop = 0)}
-                                    /><select
-                                        aria-label="Filter roles"
-                                        bind:value={roleFilter}
-                                        onchange={() => (scrollTop = 0)}
-                                        ><option value="all">All roles</option
-                                        >{#each roles as role}<option value={role}
-                                                >{role.replaceAll('_', ' ')}</option
-                                            >{/each}</select
-                                    ><span>{filtered.length} variables</span>
-                                </div>
-                                <div class="table-head grid-row">
-                                    <span>SOURCE COLUMN</span><span>DISPLAY NAME</span><span
-                                        >ROLE</span
-                                    ><span>VARIABLE TYPE</span><span>SOURCE TYPE</span>
-                                </div>
-                                <div
-                                    class="virtual-table"
-                                    role="region"
-                                    aria-label="Variable settings"
-                                    onscroll={(e) => (scrollTop = e.currentTarget.scrollTop)}
-                                >
-                                    <div
-                                        style:height={rowOffsets.at(-1) + 'px'}
-                                        class="virtual-space"
-                                    >
-                                        <div
-                                            class="virtual-rows"
-                                            style:transform={'translateY(' +
-                                                rowOffsets[start] +
-                                                'px)'}
-                                        >
-                                            {#each visible as column (column.name)}<div>
-                                                    <div
-                                                        class="grid-row data-row"
-                                                        data-column={column.name}
-                                                    >
-                                                        <button
-                                                            class="column-name"
-                                                            title="Explore this variable"
-                                                            onclick={() => {
-                                                                exploreRequest = {
-                                                                    name:
-                                                                        state.setup.renames[
-                                                                            column.name
-                                                                        ] || column.name,
-                                                                    id: exploreRequest.id + 1,
-                                                                };
-                                                                void navigate('explore');
-                                                            }}>{column.name}</button
-                                                        ><input
-                                                            aria-label={'Name for ' + column.name}
-                                                            value={draft.renames[column.name] ||
-                                                                column.name}
-                                                            onchange={(e) =>
-                                                                setName(
-                                                                    column.name,
-                                                                    e.currentTarget.value,
-                                                                )}
-                                                        /><select
-                                                            aria-label={'Role for ' + column.name}
-                                                            value={getRole(column.name, roleMap)}
-                                                            onchange={(e) =>
-                                                                setRole(
-                                                                    column.name,
-                                                                    e.currentTarget.value,
-                                                                )}
-                                                            >{#each roles as role}<option
-                                                                    value={role}
-                                                                    >{role.replaceAll(
-                                                                        '_',
-                                                                        ' ',
-                                                                    )}</option
-                                                                >{/each}</select
-                                                        ><select
-                                                            aria-label={'Type for ' + column.name}
-                                                            value={getType(column.name, typeMap)}
-                                                            onchange={(e) =>
-                                                                setType(
-                                                                    column.name,
-                                                                    e.currentTarget.value,
-                                                                )}
-                                                            >{#each types as type}<option
-                                                                    value={type}
-                                                                    >{type === 'auto'
-                                                                        ? 'Infer from data'
-                                                                        : type === 'numeric'
-                                                                          ? 'Numeric'
-                                                                          : 'Categorical'}</option
-                                                                >{/each}</select
-                                                        ><span class="dtype">{column.dtype}</span>
-                                                    </div>
-                                                    {#if getRole(column.name, roleMap) === 'split'}
-                                                        <SplitSettings
-                                                            {api}
-                                                            {state}
-                                                            setup={draft}
-                                                            disabled={busy || differentProject}
-                                                            onchange={(next) => {
-                                                                draft = next;
-                                                                touch();
-                                                            }}
-                                                        />
-                                                    {/if}
-                                                </div>{/each}
-                                        </div>
+                                {:else}
+                                    <div class="json-hint">
+                                        Roles and binning use source column names. Missing role
+                                        columns become ignored. The split entry includes its column
+                                        and training value; the other value is holdout. A missing
+                                        binning section preserves current settings; a supplied
+                                        overrides object replaces all binning overrides. Names and
+                                        types stay as set in the table.
                                     </div>
+                                    <textarea
+                                        class="json-editor"
+                                        aria-label="Variables JSON"
+                                        bind:value={jsonText}
+                                        oninput={() => {
+                                            preview = null;
+                                            notice = '';
+                                        }}
+                                        spellcheck="false"></textarea>
+                                {/if}
+                                <div class="table-footer">
+                                    <span
+                                        >Roles determine eligibility. Model selections and
+                                        interactions are configured separately.</span
+                                    ><span>Revision {state.revision}</span>
                                 </div>
-                            {:else}
-                                <div class="json-hint">
-                                    Roles and binning use source column names. Missing role columns
-                                    become ignored. The split entry includes its column and training
-                                    value; the other value is holdout. A missing binning section
-                                    preserves current settings; a supplied overrides object replaces
-                                    all binning overrides. Names and types stay as set in the table.
-                                </div>
-                                <textarea
-                                    class="json-editor"
-                                    aria-label="Variables JSON"
-                                    bind:value={jsonText}
-                                    oninput={() => {
-                                        preview = null;
-                                        notice = '';
-                                    }}
-                                    spellcheck="false"></textarea>
-                            {/if}
-                            <div class="table-footer">
-                                <span
-                                    >Roles determine eligibility. Model selections and interactions
-                                    are configured separately.</span
-                                ><span>Revision {state.revision}</span>
-                            </div>
-                        </section>
-                        {#if tab === 'table'}<BinningSettings
-                                {api}
-                                {state}
-                                active={view === 'variables'}
-                                setup={draft}
-                                disabled={busy || differentProject}
-                                resetKey={binningReset}
-                                onvalidity={(message) => {
-                                    binningError = message;
-                                    if (message) preview = null;
-                                }}
-                                onchange={(next) => {
-                                    draft = next;
-                                    touch();
-                                }}
-                            />{/if}
-                        {#if !draft.assignments.split}
-                            <section
-                                class="model-card variable-random-split"
-                                aria-label="Train and holdout split"
-                            >
-                                <h2>Train / holdout split</h2>
-                                <p class="help-text">
-                                    Random split. To use an existing column, assign it the split
-                                    role above.
-                                </p>
-                                <div class="random-split-fields">
-                                    <label
-                                        >Training fraction<input
-                                            aria-label="Training fraction"
-                                            type="number"
-                                            min="0.01"
-                                            max="0.99"
-                                            step="0.05"
-                                            bind:value={draft.split.fraction}
-                                            oninput={() => {
-                                                draft.split.mode = 'random';
-                                                touch();
-                                            }}
-                                        /></label
-                                    >
-                                    <label
-                                        >Seed<input
-                                            aria-label="Split seed"
-                                            type="number"
-                                            min="0"
-                                            step="1"
-                                            bind:value={draft.split.seed}
-                                            oninput={() => {
-                                                draft.split.mode = 'random';
-                                                touch();
-                                            }}
-                                        /></label
-                                    >
-                                    <label
-                                        >Generated column<input
-                                            aria-label="Split column name"
-                                            bind:value={draft.split.column}
-                                            oninput={() => {
-                                                draft.split.mode = 'random';
-                                                touch();
-                                            }}
-                                        /></label
-                                    >
-                                </div>
-                                <p class="help-text">
-                                    Used by Explore and every model. Apply with your variable
-                                    changes.
-                                </p>
                             </section>
-                        {/if}
-                        {#if view === 'variables'}<VariableScreening
-                                {api}
-                                {state}
-                                setup={draft}
-                                context={screeningContext}
-                                disabled={busy || differentProject}
-                                prepare={prepareScreening}
-                                onRemove={removeScreenedPredictors}
-                            />{/if}
-                        {#if view === 'variables'}<FeatureSelection
-                                {api}
-                                {state}
-                                setup={draft}
-                                context={screeningContext}
-                                disabled={busy || differentProject || !!binningError}
-                                prepare={prepareScreening}
-                                onChange={stageFeatureSelection}
-                            />{/if}
-                    </fieldset>
-                {:else}<div class="loading">Opening local data…</div>{/if}
-            </div>
+                            {#if tab === 'table'}<BinningSettings
+                                    {api}
+                                    {state}
+                                    active={view === 'variables'}
+                                    setup={draft}
+                                    disabled={busy || differentProject}
+                                    resetKey={binningReset}
+                                    onvalidity={(message) => {
+                                        binningError = message;
+                                        if (message) preview = null;
+                                    }}
+                                    onchange={(next) => {
+                                        draft = next;
+                                        touch();
+                                    }}
+                                />{/if}
+                            {#if !draft.assignments.split}
+                                <section
+                                    class="model-card variable-random-split"
+                                    aria-label="Train and holdout split"
+                                >
+                                    <h2>Train / holdout split</h2>
+                                    <p class="help-text">
+                                        Random split. To use an existing column, assign it the split
+                                        role above.
+                                    </p>
+                                    <div class="random-split-fields">
+                                        <label
+                                            >Training fraction<input
+                                                aria-label="Training fraction"
+                                                type="number"
+                                                min="0.01"
+                                                max="0.99"
+                                                step="0.05"
+                                                bind:value={draft.split.fraction}
+                                                oninput={() => {
+                                                    draft.split.mode = 'random';
+                                                    touch();
+                                                }}
+                                            /></label
+                                        >
+                                        <label
+                                            >Seed<input
+                                                aria-label="Split seed"
+                                                type="number"
+                                                min="0"
+                                                step="1"
+                                                bind:value={draft.split.seed}
+                                                oninput={() => {
+                                                    draft.split.mode = 'random';
+                                                    touch();
+                                                }}
+                                            /></label
+                                        >
+                                        <label
+                                            >Generated column<input
+                                                aria-label="Split column name"
+                                                bind:value={draft.split.column}
+                                                oninput={() => {
+                                                    draft.split.mode = 'random';
+                                                    touch();
+                                                }}
+                                            /></label
+                                        >
+                                    </div>
+                                    <p class="help-text">
+                                        Used by Explore and every model. Apply with your variable
+                                        changes.
+                                    </p>
+                                </section>
+                            {/if}
+                            {#if view === 'variables'}<VariableScreening
+                                    {api}
+                                    {state}
+                                    setup={draft}
+                                    context={screeningContext}
+                                    disabled={busy || differentProject}
+                                    prepare={prepareScreening}
+                                    onRemove={removeScreenedPredictors}
+                                />{/if}
+                            {#if view === 'variables'}<FeatureSelection
+                                    {api}
+                                    {state}
+                                    setup={draft}
+                                    context={screeningContext}
+                                    disabled={busy || differentProject || !!binningError}
+                                    prepare={prepareScreening}
+                                    onChange={stageFeatureSelection}
+                                />{/if}
+                        </fieldset>
+                    {:else}<div class="loading">Opening local data…</div>{/if}
+                </div>
+            {/if}
             <section hidden={view !== 'project'} class="workflow-page">
                 <div class="heading">
                     <div>
@@ -1267,6 +1387,17 @@
                         onOpened={projectOpened}
                         onReconnect={reconnectForOpen}
                     />{/if}
+                {#if state?.columns.length}<ProjectModelPlan
+                        {api}
+                        {state}
+                        {planState}
+                        onChanged={planChanged}
+                        onRevisionIntent={() => (planRevisionIntent = true)}
+                        onNavigate={(target, stageId) => {
+                            planStageId = stageId;
+                            navigate(target);
+                        }}
+                    />{/if}
             </section>
             <section hidden={view !== 'explore'} class="workflow-page">
                 {#if state && draft}{#key state.project_id}<ExplorePanel
@@ -1278,13 +1409,7 @@
                             onReconnect={reconnectForOpen}
                         />{/key}{/if}
             </section>
-            {#if ['model', 'diagnostics', 'compare', 'tables', 'export'].includes(view)}
-                <div class="workflow-mode" role="group" aria-label="Model workflow">
-                    <button class:chosen={!stackMode} onclick={() => chooseModelWorkflow(false)}>Single model</button>
-                    <button class:chosen={stackMode} onclick={() => chooseModelWorkflow(true)}>Build a model in stages</button>
-                </div>
-            {/if}
-            {#if view === 'export' && !stackMode}<ExportPanel
+            {#if view === 'export' && ((!stackMode && !planState?.plan) || (planState?.plan?.mode === 'single' && planState.plan.stages[0]?.kind === 'glm'))}<ExportPanel
                     {api}
                     {state}
                     context={modelContext}
@@ -1292,31 +1417,61 @@
                     {downloadProject}
                     {saveDownload}
                 />{/if}
-            {#if state && draft && !stackMode}{#key state.project_id}<ModelWorkbench
+            {#if state && !planState?.plan && view === 'model' && !state.models?.length}<section
+                    class="model-card workflow-page"
+                >
+                    <h1>Define a model plan</h1>
+                    <p>
+                        Choose Single model or Build in stages in Project &amp; data before fitting.
+                    </p>
+                    <button class="primary" onclick={() => navigate('project')}
+                        >Go to Project &amp; data</button
+                    >
+                </section>{/if}
+            {#if state && planState?.plan && view === 'model'}<PlanFitting
+                    {api}
+                    {state}
+                    {planState}
+                    onChanged={planChanged}
+                    onFitted={(name) => {
+                        requestedPlanModel = name;
+                        resultsReady = true;
+                    }}
+                />{/if}
+            {#if state && draft && ((!planState?.plan && !stackMode && (view !== 'model' || state.models?.length)) || (planState?.plan?.mode === 'single' && planState.plan.stages[0]?.kind === 'glm' && ['diagnostics', 'compare', 'tables', 'export'].includes(view)))}{#key state.project_id}<ModelWorkbench
                         {api}
                         {state}
                         {view}
                         bind:comparison
                         onContext={(context) => (modelContext = context)}
                         onState={modelState}
-                        onReady={(ready) => (resultsReady = ready)}
+                        onReady={(ready) =>
+                            (resultsReady = ready || Boolean(planState?.fit_refs?.length))}
                         onNavigate={navigate}
-                        requestedModel={legacySelected}
+                        requestedModel={planState?.plan ? requestedPlanModel : legacySelected}
+                        initialSubset={planState?.plan ? 'train' : 'holdout'}
+                        onRequestedModelConsumed={() => {
+                            if (planState?.plan) requestedPlanModel = '';
+                            else legacySelected = '';
+                        }}
                     />{/key}{/if}
-            {#if state && draft && stackMode}{#key state.project_id}<StackWorkbench
+            {#if state && draft && ((!planState?.plan && stackMode) || (planState?.plan && !(planState.plan.mode === 'single' && planState.plan.stages[0]?.kind === 'glm') && ['diagnostics', 'compare', 'tables', 'export'].includes(view)))}{#key state.project_id}<StackWorkbench
                         {api}
                         {state}
                         {view}
                         {uploadCatalogue}
                         {saveDownload}
                         onState={modelState}
-                        onReady={(ready) => (resultsReady = ready)}
+                        onReady={(ready) =>
+                            (resultsReady = ready || Boolean(planState?.fit_refs?.length))}
                         onContext={(context) => (modelContext = context)}
                         onNavigate={navigate}
                         onDirty={(isDirty) => (stackDraftDirty = isDirty)}
                         navigationAttempt={stackNavigationAttempt}
                         navigationTarget={stackNavigationTarget}
                         onNavigationResolved={resolveStackNavigation}
+                        requestedModel={requestedPlanModel}
+                        onRequestedModelConsumed={() => (requestedPlanModel = '')}
                     />{/key}{/if}
         </main>
     </div>
@@ -1338,8 +1493,6 @@
     .editor-card > .preview-card {
         margin: 12px 15px;
     }
-    .workflow-mode { display: flex; gap: 8px; margin-bottom: 16px; }
-    .workflow-mode button.chosen { background: #154b35; color: white; }
     .loaded-dataset {
         display: flex;
         flex-wrap: wrap;

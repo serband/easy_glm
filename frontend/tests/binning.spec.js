@@ -31,7 +31,7 @@ test('numeric binning stays in sync and reaches fitted rate tables', async ({ pa
         if (request.url().endsWith('/api/variables/binning-preview')) previews++;
     });
     const firstPreview = previewResponse(page, 'DriverAge');
-    await page.goto('/');
+    await page.goto('/?view=variables');
     const button = (name) => page.getByRole('button', { name, exact: true });
     const panel = page.getByRole('region', { name: 'Numeric binning' });
     await expect(panel).toBeVisible();
@@ -156,6 +156,7 @@ test('numeric binning stays in sync and reaches fitted rate tables', async ({ pa
     await page.getByLabel('Project file', { exact: true }).setInputFiles(projectPath);
     await page.getByLabel('Replace this session.', { exact: false }).check();
     await button('Open project').click();
+    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await expect(page.getByLabel('Default number of bins', { exact: true })).toHaveValue('9');
     await button('Variables JSON').click();
     const reopened = JSON.parse(await jsonEditor.inputValue()).binning;
@@ -167,7 +168,7 @@ test('numeric binning stays in sync and reaches fitted rate tables', async ({ pa
 test('distribution bars follow the selected model bins and their exact row counts', async ({
     page,
 }) => {
-    await page.goto('/');
+    await page.goto('/?view=variables');
     const panel = page.getByRole('region', { name: 'Numeric binning' });
     const firstResponse = previewResponse(page, 'Mileage');
     await panel.getByRole('button', { name: /^Mileage/ }).click();
@@ -288,7 +289,7 @@ test('distribution bars follow the selected model bins and their exact row count
 });
 
 test('a delayed preview cannot overwrite a newer draft', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/?view=variables');
     const panel = page.getByRole('region', { name: 'Numeric binning' });
     await panel.getByRole('button', { name: /^VehicleAge/ }).click();
     await page.getByLabel('Binning method for VehicleAge').selectOption('cuts');
@@ -344,7 +345,7 @@ test('automatic previews debounce edits, skip invalid drafts, and stop off the V
             requests.push(request.postDataJSON());
     });
     const initial = previewResponse(page, 'DriverAge');
-    await page.goto('/');
+    await page.goto('/?view=variables');
     const panel = page.getByRole('region', { name: 'Numeric binning' });
     await initial;
     await expect(panel).toContainText('Training preview · DriverAge');

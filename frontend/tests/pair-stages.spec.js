@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openNewLegacyDraft } from './legacy-models.helpers.js';
 
 test('residual interaction opens an unsaved automatic pair stage for review', async ({ page }) => {
     test.setTimeout(90000);
@@ -14,8 +15,7 @@ test('residual interaction opens an unsaved automatic pair stage for review', as
             includeRequests.push(request);
     });
     await page.goto('/');
-    await button('Model').click();
-    await page.getByLabel('Model selection').selectOption('__new__');
+    await openNewLegacyDraft(page);
     await page.getByLabel('New model name').fill(name);
     await button('Create model').click();
     const mainStage = page.getByLabel('Stage 1 Main effects', { exact: true });
@@ -83,8 +83,7 @@ test('sequential pair draft keeps stable IDs, order, and pair-only parents', asy
         }
     });
     await page.goto('/');
-    await page.getByRole('button', { name: 'Model', exact: true }).click();
-    await page.getByLabel('Model selection').selectOption('__new__');
+    await openNewLegacyDraft(page);
     await page.getByLabel('New model name').fill(`Pair draft ${Date.now()}`);
     await expect(page.getByRole('button', { name: 'Sequential CatBoost pairs' })).toHaveAttribute(
         'aria-pressed',
@@ -135,8 +134,7 @@ test('new eligible model keeps the staged editor even before a pair is added', a
         }
     });
     await page.goto('/');
-    await page.getByRole('button', { name: 'Model', exact: true }).click();
-    await page.getByLabel('Model selection').selectOption('__new__');
+    await openNewLegacyDraft(page);
     const name = `Empty staged ${Date.now()}`;
     await page.getByLabel('New model name').fill(name);
     await expect(page.getByRole('region', { name: 'Sequential pair stages' })).toBeVisible();
@@ -161,8 +159,7 @@ test('legacy interaction conversion creates a separate staged model', async ({ p
         }
     });
     await page.goto('/');
-    await page.getByRole('button', { name: 'Model', exact: true }).click();
-    await page.getByLabel('Model selection').selectOption('__new__');
+    await openNewLegacyDraft(page);
     const source = `Legacy pair source ${Date.now()}`;
     await page.getByLabel('New model name').fill(source);
     await page.getByRole('button', { name: 'Legacy GLM interactions' }).click();
@@ -194,8 +191,7 @@ test('saved fixed settings remain fixed until explicitly switched to automatic t
         }
     });
     await page.goto('/');
-    await page.getByRole('button', { name: 'Model', exact: true }).click();
-    await page.getByLabel('Model selection').selectOption('__new__');
+    await openNewLegacyDraft(page);
     const name = `Fixed pair ${Date.now()}`;
     await page.getByLabel('New model name').fill(name);
     await page.getByLabel('New pair first predictor').selectOption('DriverAge');

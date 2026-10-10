@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openNewLegacyDraft } from './legacy-models.helpers.js';
 
 test.use({ viewport: { width: 884, height: 773 }, actionTimeout: 15000 });
 
@@ -19,7 +20,7 @@ test('late table and variable-review responses cannot replace the latest factor 
     const chartHeading = (name) =>
         page.getByRole('heading', { name: `${name} · relativity`, exact: true });
     await page.goto('/');
-    await button('Model').click();
+    await openNewLegacyDraft(page);
     await button('Create model').click();
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 30000 });

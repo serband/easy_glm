@@ -55,12 +55,18 @@ async function checkVerticalLayout(page) {
 }
 
 test('recovery cards render truthful actions for lost parents and artifacts', async ({ page }) => {
-    let fixtureEnabled = false;
     await page.route('**/api/workbench', async (route) => {
         const response = await route.fetch();
         const body = await response.json();
-        if (!fixtureEnabled) return route.fulfill({ response, json: body });
         return route.fulfill({ response, json: { ...body, models: { ...body.models, ...models }, jobs, model_flow: modelFlow, stack_sources: {} } });
+    });
+    // This is an imported legacy-project fixture.  The current application decides
+    // which legacy workbench to open from the saved model list, before it requests
+    // the detailed workbench snapshot.
+    await page.route('**/api/variables', async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        return route.fulfill({ response, json: { ...body, models: Object.keys(models) } });
     });
     await page.route('**/api/jobs', async (route) => route.fulfill({ json: jobs }));
     await page.route('**/api/results/Usable%20child', async (route) => route.fulfill({ json: {
@@ -71,12 +77,7 @@ test('recovery cards render truthful actions for lost parents and artifacts', as
 
     await page.setViewportSize({ width: 1332, height: 1225 });
     await page.goto('/');
-    fixtureEnabled = true;
-    // StackWorkbench is retained while the legacy Model screen is showing, so
-    // reload after enabling the server fixture to make its first snapshot real.
-    await page.reload();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
-    await page.getByRole('button', { name: 'Build a model in stages' }).click();
     await expect(page.locator('.model-list-item').filter({ has: page.locator('strong', { hasText: 'Historical child' }) })).toBeVisible();
 
     const choose = async (name) => page.getByRole('complementary', { name: 'Models' }).locator('.model-list-item').filter({ has: page.locator('strong', { hasText: name }) }).click();

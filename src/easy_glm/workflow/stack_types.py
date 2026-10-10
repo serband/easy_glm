@@ -272,11 +272,14 @@ class ComponentRecipe:
             raise ValueError("Component settings must be an object")
         if not isinstance(raw.get("amendments", ()), list | tuple):
             raise ValueError("Component amendments must be a list")
+        for key in ("component_id", "name", "kind"):
+            if not isinstance(raw.get(key), str) or not raw[key].strip():
+                raise ValueError(f"Component {key} must be a non-empty string")
         factors = tuple(raw_factors)
         return cls(
-            component_id=str(raw["component_id"]),
-            name=str(raw["name"]),
-            kind=str(raw["kind"]),
+            component_id=raw["component_id"],
+            name=raw["name"],
+            kind=raw["kind"],
             factors=factors,
             settings=dict(raw.get("settings", {})),
             amendments=tuple(raw.get("amendments", ())),

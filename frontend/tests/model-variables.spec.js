@@ -1,195 +1,126 @@
 import { test, expect } from '@playwright/test';
 
-async function openBuilder(page) {
+async function startStages(page) {
     await page.goto('/');
-    await page.getByRole('button', { name: 'Model', exact: true }).click();
-    await page.getByRole('button', { name: 'Build a model in stages' }).click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    const create = page.getByRole('button', { name: 'Build in stages', exact: true });
+    if (await create.count()) {
+        await create.click();
+        return;
+    }
+    page.once('dialog', (dialog) => dialog.accept());
+    await page.getByRole('button', { name: 'Start a new plan', exact: true }).click();
 }
 
-test('new CatBoost defaults to Optuna tuning and keeps its selected budget in a draft', async ({ page }) => {
-    await openBuilder(page);
-    await page.getByRole('button', { name: 'Start a new model chain', exact: true }).first().click();
-    await page.getByLabel('Stacked model name').fill('Tuned vehicle model');
-    await page.getByLabel('Model component type').selectOption('catboost');
+async function chooseStageVariables(page, index) {
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await page.getByRole('button', { name: 'Choose variables', exact: true }).nth(index).click();
+}
+
+test('a CatBoost stage defaults to Optuna tuning on training folds', async ({ page }) => {
+    await startStages(page);
+    await page.getByLabel('Stage 1 method').selectOption('catboost');
+    await chooseStageVariables(page, 0);
     await page.getByLabel('Use VehicleAge').check();
+    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
 
-    await expect(page.getByLabel('CatBoost fitting method')).toHaveValue('tune');
-    await expect(page.getByLabel('CatBoost tuning budget')).toHaveValue('trials');
-    await expect(page.getByLabel('CatBoost trial count')).toHaveValue('8');
-    await expect(page.getByText('CatBoost is fitted using training rows only. Holdout rows are not used for tuning.')).toBeVisible();
-
-    await page.getByLabel('CatBoost trial count').fill('0');
-    await expect(page.getByLabel('CatBoost trial count')).toHaveValue('0');
-    await page.getByRole('button', { name: 'Save draft', exact: true }).click();
-    await expect(page.getByRole('alert')).toContainText('CatBoost trials must be a positive integer');
-    await expect(page.getByLabel('CatBoost trial count')).toHaveValue('0');
-    await page.getByLabel('CatBoost trial count').fill('8');
-
-    await page.getByLabel('CatBoost tuning budget').selectOption('time');
-    await expect(page.getByLabel('CatBoost tuning time')).toHaveValue('15');
-    await page.getByRole('button', { name: 'Save draft', exact: true }).click();
-    await expect(page.getByText('Draft saved.', { exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'Edit draft', exact: true }).click();
-    await expect(page.getByLabel('CatBoost fitting method')).toHaveValue('tune');
-    await expect(page.getByLabel('CatBoost tuning budget')).toHaveValue('time');
-    await expect(page.getByLabel('CatBoost tuning time')).toHaveValue('15');
-
-    await page.getByLabel('CatBoost fitting method').selectOption('manual');
-    await page.getByRole('button', { name: 'Save draft', exact: true }).click();
-    await page.getByRole('button', { name: 'Edit draft', exact: true }).click();
-    await expect(page.getByLabel('CatBoost fitting method')).toHaveValue('manual');
-    await page.getByLabel('CatBoost fitting method').selectOption('tune');
-    await expect(page.getByLabel('CatBoost tuning budget')).toHaveValue('trials');
-    await expect(page.getByLabel('CatBoost trial count')).toHaveValue('8');
-
-    await page.setViewportSize({ width: 797, height: 792 });
-    expect(await page.locator('.model-builder').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
-});
-
-test('a legacy automatic CatBoost draft keeps its saved settings until changed', async ({ page }) => {
-    await openBuilder(page);
-    const saved = page.waitForRequest('**/api/models/save');
-    await page.getByRole('button', { name: 'Start a new model chain', exact: true }).first().click();
-    await page.getByLabel('Stacked model name').fill('Legacy tuned draft');
-    await page.getByLabel('Model component type').selectOption('catboost');
-    await page.getByLabel('Use VehicleAge').check();
-    await page.getByRole('button', { name: 'Save draft', exact: true }).click();
-    const original = (await saved).postDataJSON();
-    const session = await (await page.request.get('/api/session')).json();
-    const headers = { 'X-EasyGLM-Token': session.token };
-    const snapshot = await (await page.request.get('/api/variables', { headers })).json();
-    const legacySettings = {
-        ...original.fields.components.at(-1).settings,
-        tune: true,
-        trials: 4,
-        time_limit_minutes: 12,
-    };
-    delete legacySettings.tuning_budget;
-    const update = await page.request.post('/api/models/save', {
-        headers,
-        data: {
-            ...original,
-            create: false,
-            session_id: snapshot.session_id,
-            revision: snapshot.revision,
-            fields: {
-                ...original.fields,
-                components: [{
-                    ...original.fields.components.at(-1),
-                    settings: legacySettings,
-                }],
-            },
-        },
-    });
-    expect(update.ok(), await update.text()).toBe(true);
-    const persisted = await (await page.request.get('/api/workbench', { headers })).json();
-    expect(persisted.models['Legacy tuned draft'].components.at(-1).settings).toEqual(legacySettings);
-
-    await page.reload();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
-    await page.getByRole('button', { name: 'Build a model in stages' }).click();
-    await page.locator('.model-list-item').filter({ hasText: 'Legacy tuned draft' }).click();
-    const editDraft = page.getByRole('button', { name: 'Edit draft', exact: true });
-    if (await editDraft.count()) await editDraft.click();
-    await expect(page.getByText('Existing CatBoost fitting settings. Choose a method only if you want to change this draft.')).toBeVisible();
-    const preserved = page.waitForRequest('**/api/models/save');
-    await page.getByRole('button', { name: 'Save draft', exact: true }).click();
-    expect((await preserved).postDataJSON().fields.components.at(-1).settings).toEqual(legacySettings);
+    await expect(page.getByRole('heading', { name: 'Settings for Main effects', exact: true })).toBeVisible();
+    await expect(page.getByRole('radio', { name: 'Optuna tuning' })).toBeChecked();
+    await expect(page.getByLabel('Optuna budget')).toHaveValue('trials');
+    await expect(page.getByLabel('Optuna trials')).toHaveValue('8');
+    await expect(page.getByText('Optuna tuning uses training rows only. Holdout rows are not used. Every trial is evaluated across the selected training folds.')).toBeVisible();
+
+    await page.getByLabel('Optuna trials').fill('0');
+    await page.getByRole('button', { name: 'Fit Main effects', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('CatBoost trials must be a positive integer');
+    await page.getByLabel('Optuna trials').fill('8');
+    await page.getByLabel('Optuna budget').selectOption('time');
+    await expect(page.getByLabel('Tuning time minutes')).toHaveValue('15');
+    await page.getByRole('radio', { name: 'Manual settings' }).check();
+    await expect(page.getByLabel('Iterations')).toHaveValue('500');
+    await expect(page.getByLabel('Depth')).toHaveValue('6');
 });
 
-test('CatBoost fits one Optuna trial, then a manual stage without tuning', async ({ page }) => {
-    await openBuilder(page);
-    await page.getByRole('button', { name: 'Start a new model chain', exact: true }).first().click();
-    await page.getByLabel('Stacked model name').fill('One trial CatBoost');
-    await page.getByLabel('Model component type').selectOption('catboost');
-    await page.getByLabel('Use VehicleAge').check();
-    await page.getByLabel('CatBoost trial count').fill('1');
-    await page.getByText('Advanced tuning settings', { exact: true }).click();
-    await page.getByLabel('CatBoost CV folds').fill('2');
-    await page.getByLabel('CatBoost threads').fill('1');
-    await page.getByRole('button', { name: 'Fit model', exact: true }).click();
-    await expect(page.locator('.selected-model-header .model-state')).toHaveText('Fitted', { timeout: 120000 });
-    await expect(page.getByText(/1 fitted model · poisson/)).toBeVisible();
-    await expect(page.locator('.selected-model-header')).toContainText('Its score includes One trial CatBoost.');
-    await expect(page.locator('.selected-model-header')).not.toContainText('Starting level');
-    await expect(page.getByRole('heading', { name: /One trial CatBoost — (Optuna tuning|No change selected)/ })).toBeVisible();
-    await expect(page.getByText(/1 completed of 1 trial/)).toBeVisible();
-    await expect(page.getByText(/2 training folds/)).toBeVisible();
-    const noChange = page.getByRole('heading', { name: 'One trial CatBoost — No change selected', exact: true });
-    if (await noChange.count()) {
-        await expect(page.getByText('No sampled CatBoost setting improved the preceding model on training folds')).toBeVisible();
-    }
-
-    await page.getByRole('button', { name: 'Add model after this', exact: true }).click();
-    await page.getByLabel('Stacked model name').fill('Manual correction');
-    await page.getByLabel('Model component type').selectOption('catboost');
-    await page.getByLabel('Use DriverAge').check();
-    await page.getByLabel('CatBoost fitting method').selectOption('manual');
-    await page.getByLabel('CatBoost iterations').fill('20');
-    await page.getByLabel('CatBoost depth').fill('4');
-    await page.getByLabel('CatBoost learning rate').fill('0.1');
-    await page.getByLabel('CatBoost threads').fill('1');
-    await page.getByRole('button', { name: 'Fit model', exact: true }).click();
-    await expect(page.locator('.selected-model-header .model-state')).toHaveText('Fitted', { timeout: 120000 });
-    await expect(page.getByRole('heading', { name: 'Manual correction — Manual CatBoost settings', exact: true })).toBeVisible();
-    await expect(page.getByText('Automatic tuning is off; fitted the configured CatBoost settings once')).toBeVisible();
-});
-
-test('each model keeps its own variables and local definitions', async ({ page }) => {
-    await openBuilder(page);
-    await page.getByRole('button', { name: 'Start a new model chain', exact: true }).first().click();
-    await page.getByLabel('Stacked model name').fill('Age base');
+test('each stage keeps its own variables and local numeric definitions', async ({ page }) => {
+    await startStages(page);
+    await chooseStageVariables(page, 0);
     await page.getByLabel('Use DriverAge').check();
     await page.getByRole('button', { name: 'Use custom cuts', exact: true }).click();
-    const cuts = page.getByLabel('Custom cuts for DriverAge');
-    await cuts.fill('25, 35, 45, 55');
-    await expect(page.getByRole('button', { name: 'Fit model', exact: true })).toBeEnabled();
-    await page.getByRole('button', { name: 'Fit model', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Age base', exact: true })).toBeVisible({ timeout: 60000 });
-    await expect(page.locator('.selected-model-header .model-state')).toHaveText('Fitted', { timeout: 60000 });
+    await page.getByLabel('Custom cuts for DriverAge').fill('25, 35, 45, 55');
+    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
 
-    await page.getByRole('button', { name: 'Add model after this', exact: true }).click();
-    const inherited = page.getByRole('region', { name: 'Inherited model definition' });
-    await expect(inherited).toContainText('OutcomeClaims, poisson with log link');
-    await expect(inherited).toContainText('ExposureExposure');
-    await expect(inherited).toContainText('70% training (seed 42)');
-    await expect(inherited).toContainText('Complete score from Age base');
-
-    await page.getByLabel('Stacked model name').fill('Vehicle correction');
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await page.getByRole('button', { name: 'Add stage', exact: true }).click();
+    await chooseStageVariables(page, 1);
     await page.getByRole('tab', { name: 'JSON' }).click();
     const json = page.getByLabel('Model variables JSON');
-    const protectedTarget = 'Claims';
-    await json.fill(JSON.stringify({ variables: { [protectedTarget]: { kind: 'step' } } }, null, 2));
-    await expect(page.getByRole('alert')).toContainText(`${protectedTarget} is not available`);
-    await expect(page.getByRole('button', { name: 'Fit model', exact: true })).toBeDisabled();
+    await json.fill(JSON.stringify({ variables: { Claims: { kind: 'step' } } }, null, 2));
+    await expect(page.getByRole('alert')).toContainText('Claims is not available');
+    await expect(page.getByRole('button', { name: 'Save stage setup', exact: true })).toBeDisabled();
+
     await json.fill(JSON.stringify({
         defaults: { n_bins: 6 },
         variables: { VehicleAge: { kind: 'step', knots: [1, 3, 6, 10] } },
     }, null, 2));
     await page.getByRole('button', { name: 'Apply variable JSON', exact: true }).click();
     await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
     await page.getByRole('tab', { name: 'Table' }).click();
     await expect(page.getByLabel('Use VehicleAge')).toBeChecked();
     await expect(page.getByLabel('Use DriverAge')).not.toBeChecked();
-    await page.getByRole('button', { name: 'Fit model', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Vehicle correction', exact: true })).toBeVisible({ timeout: 60000 });
-    await expect(page.locator('.selected-model-header .model-state')).toHaveText('Fitted', { timeout: 60000 });
 });
 
-test('a catalogue stage uses uploaded attributes and keeps its join key out of the factors', async ({ page }) => {
-    await openBuilder(page);
-    await page.getByRole('button', { name: 'Start a new model chain', exact: true }).first().click();
-    await page.getByLabel('Stacked model name').fill('Catalogue base');
-    await page.getByLabel('Use DriverAge').check();
-    await page.getByRole('button', { name: 'Fit model', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Catalogue base', exact: true })).toBeVisible({ timeout: 60000 });
-    await expect(page.locator('.selected-model-header .model-state')).toHaveText('Fitted', { timeout: 60000 });
+test('a catalogue stage exposes uploaded attributes but not its selected key', async ({ page }) => {
+    await startStages(page);
+    const addedStage = page.waitForResponse(
+        (response) => response.url().endsWith('/api/model-plan')
+            && response.request().method() === 'POST'
+            && response.request().postDataJSON()?.plan?.stages?.length === 2,
+    );
+    await page.getByRole('button', { name: 'Add stage', exact: true }).click();
+    await addedStage;
+    const savedCatalogueStage = page.waitForResponse(
+        (response) => response.url().endsWith('/api/model-plan')
+            && response.request().method() === 'POST'
+            && response.request().postDataJSON()?.plan?.stages?.[1]?.kind === 'catalogue',
+    );
+    await page.getByLabel('Stage 2 method').selectOption('catalogue');
+    const catalogueResponse = await savedCatalogueStage;
+    const catalogueBody = await catalogueResponse.json();
+    expect(catalogueResponse.ok(), JSON.stringify(catalogueBody)).toBe(true);
+    expect(catalogueBody.plan.stages[1].kind).toBe('catalogue');
+    await page.getByRole('button', { name: 'Choose variables', exact: true }).nth(1).click();
+    await expect(page.getByRole('heading', { name: 'Full catalogue', exact: true })).toBeVisible();
+    await page.getByLabel('Upload catalogue').setInputFiles({
+        name: 'vehicle-file.csv',
+        mimeType: 'text/csv',
+        buffer: Buffer.from('PolicyID,VehicleGroup,Power\n1,Family,90\n2,Sport,120\n'),
+    });
+    await page.getByLabel('Catalogue key').selectOption('PolicyID');
+    await expect(page.getByLabel('Use PolicyID')).toHaveCount(0);
+    await page.getByLabel('Use VehicleGroup').check();
+    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+    await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
+});
 
-    await page.getByRole('button', { name: 'Add model after this', exact: true }).click();
-    await page.getByLabel('Stacked model name').fill('Vehicle file');
-    await page.getByLabel('Model component type').selectOption('catalogue');
+test('a catalogue stage fits the uploaded file and remains available for table review', async ({ page }) => {
+    await startStages(page);
+    await chooseStageVariables(page, 0);
+    await page.getByLabel('Use DriverAge').check();
+    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await page.getByRole('button', { name: 'Add stage', exact: true }).click();
+    await page.getByLabel('Stage 2 method').selectOption('catalogue');
+    await chooseStageVariables(page, 1);
     const csv = ['PolicyID,VehicleGroup,Power']
-        .concat(Array.from({ length: 12000 }, (_, index) => `${index},${index % 3 ? 'Family' : 'Sport'},${70 + index % 90}`))
+        .concat(
+            Array.from(
+                { length: 12000 },
+                (_, index) => `${index},${index % 3 ? 'Family' : 'Sport'},${70 + (index % 90)}`,
+            ),
+        )
         .join('\n');
     await page.getByLabel('Upload catalogue').setInputFiles({
         name: 'vehicle-file.csv',
@@ -197,14 +128,20 @@ test('a catalogue stage uses uploaded attributes and keeps its join key out of t
         buffer: Buffer.from(csv),
     });
     await page.getByLabel('Catalogue key').selectOption('PolicyID');
-    await expect(page.getByLabel('Use PolicyID')).toHaveCount(0);
     await page.getByLabel('Use VehicleGroup').check();
-    await page.getByLabel('CatBoost fitting method').selectOption('manual');
-    await page.getByLabel('CatBoost iterations').fill('20');
-    await page.getByRole('button', { name: 'Fit model', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Vehicle file', exact: true })).toBeVisible({ timeout: 60000 });
-    await expect(page.locator('.selected-model-header .model-state')).toHaveText('Fitted', { timeout: 60000 });
-    await page.getByRole('button', { name: 'Inspect and amend tables', exact: true }).click();
-    await page.getByLabel('Inspect model component').selectOption({ label: 'Vehicle file' });
-    await expect(page.getByLabel('Inspect model component')).toHaveValue(/.+/);
+    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+
+    await page.getByRole('button', { name: 'Model', exact: true }).click();
+    await page.getByRole('button', { name: 'Fit Main effects', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Settings for Main effects 2', exact: true })).toBeVisible({ timeout: 60000 });
+    await page.getByRole('radio', { name: 'Manual settings' }).check();
+    await page.getByLabel('Iterations').fill('20');
+    await page.getByLabel('Threads').fill('1');
+    await page.getByRole('button', { name: 'Fit Main effects 2', exact: true }).click();
+    await expect(page.getByText('All stages are fitted.', { exact: false })).toBeVisible({ timeout: 120000 });
+
+    await page.getByRole('button', { name: 'Rate tables', exact: true }).click();
+    await expect(page.getByLabel('Inspect model component')).toBeVisible({ timeout: 60000 });
+    await page.getByLabel('Inspect model component').selectOption({ label: 'Main effects 2' });
+    await expect(page.getByText('VehicleGroup', { exact: true })).toBeVisible();
 });

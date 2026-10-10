@@ -9,6 +9,8 @@
     export let api, state, view, uploadCatalogue, saveDownload;
     export let onState = () => {}, onReady = () => {}, onContext = () => {}, onNavigate = () => {};
     export let onDirty = () => {}, navigationAttempt = 0, navigationTarget = '', onNavigationResolved = () => {};
+    export let requestedModel = '';
+    export let onRequestedModelConsumed = () => {};
     const labels = { glm: 'GLM', catboost: 'CatBoost', interaction: 'Pair interaction', catalogue: 'Catalogue lookup', legacy: 'Accepted legacy model' };
     function unseenSummary(levels) {
         return Object.entries(levels || {})
@@ -42,8 +44,12 @@
         editorOpen = false, editingExisting = '', editorDirty = false, pendingAction = null,
         selectedTab = 'results', requestEpoch = 0, diagnosticRequest = 0, modelError = '', modelNotice = '', draftBaseline = '', revisionOf = '', lastNavigationAttempt = 0,
         sourceFitId = '', refreshSuggested = false, fitDraftName = '', fitJobId = '', modelVariablesError = '', modelVariablesDraftText = '';
-    $: names = wb ? Object.keys(wb.models || {}).filter((n) => wb.models[n]?.components?.length) : [];
-    $: fitted = names.filter((n) => jobs[n]?.applicable);
+    $: names = wb ? Object.keys(wb.models || {}) : [];
+    $: if (requestedModel && names.includes(requestedModel)) { if (selected !== requestedModel) chooseSelected(requestedModel); onRequestedModelConsumed(); }
+    function canInspectStack(model) {
+        return Boolean(model?.components?.length || (['poisson', 'tweedie', 'gaussian'].includes(model?.family) && [null, undefined, 'log'].includes(model?.link)));
+    }
+    $: fitted = names.filter((n) => jobs[n]?.applicable && canInspectStack(wb.models[n]));
     $: modelFlow = wb?.model_flow || [];
     // Keep status rendering explicitly dependent on both server snapshots. Svelte
     // cannot see the reactive inputs hidden inside a template helper call.
@@ -223,7 +229,13 @@
         reading = true;
         try {
             wb = await api('workbench'); jobs = wb.jobs || {}; known = `${wb.session_id}:${wb.revision}`;
-            if (!wb.models[selected]?.components?.length) selected = Object.keys(wb.models).find((n) => wb.models[n]?.components?.length) || '';
+            // Honour the plan's completed prefix before loading any result. This
+            // also avoids briefly displaying the first historical fit on reload.
+            if (requestedModel && canInspectStack(wb.models[requestedModel])) {
+                selected = requestedModel;
+                diagnosticModel = requestedModel;
+                onRequestedModelConsumed();
+            } else if (!canInspectStack(wb.models[selected])) selected = Object.keys(wb.models).find((name) => canInspectStack(wb.models[name])) || '';
             if (source && !wb.stack_sources?.[source]) {
                 modelError = `The fitted model ${source} is no longer available. This draft still starts from it and cannot be saved as a standalone model.`;
             }
@@ -260,7 +272,7 @@
         const model = selected;
         const epoch = ++requestEpoch;
         if (!jobs[model]?.applicable) { result = null; return; }
-        const data = await api('results/' + encodeURIComponent(model));
+        const data = await api('results/' + encodeURIComponent(model) + '?stack_view=true');
         if (model !== selected || epoch !== requestEpoch) return;
         if (!data.stack) { modelError = 'Open this model in Single model.'; result = null; return; }
         modelError = '';

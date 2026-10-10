@@ -73,7 +73,7 @@ test('bare URL, refresh and new tabs use independent bootstrap without rotating 
 test('actual server restart reconnects plot while retaining names, types, roles and raw JSON draft', async ({
     page,
 }) => {
-    await page.goto('/');
+    await page.goto('/?view=variables');
     await page.getByLabel('Name for DriverAge', { exact: true }).fill('DraftAge');
     await page.getByLabel('Name for DriverAge', { exact: true }).press('Tab');
     await page.getByLabel('Type for DriverAge', { exact: true }).selectOption('categorical');
@@ -98,14 +98,14 @@ test('actual server restart reconnects plot while retaining names, types, roles 
     await expect(page.getByLabel('Role for VehicleAge', { exact: true })).toHaveValue('unassigned');
     await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
     await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
-    await expect(page.getByRole('status')).toContainText('Settings applied');
+    await expect(page.locator('.message[role="status"]')).toContainText('Settings applied');
     expect((await readProject()).data.renames.DriverAge).toBe('DraftAge');
 });
 
 test('restart refuses a previously previewed Apply even when revision is again zero', async ({
     page,
 }) => {
-    await page.goto('/');
+    await page.goto('/?view=variables');
     await page.getByLabel('Role for Region', { exact: true }).selectOption('ignore');
     await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeVisible();
@@ -118,7 +118,7 @@ test('restart refuses a previously previewed Apply even when revision is again z
     await expect(page.getByLabel('Role for Region', { exact: true })).toHaveValue('ignore');
     await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
     await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
-    await expect(page.getByRole('status')).toContainText('Settings applied');
+    await expect(page.locator('.message[role="status"]')).toContainText('Settings applied');
     expect((await readProject()).data.roles.Region).toBe('ignore');
 });
 
@@ -147,7 +147,7 @@ test('host and origin rejection does not trigger a bootstrap retry', async ({ pa
 test('incomplete JSON survives reconnection and a changed project cannot receive the old draft', async ({
     page,
 }) => {
-    await page.goto('/');
+    await page.goto('/?view=variables');
     await page.getByRole('button', { name: 'Variables JSON', exact: true }).click();
     const editor = page.getByLabel('Variables JSON', { exact: true });
     await editor.fill('{unfinished');

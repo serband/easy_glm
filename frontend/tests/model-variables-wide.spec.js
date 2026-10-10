@@ -1,17 +1,24 @@
 import { test, expect } from '@playwright/test';
 
-test('a 500-column project keeps per-model JSON selections searchable and isolated', async ({ page }) => {
-    await page.goto('/');
-    await page.getByRole('button', { name: 'Model', exact: true }).click();
-    await page.getByRole('button', { name: 'Build a model in stages' }).click();
-    await page.getByRole('button', { name: 'Start a new model chain', exact: true }).first().click();
-    await page.getByLabel('Stacked model name').fill('Wide base');
-    await page.getByLabel('Use DriverAge').check();
-    await page.getByRole('button', { name: 'Fit model', exact: true }).click();
-    await expect(page.locator('.selected-model-header .model-state')).toHaveText('Fitted', { timeout: 60000 });
+async function openStageVariables(page, index) {
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    const choose = page.getByRole('button', { name: 'Choose variables', exact: true });
+    await choose.nth(index).click();
+}
 
-    await page.getByRole('button', { name: 'Add model after this', exact: true }).click();
-    await page.getByLabel('Stacked model name').fill('Wide child');
+test('a 500-column project keeps each planned stage searchable and isolated', async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await page.getByRole('button', { name: 'Build in stages', exact: true }).click();
+
+    await openStageVariables(page, 0);
+    await page.getByLabel('Use DriverAge').check();
+    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+    await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await page.getByRole('button', { name: 'Add stage', exact: true }).click();
+    await openStageVariables(page, 1);
     await page.getByRole('tab', { name: 'JSON' }).click();
     const variables = Object.fromEntries(
         Array.from({ length: 100 }, (_, number) => [
@@ -22,9 +29,9 @@ test('a 500-column project keeps per-model JSON selections searchable and isolat
     await page.getByLabel('Model variables JSON').fill(JSON.stringify({ variables }, null, 2));
     await page.getByRole('button', { name: 'Apply variable JSON', exact: true }).click();
     await expect(page.getByText('100 selected', { exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'Save draft', exact: true }).click();
-    await page.getByRole('button', { name: 'Edit draft', exact: true }).click();
-    await expect(page.getByText('100 selected', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+
+    await page.getByRole('tab', { name: 'Table' }).click();
     await page.getByLabel('Search model variables').fill('OptionalFactor499');
     await expect(page.getByLabel('Use OptionalFactor499')).toBeVisible();
     await expect(page.getByLabel('Use OptionalFactor499')).not.toBeChecked();

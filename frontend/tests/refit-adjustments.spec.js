@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openNewLegacyDraft } from './legacy-models.helpers.js';
 
 test('a fresh fit starts unadjusted and subsequent Apply uses the new revision', async ({
     page,
@@ -7,7 +8,7 @@ test('a fresh fit starts unadjusted and subsequent Apply uses the new revision',
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto('/');
-    await button('Model').click();
+    await openNewLegacyDraft(page);
     await button('Create model').click();
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 45000 });

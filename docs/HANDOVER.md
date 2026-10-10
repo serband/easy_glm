@@ -6,7 +6,7 @@
 
 | Purpose | Checkout and state |
 | --- | --- |
-| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/catboost-optuna-default`, based on diagnostic-scope revision `86dceae`; includes per-model definitions, selectable cumulative diagnostic fits and explicit CatBoost tuning controls |
+| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/project-model-plan`, based on CatBoost-control revision `c179422`; defines the plan in Project & data, per-model variables in Variables, and ordered fitting in Model |
 | User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
 | Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
 
@@ -14,9 +14,8 @@ The current stack is **local branch work, unpushed and unreleased**. Its `pyproj
 
 On 10 October the previous `/private/tmp/easyglm-visual-model-flow` directory was
 absent. This checkout was created from its surviving committed branch. Earlier
-uncommitted changes must not be assumed recovered. The current model form has one
-name, a Method selector and Save/Fit after variable selection; these are covered
-by the current browser tests.
+uncommitted changes must not be assumed recovered. The current plan has one name and method per stage. The previous selected-model
+builder is a historical baseline, not the current screen layout.
 
 The primary workspace carries a copy of this handover and selected guidance, but its code does **not** contain the current stack. Read `examples/stacked_models.md`, `docs/plans/STACKED_MODELS.md`, `docs/LLM_USAGE_GUIDE.md`, and the source/tests **in the implementation checkout**; the example and usage guide are absent from the primary workspace, while its untracked copy of the stack plan may differ from the implementation checkout. `examples/pricing_walkthrough.md` covers the earlier released pricing flow. The usage guide describes v0.472, not takeover. The locally available `v0.472` Git tag provides the release source for comparison (`git show v0.472:<path>` from the stack checkout); verify remote state separately when network access returns.
 
@@ -32,7 +31,21 @@ The stack branch implements an ordered multiplicative sequence of GLM, direct Ca
 
 `PricingSession` and named `PricingModel` objects provide short public calls (`fit_glm`, `fit_catboost`, `fit_interaction`, `fit_catalogue`, `ae`, `compare`, `edit_rates`, `export_lookup`, `save`/`load`). The workbench has a stacked-model path and component inspection, comparison, amendment, and export views. Named fits are detached; append and amendment create new models. The Python example demonstrates GLM → two pair tables → vehicle → reviewed vehicle → occupation → postcode, then a separate CatBoost → GLM candidate. Catalogue fitting pins the full supplied key/attribute table, scores keys without training rows, checks joins/coverage, and exports an **incremental component** file. A catalogue-first file is a full unit prediction only when there is no external baseline; otherwise the external offset remains separate in the complete scorer. Missing keys error by default unless an explicit fallback is chosen.
 
-**Current product work: the selected-model workspace.** The staged workbench has a compact model list and one workspace containing the selected model's factors, settings and fitting controls. **Fit model** saves the exact draft and starts fitting in one action; **Save draft** does not fit. Saved drafts reopen for editing. Fitted models open on Results, with read-only Settings and explicit **Add model after this** or **Revise model** actions. Revisions have new names and keep the same fitted parent. The model map is optional. Dirty drafts require Keep editing, Save draft or Discard changes when leaving them.
+**Current product work: the project model plan.** Define **Single model** or
+**Build in stages**, names, methods and order in **Project & data**. Select a
+stage and edit its searchable Table/JSON definitions in **Variables**. **Model**
+contains fitting options and the next eligible Fit action. The plan can start
+with one model and be extended later. Blank future stages do not block fitting
+the configured first stage.
+
+The current plan is separate from immutable saved fitted versions. **Start a
+new plan** clears its setup and exact fitted references while retaining history.
+**Create revised plan** explicitly unlocks fitted setup: unchanged earlier fits
+are reused by their exact identities, and the changed stage and suffix need new
+fits. Existing fitted models or whole chains can be adopted explicitly as a
+frozen starting scorer and extended. Its accepted adjustments and interaction
+tables remain in the offset. Replacing that frozen starting scorer requires a
+new independent plan; it is not an editable/refitted GLM placeholder.
 
 Each component selects its own factors from safe predictor and unassigned source columns. Its **Variables for this model** editor provides searchable alphabetical Table and JSON views. Global roles identify response, weight, ID, split and ignore; those controls cannot be changed in this editor. GLMs and interaction tables now store their own defaults, types and bands in optional `ComponentRecipe.design` snapshots. Direct CatBoost uses raw values and local categorical/numeric treatment. Legacy recipes without this field retain their previous project-design behaviour and serialize without the new field, preserving existing fingerprints. A child's target, weight, family, log link and split remain inherited; its offset is the complete fitted predecessor scorer. Model-save validation rejects changes to the response convention or frozen prefix and refuses edits to global bands through a stack-model save.
 
@@ -65,11 +78,11 @@ resets to training and the final fit; stale asynchronous responses cannot replac
 the current model, scope, subset or factor. See `tests/test_stack_diagnostic_scope.py`
 and `frontend/tests/stack-diagnostics.spec.js` for the contracts.
 
-A child's own complete fit can still be used as the next offset when its original incoming parent is unavailable; that missing parent blocks revision of just the last addition. If its own fit is missing, rebuilding creates a new named copy of the whole saved recipe. Fitted stack settings and fit endpoints reject in-place overwrite. Existing single-model workflows remain available. See `docs/MODEL_FLOW.md` for the user workflow.
+A child's own complete fit can still be used as the next offset when its original incoming parent is unavailable; that missing parent blocks revision of just the last addition. If its own fit is missing, rebuilding creates a new named copy of the whole saved recipe. Fitted stack settings and fit endpoints reject in-place overwrite. Single GLMs keep their existing families, links and penalty controls. Existing saved models retain their scoring, inspection and export APIs. See `docs/MODEL_FLOW.md` for the user workflow.
 
 The 9 October correction separates ordinary drafts from saved setups that need recovery. **Needs a new fit** means the saved setup's exact earlier starting fit is unavailable; a currently fitted model with the same name is not a replacement for it. **Fit saved recipe as new model** fits the saved sequence from the beginning under a new name. **Cannot score** means the selected model's own fitted files are unavailable. A usable complete scorer remains **Fitted** even when its original starting fit is missing. The header shows identity, context and actions in separate rows; a read-only saved recipe shows the fitting order.
 
-`ModelConfig.lineage` records the parent name, fit identity, settings key and prefix fingerprint. It is provenance, excluded from fit/cache hashes; the complete ordered component recipe remains the scorer. Projects with lineage write schema version 5; older projects without lineage retain their prior serialized version. An appended candidate requires an exact applicable parent artifact and unchanged frozen prefix. Changing a parent does not mutate its existing children. Missing or changed artifacts produce historical links; an explicit full rebuild fits the whole saved recipe afresh and remains marked historical after job restore. Scope validation runs on save and fit, including imported projects, and protects response/control fields against catalogue-name collisions.
+`ModelConfig.lineage` records the parent name, fit identity, settings key and prefix fingerprint. It is provenance, excluded from fit/cache hashes; the complete ordered component recipe remains the scorer. Projects with a model plan write schema version 6; lineage-only projects write version 5, and older projects without either retain their prior serialized version. `Project.model_plan` contains server-issued plan IDs and exact stage-fit references. Imported references are checked against the actual saved recipe and artifact; equal-looking recipes do not select unrelated historical fits. An appended candidate requires an exact applicable parent artifact and unchanged frozen prefix. Changing a parent does not mutate its existing children. Missing or changed artifacts produce historical links; an explicit full rebuild fits the whole saved recipe afresh and remains marked historical after job restore. Scope validation runs on save and fit, including imported projects, and protects response/control fields against catalogue-name collisions.
 
 The Model builder work is local, unpushed and unreleased. Fresh validation for this redesign is recorded below; the earlier visual-flow results are a separate baseline. Keep discovery on training data, label in-sample and CV evidence accurately, and display holdout results only on explicit request. Table changes need preview then apply and a clear choice to retain or refit later components. A/E and searches must use the accepted complete scorer; earlier named fits must remain unchanged.
 
@@ -79,7 +92,7 @@ Known first-version boundaries: each named model scores a linear sequence; the d
 
 - `src/easy_glm/pricing/session.py`, `model.py`, `review.py`, `views.py`, `validation.py`, `persistence.py`, `excel.py`: public interactive setup, named checkpoints, edits, diagnostics, comparisons, save/load and Excel.
 - `src/easy_glm/workflow/stack_types.py`, `stack.py`, `stack_tuning.py`, `catalogue.py`: component recipes/artifacts, cumulative scoring and offsets, fold-aware tuning, catalogue validation and lookup.
-- `src/easy_glm/workflow/project.py`: global data roles/design, model configuration and JSON migration. `src/easy_glm/desktop/` plus `frontend/src/StackWorkbench.svelte` and `frontend/src/App.svelte`: workbench APIs and screens.
+- `src/easy_glm/workflow/project.py`, `workflow/model_plan.py`, `desktop/model_plan.py`: shared roles, optional plan, local single-model design, JSON migration, prefix validation and immutable fit materialisation. `src/easy_glm/desktop/` plus `frontend/src/StackWorkbench.svelte` and `frontend/src/App.svelte`: workbench APIs and screens.
 - `tests/test_pricing_stack_api.py`, `test_stack_tuning.py`, `test_stack_exports.py`, `test_desktop_stack.py`: targeted stack tests; `frontend/tests/stack-visual.mjs` and `stack-legacy-append.mjs` are local browser review scripts, not a dedicated `playwright.stack.config.js` CI job.
 
 Fresh CatBoost-control checks on 10 October: the full Python source run recorded
@@ -94,6 +107,29 @@ checkout, including scoring and exports. Independent software, adversarial and
 rendered actuarial reviews closed their findings. These are local macOS source
 checks; installed-wheel, Windows, GitHub CI and the separate 5M-row budget were
 not rerun for this change. Nothing was pushed or released.
+
+Fresh project model-plan checks on 10 October: the broad source run passed
+**1,643 Python tests**, with one skipped and one slow deselected. The two launcher
+suites separately passed **10 tests** with localhost socket permission. After
+the final catalogue-readiness and project-replacement fixes, the plan/onboarding
+suite passed **35 tests**. Ruff, Black, mypy for all 49 checked source files,
+Svelte check/build and all **27 frontend unit tests** passed.
+
+The new browser coverage exercises sequential fitting, independent definitions,
+training-only Optuna controls, a complete uploaded catalogue, 500-column JSON
+selection, supported single-model families, cumulative diagnostics and reload.
+Existing browser suites use real saved legacy models for compatibility checks;
+they do not force a hidden workflow mode. Upload and server-restart recovery are
+also tested. Every browser suite listed in the workbench CI job passed locally,
+using isolated servers where ports overlapped. Independent design, software,
+adversarial and pricing-actuary
+reviews exercised the revised screens and closed their findings.
+
+Both public walkthroughs ran all **48 Python blocks unchanged** against the final
+wheel in a fresh environment, including scoring and exports. The installed
+Python files and bundled frontend assets match the source. These are local macOS
+checks; GitHub CI, Windows and the separate 5M-row budget were not rerun. No push
+or release was performed.
 
 Fresh per-model definition checks on 10 October: **71 Python pricing/stack
 regressions**, **27 frontend unit tests** and **six browser scenarios** passed.
@@ -152,17 +188,22 @@ if [ -L frontend/node_modules ] && [ ! -e frontend/node_modules ]; then unlink f
 
 If `.venv` is a real environment, preserve it and confirm its import path before browser tests; if it points elsewhere, use a clean clone rather than replacing it. Likewise inspect a real `frontend/node_modules` directory before `npm ci`, which replaces its contents. From `frontend/`, run `npm ci`, `npm run check`, `npm run build`, `node --test tests/*.test.js`, and `npx playwright install chromium` before the relevant config suites (for example, `npx playwright test --config playwright.models.config.js`). Those suites use bundled Chromium. The separate `tests/stack-visual.mjs` and `tests/stack-legacy-append.mjs` launch the Chrome channel and require an installed Chrome browser; `npx playwright install chrome` is an optional browser installation if it is absent. CI's workbench job also checks that rebuilt static assets match tracked files. `pytest -m slow` is the separate 5M-row memory budget.
 
-The per-model definition checks use these two configurations from `frontend/`:
+The project model-plan and compatibility checks use these configurations from
+`frontend/`:
 
 ```bash
+npx playwright test --config playwright.model-plan.config.js
 npx playwright test --config playwright.model-variables.config.js
 npx playwright test --config playwright.model-variables-wide.config.js
+npx playwright test --config playwright.legacy-models.config.js
 ```
 
-The first covers root/child fitting, catalogue attributes, draft recovery and
-diagnostic fit selection with delayed-response protection. The
-second creates 500 available columns and checks bulk JSON selection, saved draft
-reopening, search and a narrow layout without horizontal table scrolling.
+The plan suite covers fitting order, single-model support and diagnostics
+selection. Model variables covers local definitions and catalogue fitting. Wide
+variables creates 500 columns and checks bulk JSON selection, reopening, search
+and a narrow layout. The legacy suite retains saved-model recovery, retry,
+diagnostic scopes and delayed-response protection. Run configurations sequentially;
+some legacy suites share a server port.
 
 For package acceptance, build and install a wheel into a **second new** environment. Keep this in the same shell as `check_dir` above:
 
@@ -207,14 +248,14 @@ This stack branch is unpushed. Check that all required changes are committed bef
 implementation checkout is a linked Git worktree: copying its directory or
 `.git` pointer alone will not transfer the repository. For local continuation,
 open `/private/tmp/easyglm-model-variable-setup` directly. For another machine, make a
-packet containing a Git bundle **and today's six guidance files**. This is a
+packet containing a Git bundle **and today's seven guidance files**. This is a
 local backup/transfer operation, not a commit, push or release:
 
 ```bash
 source_checkout=/private/tmp/easyglm-model-variable-setup
 packet=/Users/serban/Documents/Projects/easy_glm/.internal/handover-20261010
 mkdir -p "$packet/docs/plans"
-git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/catboost-optuna-default refs/tags/v0.472
+git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/project-model-plan refs/tags/v0.472
 git -C "$source_checkout" bundle verify "$packet/easyglm.bundle"
 cp "$source_checkout/AGENTS.md" "$packet/AGENTS.md"
 cp "$source_checkout/docs/HANDOVER.md" "$packet/docs/HANDOVER.md"
@@ -222,18 +263,19 @@ cp "$source_checkout/docs/MODEL_FLOW.md" "$packet/docs/MODEL_FLOW.md"
 cp "$source_checkout/docs/FUTURE_RELEASES.md" "$packet/docs/FUTURE_RELEASES.md"
 cp "$source_checkout/docs/PRICING_WORKFLOW_BUILD.md" "$packet/docs/PRICING_WORKFLOW_BUILD.md"
 cp "$source_checkout/docs/plans/STACKED_MODELS.md" "$packet/docs/plans/STACKED_MODELS.md"
+cp "$source_checkout/docs/plans/PROJECT_MODEL_WORKFLOW.md" "$packet/docs/plans/PROJECT_MODEL_WORKFLOW.md"
 ```
 
-Check that the bundle contains the current `codex/catboost-optuna-default` commit
-(`git rev-parse codex/catboost-optuna-default`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
-**new** directory with the stack branch selected, then copy the six guidance
+Check that the bundle contains the current `codex/project-model-plan` commit
+(`git rev-parse codex/project-model-plan`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
+**new** directory with the stack branch selected, then copy the seven guidance
 files into that clone and inspect `git status` before work. Keep the packet's
 directory structure; its docs are newer than the 30 September recovery bundle.
 For example, with transferred packet and destination paths chosen by the
 operator:
 
 ```bash
-git clone --branch codex/catboost-optuna-default "$packet/easyglm.bundle" "$destination"
+git clone --branch codex/project-model-plan "$packet/easyglm.bundle" "$destination"
 cp "$packet/AGENTS.md" "$destination/AGENTS.md"
 cp "$packet/docs/HANDOVER.md" "$destination/docs/HANDOVER.md"
 cp "$packet/docs/MODEL_FLOW.md" "$destination/docs/MODEL_FLOW.md"
@@ -241,6 +283,7 @@ cp "$packet/docs/FUTURE_RELEASES.md" "$destination/docs/FUTURE_RELEASES.md"
 cp "$packet/docs/PRICING_WORKFLOW_BUILD.md" "$destination/docs/PRICING_WORKFLOW_BUILD.md"
 mkdir -p "$destination/docs/plans"
 cp "$packet/docs/plans/STACKED_MODELS.md" "$destination/docs/plans/STACKED_MODELS.md"
+cp "$packet/docs/plans/PROJECT_MODEL_WORKFLOW.md" "$destination/docs/plans/PROJECT_MODEL_WORKFLOW.md"
 git -C "$destination" status --short --branch
 ```
 

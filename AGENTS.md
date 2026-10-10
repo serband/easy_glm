@@ -36,9 +36,9 @@ and human-readable, and release only with explicit authorization.
 ## Current state
 
 Read `docs/HANDOVER.md` before work on the mixed model stack. The last known public
-release is v0.472. The current Model builder work is on `codex/catboost-optuna-default` in
-`/private/tmp/easyglm-model-variable-setup`, based on diagnostic-scope revision
-`86dceae`. The user's primary checkout contains separate work. Verify the actual
+release is v0.472. The current project model-plan work is on `codex/project-model-plan` in
+`/private/tmp/easyglm-model-variable-setup`, based on CatBoost tuning revision
+`c179422`. The user's primary checkout contains separate work. Verify the actual
 checkout and preserve its existing changes. Model-flow connections record how named
 candidates were fitted; the complete ordered component recipe remains the scorer.
 
@@ -64,6 +64,11 @@ current stack status in `docs/HANDOVER.md`. `docs/PRICING_WORKFLOW_BUILD.md` is 
   usability review as well as statistical and software checks before completion.
 - Keep reviewable examples in the normal project's `examples/` directory. Avoid
   development-checkout installation instructions in the public walkthrough.
+- Define the single/staged route and named order in Project & data. Variables
+  edits one planned model at a time; Model sets fit options and fits that order.
+  The working plan and saved fitted versions are separate. Starting a new plan
+  clears current setup, not fitted history. Do not put architecture switches or
+  duplicate model/component naming back on the fitting page.
 
 ---
 

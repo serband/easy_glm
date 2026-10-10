@@ -1,11 +1,11 @@
 import { test, expect } from '@playwright/test';
+import { openNewLegacyDraft } from './legacy-models.helpers.js';
 
 const button = (page, name) => page.getByRole('button', { name, exact: true });
 
 async function newModel(page, name) {
     await page.goto('/');
-    await button(page, 'Model').click();
-    await page.getByLabel('Model selection').selectOption('__new__');
+    await openNewLegacyDraft(page);
     await page.getByLabel('New model name').fill(name);
     await page.getByLabel('Model family').selectOption('gaussian');
 }

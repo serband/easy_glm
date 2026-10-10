@@ -6,7 +6,7 @@ test('time role survives JSON and shows all-row chronological diagnostics and fa
     const button = (name) => page.getByRole('button', { name, exact: true });
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
-    await page.goto('/');
+    await page.goto('/?view=variables');
     await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await expect(page.getByLabel('Role for Year', { exact: true })).toHaveValue('time');
     await button('Variables JSON').click();

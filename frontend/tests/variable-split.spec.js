@@ -4,7 +4,7 @@ test('explicit split maps table and JSON and reaches exploration and fit', async
 }, testInfo) => {
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
-    await page.goto('/');
+    await page.goto('/?view=variables');
     const button = (name) => page.getByRole('button', { name, exact: true });
     const train = page.getByLabel('Variable training value');
     const holdout = page.getByLabel('Variable holdout value');

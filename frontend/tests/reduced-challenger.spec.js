@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openNewLegacyDraft } from './legacy-models.helpers.js';
 
 test('top N and manual pruning create a separate fitted challenger for holdout comparison', async ({
     page,
@@ -7,7 +8,7 @@ test('top N and manual pruning create a separate fitted challenger for holdout c
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     await page.goto('/');
-    await button('Model').click();
+    await openNewLegacyDraft(page);
     await button('Legacy GLM interactions').click();
     await page.getByLabel('Penalty mode').selectOption('fixed');
     await page.getByLabel('Fixed alpha').fill('0.01');

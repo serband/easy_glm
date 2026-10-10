@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openNewLegacyDraft } from './legacy-models.helpers.js';
 
 test('pair selector groups unassigned source variables without promoting them', async ({
     page,
@@ -9,8 +10,7 @@ test('pair selector groups unassigned source variables without promoting them', 
             saves.push(request.postDataJSON());
     });
     await page.goto('/');
-    await page.getByRole('button', { name: 'Model', exact: true }).click();
-    await page.getByLabel('Model selection').selectOption('__new__');
+    await openNewLegacyDraft(page, ['A', 'B']);
     await page.getByLabel('New model name').fill(`Unassigned pair ${Date.now()}`);
     const first = page.getByLabel('New pair first predictor');
     await expect(first.locator('optgroup[label="Predictors"]')).toBeAttached();
@@ -33,8 +33,7 @@ test('CatBoost tuning limit validates, persists, times out and retries without s
             saves.push(request.postDataJSON());
     });
     await page.goto('/');
-    await page.getByRole('button', { name: 'Model', exact: true }).click();
-    await page.getByLabel('Model selection').selectOption('__new__');
+    await openNewLegacyDraft(page, ['A', 'B']);
     const modelName = `Pair timeout ${Date.now()}`;
     await page.getByLabel('New model name').fill(modelName);
 
@@ -120,8 +119,7 @@ test('fitted stages expose pair edits, suffix status, refit impact and narrow la
         if (payload.action === 'edit') edits.push(payload);
     });
     await page.goto('/');
-    await page.getByRole('button', { name: 'Model', exact: true }).click();
-    await page.getByLabel('Model selection').selectOption('__new__');
+    await openNewLegacyDraft(page, ['A', 'B', 'C']);
     await page.getByLabel('New model name').fill('Pair acceptance');
     for (const name of ['A', 'B', 'C']) {
         await page.getByLabel(`Include ${name}`, { exact: true }).uncheck();

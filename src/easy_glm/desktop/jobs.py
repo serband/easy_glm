@@ -29,6 +29,10 @@ def model_key(project: Project, name: str) -> str:
     data.pop("sample_rows", None)
     data.pop("sample_seed", None)
     model = dict(spec["models"].get(name) or {})
+    # A single-stage plan may freeze its own bands.  That snapshot, rather
+    # than today's shared Variables design, defines the immutable fit.
+    design = model.get("design") or spec["design"]
+    model.pop("design", None)
     model.pop("pair_time_limit_minutes", None)
     # The model-flow diagram is navigation provenance, never an input to a
     # statistical fit.  Keeping it out means adding/removing a graph edge does
@@ -36,7 +40,7 @@ def model_key(project: Project, name: str) -> str:
     model.pop("lineage", None)
     return hashlib.sha256(
         json.dumps(
-            {"data": data, "design": spec["design"], "model": model},
+            {"data": data, "design": design, "model": model},
             sort_keys=True,
         ).encode()
     ).hexdigest()

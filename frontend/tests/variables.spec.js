@@ -1,15 +1,18 @@
 import { test, expect } from '@playwright/test';
 
-test('unchanged Variables preview explains completion and continues to Model', async ({ page }) => {
-    await page.goto('/');
+test('unchanged Variables preview continues to upfront model-plan setup', async ({ page }) => {
+    await page.goto('/?view=variables');
     await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
     await expect(page.getByRole('status').filter({ hasText: 'No variable changes to apply' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toHaveCount(0);
     await page.getByRole('button', { name: 'Continue to Model', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Model design and fit', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Define a model plan', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Go to Project & data', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Single model', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Build in stages', exact: true })).toBeVisible();
 });
 
-test('stack-only project opens the stacked workflow and keeps single-model creation available', async ({ page }) => {
+test('saved stacked projects retain their model view and route new setup through Project', async ({ page }) => {
     await page.route('**/api/workbench', async (route) => {
         const response = await route.fetch();
         const workbench = await response.json();
@@ -24,13 +27,14 @@ test('stack-only project opens the stacked workflow and keeps single-model creat
         workbench.jobs = {};
         await route.fulfill({ response, json: workbench });
     });
-    await page.goto('/');
+    await page.goto('/?view=variables');
     await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
     await page.getByRole('button', { name: 'Continue to Model', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Build a model in stages' })).toHaveClass(/chosen/);
-    await page.getByRole('button', { name: 'Single model' }).click();
-    await expect(page.getByLabel('Model selection')).toHaveValue('__new__');
-    await expect(page.getByLabel('Model selection').locator('option')).toHaveCount(1);
+    await expect(page.getByRole('heading', { name: 'Build a model in stages', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Single model', exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Single model', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Build in stages', exact: true })).toBeVisible();
     await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
@@ -41,7 +45,7 @@ test('bidirectional roles, name/type preservation, invalid reset and explicit ap
         requests = [];
     page.on('pageerror', (e) => errors.push(e.message));
     page.on('request', (r) => requests.push(r.url()));
-    await page.goto('/');
+    await page.goto('/?view=variables');
     await expect(page.getByLabel('Role for DriverAge', { exact: true })).toHaveValue('predictor');
     await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await expect(page.getByRole('img', { name: /One-way effects of/ }).first()).toBeVisible();
@@ -99,13 +103,13 @@ test('bidirectional roles, name/type preservation, invalid reset and explicit ap
     ).toBeVisible();
     await page.screenshot({ path: 'test-results/variables.png', fullPage: true });
     expect(errors).toEqual([]);
-    expect(requests.every((url) => url.startsWith('http://127.0.0.1:8770/'))).toBeTruthy();
+    expect(requests.every((url) => url.startsWith(new URL(page.url()).origin + '/'))).toBeTruthy();
 });
 
 test('singleton reassignment updates old row and invalid duplicate is refused', async ({
     page,
 }) => {
-    await page.goto('/');
+    await page.goto('/?view=variables');
     await page.getByLabel('Role for AnnualMileage', { exact: true }).selectOption('target');
     await expect(page.getByLabel('Role for Claims', { exact: true })).toHaveValue('unassigned');
     await page.getByRole('button', { name: 'Variables JSON', exact: true }).click();
@@ -120,7 +124,7 @@ test('singleton reassignment updates old row and invalid duplicate is refused', 
 });
 
 test('pending preview freezes the draft until its result is reviewable', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/?view=variables');
     const regionRole = page.getByLabel('Role for Region', { exact: true });
     const currentRole = await regionRole.inputValue();
     await regionRole.selectOption(currentRole === 'ignore' ? 'unassigned' : 'ignore');
@@ -143,7 +147,7 @@ test('pending preview freezes the draft until its result is reviewable', async (
 test('workflow pages keep a Variables draft and expose honest project/export scope', async ({
     page,
 }) => {
-    await page.goto('/');
+    await page.goto('/?view=variables');
     await page.getByLabel('Name for Claims', { exact: true }).fill('KeptDraft');
     await page.getByLabel('Name for Claims', { exact: true }).press('Tab');
     for (const name of ['Project & data', 'Explore', 'Export']) {

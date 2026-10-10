@@ -489,9 +489,17 @@ def run_model(
             deadline_seconds=pair_time_limit_seconds(cfg.pair_time_limit_minutes),
         )
 
+    # A plan-stage single GLM carries a private band snapshot.  It is made into
+    # a throw-away project view for fitting; the project-wide Variables choices
+    # and older named fits remain untouched.
+    design_project = project
+    if cfg.design is not None:
+        snapshot = project.to_dict()
+        snapshot["design"] = cfg.design
+        design_project = Project.from_dict(snapshot)
     dropped: list[str] = []
     spec = build_design(
-        project,
+        design_project,
         train,
         cfg.predictors,
         weight_col=cfg.weight,
@@ -517,7 +525,7 @@ def run_model(
         n_alphas=pen.n_alphas,
         l1_ratio=pen.l1_ratio,
         min_alpha_ratio=pen.min_alpha_ratio,
-        monotone=monotone_for(project, cfg),
+        monotone=monotone_for(design_project, cfg),
         progress=progress,
         **kwargs,
     )

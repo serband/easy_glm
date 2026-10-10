@@ -1,14 +1,19 @@
 import { test, expect } from '@playwright/test';
+import { saveLegacyGlm } from './legacy-models.helpers.js';
 test('two-model diagnostics, paths, champion and search to refit', async ({ page }) => {
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     const button = (name) => page.getByRole('button', { name, exact: true });
     const tab = (name) => page.getByRole('tab', { name, exact: true });
     await page.goto('/');
+    await saveLegacyGlm(page, `Imported legacy ${Date.now()}`);
+    await page.reload();
+    await page.getByRole('button', { name: /^Variables/ }).click();
     await page.getByLabel('Role for AnnualMileage', { exact: true }).selectOption('unassigned');
     await button('Preview changes').click();
     await button('Apply changes').click();
     await button('Model').click();
+    await page.getByLabel('Model selection').selectOption('__new__');
     await button('Legacy GLM interactions').click();
     await page.getByLabel('Penalty mode').selectOption('cv');
     await page.getByLabel('CV folds').fill('2');

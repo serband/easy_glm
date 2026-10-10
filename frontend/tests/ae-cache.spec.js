@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { saveLegacyGlm } from './legacy-models.helpers.js';
 test.use({ viewport: { width: 884, height: 773 }, actionTimeout: 15000 });
 test('fitted variable cache is immediate, invalidates after edits and rejects late misses', async ({
     page,
@@ -14,10 +15,14 @@ test('fitted variable cache is immediate, invalidates after edits and rejects la
             starts++;
     });
     await page.goto('/');
+    await saveLegacyGlm(page, `Imported legacy ${Date.now()}`);
+    await page.reload();
+    await page.getByRole('button', { name: /^Variables/ }).click();
     await page.getByLabel('Role for AnnualMileage', { exact: true }).selectOption('unassigned');
     await button('Preview changes').click();
     await button('Apply changes').click();
     await button('Model').click();
+    await page.getByLabel('Model selection', { exact: true }).selectOption('__new__');
     await button('Create model').click();
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 30000 });

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openNewLegacyDraft } from './legacy-models.helpers.js';
 
 test('interaction-only refits visibly reuse mains; main settings changes refit', async ({
     page,
@@ -7,7 +8,7 @@ test('interaction-only refits visibly reuse mains; main settings changes refit',
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto('/');
-    await button('Model').click();
+    await openNewLegacyDraft(page);
     await button('Legacy GLM interactions').click();
     await page.getByLabel('Penalty mode').selectOption('fixed');
     await page.getByLabel('Fixed alpha').fill('0.01');

@@ -25,7 +25,7 @@ test('one-way screen uses training rows and stages reviewed role changes', async
 }, testInfo) => {
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
-    await page.goto('/');
+    await page.goto('/?view=variables');
     const panel = page.getByRole('group', { name: 'One-way feature selection' });
     await panel.locator(':scope > summary').click();
     await expect(panel).toContainText('4 variables to test');
@@ -141,7 +141,7 @@ test('one-way screen uses training rows and stages reviewed role changes', async
 test('ranked chart shares a numeric scale, filters and pages without inventing skipped scores', async ({
     page,
 }) => {
-    await page.goto('/');
+    await page.goto('/?view=variables');
     const panel = page.getByRole('group', { name: 'One-way feature selection' });
     await panel.locator(':scope > summary').click();
     const snapshot = await variablesSnapshot(page);
@@ -301,7 +301,7 @@ test('ranked chart shares a numeric scale, filters and pages without inventing s
 test('cancelled or changed drafts suppress late reports, and invalid JSON cannot start', async ({
     page,
 }) => {
-    await page.goto('/');
+    await page.goto('/?view=variables');
     const panel = page.getByRole('group', { name: 'One-way feature selection' });
     await panel.locator(':scope > summary').click();
     let release;

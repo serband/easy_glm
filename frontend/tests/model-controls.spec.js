@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openNewLegacyDraft } from './legacy-models.helpers.js';
 test('model definition controls preserve selected values without browser errors', async ({
     page,
 }) => {
@@ -6,7 +7,7 @@ test('model definition controls preserve selected values without browser errors'
     page.on('pageerror', (error) => errors.push(error.message));
     const button = (name) => page.getByRole('button', { name, exact: true });
     await page.goto('/');
-    await button('Model').click();
+    await openNewLegacyDraft(page);
     await page.getByLabel('Model family', { exact: true }).selectOption('tweedie');
     await page.getByLabel('Tweedie power', { exact: true }).fill('1.7');
     await expect(page.getByLabel('Tweedie power', { exact: true })).toHaveValue('1.7');

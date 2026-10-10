@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openNewLegacyDraft } from './legacy-models.helpers.js';
 const button = (page, name) => page.getByRole('button', { name, exact: true });
 const panel = (page) => page.getByRole('region', { name: 'Predictor screening', exact: true });
 async function session(page) {
@@ -107,7 +108,7 @@ async function mockScan(page, { status = 'complete', holdStart = false, holdPoll
     return calls;
 }
 test.beforeEach(async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/?view=variables');
     await expect(page.getByLabel('Role for Claims', { exact: true })).toHaveValue('target');
 });
 test('validated full draft is screened; explicit bulk removal synchronises JSON and previews once', async ({
@@ -230,7 +231,7 @@ test('cancel prevents a late polled report from becoming removable', async ({ pa
 test('actual training scan is read-only; applying flagged removals cleans model predictors and interactions', async ({
     page,
 }) => {
-    await button(page, 'Model').click();
+    await openNewLegacyDraft(page);
     await button(page, 'Legacy GLM interactions').click();
     await page.getByLabel('Interaction first factor').selectOption('DriverAge');
     await page.getByLabel('Interaction second factor').selectOption('AnnualMileage');

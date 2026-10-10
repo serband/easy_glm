@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openNewLegacyDraft } from './legacy-models.helpers.js';
 test.use({ viewport: { width: 884, height: 773 }, actionTimeout: 15000 });
 test('dropdown previews are transient, latest-only and committed only by explicit Apply', async ({
     page,
@@ -31,7 +32,7 @@ test('dropdown previews are transient, latest-only and committed only by explici
             candidates.set(data.id, data.data);
     });
     await page.goto('/');
-    await button('Model').click();
+    await openNewLegacyDraft(page);
     await button('Create model').click();
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 30000 });

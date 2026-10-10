@@ -20,6 +20,8 @@
     export let comparison = '',
         requestedModel = '',
         onContext = () => {};
+    export let onRequestedModelConsumed = () => {};
+    export let initialSubset = 'holdout';
     let comparisonResult = null,
         comparisonKey = '',
         sentContext = '',
@@ -27,7 +29,13 @@
     $: legacyNames = wb
         ? Object.keys(wb.models).filter((name) => !wb.models[name]?.components?.length)
         : [];
-    $: if (requestedModel && legacyNames.includes(requestedModel) && selected !== requestedModel) selected = requestedModel;
+    $: if (loaded && requestedModel && legacyNames.includes(requestedModel)) {
+        if (selected !== requestedModel) {
+            selected = requestedModel;
+            pickModel();
+        }
+        onRequestedModelConsumed();
+    }
     $: effectiveChallenger =
         view === 'compare' &&
         legacyNames.includes(comparison) &&
@@ -250,7 +258,7 @@
     let pairMethod = 'legacy';
     let termSearch = '',
         termScroll = 0,
-        subset = 'holdout',
+        subset = initialSubset,
         tableName = '',
         table = null,
         tableOffset = 0,
@@ -262,7 +270,8 @@
         timer = null;
     $: signature = state ? state.session_id + ':' + state.revision : '';
     $: if (
-        (['model', 'diagnostics', 'compare', 'tables'].includes(view) || state?.models?.length) &&
+        (['model', 'diagnostics', 'compare', 'tables', 'export'].includes(view) ||
+            state?.models?.length) &&
         state &&
         !loading &&
         !saving &&
@@ -470,11 +479,9 @@
             loaded = true;
             if (selected !== '__new__' && !names.includes(selected))
                 selected = names[0] || '__new__';
-            if (!cfg && names.length)
-                selected =
-                    wb.champion && names.includes(wb.champion)
-                        ? wb.champion
-                        : names[0];
+            if (requestedModel && names.includes(requestedModel)) selected = requestedModel;
+            else if (!cfg && names.length)
+                selected = wb.champion && names.includes(wb.champion) ? wb.champion : names[0];
             if (!keepDraft || !cfg) pickModel();
             else
                 notice =
@@ -848,9 +855,10 @@
                                 bind:value={() => cfg.link, (value) => setModelField('link', value)}
                                 ><option value={null}>Family default</option><option value="log"
                                     >Log</option
-                                ><option value="logit">Logit</option>{#if cfg.link &&
-                                    !['log', 'logit'].includes(cfg.link)}<option
-                                        value={cfg.link}>{cfg.link}</option>{/if}</select
+                                ><option value="logit">Logit</option
+                                >{#if cfg.link && !['log', 'logit'].includes(cfg.link)}<option
+                                        value={cfg.link}>{cfg.link}</option
+                                    >{/if}</select
                             ></label
                         >
                         {#each ['target', 'weight', 'offset'] as field}<label
@@ -1363,9 +1371,8 @@
                     </div>
                     <div class="result-totals">
                         {#each (result.diagnostic_info?.metric_definitions?.[subset] || []).filter((definition) => definition.section === 'secondary') as definition}<span
-                                >{definition.label}: <b
-                                    >{num(result.metrics[subset]?.[definition.key])}</b
-                                ></span
+                                >{definition.label}:
+                                <b>{num(result.metrics[subset]?.[definition.key])}</b></span
                             >{/each}
                     </div>
                     <div class="result-totals">
@@ -1376,8 +1383,9 @@
                     <p class="help-text">{result.diagnostic_info?.gini_note || ''}</p>
                     {#if Object.keys(result.metrics[subset]?.metric_reasons || {}).length}<p
                             class="help-text"
-                            >{Object.values(result.metrics[subset].metric_reasons).join(' ')}</p
-                        >{/if}
+                        >
+                            {Object.values(result.metrics[subset].metric_reasons).join(' ')}
+                        </p>{/if}
                 {/if}
                 <div class="workflow-tabs" role="tablist" aria-label="Diagnostics views">
                     {#each [['variable', 'A/E by variable'], ['time', 'Time stability'], ['pair', 'A/E by pair'], ['lift', 'Lift'], ['residual', 'Residual factors'], ['importance', 'Variable importance'], ['path', 'Regularisation path'], ['coefficients', 'Coefficients']] as [key, label]}<button

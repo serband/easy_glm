@@ -14,6 +14,7 @@ import shutil
 import threading
 from contextlib import asynccontextmanager
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -49,6 +50,13 @@ from easy_glm.desktop.loading import (
     new_input_folder,
     upload_basename,
 )
+from easy_glm.desktop.model_plan import (
+    ModelPlanEdit,
+    PlanFitRef,
+    materialise_plan_prefix,
+    plan_model_name,
+    validate_model_plan,
+)
 from easy_glm.desktop.modeling import (
     FitRequest,
     ModelEdit,
@@ -58,6 +66,7 @@ from easy_glm.desktop.modeling import (
     edit_model,
     pair_candidate_groups,
     setup_info,
+    stack_factor_stages,
     validate_stack_factor_scope,
 )
 from easy_glm.desktop.reviews import ReviewEdit, ReviewJobs
@@ -69,13 +78,16 @@ from easy_glm.desktop.splits import (
     split_values,
 )
 from easy_glm.workflow.explore import univariate
+from easy_glm.workflow.model_plan import ModelPlan, new_plan_id
 from easy_glm.workflow.prep import apply_variables
 from easy_glm.workflow.project import (
     SINGLE_ROLES,
+    ModelConfig,
     ModelLineage,
     Project,
     pair_stage_fingerprint,
 )
+from easy_glm.workflow.stack_types import ComponentRecipe
 from easy_glm.workflow.variables import (
     BULK_ROLE_GROUPS,
     apply_roles_grid,
@@ -135,12 +147,96 @@ def create_app(
     undo_steps = {}
     redo_steps = {}
     catalogue_sources: dict[str, str] = {}
-    for config in project.models.values():
-        for component in getattr(config, "components", ()):
+    # Schema collection avoids loading a master file just to restore the Variables
+    # page after a project is reopened.  The pinned source/hash remains part of the
+    # stage recipe; this cache is only presentation metadata.
+    catalogue_schema_cache: dict[tuple[str, str], list[dict[str, str]]] = {}
+
+    def catalogue_descriptor(stage: ComponentRecipe) -> dict[str, Any] | None:
+        """Return saved catalogue columns for the stage editor and later stages."""
+        source_path = stage.settings.get("source_path")
+        source_hash = stage.settings.get("source_sha256")
+        if not isinstance(source_path, str) or not isinstance(source_hash, str):
+            return None
+        source = Path(source_path).resolve()
+        canonical = str(source)
+        if catalogue_sources.get(canonical) != source_hash or not source.is_file():
+            return None
+        cache_key = (canonical, source_hash)
+        columns = catalogue_schema_cache.get(cache_key)
+        if columns is None:
+            try:
+                if source.suffix.lower() == ".parquet":
+                    schema = pl.scan_parquet(source).collect_schema()
+                elif source.suffix.lower() == ".csv":
+                    schema = pl.scan_csv(source, infer_schema_length=0).collect_schema()
+                else:
+                    return None
+            except (OSError, pl.exceptions.PolarsError):
+                return None
+            columns = [
+                {"name": name, "dtype": str(dtype)} for name, dtype in schema.items()
+            ]
+            catalogue_schema_cache[cache_key] = columns
+        # ``rows`` is deliberately unknown after restart: counting a CSV would
+        # scan the full master file.  The editor only needs the durable schema
+        # to choose its key and attributes without asking for another upload.
+        return {
+            "filename": source.name,
+            "rows": None,
+            "key_columns": columns,
+            "attribute_columns": columns,
+            "columns": columns,
+        }
+
+    def register_catalogue_sources(saved_project: Project) -> None:
+        """Restore only pinned catalogue files whose saved digest still matches."""
+        components = [
+            component
+            for config in saved_project.models.values()
+            for component in getattr(config, "components", ())
+        ]
+        if saved_project.model_plan is not None:
+            components.extend(saved_project.model_plan.stages)
+        for component in components:
+            if component.kind != "catalogue":
+                continue
             source_path = component.settings.get("source_path")
             source_hash = component.settings.get("source_sha256")
-            if source_path and source_hash:
-                catalogue_sources[str(Path(source_path).resolve())] = str(source_hash)
+            if not isinstance(source_path, str) or not isinstance(source_hash, str):
+                continue
+            source = Path(source_path).resolve()
+            try:
+                if source.is_file() and _file_sha256(source) == source_hash:
+                    catalogue_sources[str(source)] = source_hash
+            except OSError:
+                continue
+
+    register_catalogue_sources(project)
+
+    def validate_plan_catalogues(
+        stages: list[ComponentRecipe], *, require_source: bool
+    ) -> None:
+        """Allow empty planned stages; require unchanged pinned uploads for fitting."""
+        for stage in stages:
+            if stage.kind != "catalogue" or stage.settings.get("catalogue") is not None:
+                continue
+            source_path = stage.settings.get("source_path")
+            source_hash = stage.settings.get("source_sha256")
+            if source_path is None and source_hash is None and not require_source:
+                continue
+            if not isinstance(source_path, str) or not isinstance(source_hash, str):
+                raise ValueError(
+                    f"{stage.name}: upload a catalogue in Variables before fitting."
+                )
+            canonical = str(Path(source_path).resolve())
+            if catalogue_sources.get(canonical) != source_hash:
+                raise ValueError(
+                    "Catalogue source is not a pinned upload in this session."
+                )
+            if _file_sha256(Path(canonical)) != source_hash:
+                raise ValueError("Catalogue contents changed since upload.")
+
     if restore_folder is not None and (restore_folder / "history.json").exists():
         history = json.loads((restore_folder / "history.json").read_text())
         for name, stacks in history.items():
@@ -172,6 +268,31 @@ def create_app(
     current = deepcopy(project)
     revision = 0
     lock = threading.RLock()
+    # These references are server-issued when a stage is queued.  They are
+    # intentionally never reconstructed by comparing old saved recipes: a new
+    # chain with identical settings must start cleanly.
+    plan_attempts: dict[tuple[str, str], PlanFitRef] = {}
+    plan_refs: list[PlanFitRef] = [
+        PlanFitRef(
+            current.model_plan.plan_id,
+            item["stage_id"],
+            item["model_name"],
+            item["fit_id"],
+        )
+        for item in (current.model_plan.fit_refs if current.model_plan else [])
+    ]
+
+    def persist_plan_refs() -> None:
+        if current.model_plan is not None:
+            current.model_plan.fit_refs = [
+                {
+                    "stage_id": item.stage_id,
+                    "model_name": item.model_name,
+                    "fit_id": item.fit_id,
+                }
+                for item in plan_refs
+                if item.plan_id == current.model_plan.plan_id
+            ]
 
     def complete_fit(job: dict[str, Any], result: dict[str, Any]) -> None:
         nonlocal revision
@@ -233,6 +354,28 @@ def create_app(
             run = pickle.load(handle)  # private fit artifact created by this app
         return pair_stage_fingerprint(cfg, run.rate_model)
 
+    def scorer_fingerprint(stack: Any) -> str:
+        """Hash the deployed score, excluding inspection and version-history metadata."""
+        payload = stack.to_dict()
+        payload.pop("virtual_components", None)
+
+        def drop_non_scoring_metadata(value: Any) -> None:
+            if isinstance(value, dict):
+                # RateModel snapshots record creation timestamps.  They are useful
+                # for inspection but do not change the current scorer or offset.
+                value.pop("snapshots", None)
+                value.pop("current_version", None)
+                for child in value.values():
+                    drop_non_scoring_metadata(child)
+            elif isinstance(value, list):
+                for child in value:
+                    drop_non_scoring_metadata(child)
+
+        drop_non_scoring_metadata(payload)
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, default=str).encode()
+        ).hexdigest()
+
     def fitted_prefix(name: str) -> Any:
         """Read an exact applicable source scorer for a guarded append."""
         from easy_glm.workflow.stack import stack_from_legacy
@@ -242,7 +385,198 @@ def create_app(
             fitted = pickle.load(handle)  # private fit artifact
         if fitted.name != name:
             raise ValueError("The source fit identity does not match its model.")
+        # A legacy artifact stores the raw fit.  Its accepted table amendments
+        # and pair tables live in the saved configuration, so compile that
+        # reviewed scorer before using it as any downstream offset.
+        if fitted.stack is None:
+            from easy_glm.workflow.run import rate_model_for
+
+            fitted = deepcopy(fitted)
+            fitted.rate_model = rate_model_for(current, fitted)
         return stack_from_legacy(current, fitted)
+
+    def plan_ref_state(
+        plan: ModelPlan | None = None,
+    ) -> tuple[list[dict[str, Any]], PlanFitRef | None]:
+        """Return the completed contiguous prefix and an optional live next job."""
+        plan = current.model_plan if plan is None else plan
+        if plan is None:
+            return [], None
+        statuses = jobs.status(current)
+        completed: list[dict[str, Any]] = []
+        pending: PlanFitRef | None = None
+        for index, stage in enumerate(plan.stages):
+            ref = next(
+                (
+                    item
+                    for item in reversed(plan_refs)
+                    if item.plan_id == plan.plan_id
+                    and item.stage_id == stage.component_id
+                ),
+                None,
+            )
+            if ref is None:
+                break
+            job = statuses.get(ref.model_name, {})
+            if job.get("id") != ref.fit_id:
+                break
+            expected = materialise_plan_prefix(current, plan, index + 1, None)
+            actual = current.models.get(ref.model_name)
+            if actual is None or (
+                actual != expected and replace(actual, lineage=None) != expected
+            ):
+                break
+            if job.get("status") in {"queued", "running"}:
+                pending = ref
+                break
+            if not job.get("applicable"):
+                break
+            completed.append(
+                {
+                    "stage_id": stage.component_id,
+                    "stage_name": stage.name,
+                    "model_name": ref.model_name,
+                    "fit_id": ref.fit_id,
+                }
+            )
+        return completed, pending
+
+    def plan_view() -> dict[str, Any]:
+        """Server-authoritative state for the project-level model workflow."""
+        plan = current.model_plan
+        prepared_columns: set[str] = set()
+        prepared_schema: dict[str, Any] = {}
+        try:
+            prepared = apply_variables(raw, current.data)
+            prepared_columns = set(prepared.columns)
+            prepared_schema = {
+                name: str(dtype) for name, dtype in prepared.schema.items()
+            }
+        except (ValueError, TypeError, KeyError, pl.exceptions.PolarsError):
+            pass
+        safe_columns: list[list[str]] = []
+        if plan is not None:
+            config = ModelConfig(
+                family=plan.family,
+                link=plan.link,
+                target=current.target,
+                weight=current.weight,
+                offset=current.offset_column,
+                divide_target_by_weight=plan.divide_target_by_weight,
+                tweedie_power=plan.tweedie_power,
+                components=deepcopy(plan.stages),
+            )
+            try:
+                safe_columns = stack_factor_stages(
+                    current, raw, prepared_columns, config
+                )
+            except (ValueError, TypeError, KeyError, pl.exceptions.PolarsError):
+                safe_columns = [[] for _stage in plan.stages]
+        refs, pending = plan_ref_state(plan)
+        ref_by_stage = {item["stage_id"]: item for item in refs}
+        statuses: list[dict[str, Any]] = []
+        next_stage_id: str | None = None
+        for stage in plan.stages if plan else []:
+            ref = ref_by_stage.get(stage.component_id)
+            if ref is not None:
+                state, message, fit = "fitted", "Fitted", ref
+            elif pending is not None and pending.stage_id == stage.component_id:
+                state, message, fit = (
+                    "fitting",
+                    "Fit in progress",
+                    {
+                        "stage_id": stage.component_id,
+                        "model_name": pending.model_name,
+                        "fit_id": pending.fit_id,
+                    },
+                )
+            elif next_stage_id is None and pending is None:
+                state, message, fit = "ready", "Ready to fit", None
+                next_stage_id = stage.component_id
+            else:
+                state, message, fit = "waiting", "Fit the earlier stage first", None
+            attempt_ref = (
+                plan_attempts.get((plan.plan_id, stage.component_id)) if plan else None
+            )
+            attempt_job = (
+                jobs.status(current).get(attempt_ref.model_name, {})
+                if attempt_ref
+                else {}
+            )
+            last_attempt = (
+                {
+                    "model_name": attempt_ref.model_name,
+                    "fit_id": attempt_ref.fit_id,
+                    "status": attempt_job.get("status"),
+                    "message": attempt_job.get("message"),
+                }
+                if attempt_ref
+                else None
+            )
+            statuses.append(
+                {
+                    "stage_id": stage.component_id,
+                    "name": stage.name,
+                    "kind": stage.kind,
+                    "state": state,
+                    "message": message,
+                    "fit": fit,
+                    "last_attempt": last_attempt,
+                }
+            )
+        history = [
+            {
+                "name": name,
+                "components": [item.name for item in config.components],
+                "fit_id": job.get("id"),
+                "status": job.get("status"),
+                "can_adopt": config.family in {"poisson", "tweedie", "gaussian"}
+                and config.link in {None, "log"},
+            }
+            for name, config in current.models.items()
+            if (job := jobs.status(current).get(name, {})).get("applicable")
+        ]
+        catalogue_descriptors: dict[str, dict[str, Any]] = {}
+        schema_at_stage = dict(prepared_schema)
+        safe_column_details = []
+        for index, columns in enumerate(safe_columns):
+            safe_column_details.append(
+                [
+                    {
+                        "name": name,
+                        "dtype": schema_at_stage.get(name),
+                        "role": current.data.roles.get(name, "unassigned"),
+                    }
+                    for name in columns
+                ]
+            )
+            if plan is None or index >= len(plan.stages):
+                continue
+            stage = plan.stages[index]
+            if stage.kind != "catalogue":
+                continue
+            descriptor = catalogue_descriptor(stage)
+            if descriptor is None:
+                continue
+            catalogue_descriptors[stage.component_id] = descriptor
+            dtype_by_name = {
+                item["name"]: item["dtype"] for item in descriptor["columns"]
+            }
+            for attribute in stage.factors:
+                if attribute in dtype_by_name:
+                    schema_at_stage[attribute] = dtype_by_name[attribute]
+        return {
+            "plan": plan.to_dict() if plan is not None else None,
+            "fit_refs": refs,
+            "stage_statuses": statuses,
+            "safe_columns": safe_columns,
+            "safe_column_details": safe_column_details,
+            "catalogue_descriptors": catalogue_descriptors,
+            "project_roles": dict(current.data.roles),
+            "design_defaults": current.to_dict()["design"]["defaults"],
+            "next_stage_id": next_stage_id,
+            "history": history,
+        }
 
     def verified_append_source(name: str) -> tuple[str, Path] | None:
         """Return an exact saved parent scorer for the candidate's final addition.
@@ -267,7 +601,7 @@ def create_app(
             lineage.parent_name != source_name
             or lineage.parent_fit_id != source_path.name
             or lineage.parent_key != model_key(current, source_name)
-            or lineage.parent_prefix_fingerprint != prefix.fingerprint()
+            or lineage.parent_prefix_fingerprint != scorer_fingerprint(prefix)
         ):
             raise ValueError("The recorded starting checkpoint is no longer available.")
         return source_name, source_path
@@ -735,7 +1069,7 @@ def create_app(
     def replace_project(
         edit: Revision, loaded: Project, loaded_raw: pl.DataFrame
     ) -> tuple[dict[str, Any], FitJobs, ReviewJobs]:
-        nonlocal current, raw, revision, session_id, project_id, token, jobs, reviews, exploration
+        nonlocal current, raw, revision, session_id, project_id, token, jobs, reviews, exploration, plan_refs
         with lock:
             check_revision(edit)
             previous_jobs, previous_reviews = jobs, reviews
@@ -743,15 +1077,19 @@ def create_app(
             exploration = ExplorationCache()
             jobs.on_complete = complete_fit
             current, raw = loaded, loaded_raw
+            plan_attempts.clear()
+            plan_refs = [
+                PlanFitRef(
+                    loaded.model_plan.plan_id,
+                    item["stage_id"],
+                    item["model_name"],
+                    item["fit_id"],
+                )
+                for item in (loaded.model_plan.fit_refs if loaded.model_plan else [])
+            ]
             catalogue_sources.clear()
-            for config in loaded.models.values():
-                for component in getattr(config, "components", ()):
-                    source_path = component.settings.get("source_path")
-                    source_hash = component.settings.get("source_sha256")
-                    if source_path and source_hash:
-                        catalogue_sources[str(Path(source_path).resolve())] = str(
-                            source_hash
-                        )
+            catalogue_schema_cache.clear()
+            register_catalogue_sources(loaded)
             revision = 0
             session_id = secrets.token_urlsafe(16)
             project_id = secrets.token_hex(32)
@@ -935,7 +1273,272 @@ def create_app(
             "stack_sources": stack_sources,
             "model_flow": saved_flow,
             "champion": saved.champion,
+            "model_plan": plan_view(),
         }
+
+    @app.get("/api/model-plan")
+    def get_model_plan() -> dict[str, Any]:
+        with lock:
+            return {**plan_view(), "session_id": session_id, "revision": revision}
+
+    @app.post("/api/model-plan")
+    def save_model_plan(edit: ModelPlanEdit) -> dict[str, Any]:
+        """Change the editable plan, never an immutable fitted model."""
+        nonlocal current, revision, plan_refs
+        with lock:
+            check_revision(edit)
+            if edit.plan is None and edit.operation != "adopt":
+                raise HTTPException(422, "Choose a model structure to save.")
+            try:
+                if edit.operation == "adopt":
+                    if not edit.adopt_model_name:
+                        raise ValueError("Choose a saved model to adopt.")
+                    status = jobs.status(current).get(edit.adopt_model_name, {})
+                    source = current.models.get(edit.adopt_model_name)
+                    if not status.get("applicable") or source is None:
+                        raise ValueError(
+                            "The saved model has no applicable fitted result."
+                        )
+                    stage_recipe = ComponentRecipe(
+                        component_id="adopted-root",
+                        name=edit.adopt_model_name,
+                        kind="glm",
+                        factors=tuple(source.predictors),
+                        settings={
+                            "alpha": source.penalty.alpha,
+                            "cv": source.penalty.cv,
+                            "n_alphas": source.penalty.n_alphas,
+                            "l1_ratio": source.penalty.l1_ratio,
+                            "min_alpha_ratio": source.penalty.min_alpha_ratio,
+                            "base": source.base,
+                        },
+                        design=deepcopy(source.design),
+                    )
+                    plan = ModelPlan(
+                        mode="sequential",
+                        family=source.family,
+                        link=source.link,
+                        tweedie_power=source.tweedie_power,
+                        divide_target_by_weight=source.divide_target_by_weight,
+                        stages=[stage_recipe],
+                        adopted_model_name=edit.adopt_model_name,
+                    )
+                else:
+                    plan = ModelPlan.from_dict(edit.plan or {})
+                # The browser cannot select a plan identity, references, or an
+                # arbitrary adopted source.  Only the adopt operation creates it.
+                old = current.model_plan
+                if plan.adopted_model_name is not None and not (
+                    edit.operation == "adopt"
+                    or (
+                        edit.operation == "revise"
+                        and old is not None
+                        and plan.adopted_model_name == old.adopted_model_name
+                    )
+                ):
+                    raise ValueError(
+                        "Only Adopt saved model may choose an adopted source."
+                    )
+                if (
+                    old is not None
+                    and old.adopted_model_name is not None
+                    and edit.operation == "save"
+                    and plan.adopted_model_name != old.adopted_model_name
+                ):
+                    raise ValueError(
+                        "The adopted scorer is frozen. Start a new independent chain to replace it."
+                    )
+                old_refs, pending = plan_ref_state(old)
+                if edit.operation == "start":
+                    plan.plan_id = new_plan_id()
+                    plan_refs = []
+                elif edit.operation == "revise":
+                    if not old_refs:
+                        raise ValueError("There is no fitted stage to revise.")
+                    if pending is not None:
+                        raise ValueError(
+                            "A stage is fitting. Wait for it or start a new chain."
+                        )
+                    if (
+                        old is not None
+                        and old.adopted_model_name is not None
+                        and (
+                            not plan.stages
+                            or not old.stages
+                            or plan.stages[0] != old.stages[0]
+                        )
+                    ):
+                        raise ValueError(
+                            "The adopted scorer is frozen. Start a new independent chain to replace it."
+                        )
+                    root_same = old is not None and (
+                        plan.mode,
+                        plan.family,
+                        plan.link,
+                        plan.tweedie_power,
+                        plan.divide_target_by_weight,
+                    ) == (
+                        old.mode,
+                        old.family,
+                        old.link,
+                        old.tweedie_power,
+                        old.divide_target_by_weight,
+                    )
+                    keep = 0
+                    if root_same and old is not None:
+                        for _ref in old_refs:
+                            if (
+                                keep >= len(plan.stages)
+                                or plan.stages[keep] != old.stages[keep]
+                            ):
+                                break
+                            keep += 1
+                    plan.plan_id = new_plan_id()
+                    plan_refs = [
+                        PlanFitRef(
+                            plan.plan_id,
+                            ref["stage_id"],
+                            ref["model_name"],
+                            ref["fit_id"],
+                        )
+                        for ref in old_refs[:keep]
+                    ]
+                elif edit.operation == "adopt":
+                    plan_refs = [
+                        PlanFitRef(
+                            plan.plan_id,
+                            plan.stages[0].component_id,
+                            plan.adopted_model_name or "",
+                            status["id"],
+                        )
+                    ]
+                else:
+                    if old is not None:
+                        plan.plan_id = old.plan_id
+                        root_changed = (
+                            plan.mode,
+                            plan.family,
+                            plan.link,
+                            plan.tweedie_power,
+                            plan.divide_target_by_weight,
+                        ) != (
+                            old.mode,
+                            old.family,
+                            old.link,
+                            old.tweedie_power,
+                            old.divide_target_by_weight,
+                        )
+                        if pending is not None and (
+                            root_changed or plan.stages != old.stages
+                        ):
+                            raise ValueError(
+                                "A stage is fitting. Wait for it or start a new chain."
+                            )
+                        if old_refs and (
+                            root_changed
+                            or plan.stages[: len(old_refs)]
+                            != old.stages[: len(old_refs)]
+                        ):
+                            raise ValueError(
+                                "A fitted stage is frozen. Choose Revise model plan to start a new version."
+                            )
+                prepared = apply_variables(raw, current.data)
+                validate_model_plan(
+                    current, plan, raw, set(prepared.columns), through_count=0
+                )
+                validate_plan_catalogues(plan.stages, require_source=False)
+                candidate = deepcopy(current)
+                candidate.model_plan = plan
+                if candidate.to_dict() != current.to_dict():
+                    current = candidate
+                    persist_plan_refs()
+                    revision += 1
+                    screenings.invalidate((session_id, project_id, revision))
+                    feature_selections.invalidate((session_id, project_id, revision))
+                return {**plan_view(), "session_id": session_id, "revision": revision}
+            except (ValueError, TypeError, KeyError, OSError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/model-plan/fit-next", status_code=202)
+    def fit_next_plan_stage(edit: Revision) -> dict[str, Any]:
+        """Fit exactly the next prefix, using its exact server-issued parent."""
+        nonlocal current, revision, plan_refs
+        with lock:
+            check_revision(edit)
+            plan = current.model_plan
+            if plan is None or not plan.stages:
+                raise HTTPException(422, "Define at least one model stage first.")
+            try:
+                refs, pending = plan_ref_state(plan)
+                if pending is not None:
+                    raise ValueError("This stage is already fitting.")
+                count = len(refs) + 1
+                if plan.adopted_model_name is not None and count == 1:
+                    raise ValueError(
+                        "The adopted scorer is unavailable. Adopt the saved model again."
+                    )
+                if count > len(plan.stages):
+                    raise ValueError("Every declared stage is already fitted.")
+                prepared = apply_variables(raw, current.data)
+                validate_model_plan(
+                    current, plan, raw, set(prepared.columns), through_count=count
+                )
+                validate_plan_catalogues(plan.stages[:count], require_source=True)
+                name = plan_model_name(current, plan, count)
+                config = materialise_plan_prefix(current, plan, count, name)
+                candidate = deepcopy(current)
+                candidate.models[name] = config
+                source_path: Path | None = None
+                source_name: str | None = None
+                if refs:
+                    previous = refs[-1]
+                    source_name = previous["model_name"]
+                    source_path = jobs.artifact(current, source_name)
+                    source_stack = fitted_prefix(source_name)
+                    config.lineage = ModelLineage(
+                        parent_name=source_name,
+                        parent_fit_id=previous["fit_id"],
+                        parent_key=model_key(current, source_name),
+                        parent_prefix_fingerprint=scorer_fingerprint(source_stack),
+                        prefix_length=len(refs),
+                    )
+                    candidate.models[name] = config
+                job = jobs.start(
+                    candidate,
+                    raw.clone(),
+                    name,
+                    source_fit=source_path,
+                    frozen_source_name=source_name,
+                )
+                # Bind this queued worker to precisely this still-current plan.
+                jobs.jobs[name]["model_plan_id"] = plan.plan_id
+                jobs.jobs[name]["model_plan_stage_id"] = plan.stages[
+                    count - 1
+                ].component_id
+                stage_id = plan.stages[count - 1].component_id
+                plan_refs = [
+                    item
+                    for item in plan_refs
+                    if not (item.plan_id == plan.plan_id and item.stage_id == stage_id)
+                ]
+                issued_ref = PlanFitRef(plan.plan_id, stage_id, name, job["id"])
+                plan_refs.append(issued_ref)
+                plan_attempts[(plan.plan_id, stage_id)] = issued_ref
+                current = candidate
+                persist_plan_refs()
+                revision += 1
+                return {
+                    "job": job,
+                    "model_name": name,
+                    "stage_id": plan.stages[count - 1].component_id,
+                    "snapshot": {
+                        **plan_view(),
+                        "revision": revision,
+                        "session_id": session_id,
+                    },
+                }
+            except (ValueError, TypeError, KeyError, OSError) as exc:
+                raise HTTPException(422, str(exc)) from exc
 
     @app.post("/api/models/save")
     def save_model(edit: ModelEdit) -> dict[str, Any]:
@@ -1025,7 +1628,7 @@ def create_app(
                         parent_name=edit.source_name,
                         parent_fit_id=edit.source_fit_id,
                         parent_key=model_key(current, edit.source_name),
-                        parent_prefix_fingerprint=prefix_stack.fingerprint(),
+                        parent_prefix_fingerprint=scorer_fingerprint(prefix_stack),
                         prefix_length=len(prefix_recipes),
                     )
                     scope_start = len(prefix_recipes)
@@ -1252,7 +1855,7 @@ def create_app(
             return jobs.status(current)
 
     @app.get("/api/results/{name}")
-    def results(name: str) -> dict[str, Any]:
+    def results(name: str, stack_view: bool = False) -> dict[str, Any]:
         with lock:
             try:
                 result = jobs.result(current, name)
@@ -1260,30 +1863,36 @@ def create_app(
                 raise HTTPException(409, str(exc)) from exc
             if result.get("stack"):
                 return result
-            return {
-                **{k: v for k, v in result.items() if k != "tables"},
-                "table_index": [
-                    {"name": key, "rows": len(table["rows"]), "kind": "main"}
-                    for key, table in result["tables"].items()
-                ]
-                + [
-                    {
-                        "name": key,
-                        "stage_id": key,
-                        "label": next(
-                            (
-                                f"{stage.a} × {stage.b}"
-                                for stage in current.models[name].pair_stages
-                                if stage.stage_id == key
+            if not stack_view:
+                return {
+                    **{k: v for k, v in result.items() if k != "tables"},
+                    "table_index": [
+                        {"name": key, "rows": len(table["rows"]), "kind": "main"}
+                        for key, table in result["tables"].items()
+                    ]
+                    + [
+                        {
+                            "name": key,
+                            "stage_id": key,
+                            "label": next(
+                                (
+                                    f"{stage.a} × {stage.b}"
+                                    for stage in current.models[name].pair_stages
+                                    if stage.stage_id == key
+                                ),
+                                key,
                             ),
-                            key,
-                        ),
-                        "rows": len(table["rows"]),
-                        "kind": "pair",
-                    }
-                    for key, table in result.get("pair_tables", {}).items()
-                ],
-            }
+                            "rows": len(table["rows"]),
+                            "kind": "pair",
+                        }
+                        for key, table in result.get("pair_tables", {}).items()
+                    ],
+                }
+        from easy_glm.desktop.fit_worker import json_safe
+        from easy_glm.desktop.stack_views import stack_result
+
+        saved, frame, fitted = stack_artifact(name)
+        return json_safe(stack_result(saved, frame, fitted, result.get("warnings")))
 
     def stack_artifact(name: str) -> tuple[Project, pl.DataFrame, Any]:
         with lock:
@@ -1294,11 +1903,28 @@ def create_app(
             saved, saved_raw = deepcopy(current), raw.clone()
         with (source / "fit.pkl").open("rb") as handle:
             fitted = pickle.load(handle)  # private artifact from our fit worker
-        if fitted.name != name or getattr(fitted, "stack", None) is None:
-            raise HTTPException(404, "This fitted model is not a component stack.")
+        if fitted.name != name:
+            raise HTTPException(
+                409, "The fitted artifact does not match the selected model."
+            )
         from easy_glm.workflow.prep import prepare
 
-        return saved, prepare(saved, saved_raw), fitted
+        frame = prepare(saved, saved_raw)
+        if getattr(fitted, "stack", None) is None:
+            from easy_glm.workflow.run import rate_model_for
+            from easy_glm.workflow.stack import stack_from_legacy
+
+            # Expose a compatible single scorer for stack inspection without
+            # changing its fitted artifact or the ordinary single-model result.
+            fitted.rate_model = rate_model_for(saved, fitted)
+            fitted.config = saved.models[name]
+            try:
+                fitted.stack = stack_from_legacy(saved, fitted)
+            except ValueError as exc:
+                raise HTTPException(
+                    404, "This fitted model is not a compatible component stack."
+                ) from exc
+        return saved, frame, fitted
 
     @app.get("/api/stack/{name}/diagnostics")
     def stack_diagnostic_view(

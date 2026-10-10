@@ -39,9 +39,11 @@ Implemented in Python and the workbench, with software, statistical and actuaria
 - Show named models in a visual flow. Extend a complete fitted model or create
   an alternative from the same parent, keeping earlier fits unchanged. Preserve
   those connections in project JSON and label historical parents explicitly.
-- Keep the selected model's variables, settings and Fit action together. Save
-  and fit in one click, reopen saved drafts, and revise fitted models as new named
-  versions. Keep the model map available behind a disclosure.
+- Define the single/staged plan, names, methods and order in Project & data.
+  Configure each model in Variables and fit in order on Model. Start a new plan,
+  append a stage, or explicitly revise the fitted setup; preserve saved results
+  and reuse only the exact unchanged fitted prefix. Adopt an existing complete
+  scorer as a frozen starting point when continuing earlier work.
 - Identify the saved chain on Diagnostics and choose its final fit or the score
   after an individual model. A/E, lift and metrics include the earlier offsets;
   grouped A/E uses factors available at that point in the chain.

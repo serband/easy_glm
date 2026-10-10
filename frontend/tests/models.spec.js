@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { saveLegacyGlm } from './legacy-models.helpers.js';
 
 test('Variables → split/model → background fit → diagnostics → rate tables → invalidation', async ({
     page,
@@ -6,12 +7,19 @@ test('Variables → split/model → background fit → diagnostics → rate tabl
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     await page.goto('/');
+    // The normal blank-project journey now starts by defining a model plan on
+    // Project & data.  This regression test exercises the still-supported
+    // imported legacy single-model editor, so seed one legitimate saved model
+    // and explicitly choose a fresh legacy draft below.
+    await saveLegacyGlm(page, `Imported legacy ${Date.now()}`);
+    await page.reload();
     await expect(page.getByLabel('Role for Claims', { exact: true })).toHaveValue('target');
     await expect(page.getByRole('button', { name: 'Diagnostics', exact: true })).toBeDisabled();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await expect(
         page.getByRole('heading', { name: 'Model design and fit', exact: true }),
     ).toBeVisible();
+    await page.getByLabel('Model selection', { exact: true }).selectOption('__new__');
     await expect(page.getByRole('button', { name: 'Fit model', exact: true })).toBeDisabled();
     await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
     await page.getByLabel('Training fraction', { exact: true }).fill('0.75');
@@ -20,6 +28,7 @@ test('Variables → split/model → background fit → diagnostics → rate tabl
     await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await expect(page.locator('.split-settings')).toHaveCount(0);
+    await page.getByLabel('Model selection', { exact: true }).selectOption('__new__');
     await page.getByLabel('Design kind for DriverAge', { exact: true }).selectOption('continuous');
     await page
         .getByLabel('Design kind for VehicleAge', { exact: true })

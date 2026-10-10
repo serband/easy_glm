@@ -84,7 +84,10 @@ test('opening data is visible, explicit, and supports files, projects and both e
             }
         });
         await button('Open data').click();
-        await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeVisible();
+        await expect(page.getByRole('region', { name: 'Current dataset' })).toContainText(
+            'portfolio.csv',
+        );
+        await nav('Variables').click();
         expect(uploadAttempts).toBe(2);
         // The heading appears before the post-upload connection refresh finishes.
         await expect(page.getByLabel('Type for Age', { exact: true })).toBeEnabled();
@@ -101,8 +104,12 @@ test('opening data is visible, explicit, and supports files, projects and both e
         ).toEqual(['Infer from data', 'Numeric', 'Categorical']);
         await page.getByLabel('Type for Age', { exact: true }).selectOption('categorical');
         await nav('Model').click();
-        await expect(page.getByText('No predictors assigned yet.', { exact: true })).toBeVisible();
-        await button('Assign predictors in Variables').click();
+        await expect(page.getByRole('heading', { name: 'Define a model plan' })).toBeVisible();
+        await button('Go to Project & data').click();
+        await expect(
+            page.getByRole('heading', { name: 'Project & data', exact: true }),
+        ).toBeVisible();
+        await nav('Variables').click();
         await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeVisible();
         await expect(page.getByLabel('Type for Age', { exact: true })).toHaveValue('categorical');
         expect((await snapshot(page)).models).toHaveLength(0);
@@ -132,7 +139,10 @@ test('opening data is visible, explicit, and supports files, projects and both e
         expect((await snapshot(page)).project_id).toBe(raw.project_id);
         await replace();
         await button('Open project').click();
-        await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeVisible();
+        await expect(page.getByRole('region', { name: 'Current dataset' })).toContainText(
+            'portfolio.csv',
+        );
+        await nav('Variables').click();
         expect((await snapshot(page)).name).toBe('Fleet renewal 2027');
         await expect(page.getByLabel('Type for Age', { exact: true })).toHaveValue('auto');
         await nav('Project & data').click();
@@ -146,7 +156,9 @@ test('opening data is visible, explicit, and supports files, projects and both e
         await expect(button('Open project')).toBeDisabled();
         await replace();
         await button('Open project').click();
-        await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeVisible();
+        await expect(page.getByRole('region', { name: 'Current dataset' })).toContainText(
+            'portfolio.csv',
+        );
         expect((await snapshot(page)).project_id).not.toBe(beforePath.project_id);
 
         for (const [id, target] of [
@@ -164,7 +176,14 @@ test('opening data is visible, explicit, and supports files, projects and both e
             expect(openings).toHaveLength(requestCount);
             expect((await snapshot(page)).project_id).toBe(beforeExample.project_id);
             await replace();
+            const exampleOpened = page.waitForResponse(
+                (response) =>
+                    response.url().endsWith('/api/project/open') &&
+                    response.request().method() === 'POST',
+            );
             await button('Load example').click();
+            expect((await exampleOpened).ok()).toBe(true);
+            await expect(button('Load example')).toBeDisabled();
             await expect(
                 page.getByRole('heading', { name: 'Project & data', exact: true }),
             ).toBeVisible();
@@ -205,6 +224,11 @@ async function openCsv(page, name, contents) {
     const replace = page.getByLabel('Replace this session.', { exact: false });
     if (await replace.count()) await replace.check();
     await page.getByRole('button', { name: 'Open data', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Current dataset' })).toContainText(name);
+    await page
+        .getByRole('navigation', { name: 'Workbench' })
+        .getByRole('button', { name: /^Variables/ })
+        .click();
     await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeVisible();
 }
 
@@ -245,8 +269,10 @@ for (const failedRead of ['session', 'variables']) {
         await page.getByRole('button', { name: 'Open data', exact: true }).click();
         const failure = page.locator('.message.error');
         await expect(failure).toContainText('Data loaded. Reconnect to continue.');
-        await expect(page.getByLabel('Type for NewFactor', { exact: true })).toHaveValue('auto');
-        await expect(page.getByLabel('Type for OldFactor', { exact: true })).toHaveCount(0);
+        await expect(
+            page.getByRole('heading', { name: 'Project & data', exact: true }),
+        ).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeHidden();
         await expect(page.locator('.portfolio')).toHaveText('confirmed');
         const confirmed = await snapshot(page);
         expect(confirmed.project_id).toBe(opened.project_id);
@@ -260,7 +286,12 @@ for (const failedRead of ['session', 'variables']) {
         failRefresh = false;
         await failure.getByRole('button', { name: 'Reconnect', exact: true }).click();
         await expect(failure).toBeHidden();
+        await page
+            .getByRole('navigation', { name: 'Workbench' })
+            .getByRole('button', { name: /^Variables/ })
+            .click();
         await expect(page.getByLabel('Type for NewFactor', { exact: true })).toHaveValue('auto');
+        await expect(page.getByLabel('Type for OldFactor', { exact: true })).toHaveCount(0);
         expect((await snapshot(page)).project_id).toBe(opened.project_id);
         expect(openRequests).toBe(1);
         expect(errors).toEqual([]);
@@ -282,7 +313,7 @@ test('a stale opener reconnects without losing its draft or replaying Open', asy
     const before = await snapshot(page);
     const other = await context.newPage();
     try {
-        await other.goto('/');
+        await other.goto('/?view=variables');
         await other.getByLabel('Role for Response', { exact: true }).selectOption('target');
         await other.getByRole('button', { name: 'Preview changes', exact: true }).click();
         await other.getByRole('button', { name: 'Apply changes', exact: true }).click();
@@ -314,6 +345,13 @@ test('a stale opener reconnects without losing its draft or replaying Open', asy
         await page.getByRole('button', { name: 'Project & data', exact: true }).click();
         await page.getByLabel('Replace this session.', { exact: false }).check();
         await page.getByRole('button', { name: 'Open data', exact: true }).click();
+        await expect(page.getByRole('region', { name: 'Current dataset' })).toContainText(
+            'after-reconnect.csv',
+        );
+        await page
+            .getByRole('navigation', { name: 'Workbench' })
+            .getByRole('button', { name: /^Variables/ })
+            .click();
         await expect(page.getByLabel('Type for NewFactor', { exact: true })).toHaveValue('auto');
         expect((await snapshot(page)).project_id).not.toBe(before.project_id);
         expect(attempts).toBe(2);
