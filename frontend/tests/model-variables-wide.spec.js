@@ -13,7 +13,7 @@ test('a 500-column project keeps each planned stage searchable and isolated', as
 
     await openStageVariables(page, 0);
     await page.getByLabel('Use DriverAge').check();
-    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
     await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
 
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
@@ -29,7 +29,7 @@ test('a 500-column project keeps each planned stage searchable and isolated', as
     await page.getByLabel('Model variables JSON').fill(JSON.stringify({ variables }, null, 2));
     await page.getByRole('button', { name: 'Apply variable JSON', exact: true }).click();
     await expect(page.getByText('100 selected', { exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
 
     await page.getByRole('tab', { name: 'Table' }).click();
     await page.getByLabel('Search model variables').fill('OptionalFactor499');
@@ -37,10 +37,8 @@ test('a 500-column project keeps each planned stage searchable and isolated', as
     await expect(page.getByLabel('Use OptionalFactor499')).not.toBeChecked();
     await page.getByLabel('Search model variables').fill('OptionalFactor000');
     await expect(page.getByLabel('Use OptionalFactor000')).toBeChecked();
-    await page.screenshot({ path: '/private/tmp/easyglm-model-variables-wide-desktop.png', fullPage: true });
     await page.setViewportSize({ width: 804, height: 1100 });
     expect(await page.locator('.variables-scroll').evaluate(
         (element) => element.scrollWidth <= element.clientWidth,
     )).toBe(true);
-    await page.screenshot({ path: '/private/tmp/easyglm-model-variables-wide-804.png', fullPage: true });
 });

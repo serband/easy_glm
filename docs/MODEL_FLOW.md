@@ -1,9 +1,18 @@
 # Build a model plan
 
-Use **Project & data** to choose **Single model** or **Build in stages**.
-Give each model a name and choose its method: GLM, CatBoost, interaction table
-or catalogue lookup. The models run in the order shown. You can add another
-model later; you do not need to decide the entire sequence before fitting.
+Set up the model in **Project & data**, then fit it on **Model**.
+
+Open data and choose **Single model** or **Build in stages**. Assign the target,
+weight/exposure, ID, train/test split and any ignored columns. These assignments
+apply to the whole project. If the data has a split column, choose its training
+and holdout values explicitly.
+
+For a single model, choose its predictors, then define its method, family/link
+and variable treatment. For models in stages, define the shared response
+convention, then give each stage a name and method: GLM, CatBoost, interaction
+table or catalogue lookup. Choose variables separately for each stage. The
+models run in the order shown. You can add another model later; you do not need
+to decide the entire sequence before fitting.
 
 Every model uses the same starting data, response, weight/exposure and
 training/holdout split. A downstream model automatically uses the complete
@@ -13,8 +22,8 @@ the currently supported Poisson, Tweedie or Gaussian family.
 
 ## Choose variables
 
-Open **Variables** and choose the model you want to configure. Its Table and
-JSON views define only that model's variables. Search the alphabetical list,
+Stay in **Project & data** and choose the model you want to configure. Its Table
+and JSON views define only that model's variables. Search the alphabetical list,
 select factors and set their treatment. Targets, weights, IDs, split columns,
 offsets and ignored columns cannot become factors.
 
@@ -37,8 +46,10 @@ For example, this JSON selects three variables and gives driver age fixed cuts:
 }
 ```
 
-Only columns under `variables` are selected. This does not change project roles
-or another model's variables.
+Only columns under `variables` are selected. This does not change shared column
+assignments or another model's variables. A column can be selected in several
+stages. Shared target, weight and split settings are inherited downstream; they
+cannot be changed separately in a later stage.
 
 ## Fit in order
 
@@ -63,11 +74,18 @@ as well as the completed candidates.
 These actions are in **Project & data**:
 
 - **Add stage** appends a model. Give it a name and method, then choose its
-  variables. Adding to a single model turns the plan into models in stages.
+  variables. Choose **Build in stages** when a later model will use the current
+  model's score as its offset.
 - **Create revised plan** lets you change a fitted model. That model and the
   models after it need fitting again. An unchanged earlier prefix can be reused.
-- **Start a new plan** clears the current setup. Saved fitted versions remain
-  available separately; starting again does not delete them.
+- **Change model structure** returns to the Single model / Build in stages
+  choice. Choose a route and confirm to replace the working plan, or choose
+  **Keep current plan** to return without changes. Saved fitted versions are kept.
+
+After a fit, **Revise shared assignments** starts a copy of the plan before
+unlocking its target, weight and split assignments. Applying those changes
+requires fitting again from the first stage. The original recipes are kept;
+their old fits do not match the revised shared assignments.
 
 Unfitted stages can be edited, moved or removed directly. Fitted versions stay
 unchanged when you revise the working plan.

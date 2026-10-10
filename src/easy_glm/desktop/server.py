@@ -227,7 +227,7 @@ def create_app(
                 continue
             if not isinstance(source_path, str) or not isinstance(source_hash, str):
                 raise ValueError(
-                    f"{stage.name}: upload a catalogue in Variables before fitting."
+                    f"{stage.name}: upload a catalogue in Project & data before fitting."
                 )
             canonical = str(Path(source_path).resolve())
             if catalogue_sources.get(canonical) != source_hash:
@@ -1569,7 +1569,7 @@ def create_app(
                         or edit.min_level_share is not None
                     ):
                         raise ValueError(
-                            "Bands belong to Variables and cannot be changed from this model draft."
+                            "Bands are defined in Project & data and cannot be changed from this model draft."
                         )
                 for component in edit.fields.get("components", []):
                     if component.get("kind") != "catalogue":

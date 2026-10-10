@@ -22,6 +22,7 @@
         onContext = () => {};
     export let onRequestedModelConsumed = () => {};
     export let initialSubset = 'holdout';
+    export let showBothDiagnosticSubsets = true;
     let comparisonResult = null,
         comparisonKey = '',
         sentContext = '',
@@ -912,8 +913,8 @@
                     </div>
                     {#if !wb.predictors.length}
                         <p>No predictors assigned yet.</p>
-                        <button onclick={() => onNavigate('variables')}
-                            >Assign predictors in Variables</button
+                        <button onclick={() => onNavigate('project')}
+                            >Assign predictors in Project &amp; data</button
                         >
                     {:else}
                         <p class="help-text">
@@ -923,10 +924,11 @@
                         <details>
                             <summary>Defaults for every predictor</summary>
                             <p class="help-text">
-                                Numeric binning is shared across models. Change it in Variables.
+                                Numeric binning is shared across legacy models. Change it in Project
+                                &amp; data.
                             </p>
-                            <button type="button" onclick={() => onNavigate('variables')}
-                                >Edit numeric binning in Variables</button
+                            <button type="button" onclick={() => onNavigate('project')}
+                                >Edit numeric binning in Project &amp; data</button
                             >
                             <div class="form-grid compact">
                                 <label
@@ -1074,7 +1076,8 @@
                             <strong>Before fitting</strong>{#each wb.problems as problem}<p>
                                     {problem}
                                 </p>{/each}
-                            <button onclick={() => onNavigate('variables')}>Review Variables</button
+                            <button onclick={() => onNavigate('project')}
+                                >Review Project &amp; data</button
                             >
                         </div>{/if}
                     <h3>Fit settings</h3>
@@ -1321,6 +1324,7 @@
                         </div>
                         <ReviewPanel
                             diagnosticTab={comparisonTab}
+                            {showBothDiagnosticSubsets}
                             challenger={effectiveChallenger}
                             fitIdentity={job?.id || ''}
                             comparisonFitIdentity={jobs[effectiveChallenger]?.id || ''}
@@ -1411,6 +1415,7 @@
                     {:else}
                         <ReviewPanel
                             {diagnosticTab}
+                            {showBothDiagnosticSubsets}
                             onIncludePair={includePairDraft}
                             challenger={effectiveChallenger}
                             fitIdentity={job?.id || ''}
@@ -1451,6 +1456,7 @@
                 </div>
                 {#if table?.kind === 'pair'}
                     <ReviewPanel
+                        {showBothDiagnosticSubsets}
                         challenger={effectiveChallenger}
                         fitIdentity={job?.id || ''}
                         comparisonFitIdentity={jobs[effectiveChallenger]?.id || ''}
@@ -1561,6 +1567,7 @@
                     </ReviewPanel>
                 {:else if table}<div class="rate-primary">
                         <ReviewPanel
+                            {showBothDiagnosticSubsets}
                             challenger={effectiveChallenger}
                             fitIdentity={job?.id || ''}
                             comparisonFitIdentity={jobs[effectiveChallenger]?.id || ''}

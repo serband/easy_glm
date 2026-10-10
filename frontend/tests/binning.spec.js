@@ -132,7 +132,7 @@ test('numeric binning stays in sync and reaches fitted rate tables', async ({ pa
     const exported = await api('project');
     expect(exported.body.design.defaults.n_bins).toBe(8);
     expect(exported.body.design.variables.VehicleAge.knots).toEqual([0, 1, 2, 3, 4, 5]);
-    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await panel.getByRole('button', { name: /^VehicleAge/ }).click();
     await expect(panel).toContainText('7 actual bins');
     await page.setViewportSize({ width: 799, height: 803 });
@@ -156,7 +156,7 @@ test('numeric binning stays in sync and reaches fitted rate tables', async ({ pa
     await page.getByLabel('Project file', { exact: true }).setInputFiles(projectPath);
     await page.getByLabel('Replace this session.', { exact: false }).check();
     await button('Open project').click();
-    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await expect(page.getByLabel('Default number of bins', { exact: true })).toHaveValue('9');
     await button('Variables JSON').click();
     const reopened = JSON.parse(await jsonEditor.inputValue()).binning;
@@ -408,7 +408,7 @@ test('automatic previews debounce edits, skip invalid drafts, and stop off the V
         'DriverAge',
         (request) => request.setup.binning.default_bins === 11,
     );
-    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await resumed;
     await expect(panel.locator('figure.binning-histogram')).toBeVisible();
 

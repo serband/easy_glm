@@ -32,7 +32,7 @@ test('downloads applied artifacts and excludes unsaved adjustment previews', asy
     // The subsequent fit deliberately uses the imported-model compatibility editor.
     await saveLegacyGlm(page, `Imported legacy ${Date.now()}`);
     await page.reload();
-    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await page.getByLabel('Training fraction', { exact: true }).fill('0.7');
     await button('Preview changes').click();
     await button('Apply changes').click();

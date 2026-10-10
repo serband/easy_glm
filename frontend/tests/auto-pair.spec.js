@@ -18,7 +18,7 @@ test('pair A/E follows latest selections and context without stale heatmaps', as
     await page.goto('/');
     await saveLegacyGlm(page, `Imported legacy ${Date.now()}`);
     await page.reload();
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await page.getByLabel('Role for AnnualMileage', { exact: true }).selectOption('unassigned');
     await button('Preview changes').click();
     await button('Apply changes').click();

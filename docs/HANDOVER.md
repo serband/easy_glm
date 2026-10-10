@@ -6,7 +6,7 @@
 
 | Purpose | Checkout and state |
 | --- | --- |
-| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/configured-plan-form`, following layout revision `e0fced7`; defines the plan in Project & data, per-model variables in Variables, and ordered fitting in Model |
+| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/project-setup-workflow`, following layout revision `0102f86`; consolidated setup in Project & data, with ordered fitting in Model |
 | User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
 | Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
 
@@ -31,21 +31,30 @@ The stack branch implements an ordered multiplicative sequence of GLM, direct Ca
 
 `PricingSession` and named `PricingModel` objects provide short public calls (`fit_glm`, `fit_catboost`, `fit_interaction`, `fit_catalogue`, `ae`, `compare`, `edit_rates`, `export_lookup`, `save`/`load`). The workbench has a stacked-model path and component inspection, comparison, amendment, and export views. Named fits are detached; append and amendment create new models. The Python example demonstrates GLM → two pair tables → vehicle → reviewed vehicle → occupation → postcode, then a separate CatBoost → GLM candidate. Catalogue fitting pins the full supplied key/attribute table, scores keys without training rows, checks joins/coverage, and exports an **incremental component** file. A catalogue-first file is a full unit prediction only when there is no external baseline; otherwise the external offset remains separate in the complete scorer. Missing keys error by default unless an explicit fallback is chosen.
 
-**Current product work: the project model plan.** Define **Single model** or
-**Build in stages**, names, methods and order in **Project & data**. Select a
-stage and edit its searchable Table/JSON definitions in **Variables**. **Model**
+**Current product work: consolidated project setup.** In **Project & data**, open
+data, choose **Single model** or **Build in stages**, and assign the shared column
+roles. For a single model, choose predictors before model details and treatment.
+For models in stages, define the shared response convention and the named methods
+in order, then select variables separately for each stage using its searchable
+Table/JSON editor. **Variables** is no longer a sidebar destination. **Model**
 contains fitting options and the next eligible Fit action. The plan can start
 with one model and be extended later. Blank future stages do not block fitting
-the configured first stage.
+the configured first stage. The navigation change reuses the existing role and
+model-plan API contracts; it does not require a project-format migration.
 
-The current plan is separate from immutable saved fitted versions. **Start a
-new plan** clears its setup and exact fitted references while retaining history.
+The current plan is separate from immutable saved fitted versions. **Change
+model structure** opens the Single model / Build in stages chooser. Choosing a
+route and confirming replaces the working setup and exact fitted references;
+**Keep current plan** returns without changes. Saved fitted versions are kept.
 **Create revised plan** explicitly unlocks fitted setup: unchanged earlier fits
 are reused by their exact identities, and the changed stage and suffix need new
 fits. Existing fitted models or whole chains can be adopted explicitly as a
 frozen starting scorer and extended. Its accepted adjustments and interaction
 tables remain in the offset. Replacing that frozen starting scorer requires a
-new independent plan; it is not an editable/refitted GLM placeholder.
+new independent plan; it is not an editable/refitted GLM placeholder. After a
+fit, **Revise shared assignments** starts a plan copy before unlocking shared
+roles. Applying role changes requires a new root fit; the old recipes remain,
+but their results do not match the changed assignments.
 
 Each component selects its own factors from safe predictor and unassigned source columns. Its **Variables for this model** editor provides searchable alphabetical Table and JSON views. Global roles identify response, weight, ID, split and ignore; those controls cannot be changed in this editor. GLMs and interaction tables now store their own defaults, types and bands in optional `ComponentRecipe.design` snapshots. Direct CatBoost uses raw values and local categorical/numeric treatment. Legacy recipes without this field retain their previous project-design behaviour and serialize without the new field, preserving existing fingerprints. A child's target, weight, family, log link and split remain inherited; its offset is the complete fitted predecessor scorer. Model-save validation rejects changes to the response convention or frozen prefix and refuses edits to global bands through a stack-model save.
 
@@ -89,6 +98,31 @@ The Model builder work is local, unpushed and unreleased. Fresh validation for t
 Known first-version boundaries: each named model scores a linear sequence; the diagram can show alternatives but does not combine two parent models; one-key, user-supplied catalogues; no arbitrary imported estimators, automatic hierarchical credibility, geographic smoothing, or mixed-stack HTML report. A direct CatBoost component requires its saved model artifact to score and cannot be represented exactly by GLM rate tables alone. Confirm any further limit in code before asserting it.
 
 ## Source map and checks
+
+**Current consolidated-setup checks, 10 October.** The focused Python suite
+passed **94 tests** covering model plans, shared roles, split settings, predictor
+screening and feature selection. Svelte check/build, all **27 frontend unit
+tests**, Black, Ruff and mypy passed. The final browser build passed **14**
+single/staged-plan scenarios, **seven** Explore scenarios and all **five**
+server-reconnection cases. The remaining affected legacy fitting, bands,
+interaction, screening, diagnostics, export and wide-variable suites also passed
+on isolated fixtures. The wide checks exercised 500 model variables and a
+2,000-column shared editor; the latter kept at most 28 table rows rendered.
+
+Independent rendered reviews covered single and staged setup at desktop and
+narrow widths. A separate pricing-actuary review fitted GLM and CatBoost stages
+with different variables, inspected cumulative training A/E, and exercised bulk
+JSON selection and protected shared assignments. Independent software and
+adversarial reviews closed their findings. Both public walkthroughs executed all
+**48 Python blocks unchanged** against the source, including scoring and exports.
+
+Recovery checks found and fixed a false Explore warning after a server restart,
+raw JSON being reformatted on a repeated active-tab click, and stale project
+metadata after explicit discard/reload. Reconnecting keeps drafts, invalidates
+old previews and blocks applying a draft to a replacement project. These are
+local macOS source checks; installed-wheel, Windows, GitHub CI and the separate
+5M-row budget were not rerun for this setup change. Nothing was pushed or released.
+The validation records below describe earlier changes and are historical.
 
 Project-page layout correction on 10 October: one page title, matching card widths
 and padding, consistent section typography, and aligned stage fields. Independent
@@ -273,7 +307,7 @@ local backup/transfer operation, not a commit, push or release:
 source_checkout=/private/tmp/easyglm-model-variable-setup
 packet=/Users/serban/Documents/Projects/easy_glm/.internal/handover-20261010
 mkdir -p "$packet/docs/plans"
-git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/project-model-plan refs/tags/v0.472
+git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/project-setup-workflow refs/tags/v0.472
 git -C "$source_checkout" bundle verify "$packet/easyglm.bundle"
 cp "$source_checkout/AGENTS.md" "$packet/AGENTS.md"
 cp "$source_checkout/docs/HANDOVER.md" "$packet/docs/HANDOVER.md"
@@ -284,8 +318,8 @@ cp "$source_checkout/docs/plans/STACKED_MODELS.md" "$packet/docs/plans/STACKED_M
 cp "$source_checkout/docs/plans/PROJECT_MODEL_WORKFLOW.md" "$packet/docs/plans/PROJECT_MODEL_WORKFLOW.md"
 ```
 
-Check that the bundle contains the current `codex/project-model-plan` commit
-(`git rev-parse codex/project-model-plan`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
+Check that the bundle contains the current `codex/project-setup-workflow` commit
+(`git rev-parse codex/project-setup-workflow`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
 **new** directory with the stack branch selected, then copy the seven guidance
 files into that clone and inspect `git status` before work. Keep the packet's
 directory structure; its docs are newer than the 30 September recovery bundle.
@@ -293,7 +327,7 @@ For example, with transferred packet and destination paths chosen by the
 operator:
 
 ```bash
-git clone --branch codex/project-model-plan "$packet/easyglm.bundle" "$destination"
+git clone --branch codex/project-setup-workflow "$packet/easyglm.bundle" "$destination"
 cp "$packet/AGENTS.md" "$destination/AGENTS.md"
 cp "$packet/docs/HANDOVER.md" "$destination/docs/HANDOVER.md"
 cp "$packet/docs/MODEL_FLOW.md" "$destination/docs/MODEL_FLOW.md"

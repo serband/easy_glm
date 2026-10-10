@@ -222,10 +222,7 @@ test('training observed rates share an aligned chart with exposure and update wi
     expect(model.divide_target_by_weight).toBe(false);
     await expect(page.locator('.response-basis')).toContainText('Density');
     const count = requests.length;
-    await page
-        .getByRole('navigation', { name: 'Workbench' })
-        .getByRole('button', { name: /^Variables\s*\d*$/ })
-        .click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     const freshRead = page.waitForResponse((r) => r.url().includes('/api/explore?'));
     await explore(page);
     await freshRead;
@@ -293,14 +290,14 @@ test('unassigned target still shows row exposure and a direct setup action', asy
     await expect(chart(page, 'Age').locator('.rate-tick')).toHaveCount(0);
     await expect(chart(page, 'Age').locator('.exposure-axis-label')).toHaveText('Rows');
     await expect(
-        page.getByRole('button', { name: 'Assign target in Variables', exact: true }),
+        page.getByRole('button', { name: 'Assign target in Project & data', exact: true }),
     ).toBeVisible();
     await page.screenshot({
         path: info.outputPath('exposure-without-target-884.png'),
         fullPage: true,
     });
-    await page.getByRole('button', { name: 'Assign target in Variables', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Assign target in Project & data', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Project & data', exact: true })).toBeVisible();
 });
 
 test('negative responses, missing-rate gaps, numeric null and single groups render honestly', async ({
@@ -430,7 +427,7 @@ test('long categorical labels stay separated through the final category', async 
     });
 });
 
-test('missing training split links directly to Variables', async ({ page }) => {
+test('missing training split links directly to Project & data', async ({ page }) => {
     await loadExample(page);
     await page.route('**/api/explore?**', (route) =>
         route.fulfill({ status: 422, json: { detail: "Split column 'train_test' is missing." } }),
@@ -438,6 +435,6 @@ test('missing training split links directly to Variables', async ({ page }) => {
     await explore(page);
     await expect(page.getByRole('alert')).toContainText('Split column');
     await page.getByRole('button', { name: 'Set up train / holdout', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeVisible();
-    await expect(page.getByRole('region', { name: 'Variable settings' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Project & data', exact: true })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Model setup' })).toBeVisible();
 });

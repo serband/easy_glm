@@ -60,7 +60,6 @@
     }
     const pageTitles = {
         project: 'Project & data',
-        variables: 'Variables',
         explore: 'Explore',
         model: 'Model',
         diagnostics: 'Diagnostics',
@@ -75,24 +74,43 @@
         planVariablesDirty = false,
         planRevisionIntent = false,
         showSharedSetup = false,
-        requestedPlanModel = '';
+        requestedPlanModel = '',
+        focusModelSetup = false,
+        planRefreshEpoch = 0,
+        choosingNewPlan = false;
+    $: sharedSetupLocked = Boolean(planState?.fit_refs?.length);
+    $: planHasSelectedFactors = Boolean(
+        planState?.plan?.stages?.some((stage) => stage.factors?.length),
+    );
+    $: modelIsDefined = Boolean(state?.models?.length || planState?.plan);
     async function refreshPlan() {
         if (!state?.columns?.length) {
             planState = null;
             return;
         }
         const generation = `${state.session_id}:${state.revision}`;
+        const requestEpoch = ++planRefreshEpoch;
         try {
             const fresh = await api('model-plan');
-            if (`${state?.session_id}:${state?.revision}` === generation) planChanged(fresh);
+            if (
+                requestEpoch === planRefreshEpoch &&
+                `${state?.session_id}:${state?.revision}` === generation
+            )
+                planChanged(fresh);
         } catch (e) {
-            if (`${state?.session_id}:${state?.revision}` === generation) {
+            if (
+                requestEpoch === planRefreshEpoch &&
+                `${state?.session_id}:${state?.revision}` === generation
+            ) {
                 error = `Cannot read the current model plan. ${e.message}`;
             }
         }
     }
     function planChanged(next) {
+        // A successful save supersedes any older initial/background plan read.
+        planRefreshEpoch += 1;
         planState = next;
+        choosingNewPlan = false;
         if (next?.revision != null && state) state = { ...state, revision: next.revision };
         const stages = next?.plan?.stages || [];
         if (!stages.some((stage) => stage.component_id === planStageId))
@@ -104,13 +122,48 @@
         } else resultsReady = Boolean(next?.history?.length);
         if (!(next?.fit_refs || []).length) planRevisionIntent = false;
     }
+    async function reviseSharedAssignments() {
+        if (!planState?.plan || busy) return;
+        if (
+            !window.confirm(
+                'Create a revised plan with these shared assignments? The original model recipes remain in this project, but their fitted results no longer match these shared assignments. Every stage in the revised plan must be fitted again.',
+            )
+        )
+            return;
+        busy = true;
+        error = '';
+        try {
+            planChanged(
+                await api('model-plan', {
+                    session_id: state.session_id,
+                    revision: state.revision,
+                    operation: 'start',
+                    plan: structuredClone(planState.plan),
+                }),
+            );
+            planRevisionIntent = false;
+        } catch (e) {
+            error = e.message;
+        } finally {
+            busy = false;
+        }
+    }
     function restoreSavedSelection() {
         if (planState?.plan) return;
         const latest = planState?.history?.at(-1);
-        legacySelected = latest && !latest.components?.length ? latest.name : '';
+        legacySelected =
+            (latest && !latest.components?.length ? latest.name : '') ||
+            state?.models?.at(-1) ||
+            '';
         requestedPlanModel = latest?.components?.length ? latest.name : '';
     }
     async function navigate(next) {
+        // Variable definitions now belong to Project & data. Keep old bookmarks and
+        // links from Explore and Model working while taking the user to the setup.
+        if (next === 'variables') {
+            next = 'project';
+            focusModelSetup = true;
+        }
         if (planVariablesDirty && next !== view) {
             if (!window.confirm('Discard unsaved stage-variable changes?')) return;
             planVariablesDirty = false;
@@ -135,6 +188,12 @@
             }
         }
         view = next;
+        if (next === 'project' && focusModelSetup) {
+            requestAnimationFrame(() => {
+                document.getElementById('model-setup')?.scrollIntoView({ block: 'start' });
+                focusModelSetup = false;
+            });
+        }
         if (['project', 'variables', 'model'].includes(next)) await refreshPlan();
         if (next === 'project' || next === 'export') {
             try {
@@ -144,6 +203,12 @@
                 projectError = e.message;
             }
         }
+    }
+    function confirmDiscardStageDraft() {
+        if (!planVariablesDirty) return true;
+        if (!window.confirm('Discard unsaved model-variable changes?')) return false;
+        planVariablesDirty = false;
+        return true;
     }
     function requestMobilePage(event) {
         const next = event.currentTarget.value;
@@ -453,7 +518,7 @@
                           train_value: draft.split.train_value,
                       }
                     : null,
-                binning: draft.binning || { default_bins: 20, overrides: {} },
+                ...(!planState?.plan ? { binning: draft.binning } : {}),
             },
             null,
             2,
@@ -526,8 +591,9 @@
             const obj = JSON.parse(jsonText);
             if (!obj || Array.isArray(obj) || typeof obj !== 'object')
                 throw new Error('Use a JSON object with the ten roles.');
-            if (Object.keys(obj).some((r) => !roles.includes(r) && r !== 'binning'))
-                throw new Error('Use the roles and binning shown in the template.');
+            const acceptedJsonKeys = planState?.plan ? roles : [...roles, 'binning'];
+            if (Object.keys(obj).some((r) => !acceptedJsonKeys.includes(r)))
+                throw new Error('Use the shared roles shown in the template.');
             let binning = draft.binning;
             if (Object.hasOwn(obj, 'binning')) {
                 const entry = obj.binning;
@@ -659,6 +725,7 @@
         }
     }
     function switchTab(next) {
+        if (next === tab) return;
         if (tab === 'table' && binningError) {
             error = binningError;
             return;
@@ -696,6 +763,13 @@
             reset();
             notice = '';
             await refreshPlan();
+            projectInfo = null;
+            projectError = '';
+            try {
+                projectInfo = await api('project');
+            } catch (e) {
+                projectError = e.message;
+            }
             restoreSavedSelection();
             if (!state.columns.length) await navigate('project');
         } catch (e) {
@@ -858,6 +932,7 @@
             jsonText = roleJson();
             preview = null;
             notice = 'Settings applied to this session.';
+            await refreshPlan();
         } catch (e) {
             error = e.message;
         } finally {
@@ -893,7 +968,14 @@
         try {
             await reload();
             const initialView = new URLSearchParams(window.location.search).get('view');
-            if (Object.hasOwn(pageTitles, initialView)) await navigate(initialView);
+            if (initialView === 'variables') {
+                await navigate('variables');
+                window.history.replaceState(
+                    {},
+                    '',
+                    `${window.location.pathname}?view=project#model-setup`,
+                );
+            } else if (Object.hasOwn(pageTitles, initialView)) await navigate(initialView);
         } catch (e) {
             error = e.message;
         }
@@ -928,11 +1010,12 @@
             <span
                 >{state?.setup.assignments.target &&
                 (state?.setup.roles.predictor.length ||
+                    planHasSelectedFactors ||
                     (stackMode && (modelContext?.fitted?.length || modelContext?.selected)))
                     ? '✓'
                     : '○'} Target and predictors</span
             >
-            <span>{state?.models.length ? '✓' : '○'} Model defined</span>
+            <span>{modelIsDefined ? '✓' : '○'} Model defined</span>
             <span>{resultsReady ? '✓' : '○'} Model fitted</span>
         </div>
         <div class="rail-bottom">
@@ -964,10 +1047,7 @@
             </select>
         </label>
         <main>
-            {#if error && ['project', 'variables'].includes(view)}<div
-                    class="message error"
-                    role="alert"
-                >
+            {#if error && view === 'project'}<div class="message error" role="alert">
                     <span>{error}</span><button onclick={reconnect} disabled={busy}
                         >Reconnect</button
                     >
@@ -976,34 +1056,17 @@
                             disabled={busy}>Discard draft and reload</button
                         >{/if}
                 </div>{/if}
-            {#if planState?.plan && view === 'variables' && !showSharedSetup}
-                <PlanVariables
-                    {api}
-                    {state}
-                    {planState}
-                    {uploadCatalogue}
-                    bind:selectedStageId={planStageId}
-                    revisionIntent={planRevisionIntent}
-                    onChanged={planChanged}
-                    onDirty={(value) => (planVariablesDirty = value)}
-                    onSharedSetup={() => (showSharedSetup = true)}
-                />
-            {:else}
-                {#if planState?.plan && view === 'variables' && showSharedSetup}<div
-                        class="session-note"
-                    >
-                        Editing shared data roles and split. <button
-                            onclick={() => (showSharedSetup = false)}>Back to stage setup</button
-                        >
-                    </div>{/if}
-                <div hidden={view !== 'variables'}>
+            {#snippet sharedDataSetup()}
+                <section
+                    class="model-card shared-data-setup"
+                    aria-label="Shared column assignments"
+                >
                     <div class="heading">
                         <div>
-                            <div class="eyebrow">PORTFOLIO SETUP</div>
-                            <h1>Variables</h1>
+                            <h2>Shared data setup</h2>
                             <p>
-                                Choose the target and predictors. Numeric values measure an amount;
-                                categorical values identify a group.
+                                Set the response, exposure or weight, ID and train/test split once.
+                                Ignore removes a column from every model picker and search.
                             </p>
                         </div>
                         <div class="dataset-meta">
@@ -1016,6 +1079,17 @@
                         server. Source files are unchanged.
                     </div>
                     {#if notice}<div class="message" role="status">{notice}</div>{/if}
+                    {#if sharedSetupLocked}
+                        <div class="message">
+                            Shared assignments are locked because this plan has fitted stages.
+                            Create a revised plan before changing them. The original fitted versions
+                            are kept as history, and every stage in the revised plan must be
+                            refitted.
+                            <button onclick={reviseSharedAssignments} disabled={busy}
+                                >Revise shared assignments</button
+                            >
+                        </div>
+                    {/if}
                     {#if state && draft}
                         <div class="role-summary">
                             {#each counts as item}<button
@@ -1030,7 +1104,7 @@
                                     )}<b>{item.count}</b></button
                                 >{/each}
                         </div>
-                        <fieldset disabled={busy} class="edit-fieldset">
+                        <fieldset disabled={busy || sharedSetupLocked} class="edit-fieldset">
                             <section class="editor-card">
                                 <div class="toolbar">
                                     <div class="segmented">
@@ -1135,10 +1209,15 @@
                                                 >{/each}</select
                                         ><span>{filtered.length} variables</span>
                                     </div>
-                                    <div class="table-head grid-row">
+                                    <div
+                                        class:legacy-variable-design={!planState?.plan}
+                                        class="table-head grid-row shared-role-row"
+                                    >
                                         <span>SOURCE COLUMN</span><span>DISPLAY NAME</span><span
                                             >ROLE</span
-                                        ><span>VARIABLE TYPE</span><span>SOURCE TYPE</span>
+                                        >{#if !planState?.plan}<span>VARIABLE TYPE</span>{/if}<span
+                                            >SOURCE TYPE</span
+                                        >
                                     </div>
                                     <div
                                         class="virtual-table"
@@ -1148,6 +1227,7 @@
                                     >
                                         <div
                                             style:height={rowOffsets.at(-1) + 'px'}
+                                            class:legacy-variable-design={!planState?.plan}
                                             class="virtual-space"
                                         >
                                             <div
@@ -1158,7 +1238,8 @@
                                             >
                                                 {#each visible as column (column.name)}<div>
                                                         <div
-                                                            class="grid-row data-row"
+                                                            class:legacy-variable-design={!planState?.plan}
+                                                            class="grid-row shared-role-row data-row"
                                                             data-column={column.name}
                                                         >
                                                             <button
@@ -1203,27 +1284,27 @@
                                                                             ' ',
                                                                         )}</option
                                                                     >{/each}</select
-                                                            ><select
-                                                                aria-label={'Type for ' +
-                                                                    column.name}
-                                                                value={getType(
-                                                                    column.name,
-                                                                    typeMap,
-                                                                )}
-                                                                onchange={(e) =>
-                                                                    setType(
+                                                            >{#if !planState?.plan}<select
+                                                                    aria-label={'Type for ' +
+                                                                        column.name}
+                                                                    value={getType(
                                                                         column.name,
-                                                                        e.currentTarget.value,
+                                                                        typeMap,
                                                                     )}
-                                                                >{#each types as type}<option
-                                                                        value={type}
-                                                                        >{type === 'auto'
-                                                                            ? 'Infer from data'
-                                                                            : type === 'numeric'
-                                                                              ? 'Numeric'
-                                                                              : 'Categorical'}</option
-                                                                    >{/each}</select
-                                                            ><span class="dtype"
+                                                                    onchange={(e) =>
+                                                                        setType(
+                                                                            column.name,
+                                                                            e.currentTarget.value,
+                                                                        )}
+                                                                    >{#each types as type}<option
+                                                                            value={type}
+                                                                            >{type === 'auto'
+                                                                                ? 'Infer from data'
+                                                                                : type === 'numeric'
+                                                                                  ? 'Numeric'
+                                                                                  : 'Categorical'}</option
+                                                                        >{/each}</select
+                                                                >{/if}<span class="dtype"
                                                                 >{column.dtype}</span
                                                             >
                                                         </div>
@@ -1245,12 +1326,10 @@
                                     </div>
                                 {:else}
                                     <div class="json-hint">
-                                        Roles and binning use source column names. Missing role
-                                        columns become ignored. The split entry includes its column
-                                        and training value; the other value is holdout. A missing
-                                        binning section preserves current settings; a supplied
-                                        overrides object replaces all binning overrides. Names and
-                                        types stay as set in the table.
+                                        Roles use source column names. Missing role columns become
+                                        ignored. The split entry includes its column and training
+                                        value; the other value is holdout. Variable types, bands and
+                                        cuts are chosen separately for each model below.
                                     </div>
                                     <textarea
                                         class="json-editor"
@@ -1269,10 +1348,11 @@
                                     ><span>Revision {state.revision}</span>
                                 </div>
                             </section>
-                            {#if tab === 'table'}<BinningSettings
+                            {#if !planState?.plan && tab === 'table'}
+                                <BinningSettings
                                     {api}
                                     {state}
-                                    active={view === 'variables'}
+                                    active={view === 'project'}
                                     setup={draft}
                                     disabled={busy || differentProject}
                                     resetKey={binningReset}
@@ -1284,7 +1364,8 @@
                                         draft = next;
                                         touch();
                                     }}
-                                />{/if}
+                                />
+                            {/if}
                             {#if !draft.assignments.split}
                                 <section
                                     class="model-card variable-random-split"
@@ -1340,28 +1421,29 @@
                                     </p>
                                 </section>
                             {/if}
-                            {#if view === 'variables'}<VariableScreening
-                                    {api}
-                                    {state}
-                                    setup={draft}
-                                    context={screeningContext}
-                                    disabled={busy || differentProject}
-                                    prepare={prepareScreening}
-                                    onRemove={removeScreenedPredictors}
-                                />{/if}
-                            {#if view === 'variables'}<FeatureSelection
-                                    {api}
-                                    {state}
-                                    setup={draft}
-                                    context={screeningContext}
-                                    disabled={busy || differentProject || !!binningError}
-                                    prepare={prepareScreening}
-                                    onChange={stageFeatureSelection}
-                                />{/if}
+                            <VariableScreening
+                                {api}
+                                {state}
+                                setup={draft}
+                                context={screeningContext}
+                                active={view === 'project'}
+                                disabled={busy || differentProject}
+                                prepare={prepareScreening}
+                                onRemove={removeScreenedPredictors}
+                            />
+                            <FeatureSelection
+                                {api}
+                                {state}
+                                setup={draft}
+                                context={screeningContext}
+                                disabled={busy || differentProject || !!binningError}
+                                prepare={prepareScreening}
+                                onChange={stageFeatureSelection}
+                            />
                         </fieldset>
                     {:else}<div class="loading">Opening local data…</div>{/if}
-                </div>
-            {/if}
+                </section>
+            {/snippet}
             <section hidden={view !== 'project'} class="workflow-page project-page">
                 <div class="heading">
                     <div>
@@ -1390,17 +1472,138 @@
                         onOpened={projectOpened}
                         onReconnect={reconnectForOpen}
                     />{/if}
-                {#if state?.columns.length}<ProjectModelPlan
-                        {api}
-                        {state}
-                        {planState}
-                        onChanged={planChanged}
-                        onRevisionIntent={() => (planRevisionIntent = true)}
-                        onNavigate={(target, stageId) => {
-                            planStageId = stageId;
-                            navigate(target);
-                        }}
-                    />{/if}
+                {#if state?.columns.length}
+                    {#if !planState?.plan || choosingNewPlan}
+                        <section id="model-setup" aria-label="Model setup">
+                            <ProjectModelPlan
+                                {api}
+                                {state}
+                                {planState}
+                                onChanged={planChanged}
+                                onRevisionIntent={() => (planRevisionIntent = true)}
+                                {confirmDiscardStageDraft}
+                                showHistory={false}
+                                routeChoiceOnly={choosingNewPlan}
+                                onCancelNewPlan={() => {
+                                    choosingNewPlan = false;
+                                }}
+                            />
+                        </section>
+                        {#if !choosingNewPlan && state.models?.length}
+                            <section
+                                class="model-card legacy-model-compat"
+                                aria-label="Existing saved models"
+                            >
+                                <div>
+                                    <h2>
+                                        Existing saved model{state.models.length === 1 ? '' : 's'}
+                                    </h2>
+                                    <p>
+                                        This project contains model{state.models.length === 1
+                                            ? ''
+                                            : 's'}
+                                        created before model plans. Open one to inspect or continue working
+                                        with it. Shared assignments below still apply to the project data.
+                                    </p>
+                                </div>
+                                <button onclick={() => navigate('model')}>Open saved model</button>
+                            </section>
+                            {@render sharedDataSetup()}
+                        {/if}
+                    {:else}
+                        <section
+                            class="model-card plan-route-summary"
+                            aria-label="Selected model structure"
+                        >
+                            <div>
+                                <h2>
+                                    {planState.plan.mode === 'single'
+                                        ? 'Single model'
+                                        : 'Build in stages'}
+                                </h2>
+                                <p>
+                                    {planState.plan.mode === 'single'
+                                        ? 'One model will be fitted from the shared data.'
+                                        : 'Each later stage offsets the complete score from the stage before it.'}
+                                </p>
+                            </div>
+                            <button
+                                onclick={() => {
+                                    if (confirmDiscardStageDraft()) choosingNewPlan = true;
+                                }}>Change model structure</button
+                            >
+                        </section>
+                        {@render sharedDataSetup()}
+                        <section id="model-setup" aria-label="Model setup">
+                            {#if planState.plan.mode === 'single'}
+                                <PlanVariables
+                                    {api}
+                                    {state}
+                                    {planState}
+                                    {uploadCatalogue}
+                                    bind:selectedStageId={planStageId}
+                                    revisionIntent={planRevisionIntent}
+                                    embedded={true}
+                                    onChanged={planChanged}
+                                    onDirty={(value) => (planVariablesDirty = value)}
+                                />
+                                <ProjectModelPlan
+                                    {api}
+                                    {state}
+                                    {planState}
+                                    onChanged={planChanged}
+                                    onRevisionIntent={() => (planRevisionIntent = true)}
+                                    {confirmDiscardStageDraft}
+                                    showHistory={false}
+                                    singleWorkflowManaged={true}
+                                />
+                            {:else}
+                                <ProjectModelPlan
+                                    {api}
+                                    {state}
+                                    {planState}
+                                    onChanged={planChanged}
+                                    onRevisionIntent={() => (planRevisionIntent = true)}
+                                    {confirmDiscardStageDraft}
+                                    showHistory={false}
+                                    onNavigate={(_, stageId) => {
+                                        planStageId = stageId;
+                                        document.getElementById('stage-variables')?.scrollIntoView({
+                                            behavior: 'smooth',
+                                            block: 'start',
+                                        });
+                                    }}
+                                />
+                                <PlanVariables
+                                    {api}
+                                    {state}
+                                    {planState}
+                                    {uploadCatalogue}
+                                    bind:selectedStageId={planStageId}
+                                    revisionIntent={planRevisionIntent}
+                                    embedded={true}
+                                    onChanged={planChanged}
+                                    onDirty={(value) => (planVariablesDirty = value)}
+                                />
+                            {/if}
+                            <details class="model-card saved-versions-history">
+                                <summary
+                                    >Saved fitted versions ({(planState?.history || [])
+                                        .length})</summary
+                                >
+                                {#if (planState?.history || []).length}
+                                    <ul>
+                                        {#each planState.history as fitted}<li>
+                                                {fitted.name}
+                                            </li>{/each}
+                                    </ul>
+                                {:else}
+                                    <p>No fitted versions yet.</p>
+                                {/if}
+                            </details>
+                        </section>
+                    {/if}
+                {/if}
             </section>
             <section hidden={view !== 'explore'} class="workflow-page">
                 {#if state && draft}{#key state.project_id}<ExplorePanel
@@ -1453,6 +1656,7 @@
                         onNavigate={navigate}
                         requestedModel={planState?.plan ? requestedPlanModel : legacySelected}
                         initialSubset={planState?.plan ? 'train' : 'holdout'}
+                        showBothDiagnosticSubsets={planState?.plan?.mode !== 'single'}
                         onRequestedModelConsumed={() => {
                             if (planState?.plan) requestedPlanModel = '';
                             else legacySelected = '';
@@ -1518,6 +1722,20 @@
         overflow-wrap: anywhere;
         min-width: 0;
     }
+    .plan-route-summary,
+    .legacy-model-compat {
+        display: flex;
+        align-items: start;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 24px;
+    }
+    .plan-route-summary h2,
+    .plan-route-summary p,
+    .legacy-model-compat h2,
+    .legacy-model-compat p {
+        margin-top: 0;
+    }
     .mobile-page-selector {
         display: none;
     }
@@ -1541,12 +1759,36 @@
         min-width: 0;
         box-sizing: border-box;
     }
+    .shared-data-setup .shared-role-row {
+        grid-template-columns: minmax(135px, 1.2fr) minmax(140px, 1.3fr) minmax(125px, 1fr) 90px;
+        min-width: 560px;
+    }
+    .shared-data-setup .shared-role-row.legacy-variable-design {
+        grid-template-columns:
+            minmax(135px, 1.1fr) minmax(140px, 1.2fr) minmax(125px, 1fr) minmax(140px, 1fr)
+            90px;
+        min-width: 700px;
+    }
+    .shared-data-setup .virtual-space {
+        min-width: 560px;
+    }
+    .shared-data-setup .virtual-space.legacy-variable-design {
+        min-width: 700px;
+    }
     @media (max-width: 900px) {
         .random-split-fields {
             grid-template-columns: 1fr;
         }
     }
     @media (max-width: 760px) {
+        .plan-route-summary,
+        .legacy-model-compat {
+            display: block;
+        }
+        .plan-route-summary button,
+        .legacy-model-compat button {
+            margin-top: 16px;
+        }
         .mobile-page-selector {
             display: grid;
             gap: 4px;

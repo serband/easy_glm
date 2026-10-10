@@ -8,9 +8,11 @@ from easy_glm.workflow.project import (
     Adjustment,
     Interaction,
     ModelConfig,
+    PairStageConfig,
     Project,
     TableSnapshot,
 )
+from easy_glm.workflow.stack_types import ComponentRecipe
 from easy_glm.workflow.variables import apply_roles_grid
 
 
@@ -95,3 +97,50 @@ def test_preview_keeps_saved_adjustments_until_explicit_apply():
         ]
         assert saved["base_rate_override"] == 0.4
         assert saved["snapshots"][0]["base_rate_override"] == 0.5
+
+
+def test_unassigned_column_still_cleans_a_legacy_model_factor():
+    project = configured()
+    project.data.roles.pop("x")
+    rows = [
+        {"column": name, "role": "predictor", "type": "auto"}
+        for name in ("x", "y", "z", "w")
+    ]
+    next(row for row in rows if row["column"] == "x")["role"] = "unassigned"
+
+    changed, notices = apply_roles_grid(project, ["x", "y", "z", "w"], rows)
+
+    assert changed and notices
+    assert project.models["Model"].predictors == ["y", "z", "w"]
+
+
+def test_unassigned_noop_preserves_plan_local_factors_and_pair_parents():
+    project = Project()
+    project.data.roles = {"y": "predictor"}
+    project.models["Local"] = ModelConfig(
+        predictors=["x"], allow_unassigned_factors=True
+    )
+    project.models["Stack"] = ModelConfig(
+        predictors=["x"],
+        components=[ComponentRecipe("stack", "Stack", "glm", ("x",))],
+    )
+    project.models["Pair"] = ModelConfig(
+        predictors=["y"],
+        pair_stages=[PairStageConfig("pair", "x", "y")],
+    )
+    rows = [
+        {
+            "column": name,
+            "role": "predictor" if name == "y" else "unassigned",
+            "type": "auto",
+        }
+        for name in ("x", "y")
+    ]
+
+    changed, notices = apply_roles_grid(project, ["x", "y"], rows)
+
+    assert not changed
+    assert not notices
+    assert project.models["Local"].predictors == ["x"]
+    assert project.models["Stack"].predictors == ["x"]
+    assert project.models["Pair"].pair_stages[0].a == "x"

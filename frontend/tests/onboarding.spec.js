@@ -28,8 +28,8 @@ test('opening data is visible, explicit, and supports files, projects and both e
     const button = (name) => page.getByRole('button', { name, exact: true });
     const nav = (name) =>
         page.getByRole('navigation', { name: 'Workbench' }).getByRole('button', {
-            name: name === 'Variables' ? /^Variables/ : name,
-            exact: name !== 'Variables',
+            name,
+            exact: true,
         });
     const replace = () => page.getByLabel('Replace this session.', { exact: false }).check();
     try {
@@ -87,31 +87,26 @@ test('opening data is visible, explicit, and supports files, projects and both e
         await expect(page.getByRole('region', { name: 'Current dataset' })).toContainText(
             'portfolio.csv',
         );
-        await nav('Variables').click();
+        await expect(page.getByRole('region', { name: 'Shared column assignments' })).toHaveCount(0);
+        await expect(button('Single model')).toBeVisible();
+        await button('Single model').click();
         expect(uploadAttempts).toBe(2);
-        // The heading appears before the post-upload connection refresh finishes.
-        await expect(page.getByLabel('Type for Age', { exact: true })).toBeEnabled();
+        // Shared roles are available only after a model route has been chosen.
+        await expect(page.getByRole('region', { name: 'Shared column assignments' })).toBeVisible();
         await page.unroute('**/api/project/upload?**');
         const raw = await snapshot(page);
         expect(raw.row_count).toBe(3);
         expect(raw.models).toHaveLength(0);
         expect(raw.columns.map((c) => c.name)).toEqual(['Claims', 'Exposure', 'Age']);
-        expect(
-            await page
-                .getByLabel('Type for Age', { exact: true })
-                .locator('option')
-                .allTextContents(),
-        ).toEqual(['Infer from data', 'Numeric', 'Categorical']);
-        await page.getByLabel('Type for Age', { exact: true }).selectOption('categorical');
+        await expect(page.getByLabel('Role for Age', { exact: true })).toHaveValue('unassigned');
         await nav('Model').click();
-        await expect(page.getByRole('heading', { name: 'Define a model plan' })).toBeVisible();
-        await button('Go to Project & data').click();
+        await expect(page.getByRole('heading', { name: 'Fit the model plan' })).toBeVisible();
+        await nav('Project & data').click();
         await expect(
             page.getByRole('heading', { name: 'Project & data', exact: true }),
         ).toBeVisible();
-        await nav('Variables').click();
-        await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeVisible();
-        await expect(page.getByLabel('Type for Age', { exact: true })).toHaveValue('categorical');
+        await expect(page.getByRole('region', { name: 'Shared column assignments' })).toBeVisible();
+        await expect(page.getByLabel('Role for Age', { exact: true })).toHaveValue('unassigned');
         expect((await snapshot(page)).models).toHaveLength(0);
         await nav('Project & data').click();
         await expect(page.getByText('portfolio.csv', { exact: true })).toBeVisible();
@@ -149,9 +144,9 @@ test('opening data is visible, explicit, and supports files, projects and both e
         await expect(page.getByRole('region', { name: 'Current dataset' })).toContainText(
             'portfolio.csv',
         );
-        await nav('Variables').click();
         expect((await snapshot(page)).name).toBe('Fleet renewal 2027');
-        await expect(page.getByLabel('Type for Age', { exact: true })).toHaveValue('auto');
+        await expect(page.getByRole('region', { name: 'Shared column assignments' })).toBeVisible();
+        await expect(page.getByLabel('Role for Age', { exact: true })).toHaveValue('unassigned');
         await nav('Project & data').click();
         await expect(page.getByRole('complementary')).toContainText('Fleet renewal 2027');
         await expect(page.getByText('portfolio.csv', { exact: true })).toBeVisible();
@@ -220,8 +215,9 @@ test('opening data is visible, explicit, and supports files, projects and both e
         await expect(
             page.getByRole('heading', { name: 'Project & data', exact: true }),
         ).toBeVisible();
-        await nav('Variables').click();
-        await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeVisible();
+        await expect(page.getByRole('navigation', { name: 'Workbench' }).getByRole('button', {
+            name: /^Variables/,
+        })).toHaveCount(0);
         expect(errors).toEqual([]);
     } finally {
         await rm(folder, { recursive: true, force: true });
@@ -239,11 +235,9 @@ async function openCsv(page, name, contents) {
     if (await replace.count()) await replace.check();
     await page.getByRole('button', { name: 'Open data', exact: true }).click();
     await expect(page.getByRole('region', { name: 'Current dataset' })).toContainText(name);
-    await page
-        .getByRole('navigation', { name: 'Workbench' })
-        .getByRole('button', { name: /^Variables/ })
-        .click();
-    await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Single model', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Single model', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Shared column assignments' })).toBeVisible();
 }
 
 for (const failedRead of ['session', 'variables']) {
@@ -253,7 +247,7 @@ for (const failedRead of ['session', 'variables']) {
         const errors = [];
         page.on('pageerror', (e) => errors.push(e.message));
         await openCsv(page, 'prior.csv', 'OldTarget,OldFactor\n0,20\n1,30\n');
-        await page.getByLabel('Type for OldFactor', { exact: true }).selectOption('categorical');
+        await page.getByLabel('Role for OldFactor', { exact: true }).selectOption('ignore');
         await page.getByRole('button', { name: 'Project & data', exact: true }).click();
         await page.getByLabel('Data file', { exact: true }).setInputFiles({
             name: 'confirmed.csv',
@@ -286,7 +280,7 @@ for (const failedRead of ['session', 'variables']) {
         await expect(
             page.getByRole('heading', { name: 'Project & data', exact: true }),
         ).toBeVisible();
-        await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeHidden();
+        await expect(page.getByRole('region', { name: 'Shared column assignments' })).toHaveCount(0);
         await expect(page.locator('.portfolio')).toHaveText('confirmed');
         const confirmed = await snapshot(page);
         expect(confirmed.project_id).toBe(opened.project_id);
@@ -300,12 +294,10 @@ for (const failedRead of ['session', 'variables']) {
         failRefresh = false;
         await failure.getByRole('button', { name: 'Reconnect', exact: true }).click();
         await expect(failure).toBeHidden();
-        await page
-            .getByRole('navigation', { name: 'Workbench' })
-            .getByRole('button', { name: /^Variables/ })
-            .click();
-        await expect(page.getByLabel('Type for NewFactor', { exact: true })).toHaveValue('auto');
-        await expect(page.getByLabel('Type for OldFactor', { exact: true })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Single model', exact: true })).toBeVisible();
+        await page.getByRole('button', { name: 'Single model', exact: true }).click();
+        await expect(page.getByLabel('Role for NewFactor', { exact: true })).toHaveValue('unassigned');
+        await expect(page.getByLabel('Role for OldFactor', { exact: true })).toHaveCount(0);
         expect((await snapshot(page)).project_id).toBe(opened.project_id);
         expect(openRequests).toBe(1);
         expect(errors).toEqual([]);
@@ -317,7 +309,7 @@ test('a stale opener reconnects without losing its draft or replaying Open', asy
     context,
 }) => {
     await openCsv(page, 'two-tabs.csv', 'Response,Exposure,Rating\n0,1,20\n1,1,30\n');
-    await page.getByLabel('Type for Rating', { exact: true }).selectOption('categorical');
+    await page.getByLabel('Role for Rating', { exact: true }).selectOption('ignore');
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await page.getByLabel('Data file', { exact: true }).setInputFiles({
         name: 'after-reconnect.csv',
@@ -327,7 +319,7 @@ test('a stale opener reconnects without losing its draft or replaying Open', asy
     const before = await snapshot(page);
     const other = await context.newPage();
     try {
-        await other.goto('/?view=variables');
+        await other.goto('/?view=project');
         await other.getByLabel('Role for Response', { exact: true }).selectOption('target');
         await other.getByRole('button', { name: 'Preview changes', exact: true }).click();
         await other.getByRole('button', { name: 'Apply changes', exact: true }).click();
@@ -349,24 +341,16 @@ test('a stale opener reconnects without losing its draft or replaying Open', asy
         await expect(page.getByRole('button', { name: 'Open data', exact: true })).toBeDisabled();
         expect(attempts).toBe(1);
         expect((await snapshot(page)).project_id).toBe(before.project_id);
-        await page
-            .getByRole('navigation', { name: 'Workbench' })
-            .getByRole('button', { name: /^Variables\s*\d*$/ })
-            .click();
-        await expect(page.getByLabel('Type for Rating', { exact: true })).toHaveValue(
-            'categorical',
-        );
+        await expect(page.getByLabel('Role for Rating', { exact: true })).toHaveValue('ignore');
         await page.getByRole('button', { name: 'Project & data', exact: true }).click();
         await page.getByLabel('Replace this session.', { exact: false }).check();
         await page.getByRole('button', { name: 'Open data', exact: true }).click();
         await expect(page.getByRole('region', { name: 'Current dataset' })).toContainText(
             'after-reconnect.csv',
         );
-        await page
-            .getByRole('navigation', { name: 'Workbench' })
-            .getByRole('button', { name: /^Variables/ })
-            .click();
-        await expect(page.getByLabel('Type for NewFactor', { exact: true })).toHaveValue('auto');
+        await expect(page.getByRole('button', { name: 'Single model', exact: true })).toBeVisible();
+        await page.getByRole('button', { name: 'Single model', exact: true }).click();
+        await expect(page.getByLabel('Role for NewFactor', { exact: true })).toHaveValue('unassigned');
         expect((await snapshot(page)).project_id).not.toBe(before.project_id);
         expect(attempts).toBe(2);
     } finally {

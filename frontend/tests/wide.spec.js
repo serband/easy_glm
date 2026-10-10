@@ -1,6 +1,16 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 
+async function startSingleModel(page) {
+    const saved = page.waitForResponse(
+        (response) =>
+            response.url().endsWith('/api/model-plan') && response.request().method() === 'POST',
+    );
+    await page.getByRole('button', { name: 'Single model', exact: true }).dispatchEvent('click');
+    expect((await saved).ok()).toBe(true);
+    await expect(page.getByRole('region', { name: 'Shared column assignments' })).toBeVisible();
+}
+
 test('2000-column virtualization and local interaction timings', async ({ page }, testInfo) => {
     const requests = [],
         errors = [];
@@ -8,6 +18,7 @@ test('2000-column virtualization and local interaction timings', async ({ page }
     page.on('pageerror', (e) => errors.push(e.message));
     const navigationStart = performance.now();
     await page.goto('/');
+    await startSingleModel(page);
     await expect(page.locator('.data-row').first()).toBeVisible();
     const navigationReadyMs = performance.now() - navigationStart;
     expect(await page.locator('.data-row').count()).toBeLessThanOrEqual(28);
@@ -90,28 +101,25 @@ test('2000-column virtualization and local interaction timings', async ({ page }
     expect(Math.max(...edits, ...switches, ...resets)).toBeLessThan(250);
 });
 
-test('binning stays lazy and searchable with 2000 numeric predictors', async ({ page }) => {
+test('per-model numeric bands stay local and searchable with 2000 numeric columns', async ({ page }) => {
     let binningRequests = 0;
     page.on('request', (request) => {
         if (request.url().includes('/api/variables/binning-preview')) binningRequests++;
     });
     await page.goto('/');
-    await page.getByRole('button', { name: 'Variables JSON', exact: true }).click();
-    const editor = page.getByLabel('Variables JSON', { exact: true });
-    const setup = JSON.parse(await editor.inputValue());
-    setup.predictor = [...setup.predictor, ...setup.unassigned, ...setup.ignore];
-    setup.unassigned = [];
-    setup.ignore = [];
-    await editor.fill(JSON.stringify(setup));
-    await page.getByRole('button', { name: 'Table', exact: true }).click();
-    const panel = page.getByRole('region', { name: 'Numeric binning' });
-    await expect(panel).toContainText('2000 of 2000');
-    expect(await panel.locator('.binning-rows button').count()).toBeLessThanOrEqual(14);
-    await page.getByLabel('Search numeric predictors').fill('variable_1999');
-    await panel.getByRole('button', { name: /^variable_1999/ }).click();
-    await page.getByLabel('Binning method for variable_1999').selectOption('quantile');
-    await page.getByLabel('Bins for variable_1999', { exact: true }).fill('12');
-    expect(await panel.locator('.binning-rows button').count()).toBe(1);
+    await startSingleModel(page);
+    await page.getByLabel('Search variables', { exact: true }).fill('variable_1999');
+    await page.getByLabel('Role for variable_1999', { exact: true }).selectOption('predictor');
+    await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
+    await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
+    await expect(page.getByRole('status')).toContainText('Settings applied');
+    await page.getByLabel('Search model variables').fill('variable_1999');
+    await page.getByLabel('Use variable_1999').check();
+    await page.getByRole('button', { name: 'Continue to model details', exact: true }).click();
+    await page.getByRole('button', { name: 'Continue to variable treatment', exact: true }).click();
+    await page.getByLabel('Search model variables').fill('variable_1999');
+    await expect(page.getByLabel('Use variable_1999')).toBeChecked();
+    await expect(page.locator('.variables-scroll tbody tr')).toHaveCount(1);
+    await page.getByLabel('Bands for variable_1999', { exact: true }).fill('12');
     expect(binningRequests).toBe(0);
-    await page.getByRole('button', { name: 'Reset', exact: true }).click();
 });

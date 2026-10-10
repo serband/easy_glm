@@ -40,7 +40,8 @@ Implemented in Python and the workbench, with software, statistical and actuaria
   an alternative from the same parent, keeping earlier fits unchanged. Preserve
   those connections in project JSON and label historical parents explicitly.
 - Define the single/staged plan, names, methods and order in Project & data.
-  Configure each model in Variables and fit in order on Model. Start a new plan,
+  Assign shared roles and configure each model's variables in the same page;
+  fit in order on Model. Change the working model structure,
   append a stage, or explicitly revise the fitted setup; preserve saved results
   and reuse only the exact unchanged fitted prefix. Adopt an existing complete
   scorer as a frozen starting point when continuing earlier work.
@@ -104,7 +105,7 @@ is missing:
 - Exported Python setup: check final roles, renames, recodes, derived columns
   and split settings together, rather than adding another export format.
 - Leakage-review candidates: make absent, unassigned and ignored roles
-  consistent with Variables; preserve reserved-column exclusions and make any
+  consistent with shared assignments; preserve reserved-column exclusions and make any
   inclusion of unassigned columns explicit.
 - Invalid evaluation targets for Gamma and inverse Gaussian: report affected
   rows and agreed treatment without silently dropping them from a headline

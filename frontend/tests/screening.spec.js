@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { openNewLegacyDraft } from './legacy-models.helpers.js';
+import { openNewLegacyDraft, saveLegacyGlm } from './legacy-models.helpers.js';
 const button = (page, name) => page.getByRole('button', { name, exact: true });
 const panel = (page) => page.getByRole('region', { name: 'Predictor screening', exact: true });
 async function session(page) {
@@ -108,7 +108,11 @@ async function mockScan(page, { status = 'complete', holdStart = false, holdPoll
     return calls;
 }
 test.beforeEach(async ({ page }) => {
-    await page.goto('/?view=variables');
+    await page.goto('/');
+    await saveLegacyGlm(page, `Imported screening ${Date.now()}`);
+    await page.reload();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Shared column assignments' })).toBeVisible();
     await expect(page.getByLabel('Role for Claims', { exact: true })).toHaveValue('target');
 });
 test('validated full draft is screened; explicit bulk removal synchronises JSON and previews once', async ({
@@ -183,7 +187,7 @@ test('invalid raw role JSON is preserved and never submitted for screening', asy
     await expect(page.getByLabel('Variables JSON', { exact: true })).toHaveValue('{unfinished');
     expect(calls.starts).toHaveLength(0);
 });
-for (const change of ['name', 'type', 'role', 'raw JSON', 'options', 'navigation']) {
+for (const change of ['name', 'type', 'split', 'role', 'raw JSON', 'options', 'navigation']) {
     test(`late scan start is discarded and cancelled after a ${change} change`, async ({
         page,
     }) => {
@@ -197,6 +201,8 @@ for (const change of ['name', 'type', 'role', 'raw JSON', 'options', 'navigation
             await page
                 .getByLabel('Type for DriverAge', { exact: true })
                 .selectOption('categorical');
+        else if (change === 'split')
+            await page.getByLabel('Training fraction', { exact: true }).fill('0.75');
         else if (change === 'role')
             await page.getByLabel('Role for DriverAge', { exact: true }).selectOption('ignore');
         else if (change === 'raw JSON') {
@@ -205,11 +211,10 @@ for (const change of ['name', 'type', 'role', 'raw JSON', 'options', 'navigation
         } else if (change === 'options') {
             await panel(page).locator('.screening-settings > summary').click();
             await page.getByLabel('Screening sample rows').fill('5000');
-        } else await button(page, 'Project & data').click();
+        } else await button(page, 'Explore').click();
         calls.releaseStart();
         await expect.poll(() => calls.cancellations).toBe(1);
-        if (change === 'navigation')
-            await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
+        if (change === 'navigation') await button(page, 'Project & data').click();
         await expect(
             page.getByRole('region', { name: 'Possible target leakage', exact: true }),
         ).toHaveCount(0);
@@ -240,7 +245,7 @@ test('actual training scan is read-only; applying flagged removals cleans model 
     await expect(
         page.getByText('Model settings saved. Fit when ready.', { exact: true }),
     ).toBeVisible();
-    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     const { headers } = await session(page);
     const readProject = async () => (await page.request.get('/api/project', { headers })).json();
     const before = await readProject();

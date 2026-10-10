@@ -225,12 +225,14 @@ def setup_info(project: Project, raw: pl.DataFrame) -> dict[str, Any]:
     except (ValueError, TypeError, KeyError, pl.exceptions.PolarsError) as exc:
         problems.append(str(exc))
     if not project.target:
-        problems.append("Assign a target role on Variables and apply it.")
+        problems.append("Assign a target role in Project & data and apply it.")
     if not project.predictors and not any(
         config.pair_stages or getattr(config, "components", ())
         for config in project.models.values()
     ):
-        problems.append("Assign at least one predictor role on Variables and apply it.")
+        problems.append(
+            "Assign at least one predictor role in Project & data and apply it."
+        )
     pair_search_preflight = {
         name: [
             {

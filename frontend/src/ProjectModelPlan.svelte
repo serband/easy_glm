@@ -5,8 +5,14 @@
     export let onChanged = () => {};
     export let onNavigate = () => {};
     export let onRevisionIntent = () => {};
+    export let confirmDiscardStageDraft = () => true;
+    export let showHistory = true;
+    export let singleWorkflowManaged = false;
+    export let routeChoiceOnly = false;
+    export let onCancelNewPlan = () => {};
     let error = '',
         busy = false,
+        starting = false,
         newKind = 'glm',
         revising = false;
     $: plan = planState?.plan || null;
@@ -73,6 +79,7 @@
         };
     }
     async function save(operation, nextPlan) {
+        if (!confirmDiscardStageDraft()) return;
         busy = true;
         error = '';
         try {
@@ -91,6 +98,7 @@
         }
     }
     async function adopt(name) {
+        if (!confirmDiscardStageDraft()) return;
         busy = true;
         error = '';
         try {
@@ -108,29 +116,37 @@
             busy = false;
         }
     }
-    function start(mode) {
+    async function start(mode) {
+        if (starting) return;
+        if (!confirmDiscardStageDraft()) return;
         if (
             plan &&
             !window.confirm('Replace the current working plan? Saved fitted versions are kept.')
         )
             return;
-        save('start', {
-            mode,
-            family: 'poisson',
-            link: 'log',
-            tweedie_power: 1.5,
-            divide_target_by_weight: Boolean(state?.setup?.assignments?.weight),
-            stages: [stage('glm', 0)],
-        });
+        starting = true;
+        try {
+            await save('start', {
+                mode,
+                family: 'poisson',
+                link: 'log',
+                tweedie_power: 1.5,
+                divide_target_by_weight: Boolean(state?.setup?.assignments?.weight),
+                stages: [stage('glm', 0)],
+            });
+        } finally {
+            starting = false;
+        }
     }
     function stageLocked(index) {
         return (adoptedRoot && index === 0) || (index < fittedCount && !revising);
     }
     function updatePlan(patch) {
+        if (!confirmDiscardStageDraft()) return;
         save(fittedCount && revising ? 'revise' : 'save', { ...plan, ...patch });
     }
     function updateStage(index, patch) {
-        if (stageLocked(index)) return;
+        if (stageLocked(index) || !confirmDiscardStageDraft()) return;
         save(index < fittedCount ? 'revise' : 'save', {
             ...plan,
             stages: stages.map((item, itemIndex) =>
@@ -162,23 +178,47 @@
             ...(kind === 'catalogue' ? { factors: [] } : {}),
         });
     }
-    function addStage(kind) {
-        save('save', {
+    function changeSelect(event, currentValue, apply) {
+        if (!confirmDiscardStageDraft()) {
+            event.currentTarget.value = currentValue ?? '';
+            return;
+        }
+        apply();
+    }
+    async function addStage(kind) {
+        if (!plan || busy || !confirmDiscardStageDraft()) return;
+        const nextPlan = {
             ...plan,
             mode: 'sequential',
             stages: [...stages, stage(kind, stages.length)],
-        });
+        };
+        busy = true;
+        error = '';
+        try {
+            const saved = await api('model-plan', {
+                session_id: state.session_id,
+                revision: state.revision,
+                operation: 'save',
+                plan: nextPlan,
+            });
+            onChanged(saved);
+            onNavigate('variables', saved.plan?.stages?.at(-1)?.component_id || '');
+        } catch (e) {
+            error = e.message;
+        } finally {
+            busy = false;
+        }
     }
     function moveStage(index, direction) {
         const target = index + direction;
         if (target < 0 || target >= stages.length) return;
         const next = [...stages];
         [next[index], next[target]] = [next[target], next[index]];
-        if (stageLocked(index) || stageLocked(target)) return;
+        if (stageLocked(index) || stageLocked(target) || !confirmDiscardStageDraft()) return;
         save(Math.min(index, target) < fittedCount ? 'revise' : 'save', { ...plan, stages: next });
     }
     function removeStage(index) {
-        if (stageLocked(index)) return;
+        if (stageLocked(index) || !confirmDiscardStageDraft()) return;
         if (
             stages.length < 2 ||
             !window.confirm(`Remove ${stages[index].name} from this working plan?`)
@@ -193,15 +233,26 @@
 
 <section class="model-plan" aria-label="Model plan">
     {#if error}<div class="message error" role="alert">{error}</div>{/if}
-    {#if !plan}
+    {#if !plan || routeChoiceOnly}
         <section class="model-card start-plan">
-            <h2>Model structure</h2>
-            <p>Choose how this model will be built. Variables and fitting follow this choice.</p>
+            <div class="plan-header">
+                <div>
+                    <h2>{routeChoiceOnly ? 'Start a new plan' : 'Model structure'}</h2>
+                    <p>
+                        {routeChoiceOnly
+                            ? 'Choose a route first. Your current plan is retained until you confirm the replacement.'
+                            : 'Choose how this model will be built. Variables and fitting follow this choice.'}
+                    </p>
+                </div>
+                {#if routeChoiceOnly}<button onclick={onCancelNewPlan} disabled={busy}
+                        >Keep current plan</button
+                    >{/if}
+            </div>
             <div class="route-actions">
                 <button
                     class="route-choice"
                     aria-label="Single model"
-                    disabled={busy}
+                    disabled={starting}
                     onclick={() => start('single')}
                 >
                     <span>Single model</span>
@@ -210,7 +261,7 @@
                 <button
                     class="route-choice"
                     aria-label="Build in stages"
-                    disabled={busy}
+                    disabled={starting}
                     onclick={() => start('sequential')}
                 >
                     <span>Build in stages</span>
@@ -218,7 +269,9 @@
                 </button>
             </div>
         </section>
-        {#if (planState?.history || []).length}<section class="model-card saved-versions">
+        {#if !routeChoiceOnly && (planState?.history || []).length}<section
+                class="model-card saved-versions"
+            >
                 <h2>Use a saved fitted version</h2>
                 <p>
                     Use a saved fit as the starting point for a new staged plan. Its complete score
@@ -235,202 +288,255 @@
                         </li>{/each}
                 </ul>
             </section>{/if}
-    {:else}
+    {:else if !(singleWorkflowManaged && plan.mode === 'single' && !fittedCount)}
         <section class="model-card configured-plan">
             <div class="plan-header">
                 <div>
-                    <h2>{plan.mode === 'single' ? 'Single model' : 'Model stages'}</h2>
+                    <h2>
+                        {singleWorkflowManaged && plan.mode === 'single'
+                            ? 'Plan actions'
+                            : plan.mode === 'single'
+                              ? 'Model details'
+                              : 'Model stages'}
+                    </h2>
                     <p>
-                        {plan.mode === 'single'
-                            ? 'One model using the shared data.'
-                            : 'Each later stage uses the complete score from the preceding stages as its offset.'}
+                        {singleWorkflowManaged && plan.mode === 'single'
+                            ? 'Save a new plan or create a revision without overwriting fitted versions.'
+                            : plan.mode === 'single'
+                              ? 'Choose the fitting method for this model. Its variables are set below.'
+                              : 'Each later stage uses the complete score from the preceding stages as its offset.'}
                     </p>
                 </div>
-                <div class="plan-actions">
-                    {#if fittedCount && !revising}<button
-                            onclick={() => {
-                                revising = true;
-                                onRevisionIntent();
-                            }}
-                            disabled={busy}>Create revised plan</button
-                        >{:else if revising}<button
-                            class="primary"
-                            onclick={() => save('revise', plan)}
-                            disabled={busy}>Save revised plan</button
-                        >{/if}<button onclick={() => start(plan.mode)} disabled={busy}
-                        >Start a new plan</button
-                    >
-                </div>
+                {#if fittedCount}<div class="plan-actions">
+                        {#if !revising}<button
+                                onclick={() => {
+                                    if (!confirmDiscardStageDraft()) return;
+                                    revising = true;
+                                    onRevisionIntent();
+                                }}
+                                disabled={busy}>Create revised plan</button
+                            >{:else}<button
+                                class="primary"
+                                onclick={() => save('revise', plan)}
+                                disabled={busy}>Save revised plan</button
+                            >{/if}
+                    </div>{/if}
             </div>
-            {#if adoptedRoot}<div class="message">
-                    Existing fitted model: {plan.adopted_model_name}. It is an accepted scorer and
-                    cannot be changed here. Add a stage to build on it, or start a new plan.
-                </div>{/if}{#if fittedCount}<p class="help-text">
-                    {revising
-                        ? 'You are revising the fitted prefix. Save revised plan to create the new version.'
-                        : 'Choose Create revised plan before changing a fitted stage.'} Earlier fitted
-                    stages are retained as saved versions. Editing one creates a revised plan and refits
-                    that stage and those after it.
-                </p>{/if}
-            <div class="two-column-grid common-settings">
-                <label class="field">
-                    <span class="field-label">Family</span>
-                    <select
-                        aria-label="Model family"
-                        disabled={busy || adoptedRoot || (fittedCount && !revising)}
-                        value={plan.family}
-                        onchange={(event) =>
-                            updatePlan({
-                                family: event.currentTarget.value,
-                                link: plan.mode === 'sequential' ? 'log' : null,
-                            })}
-                    >
-                        <option value="poisson">Poisson</option>
-                        <option value="tweedie">Tweedie</option>
-                        <option value="gaussian">Gaussian</option>
-                        {#if plan.mode === 'single'}
-                            <option value="gamma">Gamma</option>
-                            <option value="inverse_gaussian">Inverse Gaussian</option>
-                            <option value="binomial">Binomial</option>
-                        {/if}
-                    </select>
-                </label>
-                <label class="field">
-                    <span class="field-label">Link</span>
-                    <select
-                        aria-label="Model link"
-                        value={plan.mode === 'sequential' ? 'log' : plan.link || ''}
-                        onchange={(event) =>
-                            updatePlan({ link: event.currentTarget.value || null })}
-                        disabled={busy ||
-                            plan.mode === 'sequential' ||
-                            adoptedRoot ||
-                            (fittedCount && !revising)}
-                    >
-                        {#if plan.mode === 'single'}<option value="">Family default</option>{/if}
-                        <option value="log">Log</option>
-                        {#if plan.mode === 'single'}<option value="logit">Logit</option>{/if}
-                    </select>
-                </label>
-            </div>
-            {#if plan.mode === 'sequential'}
-                <p class="help-text link-note">
-                    Staged models use a log link so scores can be multiplied.
-                </p>
-            {/if}
-            {#if plan.family === 'tweedie'}
-                <div class="two-column-grid tweedie-row">
+            {#if !(singleWorkflowManaged && plan.mode === 'single')}
+                {#if adoptedRoot}<div class="message">
+                        Existing fitted model: {plan.adopted_model_name}. It is an accepted scorer
+                        and cannot be changed here. Add a stage to build on it, or start a new plan.
+                    </div>{/if}{#if fittedCount}<p class="help-text">
+                        {revising
+                            ? 'You are revising the fitted prefix. Save revised plan to create the new version.'
+                            : 'Choose Create revised plan before changing a fitted stage.'} Earlier fitted
+                        stages are retained as saved versions. Editing one creates a revised plan and
+                        refits that stage and those after it.
+                    </p>{/if}
+                <div class="two-column-grid common-settings">
                     <label class="field">
-                        <span class="field-label">Tweedie power</span>
-                        <input
-                            aria-label="Tweedie power"
-                            type="number"
-                            min="1.01"
-                            max="1.99"
-                            step="0.01"
-                            value={plan.tweedie_power}
-                            onchange={(event) =>
-                                updatePlan({ tweedie_power: Number(event.currentTarget.value) })}
+                        <span class="field-label">Response family</span>
+                        <select
+                            aria-label="Model family"
                             disabled={busy || adoptedRoot || (fittedCount && !revising)}
-                        />
+                            value={plan.family}
+                            onchange={(event) =>
+                                changeSelect(event, plan.family, () =>
+                                    updatePlan({
+                                        family: event.currentTarget.value,
+                                        link: plan.mode === 'sequential' ? 'log' : null,
+                                    }),
+                                )}
+                        >
+                            <option value="poisson">Poisson</option>
+                            <option value="tweedie">Tweedie</option>
+                            <option value="gaussian">Gaussian</option>
+                            {#if plan.mode === 'single'}
+                                <option value="gamma">Gamma</option>
+                                <option value="inverse_gaussian">Inverse Gaussian</option>
+                                <option value="binomial">Binomial</option>
+                            {/if}
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span class="field-label">Response link</span>
+                        <select
+                            aria-label="Model link"
+                            value={plan.mode === 'sequential' ? 'log' : plan.link || ''}
+                            onchange={(event) =>
+                                changeSelect(event, plan.link, () =>
+                                    updatePlan({ link: event.currentTarget.value || null }),
+                                )}
+                            disabled={busy ||
+                                plan.mode === 'sequential' ||
+                                adoptedRoot ||
+                                (fittedCount && !revising)}
+                        >
+                            {#if plan.mode === 'single'}<option value="">Family default</option
+                                >{/if}
+                            <option value="log">Log</option>
+                            {#if plan.mode === 'single'}<option value="logit">Logit</option>{/if}
+                        </select>
                     </label>
                 </div>
-            {/if}
-            <label class="checkbox-field">
-                <input
-                    type="checkbox"
-                    disabled={busy || adoptedRoot || (fittedCount && !revising)}
-                    checked={plan.divide_target_by_weight}
-                    onchange={(event) =>
-                        updatePlan({ divide_target_by_weight: event.currentTarget.checked })}
-                />
-                <span
-                    >Divide target by weight <span class="help-text">(use a unit response)</span
-                    ></span
-                >
-            </label>
-            <ol class="stage-list">
-                {#each stages as item, index}
-                    <li>
-                        <div class="two-column-grid stage-fields">
-                            <label class="field">
-                                <span class="field-label">Stage name</span>
-                                <input
-                                    aria-label={`Stage ${index + 1} name`}
-                                    value={item.name}
-                                    onchange={(event) =>
-                                        updateStage(index, { name: event.currentTarget.value })}
-                                    disabled={busy || stageLocked(index)}
-                                />
-                            </label>
-                            <label class="field">
-                                <span class="field-label">Method</span>
-                                <select
-                                    aria-label={`Stage ${index + 1} method`}
-                                    value={item.kind}
-                                    onchange={(event) =>
-                                        changeMethod(index, event.currentTarget.value)}
-                                    disabled={busy || stageLocked(index)}
-                                >
-                                    <option value="glm">GLM</option>
-                                    <option value="catboost">CatBoost</option>
-                                    <option value="interaction">Interaction</option>
-                                    <option value="catalogue">Catalogue</option>
-                                </select>
-                            </label>
-                        </div>
-                        <div class="stage-actions">
-                            <button onclick={() => onNavigate('variables', item.component_id)}
-                                >Choose variables</button
-                            >{#if stages.length > 1}<button
-                                    aria-label={`Move ${item.name} up`}
-                                    onclick={() => moveStage(index, -1)}
-                                    disabled={busy ||
-                                        index === 0 ||
-                                        stageLocked(index) ||
-                                        stageLocked(index - 1)}>Up</button
-                                ><button
-                                    aria-label={`Move ${item.name} down`}
-                                    onclick={() => moveStage(index, 1)}
-                                    disabled={busy ||
-                                        index === stages.length - 1 ||
-                                        stageLocked(index) ||
-                                        stageLocked(index + 1)}>Down</button
-                                ><button
-                                    onclick={() => removeStage(index)}
-                                    disabled={busy || stageLocked(index)}>Remove</button
-                                >{/if}
-                        </div>
-                    </li>
-                {/each}
-            </ol>
-            <div class="two-column-grid add-stage">
-                <label class="field">
-                    <span class="field-label">Method for next stage</span>
-                    <select aria-label="Add stage method" bind:value={newKind}>
-                        <option value="glm">GLM</option>
-                        <option value="catboost">CatBoost</option>
-                        <option value="interaction">Interaction</option>
-                        <option value="catalogue">Catalogue</option>
-                    </select>
-                </label>
-                <div class="add-stage-action">
-                    <button onclick={() => addStage(newKind)} disabled={busy}
-                        >{plan.mode === 'single'
-                            ? 'Add a stage and build in stages'
-                            : 'Add stage'}</button
+                {#if plan.mode === 'sequential'}
+                    <p class="help-text link-note">
+                        Staged models use a log link so scores can be multiplied.
+                    </p>
+                {/if}
+                {#if plan.family === 'tweedie'}
+                    <div class="two-column-grid tweedie-row">
+                        <label class="field">
+                            <span class="field-label">Tweedie power</span>
+                            <input
+                                aria-label="Tweedie power"
+                                type="number"
+                                min="1.01"
+                                max="1.99"
+                                step="0.01"
+                                value={plan.tweedie_power}
+                                onchange={(event) =>
+                                    updatePlan({
+                                        tweedie_power: Number(event.currentTarget.value),
+                                    })}
+                                disabled={busy || adoptedRoot || (fittedCount && !revising)}
+                            />
+                        </label>
+                    </div>
+                {/if}
+                <label class="checkbox-field">
+                    <input
+                        type="checkbox"
+                        disabled={busy || adoptedRoot || (fittedCount && !revising)}
+                        checked={plan.divide_target_by_weight}
+                        onchange={(event) =>
+                            updatePlan({ divide_target_by_weight: event.currentTarget.checked })}
+                    />
+                    <span
+                        >Divide target by weight <span class="help-text">(use a unit response)</span
+                        ></span
                     >
-                </div>
-            </div>
+                </label>
+                {#if plan.mode === 'single'}
+                    <div class="two-column-grid single-model-details">
+                        <label class="field">
+                            <span class="field-label">Model name</span>
+                            <input
+                                aria-label="Model name"
+                                value={stages[0]?.name || ''}
+                                onchange={(event) =>
+                                    updateStage(0, { name: event.currentTarget.value })}
+                                disabled={busy || stageLocked(0)}
+                            />
+                        </label>
+                        <label class="field">
+                            <span class="field-label">Fitting method</span>
+                            <select
+                                aria-label="Fitting method"
+                                value={stages[0]?.kind || 'glm'}
+                                onchange={(event) =>
+                                    changeSelect(event, stages[0]?.kind, () =>
+                                        changeMethod(0, event.currentTarget.value),
+                                    )}
+                                disabled={busy || stageLocked(0)}
+                            >
+                                <option value="glm">GLM</option>
+                                <option value="catboost">CatBoost</option>
+                                <option value="interaction">Interaction</option>
+                                <option value="catalogue">Catalogue</option>
+                            </select>
+                        </label>
+                    </div>
+                {:else}
+                    <ol class="stage-list">
+                        {#each stages as item, index}
+                            <li>
+                                <div class="two-column-grid stage-fields">
+                                    <label class="field">
+                                        <span class="field-label">Stage name</span>
+                                        <input
+                                            aria-label={`Stage ${index + 1} name`}
+                                            value={item.name}
+                                            onchange={(event) =>
+                                                updateStage(index, {
+                                                    name: event.currentTarget.value,
+                                                })}
+                                            disabled={busy || stageLocked(index)}
+                                        />
+                                    </label>
+                                    <label class="field">
+                                        <span class="field-label">Method</span>
+                                        <select
+                                            aria-label={`Stage ${index + 1} method`}
+                                            value={item.kind}
+                                            onchange={(event) =>
+                                                changeSelect(event, item.kind, () =>
+                                                    changeMethod(index, event.currentTarget.value),
+                                                )}
+                                            disabled={busy || stageLocked(index)}
+                                        >
+                                            <option value="glm">GLM</option>
+                                            <option value="catboost">CatBoost</option>
+                                            <option value="interaction">Interaction</option>
+                                            <option value="catalogue">Catalogue</option>
+                                        </select>
+                                    </label>
+                                </div>
+                                <div class="stage-actions">
+                                    <button
+                                        onclick={() => onNavigate('variables', item.component_id)}
+                                        >Choose variables</button
+                                    >{#if stages.length > 1}<button
+                                            aria-label={`Move ${item.name} up`}
+                                            onclick={() => moveStage(index, -1)}
+                                            disabled={busy ||
+                                                index === 0 ||
+                                                stageLocked(index) ||
+                                                stageLocked(index - 1)}>Up</button
+                                        ><button
+                                            aria-label={`Move ${item.name} down`}
+                                            onclick={() => moveStage(index, 1)}
+                                            disabled={busy ||
+                                                index === stages.length - 1 ||
+                                                stageLocked(index) ||
+                                                stageLocked(index + 1)}>Down</button
+                                        ><button
+                                            onclick={() => removeStage(index)}
+                                            disabled={busy || stageLocked(index)}>Remove</button
+                                        >{/if}
+                                </div>
+                            </li>
+                        {/each}
+                    </ol>
+                    <div class="two-column-grid add-stage">
+                        <label class="field">
+                            <span class="field-label">Method for next stage</span>
+                            <select aria-label="Add stage method" bind:value={newKind}>
+                                <option value="glm">GLM</option>
+                                <option value="catboost">CatBoost</option>
+                                <option value="interaction">Interaction</option>
+                                <option value="catalogue">Catalogue</option>
+                            </select>
+                        </label>
+                        <div class="add-stage-action">
+                            <button onclick={() => addStage(newKind)} disabled={busy}
+                                >Add stage</button
+                            >
+                        </div>
+                    </div>
+                {/if}
+            {/if}
         </section>
-        <section class="model-card saved-versions">
-            <h2>Saved fitted versions</h2>
-            {#if (planState?.history || []).length}<ul>
-                    {#each planState.history as fitted}<li>{fitted.name}</li>{/each}
-                </ul>{:else}<p>
-                    No fitted versions yet. Starting a new plan clears this working plan only.
-                </p>{/if}
-        </section>
+        {#if showHistory}
+            <section class="model-card saved-versions">
+                <h2>Saved fitted versions</h2>
+                {#if (planState?.history || []).length}<ul>
+                        {#each planState.history as fitted}<li>{fitted.name}</li>{/each}
+                    </ul>{:else}<p>
+                        No fitted versions yet. Starting a new plan clears this working plan only.
+                    </p>{/if}
+            </section>
+        {/if}
     {/if}
 </section>
 
@@ -524,6 +630,9 @@
         padding-left: 0;
         margin: 24px 0 0;
         list-style: none;
+    }
+    .single-model-details {
+        margin-top: 24px;
     }
     .stage-list li {
         border-top: 1px solid var(--border);

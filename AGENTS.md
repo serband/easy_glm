@@ -42,9 +42,9 @@ and human-readable, and release only with explicit authorization.
 ## Current state
 
 Read `docs/HANDOVER.md` before work on the mixed model stack. The last known public
-release is v0.472. The current project model-plan work is on `codex/configured-plan-form` in
-`/private/tmp/easyglm-model-variable-setup`, based on CatBoost tuning revision
-`c179422`. The user's primary checkout contains separate work. Verify the actual
+release is v0.472. The current project setup work is on `codex/project-setup-workflow` in
+`/private/tmp/easyglm-model-variable-setup`, based on layout revision
+`0102f86`. The user's primary checkout contains separate work. Verify the actual
 checkout and preserve its existing changes. Model-flow connections record how named
 candidates were fitted; the complete ordered component recipe remains the scorer.
 
@@ -70,8 +70,10 @@ current stack status in `docs/HANDOVER.md`. `docs/PRICING_WORKFLOW_BUILD.md` is 
   usability review as well as statistical and software checks before completion.
 - Keep reviewable examples in the normal project's `examples/` directory. Avoid
   development-checkout installation instructions in the public walkthrough.
-- Define the single/staged route and named order in Project & data. Variables
-  edits one planned model at a time; Model sets fit options and fits that order.
+- Keep setup in Project & data: open data, choose the single/staged route,
+  assign shared column roles, then define the model or named stages and their
+  independent variables. Embed searchable Table/JSON editors here; Variables
+  is not a separate sidebar destination. Model sets fit options and fits that order.
   The working plan and saved fitted versions are separate. Starting a new plan
   clears current setup, not fitted history. Do not put architecture switches or
   duplicate model/component naming back on the fitting page.

@@ -40,8 +40,8 @@ test('training importance is automatic, cached by original fit and compatible wi
     await expect(
         page.getByText(/Training · Original fit · 5 shuffles per variable · .* rows/),
     ).toBeVisible();
-    await expect(page.getByLabel('Importance sample percentage')).toHaveValue('30');
-    await expect(page.getByLabel('Importance sample seed')).toHaveValue('42');
+    await expect(page.getByLabel('Importance sample percentage', { exact: true })).toHaveValue('30');
+    await expect(page.getByLabel('Importance sample seed', { exact: true })).toHaveValue('42');
     await expect(
         page.locator('.model-workbench .metrics-grid,.model-workbench .result-totals'),
     ).toHaveCount(0);

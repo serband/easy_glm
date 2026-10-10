@@ -15,9 +15,20 @@ test('fitted variable cache is immediate, invalidates after edits and rejects la
             starts++;
     });
     await page.goto('/');
+    const session = await (await page.request.get('/api/session')).json();
+    const headers = { 'X-EasyGLM-Token': session.token };
+    const variables = await (await page.request.get('/api/variables', { headers })).json();
+    const setup = structuredClone(variables.setup);
+    setup.roles.unassigned = setup.roles.unassigned.filter((name) => name !== 'AnnualMileage');
+    setup.roles.predictor.push('AnnualMileage');
+    const assigned = await page.request.post('/api/variables/apply', {
+        headers,
+        data: { session_id: variables.session_id, revision: variables.revision, setup },
+    });
+    expect(assigned.ok(), await assigned.text()).toBe(true);
     await saveLegacyGlm(page, `Imported legacy ${Date.now()}`);
     await page.reload();
-    await page.getByRole('button', { name: /^Variables/ }).click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await page.getByLabel('Role for AnnualMileage', { exact: true }).selectOption('unassigned');
     await button('Preview changes').click();
     await button('Apply changes').click();

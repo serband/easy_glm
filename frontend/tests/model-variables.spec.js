@@ -3,13 +3,13 @@ import { test, expect } from '@playwright/test';
 async function startStages(page) {
     await page.goto('/');
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
-    const create = page.getByRole('button', { name: 'Build in stages', exact: true });
-    if (await create.count()) {
-        await create.click();
-        return;
+    let create = page.getByRole('button', { name: 'Build in stages', exact: true });
+    if (!(await create.count())) {
+        await page.getByRole('button', { name: 'Change model structure', exact: true }).click();
+        page.once('dialog', (dialog) => dialog.accept());
+        create = page.getByRole('button', { name: 'Build in stages', exact: true });
     }
-    page.once('dialog', (dialog) => dialog.accept());
-    await page.getByRole('button', { name: 'Start a new plan', exact: true }).click();
+    await create.click();
 }
 
 async function chooseStageVariables(page, index) {
@@ -22,7 +22,7 @@ test('a CatBoost stage defaults to Optuna tuning on training folds', async ({ pa
     await page.getByLabel('Stage 1 method').selectOption('catboost');
     await chooseStageVariables(page, 0);
     await page.getByLabel('Use VehicleAge').check();
-    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
 
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Settings for Main effects', exact: true })).toBeVisible();
@@ -48,7 +48,7 @@ test('each stage keeps its own variables and local numeric definitions', async (
     await page.getByLabel('Use DriverAge').check();
     await page.getByRole('button', { name: 'Use custom cuts', exact: true }).click();
     await page.getByLabel('Custom cuts for DriverAge').fill('25, 35, 45, 55');
-    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
 
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await page.getByRole('button', { name: 'Add stage', exact: true }).click();
@@ -57,7 +57,7 @@ test('each stage keeps its own variables and local numeric definitions', async (
     const json = page.getByLabel('Model variables JSON');
     await json.fill(JSON.stringify({ variables: { Claims: { kind: 'step' } } }, null, 2));
     await expect(page.getByRole('alert')).toContainText('Claims is not available');
-    await expect(page.getByRole('button', { name: 'Save stage setup', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Save model variables', exact: true })).toBeDisabled();
 
     await json.fill(JSON.stringify({
         defaults: { n_bins: 6 },
@@ -65,7 +65,7 @@ test('each stage keeps its own variables and local numeric definitions', async (
     }, null, 2));
     await page.getByRole('button', { name: 'Apply variable JSON', exact: true }).click();
     await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
     await page.getByRole('tab', { name: 'Table' }).click();
     await expect(page.getByLabel('Use VehicleAge')).toBeChecked();
     await expect(page.getByLabel('Use DriverAge')).not.toBeChecked();
@@ -100,7 +100,7 @@ test('a catalogue stage exposes uploaded attributes but not its selected key', a
     await page.getByLabel('Catalogue key').selectOption('PolicyID');
     await expect(page.getByLabel('Use PolicyID')).toHaveCount(0);
     await page.getByLabel('Use VehicleGroup').check();
-    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
     await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
 });
 
@@ -108,7 +108,7 @@ test('a catalogue stage fits the uploaded file and remains available for table r
     await startStages(page);
     await chooseStageVariables(page, 0);
     await page.getByLabel('Use DriverAge').check();
-    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
 
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await page.getByRole('button', { name: 'Add stage', exact: true }).click();
@@ -129,7 +129,7 @@ test('a catalogue stage fits the uploaded file and remains available for table r
     });
     await page.getByLabel('Catalogue key').selectOption('PolicyID');
     await page.getByLabel('Use VehicleGroup').check();
-    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
 
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await page.getByRole('button', { name: 'Fit Main effects', exact: true }).click();
@@ -143,5 +143,5 @@ test('a catalogue stage fits the uploaded file and remains available for table r
     await page.getByRole('button', { name: 'Rate tables', exact: true }).click();
     await expect(page.getByLabel('Inspect model component')).toBeVisible({ timeout: 60000 });
     await page.getByLabel('Inspect model component').selectOption({ label: 'Main effects 2' });
-    await expect(page.getByText('VehicleGroup', { exact: true })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'VehicleGroup', exact: true })).toBeVisible();
 });

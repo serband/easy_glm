@@ -6,16 +6,21 @@ test('time role survives JSON and shows all-row chronological diagnostics and fa
     const button = (name) => page.getByRole('button', { name, exact: true });
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
-    await page.goto('/?view=variables');
-    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
+    await page.goto('/?view=project');
+    await page.getByRole('button', { name: 'Single model', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Shared column assignments' })).toBeVisible();
     await expect(page.getByLabel('Role for Year', { exact: true })).toHaveValue('time');
     await button('Variables JSON').click();
     const roles = JSON.parse(await page.getByLabel('Variables JSON', { exact: true }).inputValue());
     expect(roles.time).toBe('Year');
     await button('Table').click();
+    await page.getByLabel('Use DriverAge').check();
+    await button('Continue to model details').click();
+    await button('Continue to variable treatment').click();
+    await button('Save model setup').click();
     await button('Model').click();
-    await button('Fit model').click();
-    await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 45000 });
+    await button(/^Fit /).click();
+    await expect(page.getByText('Fitted and kept as a saved version.')).toBeVisible({ timeout: 45000 });
     await button('Diagnostics').click();
     await page.getByRole('tab', { name: 'Time stability', exact: true }).click();
     await expect(

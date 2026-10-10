@@ -56,7 +56,7 @@ def validate_model_plan(
         problems.append("Choose a declared stage to fit")
     if through_count:
         if not project.target:
-            problems.append("Assign a target in Variables before fitting a model")
+            problems.append("Assign a target in Project & data before fitting a model")
         config = ModelConfig(
             family=plan.family,
             link=plan.link,
@@ -91,7 +91,7 @@ def validate_model_plan(
                     "source_path"
                 ):
                     problems.append(
-                        f"{stage.name}: upload a catalogue in Variables before fitting"
+                        f"{stage.name}: upload a catalogue in Project & data before fitting"
                     )
                 # Its factors are pinned attributes from the uploaded lookup,
                 # introduced by this stage rather than raw columns available before it.

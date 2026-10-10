@@ -6,6 +6,17 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     page.on('pageerror', (e) => errors.push(e.message));
     const button = (name) => page.getByRole('button', { name, exact: true });
     await page.goto('/');
+    const session = await (await page.request.get('/api/session')).json();
+    const headers = { 'X-EasyGLM-Token': session.token };
+    const variables = await (await page.request.get('/api/variables', { headers })).json();
+    const setup = structuredClone(variables.setup);
+    setup.roles.unassigned = setup.roles.unassigned.filter((name) => name !== 'AnnualMileage');
+    setup.roles.predictor.push('AnnualMileage');
+    const assigned = await page.request.post('/api/variables/apply', {
+        headers,
+        data: { session_id: variables.session_id, revision: variables.revision, setup },
+    });
+    expect(assigned.ok(), await assigned.text()).toBe(true);
     await saveLegacyGlm(page, `Imported legacy ${Date.now()}`, [
         'DriverAge',
         'VehicleAge',
@@ -13,7 +24,7 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
         'AnnualMileage',
     ]);
     await page.reload();
-    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await page.getByLabel('Role for AnnualMileage', { exact: true }).selectOption('unassigned');
     await button('Preview changes').click();
     await button('Apply changes').click();
@@ -146,7 +157,7 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
         .click();
     await expect(page.getByLabel('Include AnnualMileage', { exact: true })).toBeChecked();
     await expect(page.getByText('Fit needs updating', { exact: true })).toBeVisible();
-    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await expect(page.getByLabel('Role for AnnualMileage', { exact: true })).toHaveValue(
         'predictor',
     );

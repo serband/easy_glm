@@ -33,15 +33,28 @@ async function planFitRefs(page) {
     });
 }
 
-async function chooseAndFitFirstGlm(page, variable = 'DriverAge') {
+async function chooseAndFitFirstStageGlm(page, variable = 'DriverAge') {
     await page.getByRole('button', { name: 'Choose variables', exact: true }).first().click();
     await page.getByLabel(`Use ${variable}`).check();
-    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await page.getByRole('button', { name: /Fit .+/ }).click();
     await expect(page.getByText('Fitted and kept as a saved version.')).toBeVisible({
         timeout: 120000,
     });
+}
+
+async function chooseSingleVariables(page, variable = 'DriverAge') {
+    const choose = page.getByRole('button', { name: 'Choose variables', exact: true });
+    if (await choose.count()) await choose.click();
+    await page.getByLabel(`Use ${variable}`).check();
+    await page.getByRole('button', { name: 'Continue to model details', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Model details', exact: true })).toBeVisible();
+}
+
+async function saveSingleSetup(page) {
+    await page.getByRole('button', { name: 'Continue to variable treatment', exact: true }).click();
+    await page.getByRole('button', { name: 'Save model setup', exact: true }).click();
 }
 
 async function openBinaryData(page) {
@@ -69,7 +82,7 @@ async function openBinaryData(page) {
     await page.getByRole('button', { name: 'Open data', exact: true }).click();
     expect((await loaded).ok()).toBe(true);
     await expect(page.getByRole('button', { name: 'Open data', exact: true })).toBeDisabled();
-    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
+    await page.getByRole('button', { name: 'Single model', exact: true }).click();
     await page.getByLabel('Role for Claim').selectOption('target');
     await page.getByLabel('Role for DriverAge').selectOption('predictor');
     await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
@@ -84,6 +97,7 @@ test('single-model links are restricted to scorers that can be diagnosed and exp
 
     await openFrenchMotorExample(page);
     await startPlan(page, 'Single model');
+    await chooseSingleVariables(page, 'DrivAge');
     await page.getByLabel('Model family').selectOption('gaussian');
     await expect(page.getByLabel('Model link').locator('option[value="identity"]')).toHaveCount(0);
 
@@ -112,7 +126,10 @@ test('single-model links are restricted to scorers that can be diagnosed and exp
     });
     expect(rejected).toBe(422);
 
-    await chooseAndFitFirstGlm(page, 'DrivAge');
+    await saveSingleSetup(page);
+    await page.getByRole('button', { name: 'Model', exact: true }).click();
+    await page.getByRole('button', { name: /Fit .+/ }).click();
+    await expect(page.getByText('Fitted and kept as a saved version.')).toBeVisible({ timeout: 120000 });
 
     await page.getByRole('button', { name: 'Diagnostics', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Actual versus expected' })).toBeVisible();
@@ -125,10 +142,13 @@ test('single-model links are restricted to scorers that can be diagnosed and exp
 
 test('a single binomial logit model can be inspected and exported', async ({ page }) => {
     await openBinaryData(page);
-    await startPlan(page, 'Single model');
+    await chooseSingleVariables(page);
     await page.getByLabel('Model family').selectOption('binomial');
     await page.getByLabel('Model link').selectOption('logit');
-    await chooseAndFitFirstGlm(page);
+    await saveSingleSetup(page);
+    await page.getByRole('button', { name: 'Model', exact: true }).click();
+    await page.getByRole('button', { name: /Fit .+/ }).click();
+    await expect(page.getByText('Fitted and kept as a saved version.')).toBeVisible({ timeout: 120000 });
     await page.getByRole('button', { name: 'Diagnostics', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Actual versus expected' })).toBeVisible();
     await page.getByRole('button', { name: 'Export', exact: true }).click();
@@ -142,7 +162,7 @@ test('diagnostics opens the latest staged fit and lets the actuary inspect an ea
 }) => {
     await openFrenchMotorExample(page);
     await startPlan(page, 'Build in stages');
-    await chooseAndFitFirstGlm(page, 'DrivAge');
+    await chooseAndFitFirstStageGlm(page, 'DrivAge');
     const [first] = await planFitRefs(page);
 
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
@@ -153,7 +173,7 @@ test('diagnostics opens the latest staged fit and lets the actuary inspect an ea
         .getByRole('button', { name: 'Choose variables', exact: true })
         .click();
     await page.getByLabel('Use DrivAge').check();
-    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await page.getByRole('button', { name: /Fit .+/ }).click();
     await expect(page.getByText('Fitted and kept as a saved version.')).toHaveCount(2, {

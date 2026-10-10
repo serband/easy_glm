@@ -1,14 +1,18 @@
 import { test, expect } from '@playwright/test';
+import { useFreshModelPlanProject } from './model-plan-fixture.helpers.js';
+
+useFreshModelPlanProject(test);
 
 async function startSequential(page) {
     await page.goto('/');
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
-    if (await page.getByRole('button', { name: 'Start a new plan', exact: true }).count()) {
+    let route = page.getByRole('button', { name: 'Build in stages', exact: true });
+    if (!(await route.count())) {
+        await page.getByRole('button', { name: 'Change model structure', exact: true }).click();
         page.once('dialog', (dialog) => dialog.accept());
-        await page.getByRole('button', { name: 'Start a new plan', exact: true }).click();
-    } else {
-        await page.getByRole('button', { name: 'Build in stages', exact: true }).click();
+        route = page.getByRole('button', { name: 'Build in stages', exact: true });
     }
+    await route.click();
     await page.getByRole('button', { name: 'Choose variables', exact: true }).first().click();
 }
 
@@ -17,9 +21,9 @@ test('staged plan selects variables then fits its first GLM before the next stag
     page.on('pageerror', (error) => errors.push(error.message));
     await page.setViewportSize({ width: 797, height: 900 });
     await startSequential(page);
-    await expect(page.getByRole('heading', { name: 'Set up a stage' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Variables for Main effects' })).toBeVisible();
     await page.getByLabel(/^Use (DriverAge|DrivAge)$/).check();
-    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Fit Main effects', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Fit Main effects', exact: true }).click();
@@ -34,9 +38,9 @@ test('staged plan selects variables then fits its first GLM before the next stag
     await page.getByLabel('Stage 2 name').locator('xpath=ancestor::li').getByRole('button', { name: 'Choose variables', exact: true }).click();
     await expect(page.getByLabel('Model stage')).toHaveValue(await page.locator('[aria-label="Model stage"] option').nth(1).getAttribute('value'));
     await page.getByLabel(/^Use (VehicleAge|VehAge)$/).check();
-    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
-    await expect(page.getByText(/complete score through Main effects as its offset/)).toBeVisible();
+    await expect(page.getByText(/^Will use the complete score through Main effects as its offset/)).toBeVisible();
     await expect(page.getByLabel('Optuna trials')).toHaveValue('8');
     await page.getByLabel('Optuna trials').fill('1');
     await page.getByRole('button', { name: /Fit CatBoost correction/ }).click();

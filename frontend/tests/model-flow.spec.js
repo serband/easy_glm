@@ -14,9 +14,9 @@ test('project setup chooses the staged workflow before its model variables and f
     await expect(page.getByLabel('Stage 1 name')).toBeVisible();
     await page.getByRole('button', { name: 'Choose variables', exact: true }).click();
 
-    await expect(page.getByRole('heading', { name: 'Set up a stage', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Variables for Main effects', exact: true })).toBeVisible();
     await page.getByLabel('Use DriverAge').check();
-    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
 
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Settings for Main effects', exact: true })).toBeVisible();
@@ -30,9 +30,9 @@ test('project setup chooses the staged workflow before its model variables and f
     await page.getByRole('button', { name: 'Add stage', exact: true }).click();
     await page.getByRole('button', { name: 'Choose variables', exact: true }).nth(1).click();
     await page.getByLabel('Use VehicleAge').check();
-    await page.getByRole('button', { name: 'Save stage setup', exact: true }).click();
+    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
     await page.getByRole('button', { name: 'Model', exact: true }).click();
-    await expect(page.getByText(/complete score through Main effects as its offset/)).toBeVisible();
+    await expect(page.getByText(/^Will use the complete score through Main effects as its offset/)).toBeVisible();
     await page.getByRole('button', { name: /^Fit / }).click();
     await expect(page.getByText('All stages are fitted.', { exact: false })).toBeVisible({ timeout: 60000 });
 

@@ -20,12 +20,31 @@ async function variablesSnapshot(page) {
     });
 }
 
+async function openSharedSetup(page) {
+    const loaded = page.waitForResponse(
+        (response) =>
+            response.url().includes('/api/model-plan') && response.request().method() === 'GET',
+    );
+    await page.goto('/?view=project');
+    await loaded;
+    const shared = page.getByRole('region', { name: 'Shared column assignments' });
+    if (await shared.count()) return;
+    let route = page.getByRole('button', { name: 'Single model', exact: true });
+    if (!(await route.count())) {
+        await page.getByRole('button', { name: 'Change model structure', exact: true }).click();
+        page.once('dialog', (dialog) => dialog.accept());
+        route = page.getByRole('button', { name: 'Single model', exact: true });
+    }
+    await route.click();
+    await expect(shared).toBeVisible();
+}
+
 test('one-way screen uses training rows and stages reviewed role changes', async ({
     page,
 }, testInfo) => {
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
-    await page.goto('/?view=variables');
+    await openSharedSetup(page);
     const panel = page.getByRole('group', { name: 'One-way feature selection' });
     await panel.locator(':scope > summary').click();
     await expect(panel).toContainText('4 variables to test');
@@ -141,7 +160,7 @@ test('one-way screen uses training rows and stages reviewed role changes', async
 test('ranked chart shares a numeric scale, filters and pages without inventing skipped scores', async ({
     page,
 }) => {
-    await page.goto('/?view=variables');
+    await openSharedSetup(page);
     const panel = page.getByRole('group', { name: 'One-way feature selection' });
     await panel.locator(':scope > summary').click();
     const snapshot = await variablesSnapshot(page);
@@ -301,7 +320,7 @@ test('ranked chart shares a numeric scale, filters and pages without inventing s
 test('cancelled or changed drafts suppress late reports, and invalid JSON cannot start', async ({
     page,
 }) => {
-    await page.goto('/?view=variables');
+    await openSharedSetup(page);
     const panel = page.getByRole('group', { name: 'One-way feature selection' });
     await panel.locator(':scope > summary').click();
     let release;

@@ -8,14 +8,18 @@ with the complete preceding score as their offset.
 
 | Screen | Action |
 | --- | --- |
-| Project & data | Open data; choose one model or models in stages; name and order the models. Add another model here whenever needed. |
-| Variables | Select a model in the plan; choose its variables and definitions using the searchable Table or JSON editor. |
+| Project & data | Open data; choose one model or models in stages; assign shared column roles; define each model using searchable Table and JSON editors. |
 | Model | Set fitting options and fit the next model in order. |
 | Diagnostics | Choose a fitted version, then inspect the complete final fit or the cumulative fit through an earlier model. |
 
 The project name identifies the work. Each model has one name and one method.
 There is no separate component-name field. The choice between one model and
 models in stages appears only in Project & data.
+
+For a single model, choose its variables, then its model details and variable
+treatment. For models in stages, define the shared response convention and the
+named methods in order, then choose variables and treatment separately for each
+stage. There is no separate Variables sidebar page.
 
 The response, weight/exposure, split and source data are shared. They cannot be
 overridden for a downstream model. Each model has its own selected variables,
@@ -27,8 +31,9 @@ columns cannot become model factors.
 The current plan is editable setup. Fitted versions are saved results and remain
 unchanged when the plan changes.
 
-- Start a new plan clears the current setup and selection. Saved fitted versions
-  remain available in history.
+- Change model structure opens the route chooser. Choosing a route and confirming
+  replaces the working setup and selection; Keep current plan cancels unchanged.
+  Saved fitted versions remain available in history.
 - Add a model appends to the current plan. It does not require all future models
   to be declared before fitting the first model.
 - Changes to an unfitted model do not invalidate earlier fitted models.
@@ -39,6 +44,9 @@ unchanged when the plan changes.
   is explicit; loading a project must not pick a branch arbitrarily. The adopted
   scorer is a frozen first stage, including its accepted amendments. It can be
   extended; replacing it requires a new independent plan.
+- After fitting, shared column assignments are locked. Revise shared assignments
+  copies the plan before unlocking them. Applying changes requires a new root fit
+  and retains the previous saved recipes and results.
 
 Fitting saves the exact current options and starts the next eligible model in one
 action. Model 3 cannot be fitted before models 1 and 2. Failures and cancelled

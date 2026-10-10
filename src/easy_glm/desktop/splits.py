@@ -66,7 +66,9 @@ def split_counts(project: Project, raw: pl.DataFrame) -> dict[str, int]:
         observed = [item["value"] for item in options["values"]]
         selected = [value for value in observed if matches(value)]
         if len(selected) != 1:
-            raise ValueError("Choose a training value from this column on Variables.")
+            raise ValueError(
+                "Choose a training value from this column in Project & data."
+            )
         project.data.split.train_value = selected[0]
         project.data.split.holdout_value = next(
             value for value in observed if not matches(value)
@@ -80,7 +82,7 @@ def split_values(project: Project, raw: pl.DataFrame) -> dict[str, Any]:
     frame = apply_variables(raw, project.data)
     column = project.data.split.column
     if column not in frame.columns:
-        raise ValueError("Choose an existing split column on Variables.")
+        raise ValueError("Choose an existing split column in Project & data.")
     series = frame[column]
     missing = series.is_null()
     if series.dtype.is_float():

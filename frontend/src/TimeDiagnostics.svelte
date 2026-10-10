@@ -93,8 +93,8 @@
         Original fit · all training and holdout rows. A/E above 1 means actual exceeds expected.
     </p>
     {#if !timeColumn}
-        <p>Assign a Time role to a numeric column on Variables.</p>
-        <button onclick={() => onNavigate('variables')}>Set Time on Variables</button>
+        <p>Assign a Time role to a numeric column in Project &amp; data.</p>
+        <button onclick={() => onNavigate('project')}>Set Time in Project &amp; data</button>
     {:else}
         <div class="time-controls">
             <label

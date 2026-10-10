@@ -1,5 +1,5 @@
 <script>
-    import { onDestroy } from 'svelte';
+    import { onDestroy, tick } from 'svelte';
     import { formatNumber as num } from './format.js';
     import DiagnosticTable from './DiagnosticTable.svelte';
     import ExploreChart from './ExploreChart.svelte';
@@ -79,6 +79,10 @@
                 if (column) query.set('column', column);
                 if (model) query.set('model', model);
                 fresh = await api('explore?' + query);
+                // A retry after a local-server restart updates the parent
+                // session while this request is in flight. Let that new state
+                // reach this component before comparing request contexts.
+                await tick();
                 if (sequence !== requestId || scope !== context) return;
                 cache.set(wanted, fresh);
             }
@@ -137,7 +141,10 @@
             <div class="explore-controls">
                 <div class="variable-choice">
                     <SearchableVariableSelect
-                        options={(metadata?.columns || []).map((item) => ({ value: item.name, label: item.name }))}
+                        options={(metadata?.columns || []).map((item) => ({
+                            value: item.name,
+                            label: item.name,
+                        }))}
                         bind:value={column}
                         label="Variable"
                         selectLabel="Plot variable"
@@ -182,7 +189,7 @@
                     <p>{error}</p>
                     <div>
                         {#if /split|train(?:ing)? (?:flag|column)|holdout/i.test(error)}
-                            <button onclick={() => onNavigate('variables')}
+                            <button onclick={() => onNavigate('project')}
                                 >Set up train / holdout</button
                             >
                         {:else}
@@ -209,8 +216,8 @@
                 </div>
                 {#if !result.target}<div class="target-missing">
                         <span>Assign a target to see the observed response.</span><button
-                            onclick={() => onNavigate('variables')}
-                            >Assign target in Variables</button
+                            onclick={() => onNavigate('project')}
+                            >Assign target in Project &amp; data</button
                         >
                     </div>{/if}
                 {#if result.column && result.table.length}

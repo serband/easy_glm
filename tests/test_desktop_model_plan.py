@@ -144,7 +144,7 @@ def test_catalogue_can_be_planned_before_upload_but_cannot_fit_without_it(plan_c
     assert wait(plan_client, first.json()["model_name"])["status"] == "complete"
     blocked = plan_client.post("/api/model-plan/fit-next", json=revision(plan_client))
     assert blocked.status_code == 422
-    assert "upload a catalogue in Variables" in blocked.text
+    assert "upload a catalogue in Project & data" in blocked.text
     assert len(plan_client.get("/api/model-plan").json()["fit_refs"]) == 1
 
     # An arbitrary path or a half-specified upload must not become a saved source.
@@ -444,6 +444,56 @@ def test_starting_identical_plan_does_not_reuse_old_fit(plan_client):
     assert fresh.status_code == 200, fresh.text
     assert fresh.json()["fit_refs"] == []
     assert fresh.json()["stage_statuses"][0]["state"] == "ready"
+
+
+def test_revising_shared_assignments_keeps_recipes_but_requires_a_new_root_fit(
+    plan_client,
+):
+    plan = {
+        "mode": "sequential",
+        "family": "poisson",
+        "link": "log",
+        "stages": [stage("root", "Core GLM", "Age"), stage("later", "Vehicle", "Age")],
+    }
+    saved = plan_client.post(
+        "/api/model-plan", json={**revision(plan_client), "plan": plan}
+    )
+    assert saved.status_code == 200, saved.text
+    started = plan_client.post("/api/model-plan/fit-next", json=revision(plan_client))
+    assert started.status_code == 202, started.text
+    model_name = started.json()["model_name"]
+    assert wait(plan_client, model_name)["status"] == "complete"
+    fitted = plan_client.get("/api/model-plan").json()
+    assert len(fitted["fit_refs"]) == 1
+
+    revised = plan_client.post(
+        "/api/model-plan",
+        json={
+            **revision(plan_client),
+            "operation": "start",
+            "plan": fitted["plan"],
+        },
+    )
+    assert revised.status_code == 200, revised.text
+    assert revised.json()["plan"]["plan_id"] != fitted["plan"]["plan_id"]
+    assert revised.json()["plan"]["stages"] == fitted["plan"]["stages"]
+    assert revised.json()["fit_refs"] == []
+
+    variables = plan_client.get("/api/variables").json()
+    setup = deepcopy(variables["setup"])
+    setup["roles"]["predictor"].remove("Region")
+    setup["roles"].setdefault("ignore", []).append("Region")
+    edit = {**revision(plan_client), "setup": setup}
+    preview = plan_client.post("/api/variables/preview", json=edit)
+    assert preview.status_code == 200, preview.text
+    applied = plan_client.post("/api/variables/apply", json=edit)
+    assert applied.status_code == 200, applied.text
+    current_plan = plan_client.get("/api/model-plan").json()
+    assert current_plan["fit_refs"] == []
+    assert current_plan["next_stage_id"] == "root"
+    assert current_plan["stage_statuses"][0]["state"] == "ready"
+    assert "Region" not in current_plan["safe_columns"][0]
+    assert model_name in plan_client.get("/api/project").json()["models"]
 
 
 def test_single_plan_can_use_an_unassigned_raw_factor():
