@@ -133,7 +133,7 @@ test('shared assignments use Table and JSON once, while stages keep independent 
     await page.getByLabel('Use DriverAge').check();
     await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
 
-    await page.getByRole('button', { name: 'Add stage', exact: true }).click();
+    await page.getByRole('button', { name: 'Add model', exact: true }).click();
     await page.getByRole('button', { name: 'Choose variables', exact: true }).nth(1).click();
     await expect(page.getByText(/complete score through Main effects as its offset/)).toBeVisible();
     await page.getByRole('tab', { name: 'JSON', exact: true }).click();

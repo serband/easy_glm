@@ -1,4 +1,6 @@
 <script>
+    import { tick } from 'svelte';
+
     export let api;
     export let state;
     export let planState = null;
@@ -13,24 +15,15 @@
     let error = '',
         busy = false,
         starting = false,
-        newKind = 'glm',
         revising = false;
     $: plan = planState?.plan || null;
     $: stages = plan?.stages || [];
     $: fittedCount = planState?.fit_refs?.length || 0;
     $: adoptedRoot = Boolean(plan?.adopted_model_name);
-    function stage(kind, index) {
-        const label =
-            kind === 'glm'
-                ? 'Main effects'
-                : kind === 'catboost'
-                  ? 'CatBoost correction'
-                  : kind === 'catalogue'
-                    ? 'Catalogue correction'
-                    : 'Interaction';
+    function stage(kind, index, name = index === 0 ? 'Main effects' : `Model ${index + 1}`) {
         return {
             component_id: crypto.randomUUID(),
-            name: index ? `${label} ${index + 1}` : label,
+            name,
             kind,
             factors: [],
             settings:
@@ -77,6 +70,31 @@
                 variables: {},
             },
         };
+    }
+    function assignmentName(name) {
+        return state?.setup?.renames?.[name] || name;
+    }
+    $: externalOffset = state?.setup?.assignments?.offset
+        ? assignmentName(state.setup.assignments.offset)
+        : state?.setup?.assignments?.current_premium
+          ? `log(${assignmentName(state.setup.assignments.current_premium)}) (derived from current premium)`
+          : null;
+    function stageOffset(index) {
+        if (adoptedRoot && index === 0)
+            return `Accepted saved scorer: ${plan.adopted_model_name}.`;
+        if (index === 0)
+            return externalOffset
+                ? `Starts from project data. No earlier model. External offset: ${externalOffset}.`
+                : 'Starts from project data. No earlier model.';
+        const priorNames = stages.slice(0, index).map((item) => item.name);
+        if (adoptedRoot) priorNames[0] = plan.adopted_model_name;
+        return `Offset: complete score from ${priorNames.join(' → ')}.`;
+    }
+    function nextModelName() {
+        const names = new Set(stages.map((item) => item.name));
+        let number = stages.length + 1;
+        while (names.has(`Model ${number}`)) number += 1;
+        return `Model ${number}`;
     }
     async function save(operation, nextPlan) {
         if (!confirmDiscardStageDraft()) return;
@@ -185,12 +203,12 @@
         }
         apply();
     }
-    async function addStage(kind) {
+    async function addStage() {
         if (!plan || busy || !confirmDiscardStageDraft()) return;
         const nextPlan = {
             ...plan,
             mode: 'sequential',
-            stages: [...stages, stage(kind, stages.length)],
+            stages: [...stages, stage('glm', stages.length, nextModelName())],
         };
         busy = true;
         error = '';
@@ -202,7 +220,13 @@
                 plan: nextPlan,
             });
             onChanged(saved);
-            onNavigate('variables', saved.plan?.stages?.at(-1)?.component_id || '');
+            const stageId = saved.plan?.stages?.at(-1)?.component_id;
+            busy = false;
+            await tick();
+            await tick();
+            const card = document.getElementById(`model-stage-${stageId}`);
+            card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            card?.querySelector('select')?.focus();
         } catch (e) {
             error = e.message;
         } finally {
@@ -325,7 +349,7 @@
             {#if !(singleWorkflowManaged && plan.mode === 'single')}
                 {#if adoptedRoot}<div class="message">
                         Existing fitted model: {plan.adopted_model_name}. It is an accepted scorer
-                        and cannot be changed here. Add a stage to build on it, or start a new plan.
+                        and cannot be changed here. Add a model to build on it, or start a new plan.
                     </div>{/if}{#if fittedCount}<p class="help-text">
                         {revising
                             ? 'You are revising the fitted prefix. Save revised plan to create the new version.'
@@ -450,79 +474,89 @@
                 {:else}
                     <ol class="stage-list">
                         {#each stages as item, index}
-                            <li>
+                            <li class="stage-card" id={`model-stage-${item.component_id}`}>
+                                <h3>Model {index + 1}</h3>
+                                <p class="stage-offset">{stageOffset(index)}</p>
                                 <div class="two-column-grid stage-fields">
                                     <label class="field">
-                                        <span class="field-label">Stage name</span>
+                                        <span class="field-label">Model name</span>
                                         <input
-                                            aria-label={`Stage ${index + 1} name`}
-                                            value={item.name}
+                                            aria-label={`Model ${index + 1} name`}
+                                            value={adoptedRoot && index === 0
+                                                ? plan.adopted_model_name
+                                                : item.name}
+                                            readonly={adoptedRoot && index === 0}
                                             onchange={(event) =>
                                                 updateStage(index, {
                                                     name: event.currentTarget.value,
                                                 })}
-                                            disabled={busy || stageLocked(index)}
+                                            disabled={busy ||
+                                                (stageLocked(index) && !(adoptedRoot && index === 0))}
                                         />
                                     </label>
                                     <label class="field">
-                                        <span class="field-label">Method</span>
-                                        <select
-                                            aria-label={`Stage ${index + 1} method`}
-                                            value={item.kind}
-                                            onchange={(event) =>
-                                                changeSelect(event, item.kind, () =>
-                                                    changeMethod(index, event.currentTarget.value),
-                                                )}
-                                            disabled={busy || stageLocked(index)}
-                                        >
-                                            <option value="glm">GLM</option>
-                                            <option value="catboost">CatBoost</option>
-                                            <option value="interaction">Interaction</option>
-                                            <option value="catalogue">Catalogue</option>
-                                        </select>
+                                        <span class="field-label">Model type</span>
+                                        {#if adoptedRoot && index === 0}
+                                            <input
+                                                aria-label={`Model ${index + 1} type`}
+                                                value="Saved fitted model"
+                                                readonly
+                                            />
+                                        {:else}
+                                            <select
+                                                aria-label={`Model ${index + 1} type`}
+                                                value={item.kind}
+                                                onchange={(event) =>
+                                                    changeSelect(event, item.kind, () =>
+                                                        changeMethod(index, event.currentTarget.value),
+                                                    )}
+                                                disabled={busy || stageLocked(index)}
+                                            >
+                                                <option value="glm">GLM</option>
+                                                <option value="catboost">CatBoost</option>
+                                                <option value="interaction">Interaction table</option>
+                                                <option value="catalogue">Catalogue</option>
+                                            </select>
+                                        {/if}
                                     </label>
                                 </div>
-                                <div class="stage-actions">
-                                    <button
-                                        onclick={() => onNavigate('variables', item.component_id)}
-                                        >Choose variables</button
-                                    >{#if stages.length > 1}<button
-                                            aria-label={`Move ${item.name} up`}
-                                            onclick={() => moveStage(index, -1)}
-                                            disabled={busy ||
-                                                index === 0 ||
-                                                stageLocked(index) ||
-                                                stageLocked(index - 1)}>Up</button
-                                        ><button
-                                            aria-label={`Move ${item.name} down`}
-                                            onclick={() => moveStage(index, 1)}
-                                            disabled={busy ||
-                                                index === stages.length - 1 ||
-                                                stageLocked(index) ||
-                                                stageLocked(index + 1)}>Down</button
-                                        ><button
-                                            onclick={() => removeStage(index)}
-                                            disabled={busy || stageLocked(index)}>Remove</button
-                                        >{/if}
+                                <div class="stage-footer">
+                                    <span class="selected-count"
+                                        >{adoptedRoot && index === 0
+                                            ? 'Saved fitted variables are preserved'
+                                            : `${item.factors?.length || 0} variable${
+                                                  item.factors?.length === 1 ? '' : 's'
+                                              } selected`}</span
+                                    >
+                                    <div class="stage-actions">
+                                        {#if !(adoptedRoot && index === 0)}<button
+                                                onclick={() => onNavigate('variables', item.component_id)}
+                                                >Choose variables</button
+                                            >{/if}{#if stages.length > 1}<button
+                                                aria-label={`Move ${item.name} up`}
+                                                onclick={() => moveStage(index, -1)}
+                                                disabled={busy ||
+                                                    index === 0 ||
+                                                    stageLocked(index) ||
+                                                    stageLocked(index - 1)}>Up</button
+                                            ><button
+                                                aria-label={`Move ${item.name} down`}
+                                                onclick={() => moveStage(index, 1)}
+                                                disabled={busy ||
+                                                    index === stages.length - 1 ||
+                                                    stageLocked(index) ||
+                                                    stageLocked(index + 1)}>Down</button
+                                            ><button
+                                                onclick={() => removeStage(index)}
+                                                disabled={busy || stageLocked(index)}>Remove</button
+                                            >{/if}
+                                    </div>
                                 </div>
                             </li>
                         {/each}
                     </ol>
-                    <div class="two-column-grid add-stage">
-                        <label class="field">
-                            <span class="field-label">Method for next stage</span>
-                            <select aria-label="Add stage method" bind:value={newKind}>
-                                <option value="glm">GLM</option>
-                                <option value="catboost">CatBoost</option>
-                                <option value="interaction">Interaction</option>
-                                <option value="catalogue">Catalogue</option>
-                            </select>
-                        </label>
-                        <div class="add-stage-action">
-                            <button onclick={() => addStage(newKind)} disabled={busy}
-                                >Add stage</button
-                            >
-                        </div>
+                    <div class="add-stage">
+                        <button onclick={addStage} disabled={busy}>Add model</button>
                     </div>
                 {/if}
             {/if}
@@ -630,34 +664,52 @@
         padding-left: 0;
         margin: 24px 0 0;
         list-style: none;
+        display: grid;
+        gap: 16px;
     }
     .single-model-details {
         margin-top: 24px;
     }
-    .stage-list li {
-        border-top: 1px solid var(--border);
-        padding: 16px 0;
+    .stage-card {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 16px;
+        background: #fff;
+    }
+    .stage-card h3 {
+        margin: 0;
+        font-size: 16px;
+    }
+    .stage-offset {
+        margin: 8px 0 16px;
+        color: var(--muted);
+    }
+    .stage-footer {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 16px;
+    }
+    .selected-count {
+        color: var(--muted);
+        font-size: 13px;
     }
     .configured-plan .plan-actions button,
-    .stage-actions button,
-    .add-stage-action button {
+    .stage-actions button {
         min-height: 38px;
     }
     .stage-actions {
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
-        margin-top: 16px;
     }
     .add-stage {
         margin-top: 24px;
     }
-    .add-stage-action {
-        display: flex;
-        align-items: end;
-    }
-    .add-stage-action button {
-        align-self: end;
+    .add-stage button {
+        min-height: 38px;
     }
     .configured-plan + .saved-versions {
         margin-top: 24px;
@@ -674,12 +726,6 @@
         }
         .two-column-grid {
             grid-template-columns: 1fr;
-        }
-        .add-stage-action {
-            align-items: start;
-        }
-        .add-stage-action button {
-            align-self: start;
         }
         .route-actions {
             grid-template-columns: 1fr;

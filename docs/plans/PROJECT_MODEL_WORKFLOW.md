@@ -21,6 +21,13 @@ treatment. For models in stages, define the shared response convention and the
 named methods in order, then choose variables and treatment separately for each
 stage. There is no separate Variables sidebar page.
 
+Each model has a numbered card with **Model name**, **Model type**, its incoming
+offset and its own **Choose variables** action. **Add model** appends a new GLM
+card and focuses its type without opening the variables editor. There is no
+separate type selector for a model that has not yet been added. Later cards name
+the complete preceding sequence they offset. An adopted starter displays its
+exact saved name and **Saved fitted model**, with its accepted scorer locked.
+
 The response, weight/exposure, split and source data are shared. They cannot be
 overridden for a downstream model. Each model has its own selected variables,
 numeric bands or raw CatBoost types. IDs, ignored columns and shared control

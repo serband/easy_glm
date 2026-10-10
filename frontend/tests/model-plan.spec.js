@@ -16,7 +16,7 @@ async function startSequential(page) {
     await page.getByRole('button', { name: 'Choose variables', exact: true }).first().click();
 }
 
-test('staged plan selects variables then fits its first GLM before the next stage', async ({ page }) => {
+test('numbered models keep their type, variables and cumulative offsets', async ({ page }) => {
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.setViewportSize({ width: 797, height: 900 });
@@ -32,10 +32,16 @@ test('staged plan selects variables then fits its first GLM before the next stag
     await page.getByRole('button', { name: 'Diagnostics', exact: true }).click();
     await expect(page.getByText(/Actual versus expected/)).toBeVisible();
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
-    await page.getByLabel('Add stage method').selectOption('catboost');
-    await page.getByRole('button', { name: 'Add stage', exact: true }).click();
-    await expect(page.getByLabel('Stage 2 name')).toBeVisible();
-    await page.getByLabel('Stage 2 name').locator('xpath=ancestor::li').getByRole('button', { name: 'Choose variables', exact: true }).click();
+    await expect(page.getByLabel('Add stage method')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Add model', exact: true }).click();
+    await expect(page.getByLabel('Model 2 name')).toBeVisible();
+    await expect(page.locator('[aria-label="Model 2 type"]')).toBeFocused();
+    await page.getByLabel('Model 2 name').fill('Vehicle CatBoost');
+    await page.getByLabel('Model 2 name').press('Tab');
+    await expect(page.getByLabel('Model 2 name')).toHaveValue('Vehicle CatBoost');
+    await page.getByLabel('Model 2 type').selectOption('catboost');
+    await expect(page.getByText('Offset: complete score from Main effects.')).toBeVisible();
+    await page.getByLabel('Model 2 name').locator('xpath=ancestor::li').getByRole('button', { name: 'Choose variables', exact: true }).click();
     await expect(page.getByLabel('Model stage')).toHaveValue(await page.locator('[aria-label="Model stage"] option').nth(1).getAttribute('value'));
     await page.getByLabel(/^Use (VehicleAge|VehAge)$/).check();
     await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
@@ -43,8 +49,17 @@ test('staged plan selects variables then fits its first GLM before the next stag
     await expect(page.getByText(/^Will use the complete score through Main effects as its offset/)).toBeVisible();
     await expect(page.getByLabel('Optuna trials')).toHaveValue('8');
     await page.getByLabel('Optuna trials').fill('1');
-    await page.getByRole('button', { name: /Fit CatBoost correction/ }).click();
+    await page.getByRole('button', { name: /Fit Vehicle CatBoost/ }).click();
     await expect(page.getByText('Fitted and kept as a saved version.')).toHaveCount(2, { timeout: 120000 });
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await page.getByRole('button', { name: 'Add model', exact: true }).click();
+    await page.getByLabel('Model 3 name').fill('Occupation CatBoost');
+    await page.getByLabel('Model 3 name').press('Tab');
+    await expect(page.getByLabel('Model 3 name')).toHaveValue('Occupation CatBoost');
+    await page.getByLabel('Model 3 type').selectOption('catboost');
+    await expect(
+        page.getByText('Offset: complete score from Main effects → Vehicle CatBoost.'),
+    ).toBeVisible();
     expect(errors).toEqual([]);
 });
 
@@ -52,7 +67,7 @@ test('plan picker guards unsaved work and remains narrow', async ({ page }) => {
     await page.setViewportSize({ width: 797, height: 900 });
     await startSequential(page);
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
-    await page.getByRole('button', { name: 'Add stage', exact: true }).click();
+    await page.getByRole('button', { name: 'Add model', exact: true }).click();
     await page.getByRole('button', { name: 'Choose variables', exact: true }).first().click();
     await page.getByLabel(/^Use (DriverAge|DrivAge)$/).check();
     page.once('dialog', (dialog) => dialog.dismiss());

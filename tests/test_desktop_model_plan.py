@@ -528,7 +528,8 @@ def test_single_plan_can_use_an_unassigned_raw_factor():
         assert wait(client, response.json()["model_name"])["status"] == "complete"
 
 
-def test_adopted_complete_stack_remains_exact_frozen_prefix(plan_client):
+@pytest.mark.parametrize("operation", ["save", "revise"])
+def test_adopted_complete_stack_remains_exact_frozen_prefix(plan_client, operation):
     original = {
         "mode": "sequential",
         "family": "poisson",
@@ -549,6 +550,11 @@ def test_adopted_complete_stack_remains_exact_frozen_prefix(plan_client):
         "/api/model-plan/fit-next", json=revision(plan_client)
     ).json()
     assert wait(plan_client, second["model_name"])["status"] == "complete"
+    source_diagnostics = plan_client.get(
+        f"/api/stack/{second['model_name']}/diagnostics",
+        params={"subset": "train"},
+    )
+    assert source_diagnostics.status_code == 200, source_diagnostics.text
 
     adopted = plan_client.post(
         "/api/model-plan",
@@ -559,8 +565,11 @@ def test_adopted_complete_stack_remains_exact_frozen_prefix(plan_client):
         },
     )
     assert adopted.status_code == 200, adopted.text
-    assert adopted.json()["stage_statuses"][0]["state"] == "fitted"
-    adopted_plan = adopted.json()["plan"]
+    adopted_view = adopted.json()
+    assert adopted_view["stage_statuses"][0]["state"] == "fitted"
+    adopted_plan = adopted_view["plan"]
+    adopted_ref = adopted_view["fit_refs"][0]
+    frozen_root = deepcopy(adopted_plan["stages"][0])
     continued = {
         **adopted_plan,
         "stages": [
@@ -570,12 +579,34 @@ def test_adopted_complete_stack_remains_exact_frozen_prefix(plan_client):
     }
     revised = plan_client.post(
         "/api/model-plan",
-        json={**revision(plan_client), "operation": "revise", "plan": continued},
+        json={**revision(plan_client), "operation": operation, "plan": continued},
     )
     assert revised.status_code == 200, revised.text
+    view = revised.json()
+    assert view["plan"]["adopted_model_name"] == second["model_name"]
+    assert view["plan"]["stages"][0] == frozen_root
+    assert view["fit_refs"] == [adopted_ref]
+    forged_source = {
+        **view["plan"],
+        "adopted_model_name": "a different saved model",
+    }
+    rejected = plan_client.post(
+        "/api/model-plan",
+        json={**revision(plan_client), "operation": operation, "plan": forged_source},
+    )
+    assert rejected.status_code == 422
     third = plan_client.post("/api/model-plan/fit-next", json=revision(plan_client))
     assert third.status_code == 202, third.text
-    assert wait(plan_client, third.json()["model_name"])["status"] == "complete"
+    third_model_name = third.json()["model_name"]
+    assert wait(plan_client, third_model_name)["status"] == "complete"
+    prefix_diagnostics = plan_client.get(
+        f"/api/stack/{third_model_name}/diagnostics",
+        params={"subset": "train", "through": "two"},
+    )
+    assert prefix_diagnostics.status_code == 200, prefix_diagnostics.text
+    assert prefix_diagnostics.json()["metrics"]["expected"] == pytest.approx(
+        source_diagnostics.json()["metrics"]["expected"], abs=1e-12
+    )
 
 
 def test_client_cannot_inject_an_adopted_source(plan_client):
@@ -593,7 +624,8 @@ def test_client_cannot_inject_an_adopted_source(plan_client):
     assert response.status_code == 422
 
 
-def test_adopted_root_cannot_be_revised_into_a_different_root(plan_client):
+@pytest.mark.parametrize("operation", ["save", "revise"])
+def test_adopted_root_cannot_be_revised_into_a_different_root(plan_client, operation):
     original = {
         "mode": "sequential",
         "family": "poisson",
@@ -625,7 +657,7 @@ def test_adopted_root_cannot_be_revised_into_a_different_root(plan_client):
     }
     response = plan_client.post(
         "/api/model-plan",
-        json={**revision(plan_client), "operation": "revise", "plan": forged},
+        json={**revision(plan_client), "operation": operation, "plan": forged},
     )
     assert response.status_code == 422
 

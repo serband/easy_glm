@@ -17,7 +17,7 @@ test('a 500-column project keeps each planned stage searchable and isolated', as
     await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
 
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
-    await page.getByRole('button', { name: 'Add stage', exact: true }).click();
+    await page.getByRole('button', { name: 'Add model', exact: true }).click();
     await openStageVariables(page, 1);
     await page.getByRole('tab', { name: 'JSON' }).click();
     const variables = Object.fromEntries(

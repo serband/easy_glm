@@ -1331,7 +1331,7 @@ def create_app(
                 if plan.adopted_model_name is not None and not (
                     edit.operation == "adopt"
                     or (
-                        edit.operation == "revise"
+                        edit.operation in {"save", "revise"}
                         and old is not None
                         and plan.adopted_model_name == old.adopted_model_name
                     )

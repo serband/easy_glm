@@ -6,7 +6,7 @@
 
 | Purpose | Checkout and state |
 | --- | --- |
-| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/project-setup-workflow`, following layout revision `0102f86`; consolidated setup in Project & data, with ordered fitting in Model |
+| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/explicit-model-stages`, following consolidated setup revision `6b15bbb`; consolidated setup in Project & data, with ordered fitting in Model |
 | User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
 | Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
 
@@ -35,12 +35,20 @@ The stack branch implements an ordered multiplicative sequence of GLM, direct Ca
 data, choose **Single model** or **Build in stages**, and assign the shared column
 roles. For a single model, choose predictors before model details and treatment.
 For models in stages, define the shared response convention and the named methods
-in order, then select variables separately for each stage using its searchable
+in numbered cards using **Model name** and **Model type**, then select variables
+separately for each stage using its searchable
 Table/JSON editor. **Variables** is no longer a sidebar destination. **Model**
 contains fitting options and the next eligible Fit action. The plan can start
 with one model and be extended later. Blank future stages do not block fitting
 the configured first stage. The navigation change reuses the existing role and
 model-plan API contracts; it does not require a project-format migration.
+
+**Add model** appends a GLM card named **Model N** and focuses its type. It does
+not open the variables editor. Each card shows its complete preceding offset
+source; an adopted root shows the exact saved name and **Saved fitted model**,
+with its accepted scorer locked. There is no separate next-model type selector.
+Appending or saving downstream variables preserves the adopted source and exact
+fit reference; replacing that source or editing its frozen recipe is rejected.
 
 The current plan is separate from immutable saved fitted versions. **Change
 model structure** opens the Single model / Build in stages chooser. Choosing a
@@ -99,7 +107,27 @@ Known first-version boundaries: each named model scores a linear sequence; the d
 
 ## Source map and checks
 
-**Current consolidated-setup checks, 10 October.** The focused Python suite
+**Numbered-model correction, 10 October.** The model list now keeps the current
+name, type, variable action and cumulative offset together. Appending keeps the
+new card visible and focuses its enabled type selector. Adoption checks found
+and fixed a rejected append/save of an unchanged adopted source; frozen-root
+and different-source edits remain rejected. Its variables view now describes
+the preserved scorer instead of displaying an empty GLM placeholder.
+
+The focused model-plan Python suite passed **23 tests**. Svelte check/build,
+Black, Ruff and the **27 frontend unit tests** passed. Focused browser checks
+passed **15 model-plan**, **five model-variable/flow**, and **one 500-variable**
+scenarios, including strict new-card focus and adopted append. Independent
+rendered review covered one and three cards at 1150px and 797px. The actuarial review
+configured three independent variable sets, fitted GLM and Vehicle CatBoost,
+confirmed the third model's eligibility, configured CatBoost → GLM, and extended
+an API-seeded adopted scorer through the UI. The third and reverse-order models
+were configured rather than fitted. The route chooser does not expose saved-fit
+adoption; the adopted-plan test starts from the existing API contract. The live
+preview was restored with its exact project, 50,000 rows and 13 columns.
+These are local source checks, not an installed-wheel or Windows release check.
+
+**Consolidated-setup baseline checks, 10 October.** The focused Python suite
 passed **94 tests** covering model plans, shared roles, split settings, predictor
 screening and feature selection. Svelte check/build, all **27 frontend unit
 tests**, Black, Ruff and mypy passed. The final browser build passed **14**
@@ -307,7 +335,7 @@ local backup/transfer operation, not a commit, push or release:
 source_checkout=/private/tmp/easyglm-model-variable-setup
 packet=/Users/serban/Documents/Projects/easy_glm/.internal/handover-20261010
 mkdir -p "$packet/docs/plans"
-git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/project-setup-workflow refs/tags/v0.472
+git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/explicit-model-stages refs/tags/v0.472
 git -C "$source_checkout" bundle verify "$packet/easyglm.bundle"
 cp "$source_checkout/AGENTS.md" "$packet/AGENTS.md"
 cp "$source_checkout/docs/HANDOVER.md" "$packet/docs/HANDOVER.md"
@@ -318,8 +346,8 @@ cp "$source_checkout/docs/plans/STACKED_MODELS.md" "$packet/docs/plans/STACKED_M
 cp "$source_checkout/docs/plans/PROJECT_MODEL_WORKFLOW.md" "$packet/docs/plans/PROJECT_MODEL_WORKFLOW.md"
 ```
 
-Check that the bundle contains the current `codex/project-setup-workflow` commit
-(`git rev-parse codex/project-setup-workflow`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
+Check that the bundle contains the current `codex/explicit-model-stages` commit
+(`git rev-parse codex/explicit-model-stages`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
 **new** directory with the stack branch selected, then copy the seven guidance
 files into that clone and inspect `git status` before work. Keep the packet's
 directory structure; its docs are newer than the 30 September recovery bundle.
@@ -327,7 +355,7 @@ For example, with transferred packet and destination paths chosen by the
 operator:
 
 ```bash
-git clone --branch codex/project-setup-workflow "$packet/easyglm.bundle" "$destination"
+git clone --branch codex/explicit-model-stages "$packet/easyglm.bundle" "$destination"
 cp "$packet/AGENTS.md" "$destination/AGENTS.md"
 cp "$packet/docs/HANDOVER.md" "$destination/docs/HANDOVER.md"
 cp "$packet/docs/MODEL_FLOW.md" "$destination/docs/MODEL_FLOW.md"

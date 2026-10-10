@@ -9,8 +9,10 @@ and holdout values explicitly.
 
 For a single model, choose its predictors, then define its method, family/link
 and variable treatment. For models in stages, define the shared response
-convention, then give each stage a name and method: GLM, CatBoost, interaction
-table or catalogue lookup. Choose variables separately for each stage. The
+convention, then set **Model name** and **Model type** in each numbered card.
+Types are GLM, CatBoost, interaction table or catalogue lookup. Each card shows
+the complete preceding score it will use as its offset. Choose variables
+separately for each stage. The
 models run in the order shown. You can add another model later; you do not need
 to decide the entire sequence before fitting.
 
@@ -73,8 +75,10 @@ as well as the completed candidates.
 
 These actions are in **Project & data**:
 
-- **Add stage** appends a model. Give it a name and method, then choose its
-  variables. Choose **Build in stages** when a later model will use the current
+- **Add model** appends a numbered card with GLM selected. Set the new card's
+  name and type, then click its **Choose variables** button. Adding a card leaves
+  you in the model list. Choose **Build in stages** when a later model will use
+  the current
   model's score as its offset.
 - **Create revised plan** lets you change a fitted model. That model and the
   models after it need fitting again. An unchanged earlier prefix can be reused.

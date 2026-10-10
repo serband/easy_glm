@@ -25,6 +25,7 @@
     $: if (!selectedStageId && stages.length) selectedStageId = stages[0].component_id;
     $: stageIndex = stages.findIndex((stage) => stage.component_id === selectedStageId);
     $: current = stageIndex >= 0 ? stages[stageIndex] : null;
+    $: adoptedStarter = Boolean(plan?.adopted_model_name) && stageIndex === 0;
     $: sourceKey = JSON.stringify({
         current: current || null,
         response: plan
@@ -73,8 +74,7 @@
         planState?.stage_statuses?.find((item) => item.stage_id === current?.component_id)
             ?.state === 'fitted',
     );
-    $: locked =
-        (Boolean(plan?.adopted_model_name) && stageIndex === 0) || (isFitted && !revisionIntent);
+    $: locked = adoptedStarter || (isFitted && !revisionIntent);
     $: sourceColumns =
         planState?.safe_column_details?.[stageIndex] ||
         (planState?.safe_columns?.[stageIndex] || []).map(
@@ -254,17 +254,21 @@
                 <h2>
                     {singleMode
                         ? 'Variables for this model'
-                        : `Variables for ${current?.name || 'this stage'}`}
+                        : adoptedStarter
+                          ? `Saved variables for ${plan.adopted_model_name}`
+                          : `Variables for ${current?.name || 'this stage'}`}
                 </h2>
                 <p>
                     {singleMode
                         ? 'Choose the factors and their treatment for this model.'
-                        : stageIndex
-                          ? `This stage uses the complete score through ${stages[stageIndex - 1]?.name} as its offset.`
-                          : 'This first stage starts from the shared data.'}
+                        : adoptedStarter
+                          ? 'The complete saved scorer and its variable definitions are preserved.'
+                          : stageIndex
+                            ? `This stage uses the complete score through ${stages[stageIndex - 1]?.name} as its offset.`
+                            : 'This first stage starts from the shared data.'}
                 </p>
             </div>
-            <strong>{working?.factors?.length || 0} selected</strong>
+            {#if !adoptedStarter}<strong>{working?.factors?.length || 0} selected</strong>{/if}
         </div>
     {:else}
         <div class="heading">
@@ -303,7 +307,11 @@
                         }}
                     >
                         {#each stages as item, index}
-                            <option value={item.component_id}>{index + 1}. {item.name}</option>
+                            <option value={item.component_id}
+                                >{index + 1}. {index === 0 && plan.adopted_model_name
+                                    ? plan.adopted_model_name
+                                    : item.name}</option
+                            >
                         {/each}
                     </select>
                 </label>
@@ -320,7 +328,12 @@
             <button class="quiet" onclick={onSharedSetup}>Change shared data setup</button>
         {/if}
         {#if error}<div class="message error" role="alert">{error}</div>{/if}
-        {#if locked}
+        {#if adoptedStarter}
+            <div class="message">
+                This saved starting model is locked. Add a model after it to extend the chain. Start
+                a new plan to replace it.
+            </div>
+        {:else if locked}
             <div class="message">
                 This stage is already fitted. Go to Project &amp; data and choose Create revised
                 plan before changing it.
@@ -361,7 +374,7 @@
                 {/if}
             </section>
         {/if}
-        {#if working}
+        {#if working && !adoptedStarter}
             <fieldset disabled={locked}>
                 {#if singleMode && embedded && singleStep === 'selection'}
                     <ModelVariables

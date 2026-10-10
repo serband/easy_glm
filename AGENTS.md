@@ -42,9 +42,9 @@ and human-readable, and release only with explicit authorization.
 ## Current state
 
 Read `docs/HANDOVER.md` before work on the mixed model stack. The last known public
-release is v0.472. The current project setup work is on `codex/project-setup-workflow` in
-`/private/tmp/easyglm-model-variable-setup`, based on layout revision
-`0102f86`. The user's primary checkout contains separate work. Verify the actual
+release is v0.472. The current project setup work is on `codex/explicit-model-stages` in
+`/private/tmp/easyglm-model-variable-setup`, based on consolidated setup revision
+`6b15bbb`. The user's primary checkout contains separate work. Verify the actual
 checkout and preserve its existing changes. Model-flow connections record how named
 candidates were fitted; the complete ordered component recipe remains the scorer.
 

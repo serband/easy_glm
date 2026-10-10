@@ -19,7 +19,7 @@ async function chooseStageVariables(page, index) {
 
 test('a CatBoost stage defaults to Optuna tuning on training folds', async ({ page }) => {
     await startStages(page);
-    await page.getByLabel('Stage 1 method').selectOption('catboost');
+    await page.getByLabel('Model 1 type').selectOption('catboost');
     await chooseStageVariables(page, 0);
     await page.getByLabel('Use VehicleAge').check();
     await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
@@ -51,7 +51,7 @@ test('each stage keeps its own variables and local numeric definitions', async (
     await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
 
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
-    await page.getByRole('button', { name: 'Add stage', exact: true }).click();
+    await page.getByRole('button', { name: 'Add model', exact: true }).click();
     await chooseStageVariables(page, 1);
     await page.getByRole('tab', { name: 'JSON' }).click();
     const json = page.getByLabel('Model variables JSON');
@@ -78,14 +78,14 @@ test('a catalogue stage exposes uploaded attributes but not its selected key', a
             && response.request().method() === 'POST'
             && response.request().postDataJSON()?.plan?.stages?.length === 2,
     );
-    await page.getByRole('button', { name: 'Add stage', exact: true }).click();
+    await page.getByRole('button', { name: 'Add model', exact: true }).click();
     await addedStage;
     const savedCatalogueStage = page.waitForResponse(
         (response) => response.url().endsWith('/api/model-plan')
             && response.request().method() === 'POST'
             && response.request().postDataJSON()?.plan?.stages?.[1]?.kind === 'catalogue',
     );
-    await page.getByLabel('Stage 2 method').selectOption('catalogue');
+    await page.getByLabel('Model 2 type').selectOption('catalogue');
     const catalogueResponse = await savedCatalogueStage;
     const catalogueBody = await catalogueResponse.json();
     expect(catalogueResponse.ok(), JSON.stringify(catalogueBody)).toBe(true);
@@ -111,8 +111,8 @@ test('a catalogue stage fits the uploaded file and remains available for table r
     await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
 
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
-    await page.getByRole('button', { name: 'Add stage', exact: true }).click();
-    await page.getByLabel('Stage 2 method').selectOption('catalogue');
+    await page.getByRole('button', { name: 'Add model', exact: true }).click();
+    await page.getByLabel('Model 2 type').selectOption('catalogue');
     await chooseStageVariables(page, 1);
     const csv = ['PolicyID,VehicleGroup,Power']
         .concat(
@@ -133,15 +133,15 @@ test('a catalogue stage fits the uploaded file and remains available for table r
 
     await page.getByRole('button', { name: 'Model', exact: true }).click();
     await page.getByRole('button', { name: 'Fit Main effects', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Settings for Main effects 2', exact: true })).toBeVisible({ timeout: 60000 });
+    await expect(page.getByRole('heading', { name: 'Settings for Model 2', exact: true })).toBeVisible({ timeout: 60000 });
     await page.getByRole('radio', { name: 'Manual settings' }).check();
     await page.getByLabel('Iterations').fill('20');
     await page.getByLabel('Threads').fill('1');
-    await page.getByRole('button', { name: 'Fit Main effects 2', exact: true }).click();
+    await page.getByRole('button', { name: 'Fit Model 2', exact: true }).click();
     await expect(page.getByText('All stages are fitted.', { exact: false })).toBeVisible({ timeout: 120000 });
 
     await page.getByRole('button', { name: 'Rate tables', exact: true }).click();
     await expect(page.getByLabel('Inspect model component')).toBeVisible({ timeout: 60000 });
-    await page.getByLabel('Inspect model component').selectOption({ label: 'Main effects 2' });
+    await page.getByLabel('Inspect model component').selectOption({ label: 'Model 2' });
     await expect(page.getByRole('columnheader', { name: 'VehicleGroup', exact: true })).toBeVisible();
 });

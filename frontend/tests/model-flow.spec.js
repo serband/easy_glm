@@ -11,7 +11,7 @@ test('project setup chooses the staged workflow before its model variables and f
 
     await expect(page.getByRole('heading', { name: 'Project & data', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Build in stages', exact: true }).click();
-    await expect(page.getByLabel('Stage 1 name')).toBeVisible();
+    await expect(page.getByLabel('Model 1 name')).toBeVisible();
     await page.getByRole('button', { name: 'Choose variables', exact: true }).click();
 
     await expect(page.getByRole('heading', { name: 'Variables for Main effects', exact: true })).toBeVisible();
@@ -24,10 +24,10 @@ test('project setup chooses the staged workflow before its model variables and f
     await expect(page.getByText('Fitting Main effects', { exact: false })).toBeVisible();
     await expect(page.getByText('All stages are fitted.', { exact: false })).toBeVisible({ timeout: 60000 });
 
-    // A later stage is defined from the same project data, but its fit starts
-    // from the complete saved score of the preceding stage.
+    // A later model is defined from the same project data, but its fit starts
+    // from the complete saved score of the preceding model.
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
-    await page.getByRole('button', { name: 'Add stage', exact: true }).click();
+    await page.getByRole('button', { name: 'Add model', exact: true }).click();
     await page.getByRole('button', { name: 'Choose variables', exact: true }).nth(1).click();
     await page.getByLabel('Use VehicleAge').check();
     await page.getByRole('button', { name: 'Save model variables', exact: true }).click();

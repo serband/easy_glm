@@ -166,9 +166,9 @@ test('diagnostics opens the latest staged fit and lets the actuary inspect an ea
     const [first] = await planFitRefs(page);
 
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
-    await page.getByRole('button', { name: /Add .*stage/ }).click();
+    await page.getByRole('button', { name: 'Add model', exact: true }).click();
     await page
-        .getByLabel('Stage 2 name')
+        .getByLabel('Model 2 name')
         .locator('xpath=ancestor::li')
         .getByRole('button', { name: 'Choose variables', exact: true })
         .click();
@@ -194,4 +194,55 @@ test('diagnostics opens the latest staged fit and lets the actuary inspect an ea
     await page.getByRole('button', { name: 'Diagnostics', exact: true }).click();
     await expect(page.getByRole('heading', { name: /Diagnostics/ })).toBeVisible();
     await expect(page.getByLabel('Diagnostic saved model')).toHaveValue(latest);
+});
+
+test('an adopted saved scorer is locked while an appended model can define its own variables', async ({
+    page,
+}) => {
+    await openFrenchMotorExample(page);
+    await startPlan(page, 'Build in stages');
+    await chooseAndFitFirstStageGlm(page, 'DrivAge');
+    const [savedModel] = await planFitRefs(page);
+
+    const adopted = await page.evaluate(async (adoptModelName) => {
+        const session = await fetch('/api/session').then((response) => response.json());
+        const headers = {
+            'content-type': 'application/json',
+            'X-EasyGLM-Token': session.token,
+        };
+        const current = await fetch('/api/model-plan', { headers }).then((response) =>
+            response.json(),
+        );
+        const response = await fetch('/api/model-plan', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+                session_id: current.session_id,
+                revision: current.revision,
+                operation: 'adopt',
+                adopt_model_name: adoptModelName,
+            }),
+        });
+        return { status: response.status, body: await response.json() };
+    }, savedModel);
+    expect(adopted.status, JSON.stringify(adopted.body)).toBe(200);
+    await page.reload();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+
+    await expect(page.getByText(`Existing fitted model: ${savedModel}`)).toBeVisible();
+    await expect(page.getByLabel('Model 1 name')).toHaveValue(savedModel);
+    await expect(page.getByLabel('Model 1 name')).toHaveAttribute('readonly', '');
+    await expect(page.getByLabel('Model 1 type')).toHaveValue('Saved fitted model');
+    await expect(page.getByLabel('Model 1 type')).toHaveAttribute('readonly', '');
+    await page.getByRole('button', { name: 'Add model', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Project & data', exact: true })).toBeVisible();
+    await expect(page.getByLabel('Model 2 name')).toBeVisible();
+    await page
+        .getByLabel('Model 2 name')
+        .locator('xpath=ancestor::li')
+        .getByRole('button', { name: 'Choose variables', exact: true })
+        .click();
+    await page.getByLabel('Use VehAge').check();
+    await page.getByRole('button', { name: 'Save model variables', exact: true }).click();
+    await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
 });
