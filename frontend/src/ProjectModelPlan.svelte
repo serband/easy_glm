@@ -459,8 +459,9 @@
         line-height: 1.5;
     }
     .stage-list {
-        padding-left: 24px;
+        padding-left: 0;
         margin: 20px 0;
+        list-style: none;
     }
     .stage-list li {
         display: grid;
@@ -469,6 +470,15 @@
         align-items: center;
         border-top: 1px solid var(--line);
         padding: 12px 0;
+    }
+    .stage-list li > label {
+        display: grid;
+        gap: 7px;
+        min-width: 0;
+    }
+    .stage-list li > label input,
+    .stage-list li > label select {
+        width: 100%;
     }
     .stage-actions {
         display: flex;

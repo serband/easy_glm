@@ -6,7 +6,7 @@
 
 | Purpose | Checkout and state |
 | --- | --- |
-| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/project-model-plan`, based on CatBoost-control revision `c179422`; defines the plan in Project & data, per-model variables in Variables, and ordered fitting in Model |
+| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/project-page-layout`, following model-plan revision `09b171f`; defines the plan in Project & data, per-model variables in Variables, and ordered fitting in Model |
 | User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
 | Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
 
@@ -89,6 +89,13 @@ The Model builder work is local, unpushed and unreleased. Fresh validation for t
 Known first-version boundaries: each named model scores a linear sequence; the diagram can show alternatives but does not combine two parent models; one-key, user-supplied catalogues; no arbitrary imported estimators, automatic hierarchical credibility, geographic smoothing, or mixed-stack HTML report. A direct CatBoost component requires its saved model artifact to score and cannot be represented exactly by GLM rate tables alone. Confirm any further limit in code before asserting it.
 
 ## Source map and checks
+
+Project-page layout correction on 10 October: one page title, matching card widths
+and padding, consistent section typography, and aligned stage fields. Independent
+designers reviewed rendered empty and staged pages at desktop and narrow widths;
+their layout findings were fixed. Svelte check/build and the five model-plan and
+four data-opening browser tests passed locally. No modelling or API changes,
+push, or release were made for this correction.
 
 - `src/easy_glm/pricing/session.py`, `model.py`, `review.py`, `views.py`, `validation.py`, `persistence.py`, `excel.py`: public interactive setup, named checkpoints, edits, diagnostics, comparisons, save/load and Excel.
 - `src/easy_glm/workflow/stack_types.py`, `stack.py`, `stack_tuning.py`, `catalogue.py`: component recipes/artifacts, cumulative scoring and offsets, fold-aware tuning, catalogue validation and lookup.

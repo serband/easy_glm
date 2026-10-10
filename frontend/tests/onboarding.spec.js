@@ -138,7 +138,14 @@ test('opening data is visible, explicit, and supports files, projects and both e
         await expect(button('Open project')).toBeDisabled();
         expect((await snapshot(page)).project_id).toBe(raw.project_id);
         await replace();
+        const projectUpload = page.waitForResponse(
+            (response) =>
+                response.url().includes('/api/project/upload?') &&
+                response.request().method() === 'POST',
+        );
         await button('Open project').click();
+        expect((await projectUpload).ok()).toBe(true);
+        await expect(button('Open project')).toBeDisabled();
         await expect(page.getByRole('region', { name: 'Current dataset' })).toContainText(
             'portfolio.csv',
         );
@@ -155,7 +162,14 @@ test('opening data is visible, explicit, and supports files, projects and both e
         const beforePath = await snapshot(page);
         await expect(button('Open project')).toBeDisabled();
         await replace();
+        const projectOpen = page.waitForResponse(
+            (response) =>
+                response.url().endsWith('/api/project/open') &&
+                response.request().method() === 'POST',
+        );
         await button('Open project').click();
+        expect((await projectOpen).ok()).toBe(true);
+        await expect(button('Open project')).toBeDisabled();
         await expect(page.getByRole('region', { name: 'Current dataset' })).toContainText(
             'portfolio.csv',
         );
