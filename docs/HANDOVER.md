@@ -65,6 +65,17 @@ env EASYGLM_SCORING_PORT=8896 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   frontend/tests/scoring_server.py
 ```
 
+Handover recheck on 11 October: the full Python source suite passed **1,729 tests**,
+with one skipped and the separate scale test deselected (Python 3.12). An
+independent reviewer passed **35** focused scoring/workflow tests, then restored
+the Git bundle into a new checkout and passed **25** scoring tests there. All
+**30** frontend unit tests, Svelte checking, Ruff, Black and mypy passed. The
+installed wheel matches all **116** source-package code and frontend asset files.
+A fresh pricing-actuary browser review passed overall prediction, vehicle-only
+multiplier scoring, cumulative checkpoints, separate native catalogue candidates
+and missing-input checks. The isolated installed-wheel preview is on **8896**.
+These are local checks; Windows, remote CI and the 5M-row scale test remain open.
+
 The previous correction was tested from source and an installed wheel, including
 the six browser cases and literal worked-example blocks. Those results are
 historical evidence below. Before any release, rerun the release checks from a
