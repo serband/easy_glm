@@ -8,8 +8,6 @@ We will also cover changing an earlier model, checking A/E and exporting rates.
 For the same modelling actions in Python, use
 [Building a pricing model](pricing_walkthrough.md).
 
-The screens below are part of the [unreleased workbench](../docs/HANDOVER.md).
-
 ## Worked exercise: French motor claim frequency
 
 Build these three models:

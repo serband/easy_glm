@@ -6,8 +6,6 @@ GLM, add two interaction tables, then build a vehicle file, an occupation file
 and a postcode file. Run a block, look at its tables or A/E, then decide whether
 you want to carry that result into the next block.
 
-> Stacked models are unreleased work; see [the current status](../docs/HANDOVER.md).
-
 Each model after the first is a multiplier on the score built so far. For example,
 the occupation model is fitted after the GLM, the two interaction tables and the
 vehicle file; it learns what those have left unexplained. `ae` shows actual divided

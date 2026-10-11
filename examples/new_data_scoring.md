@@ -13,9 +13,6 @@ the rates you have reviewed and signed off. A refreshed vehicle master is scored
 with the saved CatBoost fit to create a candidate file for review; it does not
 alter the accepted file.
 
-> These new scoring controls are unreleased branch work. They are not in PyPI
-> v0.472. See [the current status](../docs/HANDOVER.md).
-
 Run the blocks in one notebook or Python session. The data is synthetic. For the
 reasoning behind the modelling steps, see [building rating files](stacked_models.md).
 

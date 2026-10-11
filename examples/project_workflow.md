@@ -12,8 +12,6 @@ workbench. `validate`, used below, checks that the settings work with your data.
 This page shows how to build and change a recipe in Python. For a model-building
 session with searches and charts, use [Building a pricing model](pricing_walkthrough.md).
 
-> Mixed-model recipes are unreleased work; see [the current status](../docs/HANDOVER.md).
-
 Run the blocks in order. They write the example data, recipe and outputs into the
 current directory.
 

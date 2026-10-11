@@ -7,8 +7,6 @@ Each fit below starts with the same claim outcome and training split. A model
 added later is fitted to what the earlier models have not explained, so
 `GLM → CatBoost` and `CatBoost → GLM` answer different questions.
 
-> Mixed stacks are unreleased work; see [the current status](../docs/HANDOVER.md).
-
 Fitting and tuning use training rows. The last comparison asks for holdout
 results separately.
 

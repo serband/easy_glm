@@ -25,9 +25,6 @@ files, and scoring new data.
 | Take a fitted GUI workflow into Python, or score without refitting | [Project and scorer exports](project_workflow.md#export-the-accepted-setup-and-the-fitted-scorer) |
 | Give an LLM the package's current conventions | [Usage guide](../docs/LLM_USAGE_GUIDE.md) |
 
-The pricing walkthrough uses the published v0.472 API. Staged models, numeric
-curves and the new workbench screens are [unreleased](../docs/HANDOVER.md).
-
 ## Which API should I use?
 
 | What you want to do | Use |

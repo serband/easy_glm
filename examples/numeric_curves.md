@@ -4,8 +4,6 @@ Fit driver age as bands, then as a continuous curve. We will compare the rates,
 choose the ages where the curve can change direction, add a driver-age/vehicle-age
 interaction, and amend and export the rates.
 
-These curve options are [unreleased](../docs/HANDOVER.md).
-
 ## Set up
 
 `PricingSession` keeps the data and modelling settings together. Here we use
