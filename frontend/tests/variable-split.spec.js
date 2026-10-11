@@ -45,7 +45,7 @@ test('explicit split maps table and JSON and reaches exploration and fit', async
     await expect(page.getByRole('alert')).toHaveCount(0);
     await button('Model').click();
     await expect(page.locator('.split-settings')).toHaveCount(0);
-    await expect(page.getByRole('heading', { name: 'Fit the model plan', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Fit models', exact: true })).toBeVisible();
     await button('Project & data').click();
     await page.getByLabel('Use DriverAge').check();
     await button('Continue to model details').click();
@@ -91,6 +91,6 @@ test('explicit split maps table and JSON and reaches exploration and fit', async
     await button('Explore').click();
     await expect(page.getByRole('img', { name: /One-way effects/ }).first()).toBeVisible();
     await button('Model').click();
-    await expect(page.getByRole('heading', { name: 'Fit the model plan', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Fit models', exact: true })).toBeVisible();
     expect(errors).toEqual([]);
 });

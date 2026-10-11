@@ -100,7 +100,7 @@ test('opening data is visible, explicit, and supports files, projects and both e
         expect(raw.columns.map((c) => c.name)).toEqual(['Claims', 'Exposure', 'Age']);
         await expect(page.getByLabel('Role for Age', { exact: true })).toHaveValue('unassigned');
         await nav('Model').click();
-        await expect(page.getByRole('heading', { name: 'Fit the model plan' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Fit models', exact: true })).toBeVisible();
         await nav('Project & data').click();
         await expect(
             page.getByRole('heading', { name: 'Project & data', exact: true }),

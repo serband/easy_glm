@@ -112,6 +112,8 @@ test.beforeEach(async ({ page }) => {
     await saveLegacyGlm(page, `Imported screening ${Date.now()}`);
     await page.reload();
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    // Shared assignments appear after choosing the route for this working plan.
+    await page.getByRole('button', { name: 'Single model', exact: true }).click();
     await expect(page.getByRole('region', { name: 'Shared column assignments' })).toBeVisible();
     await expect(page.getByLabel('Role for Claims', { exact: true })).toHaveValue('target');
 });

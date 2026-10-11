@@ -74,7 +74,7 @@ async function openBinaryData(page) {
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await setupStep(page, 'Data').click();
     await page.getByRole('radio', { name: 'Own data', exact: true }).check();
-    await page.locator('input[type="file"]').setInputFiles({
+    await page.getByLabel('Data file', { exact: true }).setInputFiles({
         name: 'binary_claims.csv',
         mimeType: 'text/csv',
         buffer: Buffer.from(rows.join('\n')),
