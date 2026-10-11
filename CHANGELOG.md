@@ -2,7 +2,7 @@
 
 This is the user-facing record of useful new features and fixes.
 
-## 0.473 — 11 October 2026
+## Unreleased
 
 - Add single-model and staged-model routes. A staged plan gives each named model
   its own factors and fits later models on the complete score from earlier ones.
@@ -11,8 +11,7 @@ This is the user-facing record of useful new features and fixes.
 - Allow CatBoost interactions after a Gaussian GLM when it uses a log link.
 - Make one-way variable selectors in Explore and model results searchable and
   alphabetical.
-- Add catalogue models for vehicle, occupation and postcode files, including
-  rates for catalogue codes without training experience.
+- Add keyed lookup models, including scores for keys without training rows.
 - Show diagnostics for a selected point in a fitted sequence or for the complete
   score, and export the accepted workflow as a Python script, frozen scorer and
   component workbooks.

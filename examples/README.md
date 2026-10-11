@@ -1,15 +1,17 @@
 # EasyGLM examples
 
-**[Build a pricing model](pricing_walkthrough.md)** — a complete, step-by-step walkthrough: set bands, fit a GLM, inspect A/E, search for missing factors, add interactions and export the tables.
+**[Build a pricing model](pricing_walkthrough.md)** — a worked motor-insurance
+example: set bands, fit a GLM, inspect A/E, search for missing factors, add
+interactions and export tables.
 
 Other examples:
 
 | Example | What it demonstrates |
 | --- | --- |
 | [Workbench walkthrough](workbench_walkthrough.md) | A practical path through roles, splitting, model design, fitting, diagnostics, comparisons, rate tables and export. |
-| [Pricing workflows](workflows.md) | Find the right worked guide for GLMs, interactions, model chains, rating files, scoring and exports. |
-| [Build rating files](stacked_models.md) | Build and review vehicle, occupation and postcode files after a GLM and its interaction tables. |
-| [Score new data](new_data_scoring.md) | Score a renewal extract, full rating file or refreshed catalogue, then export CSV or Parquet results. |
+| [Pricing workflows](workflows.md) | Find a worked guide for GLMs, interactions, model chains, scoring and exports. The examples use insurance data. |
+| [Chained lookup example](stacked_models.md) | A motor-data example of chained GLM, interaction and keyed lookup models. |
+| [Score new data](new_data_scoring.md) | A motor-data example of scoring another dataset or a refreshed keyed lookup, then exporting CSV or Parquet results. |
 | [Basic usage](basic_usage.py) | Poisson claim frequency and Tweedie incurred-claims fits from Python. |
 | [Ready-to-open project](easy_glm_demo.py) | Build a French motor workbench project in Python, then open it in the browser. |
 | [Advanced pipeline](advanced_pipeline.py) | Use the lower-level design, fit and rate-table building blocks. |

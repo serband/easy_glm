@@ -1,11 +1,13 @@
 # Examples and workflows
 
-Start with [Building a pricing model](pricing_walkthrough.md): fit a small GLM,
-check A/E, add missing factors and interactions, amend rates and export to Excel.
-For the browser version, use the [Workbench walkthrough](workbench_walkthrough.md).
+Start with [Building a pricing model](pricing_walkthrough.md), a worked insurance
+example: fit a small GLM, check A/E, add missing factors and interactions, amend
+rates and export to Excel. For the browser version, use the
+[Workbench walkthrough](workbench_walkthrough.md).
 
-Use the guides below for other model orders, full vehicle, occupation and postcode
-files, and scoring new data.
+The examples use insurance data and names, but the model-building actions are
+general. Use the guides below for other model orders, keyed lookup data and
+scoring new data.
 
 | What you want to do | Worked example |
 | --- | --- |
@@ -14,11 +16,11 @@ files, and scoring new data.
 | Compare numeric bands with smooth curves and control their tails | [Numeric curves](numeric_curves.md) |
 | Add two interaction tables in order | [Fit and review interactions](pricing_walkthrough.md#fit-the-first-interaction) |
 | Set up shared roles and different variables for each GUI model | [Workbench walkthrough](workbench_walkthrough.md) |
-| Build vehicle, occupation and postcode files after a GLM and its interactions | [Stacking models and building rating files](stacked_models.md) |
-| Score every entry in a catalogue, including codes with no training rows | [Full-file scoring and exports](stacked_models.md#export-reopen-and-score-an-unseen-catalogue-code) |
-| Score a renewal extract, an individual rating file or a refreshed master | [Score new data and export rating files](new_data_scoring.md) |
+| Build chained GLM, interaction and keyed lookup models | [Chained lookup example](stacked_models.md) |
+| Score every entry in keyed lookup data, including keys with no training rows | [Full-file scoring and exports](stacked_models.md#export-reopen-and-score-an-unseen-catalogue-code) |
+| Score another dataset, one model component or refreshed lookup data | [Score new data and export rating files](new_data_scoring.md) |
 | Fit CatBoost alone, GLM then CatBoost, or CatBoost then GLM | [Other model workflows](model_variations.md) |
-| Model pure premium, paid severity or claim occurrence | [Model families](model_families.md) |
+| Model count, positive or binary outcomes | [Model families](model_families.md) |
 | Choose Optuna trials, a tuning-time limit or manual CatBoost settings | [CatBoost fitting controls](model_variations.md#standalone-catboost-with-a-trial-budget) |
 | Change bands, keep earlier models and compare candidates | [Revised numeric bands](pricing_walkthrough.md#fit-the-first-glm) |
 | Understand, save and run `Project.from_dict` recipes | [Save, edit and run a model recipe](project_workflow.md) |
@@ -38,25 +40,26 @@ modelling work and keep the existing rates.
 
 ## Read the model chain
 
-For the rating-file example, the fitting sequence is:
+One possible sequence is:
 
 ```mermaid
 flowchart LR
     A[GLM main effects] --> B[First interaction table]
     B --> C[Second interaction table]
-    C --> D[Vehicle file]
-    D --> E[Reviewed vehicle rates]
-    E --> F[Occupation file]
-    F --> G[Postcode file]
+    C --> D[CatBoost correction]
+    D --> E[Reviewed component]
+    E --> F[Keyed lookup model]
+    F --> G[Later model]
 ```
 
 In the workbench, add interaction tables inside the GLM after reviewing its
 main effects. Each later fit uses the combined prediction from everything
-before it as its offset. Occupation therefore corrects the GLM, both interaction
-tables and the reviewed vehicle file.
+before it as its offset. Each later model therefore corrects the GLM, accepted
+interaction tables and every earlier component.
 
-A/E after Vehicle checks that combined prediction against actual claims.
-The Vehicle file alone contains multipliers to apply to the preceding score.
+A/E after a model checks the combined prediction against the observed outcome.
+A downstream correction on its own may be a multiplier to apply to the preceding
+score, rather than a complete prediction.
 
 ## How to work through the examples
 

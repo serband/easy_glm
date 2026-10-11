@@ -5,12 +5,11 @@ or delivery order. For released changes, see the [changelog](../CHANGELOG.md).
 
 ## Modelling methods
 
-- **Hierarchical rating factors:** allow sparse vehicle variants to borrow
-  strength from model or make, occupations from occupation groups, and postcodes
-  from larger areas. Show support and fallback rules and export leaf-level
-  lookup files alongside component detail.
-- **Postcode smoothing:** assess geographic smoothing and local residual
-  effects, with validation suited to new areas and future periods.
+- **Hierarchical factors:** allow sparse codes to borrow strength from their
+  parent groups. Show support and fallback rules and export leaf-level lookup
+  files alongside component detail.
+- **Spatial smoothing:** assess geographic smoothing and local residual effects,
+  with validation suited to new areas and future periods.
 - **Tweedie power selection:** investigate an optional training-only
   profile-likelihood search. Keep manual selection and show the powers and
   comparison before accepting a choice.
@@ -34,11 +33,10 @@ or delivery order. For released changes, see the [changelog](../CHANGELOG.md).
 
 ## Worked examples
 
-- Add a Gamma severity workflow, an expanded Swedish motorcycle Tweedie
-  workflow, an existing-premium offset example and a genuine binary example.
+- Add Gamma severity, Tweedie, external-offset and binary workflows.
 - Add wide-data, predictor-screening, step-versus-linear, monotonic-constraint
   and candidate-comparison workflows.
-- Extend the catalogue example with real vehicle, occupation or postcode data.
+- Add a keyed lookup workflow using public data.
 
 Each example should use short public calls, make its modelling decisions
 explicit and run from a standard installation. Exported scoring should reproduce

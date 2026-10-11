@@ -1,6 +1,6 @@
 # EasyGLM
 
-Build insurance pricing GLMs and rating files, check A/E and export rating
+Build GLMs and CatBoost models, review diagnostics and export scorers and model
 tables. EasyGLM works in a local browser workbench or from Python.
 
 ## Install and open
@@ -18,11 +18,12 @@ Restart the workbench after upgrading.
 Install as `easy-glm`; import in Python as `easy_glm`. The standard installation
 includes the workbench, GLM fitting, CatBoost interactions and Optuna tuning.
 
-## Build a pricing model
+## Build a model
 
 Open data, then choose the route in **Project & data**:
 
-- **Single model** for one GLM, CatBoost or catalogue model.
+- **Single model** for one GLM, CatBoost or keyed lookup model (**Catalogue** in
+  the interface).
 - **Build in stages** for a sequence of models built from the same data.
 
 Next, set the columns shared by the work: target, exposure or weight, ID, and
@@ -31,13 +32,12 @@ For a staged model, name each model and choose its type before selecting any
 factors. Every model has its own factor selection. EasyGLM carries the complete
 prediction from earlier models into the next fit as an offset.
 
-A typical motor sequence is:
+A sequence can combine models in the order you choose. For example:
 
 ```text
 GLM main effects + reviewed interaction tables
-    → Vehicle model or catalogue
-    → Occupation model or catalogue
-    → Postcode model or catalogue
+    → CatBoost correction
+    → GLM correction
 ```
 
 Fit each model on **Model** before moving to the next one. A GLM owns its
@@ -59,12 +59,12 @@ Poisson, Tweedie and Gaussian.
 | Project JSON | The setup: source-data location, shared columns, model definitions and factor choices. It does not contain data or fitted rates. |
 | Fitted scorer | A single-model `.easyglm` file, a stacked-model JSON bundle or a Python scorer. Each scores without fitting again. |
 | Python workflow | A script that fits the accepted workflow again from source data. Fresh fits can differ slightly. |
-| Excel | A single-model rating-table workbook or a stacked-model component workbook. |
-| Catalogue lookup file | A full CSV lookup for each fitted catalogue model. |
-| HTML report | A single-model report with summaries, rating factors and diagnostics. |
+| Excel | A single-model table workbook or a stacked-model component workbook. |
+| Keyed lookup file | A full CSV lookup for each fitted keyed lookup model. |
+| HTML report | A single-model report with summaries, model factors and diagnostics. |
 
 For a staged model, use **Score on new data** to choose a saved fitted version,
-the dataset and whether you need one rating model or the cumulative score.
+the dataset and whether you need one model component or the cumulative score.
 Download CSV or Parquet results after checking the required columns.
 
 Save both the project JSON and a fitted scorer. The project keeps the setup;
@@ -83,7 +83,7 @@ easy_glm.launch_workbench(data=df)
 For interactive Python modelling, use
 [PricingSession](examples/pricing_walkthrough.md). For a reproducible settings
 file, use the [Project workflow](examples/project_workflow.md). For model
-chains, catalogue files and scoring new data, use the
+chains, keyed lookup data and scoring new data, use the
 [worked workflows](examples/workflows.md).
 
 [Workbench walkthrough](examples/workbench_walkthrough.md) ·

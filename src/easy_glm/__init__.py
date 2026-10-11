@@ -1,4 +1,4 @@
-"""easy_glm — insurance pricing with LASSO-regularised GLMs.
+"""easy_glm — regularised GLMs, sequential models and portable scoring.
 
 API layers
 ----------
