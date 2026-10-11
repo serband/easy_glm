@@ -22,7 +22,13 @@ from typing import Any, cast
 import numpy as np
 import polars as pl
 
-from easy_glm.core.design import SPARSE_ROW_THRESHOLD, frequent_levels, quantile_knots
+from easy_glm.core.design import (
+    SPARSE_ROW_THRESHOLD,
+    AglmLEncoder,
+    AglmOEncoder,
+    frequent_levels,
+    quantile_knots,
+)
 from easy_glm.core.fit import _fit_main_effects
 from easy_glm.core.tables import to_rate_model
 from easy_glm.engine._scoring import row_index
@@ -276,7 +282,13 @@ def _axis(
     vd = project.design.variables.get(variable, VariableDesign())
     defaults = project.design.defaults
     if series.dtype.is_numeric() and vd.kind != "categorical":
-        if isinstance(vd.knots, (list, tuple)):
+        if vd.kind in ("aglm", "aglm_l"):
+            from .run import encoder_for
+
+            curve = encoder_for(variable, series, vd, project)
+            assert isinstance(curve, AglmOEncoder | AglmLEncoder)
+            cuts = curve.band_edges()
+        elif isinstance(vd.knots, (list, tuple)):
             cuts = [float(v) for v in vd.knots]
         elif vd.knots == "integer":
             from .run import integer_knots
@@ -327,6 +339,54 @@ def _axis(
         )
     RateModel._precompute_variables({variable: axis})
     return axis
+
+
+def interaction_grid(
+    project: Project,
+    train: pl.DataFrame,
+    a: str,
+    b: str,
+    weight_col: str | None = None,
+) -> dict[str, Any]:
+    """Preview the actual training table size without fitting a model."""
+    if a == b:
+        raise ValueError("Choose two different variables for an interaction")
+    axes = (_axis(project, train, a, weight_col), _axis(project, train, b, weight_col))
+    return _grid_summary(project, a, b, axes)
+
+
+def _grid_summary(
+    project: Project,
+    a: str,
+    b: str,
+    axes: tuple[VariableConfig, VariableConfig],
+) -> dict[str, Any]:
+    rows_a, rows_b = len(axes[0].table), len(axes[1].table)
+    cells = rows_a * rows_b
+    allowed = cells <= MAX_CELLS
+    message = (
+        f"{a}: {rows_a:,} table rows × {b}: {rows_b:,} table rows = {cells:,} cells."
+    )
+    if not allowed:
+        message += f" This is above the {MAX_CELLS:,} limit."
+        aglm = any(
+            project.design.variables.get(name, VariableDesign()).kind
+            in ("aglm", "aglm_l")
+            for name in (a, b)
+        )
+        message += (
+            " Choose fewer interaction table bands, or a smaller full break grid, before fitting."
+            if aglm
+            else " Reduce the configured bins/levels before fitting."
+        )
+    return {
+        "rows_a": rows_a,
+        "rows_b": rows_b,
+        "cells": cells,
+        "limit": MAX_CELLS,
+        "allowed": allowed,
+        "message": message,
+    }
 
 
 def _raw_features(
@@ -407,9 +467,7 @@ def _fit_table(
     )
     n_cells = len(axes[0].table) * len(axes[1].table)
     if n_cells > MAX_CELLS:
-        raise ValueError(
-            f"Pair {stage.a} × {stage.b} needs {n_cells:,} cells; limit is {MAX_CELLS:,}. Reduce the configured bins/levels"
-        )
+        raise ValueError(_grid_summary(project, stage.a, stage.b, axes)["message"])
     with np.errstate(over="ignore", under="ignore"):
         baseline = np.exp(prefix.linear_predictor(train))
     if not np.all(np.isfinite(baseline) & (baseline > 0)):
@@ -509,7 +567,12 @@ def _apply_stage_edits(
         for parent in (stage.a, stage.b):
             axis = table.axes[0 if parent == stage.a else 1]
             design = project.design.variables.get(parent, VariableDesign())
-            if axis.type == "numeric" and not isinstance(design.knots, (list, tuple)):
+            fixed_cuts = (
+                design.breaks is not None
+                if design.kind in ("aglm", "aglm_l")
+                else isinstance(design.knots, (list, tuple))
+            )
+            if axis.type == "numeric" and not fixed_cuts:
                 raise ValueError(
                     f"Pair edit on {stage.stage_id!r} cannot replay across CV folds: "
                     f"{parent!r} has data-derived cuts. Specify fixed cuts or reset the edit"
@@ -663,9 +726,7 @@ def preflight_pair_stages(
         cells = len(axes[0].table) * len(axes[1].table)
         grid_cells.append(cells)
         if cells > MAX_CELLS:
-            raise ValueError(
-                f"Stage {stage.stage_id} needs {cells:,} cells, above the {MAX_CELLS:,} limit. Reduce bins/levels before fitting"
-            )
+            raise ValueError(_grid_summary(project, stage.a, stage.b, axes)["message"])
         previous = stages[:index]
         if any(item.search is not None for item in previous):
             prefix_trials = (

@@ -46,14 +46,17 @@ def score_linear(values: np.ndarray, config: VariableConfig) -> np.ndarray:
     if config.breakpoints is None or config.slopes is None or config.starts is None:
         return _score_linear_fallback(values, config)
     values = np.asarray(values, dtype=float)
+    if config.curve_kind in ("aglm", "aglm_l") and np.isinf(values).any():
+        raise ValueError("AGLM curves do not accept infinite values")
     nan_mask = np.isnan(values)
     if nan_mask.any() and config.null_relativity is None:
         raise ValueError(
             "Some numeric values did not match any band. "
             "Check for NaN values in the input data."
         )
-    # clip first, exactly like the encoder: +-inf then scores as the clamp value
-    if len(config.breakpoints):
+    # Old curves are flat outside their grid. AGLM extend curves retain their
+    # fitted tail slopes, anchored at the finite edge of the open tail row.
+    if len(config.breakpoints) and config.extrapolation == "flat":
         values = np.clip(values, config.breakpoints[0], config.breakpoints[-1])
     idx = np.searchsorted(config.breakpoints, values, side="right")
     result = config.relativities[idx] * np.exp(
@@ -98,6 +101,8 @@ def row_index(series: pl.Series, config: VariableConfig) -> np.ndarray:
         if config.breakpoints is None:
             raise ValueError(f"{config.type} config not precomputed")
         values = np.asarray(series.cast(pl.Float64).to_numpy(), dtype=float)
+        if config.curve_kind in ("aglm", "aglm_l") and np.isinf(values).any():
+            raise ValueError("AGLM curves do not accept infinite values")
         idx = np.searchsorted(config.breakpoints, values, side="right").astype(np.int64)
         nan_mask = np.isnan(values)
         if nan_mask.any():
@@ -159,8 +164,10 @@ def _score_numeric_fallback(values: np.ndarray, config: VariableConfig) -> np.nd
 
 def _score_linear_fallback(values: np.ndarray, config: VariableConfig) -> np.ndarray:
     values = np.asarray(values, dtype=float)
+    if config.curve_kind in ("aglm", "aglm_l") and np.isinf(values).any():
+        raise ValueError("AGLM curves do not accept infinite values")
     edges = [float(r.from_) for r in config.table if r.from_ is not None]
-    if edges:
+    if edges and config.extrapolation == "flat":
         values = np.clip(values, min(edges), max(edges))
     result = np.full(len(values), np.nan, dtype=float)
     for row in config.table:
@@ -170,10 +177,11 @@ def _score_linear_fallback(values: np.ndarray, config: VariableConfig) -> np.nda
         low = -np.inf if row.from_ is None else float(row.from_)
         high = np.inf if row.to_ is None else float(row.to_)
         mask = (values >= low) & (values < high)
-        if row.from_ is None or row.to_ is None or row.slope == 0.0:
+        if row.slope == 0.0:
             result[mask] = row.relativity
         else:
-            result[mask] = row.relativity * np.exp(row.slope * (values[mask] - low))
+            start = row.to_ if row.from_ is None else row.from_
+            result[mask] = row.relativity * np.exp(row.slope * (values[mask] - start))
     if np.any(np.isnan(result)):
         raise ValueError(
             "Some numeric values did not match any band. "

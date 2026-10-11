@@ -2,6 +2,14 @@
 
 This is the user-facing record of useful new features and fixes.
 
+## Unreleased
+
+- Add optional AGLM numeric curves, with automatic training-data grids or your own grid and a choice of flat or extended tails. Existing bands and curves keep their defaults.
+- Preserve these curves in rating tables, amendments, saved models, Excel and Python exports. Add a worked example for fitting and reviewing them.
+- Preview interaction-table sizes before fitting, with coarser table bands available without changing the GLM curve.
+- Continue directly to fitting when the next model already has its variables set.
+- Fix numeric bands for rare binary values and rounding for very small numeric ranges.
+
 ## 0.472 — 23 September 2026
 
 - Add an interactive pricing workflow and worked example: fit GLMs, check A/E, find missing factors, add interactions, amend rates and export to Excel.

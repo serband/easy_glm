@@ -1,6 +1,7 @@
 const DESIGN_KEYS = [
     'kind', 'knots', 'clamp', 'n_bins', 'null_indicator', 'min_level_share',
-    'max_levels', 'levels', 'monotone', 'penalty_weight',
+    'max_levels', 'levels', 'monotone', 'penalty_weight', 'breaks', 'n_breaks',
+    'extrapolation',
 ];
 
 const VARIABLE_DESIGN_DEFAULTS = {
@@ -14,6 +15,9 @@ const VARIABLE_DESIGN_DEFAULTS = {
     levels: null,
     monotone: null,
     penalty_weight: 1,
+    breaks: null,
+    n_breaks: null,
+    extrapolation: null,
 };
 
 export const DEFAULT_DESIGN = {
@@ -52,15 +56,45 @@ function validKnots(name, knots) {
         throw new Error(`${name}: custom cuts must be strictly increasing.`);
 }
 
+function validBreaks(name, breaks) {
+    if (!Array.isArray(breaks) || breaks.length < 2)
+        throw new Error(`${name}: a custom break-point grid needs a lowest and highest value.`);
+    if (breaks.some((value) => !Number.isFinite(value)))
+        throw new Error(`${name}: custom break points must be finite numbers.`);
+    if (breaks.some((value, index) => index && value <= breaks[index - 1]))
+        throw new Error(`${name}: custom break points must be strictly increasing.`);
+}
+
 function validateDesign(name, design, { method, numeric }) {
     if (!design || typeof design !== 'object' || Array.isArray(design))
         throw new Error(`${name}: variable settings must be an object.`);
     if (Object.keys(design).some((key) => !DESIGN_KEYS.includes(key)))
         throw new Error(`${name}: variable settings contain an unknown field.`);
-    if (design.kind != null && !['step', 'categorical', 'linear', 'continuous'].includes(design.kind))
-        throw new Error(`${name}: choose numeric bands or categorical.`);
+    const isAglm = design.kind === 'aglm' || design.kind === 'aglm_l';
+    const hasAglmSettings = ['breaks', 'n_breaks', 'extrapolation']
+        .some((key) => design[key] != null);
+    if (design.kind != null && !['step', 'categorical', 'linear', 'continuous', 'aglm', 'aglm_l'].includes(design.kind))
+        throw new Error(`${name}: choose a supported variable type.`);
     if (method === 'catboost' && design.kind && design.kind !== 'categorical')
         throw new Error(`${name}: CatBoost uses raw numeric values; only categorical can be forced.`);
+    if (method === 'catboost' && hasAglmSettings)
+        throw new Error(`${name}: CatBoost uses raw values and cannot use AGLM curve settings.`);
+    if (!isAglm && hasAglmSettings)
+        throw new Error(`${name}: AGLM curve settings can only be used with an AGLM curve.`);
+    if (isAglm && method !== 'glm')
+        throw new Error(`${name}: AGLM curves are available for GLM models only.`);
+    if (isAglm && !numeric)
+        throw new Error(`${name}: an AGLM curve needs a numeric column.`);
+    if (isAglm && design.knots != null && design.knots !== 'quantile')
+        throw new Error(`${name}: an AGLM curve uses automatic break points or its own full grid.`);
+    if (isAglm && (design.n_bins != null || design.clamp != null || design.monotone != null))
+        throw new Error(`${name}: remove numeric bands, clamping and monotonicity before using an AGLM curve.`);
+    if (isAglm && design.breaks != null) validBreaks(name, design.breaks);
+    if (isAglm && design.n_breaks != null && (
+        !Number.isInteger(design.n_breaks) || design.n_breaks < 2 || design.n_breaks > 200
+    )) throw new Error(`${name}: number of break points must be a whole number from 2 to 200.`);
+    if (isAglm && design.extrapolation != null && !['extend', 'flat'].includes(design.extrapolation))
+        throw new Error(`${name}: tails must be Extend or Flat.`);
     if (method === 'glm' && design.kind === 'categorical' && numeric)
         return;
     if (method === 'glm' && design.kind && !numeric && design.kind !== 'categorical')

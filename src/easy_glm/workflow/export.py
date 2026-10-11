@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from easy_glm.core.design import (
+    AglmLEncoder,
+    AglmOEncoder,
     CategoricalEncoder,
     DesignSpec,
     InteractionEncoder,
@@ -325,6 +327,12 @@ def _spec_code(spec: DesignSpec) -> str:
                 f"    {var!r}: CategoricalEncoder({var!r}, {_list(enc.levels)}"
                 f"{_penalty_arg(enc)}),"
             )
+        elif isinstance(enc, AglmOEncoder | AglmLEncoder):
+            parts.append(
+                f"    {var!r}: {type(enc).__name__}({var!r}, {_list(enc.breaks)}, "
+                f"extrapolation={enc.extrapolation!r}, "
+                f"null_indicator={enc.null_indicator}{_penalty_arg(enc)}),"
+            )
         elif isinstance(enc, LinearEncoder):
             parts.append(
                 f"    {var!r}: LinearEncoder({var!r}, {_list(enc.knots)}, "
@@ -587,6 +595,8 @@ def to_script(
     lines += [
         "",
         "from easy_glm import (",
+        "    AglmOEncoder,",
+        "    AglmLEncoder,",
         "    CategoricalEncoder,",
         "    DesignSpec,",
         "    InteractionEncoder,",

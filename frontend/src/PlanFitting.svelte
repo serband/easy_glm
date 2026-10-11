@@ -472,12 +472,13 @@
                                 {#if stageModelIndex < plannedModels.length - 1}
                                     <button
                                         class="primary continue-model"
-                                        onclick={() =>
+                                        onclick={() => {
+                                            const nextModel = plannedModels[stageModelIndex + 1];
                                             onNavigate(
-                                                'variables',
-                                                plannedModels[stageModelIndex + 1].core
-                                                    .component_id,
-                                            )}
+                                                setupProblem(nextModel.core) ? 'variables' : 'model',
+                                                nextModel.core.component_id,
+                                            );
+                                        }}
                                         >Continue to {plannedModels[stageModelIndex + 1]
                                             .name}</button
                                     >

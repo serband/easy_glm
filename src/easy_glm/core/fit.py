@@ -38,6 +38,8 @@ from sklearn.model_selection import KFold
 
 from .design import (
     SCORING_CHUNK_ROWS,
+    AglmLEncoder,
+    AglmOEncoder,
     DesignSpec,
     InteractionEncoder,
     LinearEncoder,
@@ -153,6 +155,11 @@ def monotone_bounds(
     for var, direction in monotone.items():
         if var not in spec:
             raise KeyError(f"monotone: {var!r} is not a predictor in the spec")
+        if isinstance(spec[var], AglmOEncoder | AglmLEncoder):
+            raise ValueError(
+                f"monotone: {var!r} uses an AGLM basis whose combined slopes "
+                "cannot yet be constrained"
+            )
         if not isinstance(spec[var], StepEncoder | LinearEncoder):
             raise ValueError(
                 f"monotone: {var!r} is categorical or an interaction; only numeric "
@@ -431,7 +438,7 @@ def _modal_bins(
             continue
         counts = exposures[var].copy()
         if (
-            isinstance(enc, StepEncoder | LinearEncoder)
+            isinstance(enc, StepEncoder | LinearEncoder | AglmOEncoder | AglmLEncoder)
             and enc.null_indicator
             and len(counts) > 1
         ):
@@ -665,6 +672,10 @@ def design_row_key(
             x = data[var].cast(pl.Float64).to_numpy()
             columns[f"x:{var}"] = pl.Series(
                 f"x:{var}", np.clip(np.where(np.isnan(x), enc.lo, x), enc.lo, enc.hi)
+            )
+        elif isinstance(enc, AglmOEncoder | AglmLEncoder):
+            columns[f"x:{var}"] = pl.Series(
+                f"x:{var}", enc.aggregation_values(data[var])
             )
     if offset is not None:
         columns["o:"] = pl.Series("o:", np.asarray(offset, dtype=float))

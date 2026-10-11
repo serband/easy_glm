@@ -56,6 +56,10 @@ class EasyGLM:
         knots: dict[str, list[float]] | None = None,
         categorical: list[str] | None = None,
         null_indicator: bool = True,
+        numeric_kinds: Mapping[str, str] | None = None,
+        breaks: Mapping[str, list[float]] | None = None,
+        n_breaks: int = 100,
+        extrapolation: Mapping[str, str] | None = None,
         base_rate: float | None = None,
         base: str = "modal",
         exposure_col: str | None = None,
@@ -83,7 +87,13 @@ class EasyGLM:
             ``{"DrivAge": "decreasing", ...}`` sign constraints on numeric
             predictors.
         n_bins, min_level_share, knots, categorical, null_indicator
-            Design options, see :meth:`DesignSpec.from_data`.
+            Existing step/linear design options, see
+            :meth:`DesignSpec.from_data`.
+        numeric_kinds, breaks, n_breaks, extrapolation
+            Select AGLM numeric bases by variable. ``breaks`` are full endpoint
+            grids; otherwise up to ``n_breaks`` (default 100) interpolated
+            training quantiles are used. AGLM tails extend by default, or use
+            ``"flat"`` to clip them. These do not change existing ``n_bins``.
         base_rate
             Override the base rate. By default it is calibrated exactly so that
             ``rate_model.predict(...)`` reproduces the GLM.
@@ -129,6 +139,10 @@ class EasyGLM:
             categorical=categorical,
             null_indicator=null_indicator,
             weight_col=weight_col,
+            numeric_kinds=dict(numeric_kinds or {}),  # type: ignore[arg-type]
+            breaks=dict(breaks or {}),
+            n_breaks=n_breaks,
+            extrapolation=dict(extrapolation or {}),  # type: ignore[arg-type]
         )
         glm = fit_glm(
             train,

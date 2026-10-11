@@ -178,7 +178,11 @@ def _candidate_axis(model: Any, train: pl.DataFrame, variable: str) -> VariableC
             other_label=other_label_for(levels),
         )
     else:
-        if design is not None and isinstance(design.knots, (list, tuple)):
+        if kind in ("aglm", "aglm_l"):
+            from easy_glm.workflow.run import encoder_for
+
+            cuts = encoder_for(variable, series, design, model._project).band_edges()
+        elif design is not None and isinstance(design.knots, (list, tuple)):
             cuts = [float(value) for value in design.knots]
         elif design is not None and design.knots == "integer":
             cuts = integer_knots(series, defaults.max_integer_knots) or quantile_knots(

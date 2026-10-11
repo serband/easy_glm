@@ -13,6 +13,7 @@ the browser.
 | --- | --- |
 | Fit a small GLM, inspect A/E and find missing factors | [Building a pricing model](pricing_walkthrough.md#fit-the-first-glm) |
 | Control automatic bins or supply your own numeric cuts | [Choose the bins](pricing_walkthrough.md#set-how-numeric-variables-are-binned) |
+| Compare numeric bands with smooth curves and control their tails | [Numeric curves](numeric_curves.md) |
 | Add two interaction tables in order | [Fit and review interactions](pricing_walkthrough.md#fit-the-first-interaction) |
 | Set up shared roles and different variables for each GUI model | [Workbench walkthrough](workbench_walkthrough.md) |
 | Build vehicle, occupation and postcode files after a GLM and its interactions | [Stacking models and building rating files](stacked_models.md) |

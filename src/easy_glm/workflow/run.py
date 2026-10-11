@@ -8,7 +8,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal, cast
 
 import numpy as np
 import polars as pl
@@ -21,6 +21,7 @@ from easy_glm.core.design import (
     Encoder,
     InteractionEncoder,
     StepEncoder,
+    aglm_encoder_from_data,
     frequent_levels,
     linear_encoder_from_data,
     quantile_knots,
@@ -43,6 +44,7 @@ from .project import (
     ModelConfig,
     Project,
     VariableDesign,
+    numeric_method_problems,
     pair_time_limit_seconds,
     premium_offset_column,
 )
@@ -90,6 +92,30 @@ def encoder_for(
     numeric = series.dtype in NUMERIC_DTYPES
     kind = vd.kind or ("step" if numeric else "categorical")
     pw = float(vd.penalty_weight)
+    curve_problems = numeric_method_problems(variable, vd)
+    if curve_problems:
+        raise ValueError("; ".join(curve_problems))
+    if kind in ("aglm", "aglm_l"):
+        if not numeric:
+            raise ValueError(f"{variable!r} is not numeric; cannot use an AGLM curve")
+        usable = series.drop_nulls().cast(pl.Float64).drop_nans()
+        if vd.breaks is None and usable.n_unique() < 2:
+            raise UnusableColumnError(
+                f"Cannot derive a break grid for {variable!r} "
+                "(constant or all-null on train)"
+            )
+        return aglm_encoder_from_data(
+            variable,
+            series,
+            kind=cast(Literal["aglm", "aglm_l"], kind),
+            breaks=vd.breaks,
+            n_breaks=vd.n_breaks if vd.n_breaks is not None else 100,
+            extrapolation=cast(Literal["extend", "flat"], vd.extrapolation or "extend"),
+            null_indicator=(
+                d.null_indicator if vd.null_indicator is None else vd.null_indicator
+            ),
+            penalty_weight=pw,
+        )
     if kind in ("step", "linear", "continuous"):
         if not numeric:
             raise ValueError(f"{variable!r} is not numeric; cannot use a {kind} design")

@@ -57,6 +57,45 @@ test('CatBoost refuses GLM bands and accepts a forced categorical field', () => 
     assert.deepEqual(parsed.factors, ['Region']);
 });
 
+test('AGLM curve settings are accepted only for numeric GLM variables', () => {
+    const parsed = parseModelVariablesJson(JSON.stringify({
+        variables: {
+            DriverAge: {
+                kind: 'aglm',
+                breaks: [18, 25, 35, 50, 80],
+                extrapolation: 'flat',
+            },
+            VehicleAge: { kind: 'aglm_l', n_breaks: 100, extrapolation: 'extend' },
+        },
+    }), { eligible: [...columns.keys()], columnByName: columns, method: 'glm' });
+    assert.equal(parsed.design.variables.DriverAge.kind, 'aglm');
+    assert.deepEqual(parsed.design.variables.DriverAge.breaks, [18, 25, 35, 50, 80]);
+    assert.equal(parsed.design.variables.VehicleAge.n_breaks, 100);
+    assert.equal(parsed.design.variables.VehicleAge.extrapolation, 'extend');
+
+    assert.throws(() => parseModelVariablesJson(JSON.stringify({
+        variables: { Region: { kind: 'aglm', n_breaks: 100 } },
+    }), { eligible: [...columns.keys()], columnByName: columns, method: 'glm' }), /numeric column/);
+    assert.throws(() => parseModelVariablesJson(JSON.stringify({
+        variables: { DriverAge: { kind: 'aglm', n_breaks: 100 } },
+    }), { eligible: [...columns.keys()], columnByName: columns, method: 'catboost' }), /raw numeric values/);
+});
+
+test('AGLM curve settings reject incompatible controls and invalid grids', () => {
+    const settings = (variable) => parseModelVariablesJson(JSON.stringify({
+        variables: { DriverAge: variable },
+    }), { eligible: [...columns.keys()], columnByName: columns, method: 'glm' });
+
+    assert.throws(() => settings({ kind: 'step', n_breaks: 100 }), /only be used with an AGLM curve/);
+    assert.throws(() => settings({ kind: 'aglm', n_bins: 8 }), /remove numeric bands/);
+    assert.throws(() => settings({ kind: 'aglm_l', monotone: 'increasing' }), /remove numeric bands/);
+    assert.throws(() => settings({ kind: 'aglm', knots: [18, 25, 80] }), /automatic break points/);
+    assert.throws(() => settings({ kind: 'aglm', breaks: [18] }), /lowest and highest/);
+    assert.throws(() => settings({ kind: 'aglm', breaks: [18, 18, 80] }), /strictly increasing/);
+    assert.throws(() => settings({ kind: 'aglm', n_breaks: 201 }), /2 to 200/);
+    assert.throws(() => settings({ kind: 'aglm', extrapolation: 'curve' }), /Extend or Flat/);
+});
+
 test('model JSON serialises variables alphabetically and does not include unselected inherited variables', () => {
     const text = modelVariablesJson({
         factors: ['VehicleAge', 'DriverAge'],

@@ -285,6 +285,57 @@ class VariableDesign:
     #: penalised at all** (every band or level is kept). See
     #: :func:`easy_glm.core.fit.penalty_weights`.
     penalty_weight: float = 1.0
+    #: AGLM only: full break grid including both endpoints; None uses training
+    #: quantiles. These are separate from step cuts and band counts.
+    breaks: list[float] | None = None
+    n_breaks: int | None = None
+    #: AGLM only: "extend" (default) or "flat" outside the break grid.
+    extrapolation: str | None = None
+
+
+def numeric_method_problems(variable: str, design: VariableDesign) -> list[str]:
+    """Validate the additional curve controls without rewriting older designs."""
+    where = f"design[{variable!r}]"
+    if design.kind not in ("aglm", "aglm_l"):
+        if any(
+            value is not None
+            for value in (design.breaks, design.n_breaks, design.extrapolation)
+        ):
+            return [f"{where}: break grids and extrapolation require an AGLM curve"]
+        return []
+    problems: list[str] = []
+    if (
+        design.knots != "quantile"
+        or design.n_bins is not None
+        or design.clamp is not None
+    ):
+        problems.append(
+            f"{where}: use breaks/n_breaks for an AGLM curve, rather than cuts, "
+            "band counts or clamps"
+        )
+    if design.monotone is not None:
+        problems.append(f"{where}: AGLM curves do not support monotone constraints")
+    if design.breaks is not None and not (
+        isinstance(design.breaks, list)
+        and len(design.breaks) >= 2
+        and all(_is_finite_number(value) for value in design.breaks)
+        and all(
+            left < right
+            for left, right in zip(design.breaks, design.breaks[1:], strict=False)
+        )
+    ):
+        problems.append(
+            f"{where}.breaks must include at least two finite, increasing endpoints"
+        )
+    if design.n_breaks is not None and (
+        isinstance(design.n_breaks, bool)
+        or not isinstance(design.n_breaks, int)
+        or not 2 <= design.n_breaks <= 200
+    ):
+        problems.append(f"{where}.n_breaks must be a whole number from 2 to 200")
+    if design.extrapolation not in (None, "extend", "flat"):
+        problems.append(f"{where}.extrapolation must be 'extend' or 'flat'")
+    return problems
 
 
 @dataclass
@@ -969,11 +1020,20 @@ class Project:
         ):
             problems.append("split.fraction must be in (0, 1)")
         for var, vd in self.design.variables.items():
-            if vd.kind not in (None, "step", "linear", "continuous", "categorical"):
+            if vd.kind not in (
+                None,
+                "step",
+                "linear",
+                "continuous",
+                "categorical",
+                "aglm",
+                "aglm_l",
+            ):
                 problems.append(
                     f"design[{var!r}].kind must be 'step', 'linear', 'continuous' "
-                    "or 'categorical'"
+                    "'categorical', 'aglm' or 'aglm_l'"
                 )
+            problems.extend(numeric_method_problems(var, vd))
             if vd.monotone not in (None, "increasing", "decreasing"):
                 problems.append(f"design[{var!r}].monotone invalid")
             if vd.monotone and vd.kind == "categorical":
@@ -1371,6 +1431,12 @@ class Project:
     # -- (de)serialisation ---------------------------------------------
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
+        # Optional curve controls must not change unchanged legacy project JSON
+        # or fitted-recipe fingerprints just because this package was upgraded.
+        for definition in d["design"]["variables"].values():
+            for key in ("breaks", "n_breaks", "extrapolation"):
+                if definition.get(key) is None:
+                    definition.pop(key, None)
         # ``asdict`` sees the compatibility ``ModelPlan.stages`` projection.
         # The plan itself owns its wire format: v1 preserves stages, while v2
         # writes only its logical named models.

@@ -1967,6 +1967,7 @@
                                 );
                             })();
                         } else if (target === 'project') void navigate('project');
+                        else if (target === 'model') void navigate('model');
                         else if (target === 'diagnostics') void navigate('diagnostics');
                         else if (target === 'explore') void navigate('explore');
                     }}

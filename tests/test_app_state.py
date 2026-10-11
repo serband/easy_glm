@@ -163,7 +163,7 @@ class TestHashes:
         before = S.model_hash(p, "freq")
         p.models["freq"].pair_time_limit_minutes = 0.25
         assert S.model_hash(p, "freq") == before
-        assert S.PERSIST_FORMAT == 13
+        assert S.PERSIST_FORMAT == 14
 
     def test_run_key_includes_data_identity_and_versions(self, workspace, monkeypatch):
         p = Project.from_json(workspace["project"])

@@ -29,6 +29,8 @@
     let cutsText = {};
     let bandsText = {};
     let customModes = {};
+    let breaksText = {};
+    let aglmCustomModes = {};
 
     $: eligible = [...columns]
         .filter((column) => column?.name)
@@ -132,15 +134,47 @@
         });
     }
 
+    function replaceVariable(name, nextVariable) {
+        const current = design || {
+            defaults: normaliseDefaults(inheritedDesign?.defaults),
+            variables: {},
+        };
+        emit(factors, {
+            ...current,
+            variables: { ...current.variables, [name]: nextVariable },
+        });
+    }
+
+    function isAglm(kind) {
+        return kind === 'aglm' || kind === 'aglm_l';
+    }
+
+    function withoutAglmSettings(current = {}) {
+        return { ...current, breaks: null, n_breaks: null, extrapolation: null };
+    }
+
     function changeKind(name, value) {
         if (method === 'catboost') {
-            updateVariable(
-                name,
-                value === 'categorical' ? { kind: 'categorical' } : { kind: null },
-            );
+            replaceVariable(name, value === 'categorical' ? { kind: 'categorical' } : { kind: null });
             return;
         }
-        updateVariable(name, { kind: value });
+        const current = effectiveDesign(name);
+        if (isAglm(value)) {
+            aglmCustomModes = { ...aglmCustomModes, [name]: false };
+            replaceVariable(name, {
+                ...withoutAglmSettings(current),
+                kind: value,
+                knots: 'quantile',
+                n_bins: null,
+                clamp: null,
+                monotone: null,
+                breaks: null,
+                n_breaks: 100,
+                extrapolation: 'extend',
+            });
+            return;
+        }
+        replaceVariable(name, withoutAglmSettings({ ...current, kind: value }));
     }
 
     function changeCuts(name, value) {
@@ -179,6 +213,49 @@
         cutsText = { ...cutsText, [name]: '' };
         inputError = `${name}: enter custom cuts.`;
         reportValidity();
+    }
+
+    function useAutomaticBreaks(name) {
+        aglmCustomModes = { ...aglmCustomModes, [name]: false };
+        inputError = '';
+        reportValidity();
+        updateVariable(name, { breaks: null, n_breaks: effectiveDesign(name).n_breaks ?? 100 });
+    }
+
+    function useCustomBreaks(name) {
+        aglmCustomModes = { ...aglmCustomModes, [name]: true };
+        breaksText = { ...breaksText, [name]: '' };
+        inputError = `${name}: enter a full break-point grid, including the lowest and highest values.`;
+        reportValidity();
+    }
+
+    function changeBreaks(name, value) {
+        breaksText = { ...breaksText, [name]: value };
+        const breaks = value.trim() === '' ? [] : value.split(',').map((piece) => Number(piece.trim()));
+        if (
+            breaks.length < 2 ||
+            breaks.some((value) => !Number.isFinite(value)) ||
+            breaks.some((value, index) => index && value <= breaks[index - 1])
+        ) {
+            inputError = `${name}: enter a full, strictly increasing break-point grid.`;
+            reportValidity();
+            return;
+        }
+        inputError = '';
+        reportValidity();
+        updateVariable(name, { breaks, n_breaks: null });
+    }
+
+    function changeBreakPointCount(name, value) {
+        const count = Number(value);
+        if (!Number.isInteger(count) || count < 2 || count > 200) {
+            inputError = `${name}: number of break points must be a whole number from 2 to 200.`;
+            reportValidity();
+            return;
+        }
+        inputError = '';
+        reportValidity();
+        updateVariable(name, { breaks: null, n_breaks: count });
     }
 
     function reportValidity() {
@@ -370,7 +447,9 @@
                                             <option value="categorical">Categorical</option>
                                             {#if column.numeric}<option value="linear"
                                                     >Piecewise linear</option
-                                                ><option value="continuous">Continuous</option>{/if}
+                                                ><option value="continuous">Continuous</option
+                                                ><option value="aglm">AGLM smooth curve</option
+                                                ><option value="aglm_l">AGLM L curve</option>{/if}
                                         </select>
                                     {:else}
                                         <select
@@ -454,6 +533,76 @@
                                         {#if local.max_levels == null}<small class="no-level-limit"
                                                 >No count limit</small
                                             >{/if}
+                                    {:else if selected && isAglm(local.kind)}
+                                        <div class="aglm-settings">
+                                            <label
+                                                >Break points<select
+                                                    aria-label={`Break points for ${column.name}`}
+                                                    value={aglmCustomModes[column.name] ||
+                                                    (Array.isArray(local.breaks) && local.breaks.length)
+                                                        ? 'custom'
+                                                        : 'automatic'}
+                                                    onchange={(event) =>
+                                                        event.currentTarget.value === 'custom'
+                                                            ? useCustomBreaks(column.name)
+                                                            : useAutomaticBreaks(column.name)}
+                                                >
+                                                    <option value="automatic">Automatic</option>
+                                                    <option value="custom">Custom full grid</option>
+                                                </select></label
+                                            >
+                                            {#if aglmCustomModes[column.name] || (Array.isArray(local.breaks) && local.breaks.length)}
+                                                <label class="aglm-wide"
+                                                    >Full grid<input
+                                                        aria-label={`Custom break points for ${column.name}`}
+                                                        placeholder="e.g. 18, 25, 35, 50, 80"
+                                                        value={breaksText[column.name] ??
+                                                            (Array.isArray(local.breaks)
+                                                                ? local.breaks.join(', ')
+                                                                : '')}
+                                                        oninput={(event) =>
+                                                            changeBreaks(
+                                                                column.name,
+                                                                event.currentTarget.value,
+                                                            )}
+                                                    /></label
+                                                >
+                                                <small class="aglm-wide"
+                                                    >Include the lowest and highest values.</small
+                                                >
+                                            {:else}
+                                                <label
+                                                    >Points<input
+                                                        aria-label={`Break-point count for ${column.name}`}
+                                                        type="number"
+                                                        min="2"
+                                                        max="200"
+                                                        value={local.n_breaks ?? 100}
+                                                        oninput={(event) =>
+                                                            changeBreakPointCount(
+                                                                column.name,
+                                                                event.currentTarget.value,
+                                                            )}
+                                                    /></label
+                                                >
+                                            {/if}
+                                            <label
+                                                >Tails<select
+                                                    aria-label={`Tails for ${column.name}`}
+                                                    value={local.extrapolation || 'extend'}
+                                                    onchange={(event) =>
+                                                        updateVariable(column.name, {
+                                                            extrapolation: event.currentTarget.value,
+                                                        })}
+                                                >
+                                                    <option value="extend">Extend</option>
+                                                    <option value="flat">Flat</option>
+                                                </select></label
+                                            >
+                                            <small class="aglm-help aglm-wide"
+                                                >Extend continues the curve beyond the grid. Flat holds the end value.</small
+                                            >
+                                        </div>
                                     {:else if selected && ['linear', 'continuous'].includes(local.kind)}<span
                                             >Use JSON for this curve.</span
                                         >
@@ -572,6 +721,7 @@
     }
     .variables-scroll table {
         width: 100%;
+        min-width: 760px;
         table-layout: fixed;
         border-collapse: collapse;
         font-size: 12px;
@@ -636,6 +786,58 @@
         font-size: 11px;
         margin-top: 4px;
     }
+    .aglm-settings {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(92px, 1fr));
+        gap: 8px;
+        align-items: end;
+    }
+    .variables-scroll td .aglm-settings label {
+        display: grid;
+        gap: 4px;
+        align-items: normal;
+        font-size: 11px;
+    }
+    .aglm-settings input,
+    .aglm-settings select {
+        width: 100%;
+        box-sizing: border-box;
+    }
+    .aglm-wide {
+        grid-column: 1 / -1;
+    }
+    .variables-scroll .aglm-settings small {
+        margin: 0;
+        font-size: 10px;
+        line-height: 1.35;
+    }
+    .aglm-help {
+        color: #526e5d;
+    }
+    @media (max-width: 900px) {
+        /* The application sidebar leaves a fairly narrow working column at
+           this viewport. Keep the table itself in view and put the AGLM
+           controls one below another, rather than hiding a third control in
+           a horizontal scroll area. */
+        .variables-scroll table {
+            min-width: 0;
+        }
+        .variables-scroll th:first-child,
+        .variables-scroll td:first-child {
+            width: 30px;
+        }
+        .variables-scroll th:nth-child(2),
+        .variables-scroll td:nth-child(2) {
+            width: 27%;
+        }
+        .variables-scroll th:nth-child(3),
+        .variables-scroll td:nth-child(3) {
+            width: 29%;
+        }
+        .aglm-settings {
+            grid-template-columns: minmax(0, 1fr);
+        }
+    }
     textarea {
         box-sizing: border-box;
         width: 100%;
@@ -671,6 +873,9 @@
         .variables-scroll td label input {
             width: 100%;
             box-sizing: border-box;
+        }
+        .aglm-settings {
+            grid-template-columns: repeat(3, minmax(92px, 1fr));
         }
         .variables-scroll td .text-button {
             white-space: normal;

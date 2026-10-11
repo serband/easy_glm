@@ -256,6 +256,42 @@ class PricingSession:
             f"Training band support — {variable}",
         )
 
+    def numeric(
+        self,
+        variable: str,
+        *,
+        kind: str = "aglm",
+        breaks: Sequence[float] | None = None,
+        n_breaks: int = 100,
+        extrapolation: str = "extend",
+    ) -> Any:
+        """Choose an AGLM curve for future fits; preview its training grid.
+
+        ``breaks`` includes both endpoints. Otherwise ``n_breaks`` interpolated
+        training quantiles supply the grid. Earlier named models are unchanged.
+        """
+        require_column(self._data, variable, "Numeric curve")
+        if kind not in ("aglm", "aglm_l"):
+            raise ValueError(
+                "Choose kind='aglm' or kind='aglm_l'; use bands for step bands"
+            )
+        design = VariableDesign(
+            kind=kind,
+            breaks=list(breaks) if breaks is not None else None,
+            n_breaks=n_breaks,
+            extrapolation=extrapolation,
+        )
+        # Validate and construct first: a failed edit must not change the session.
+        from easy_glm.workflow.run import encoder_for
+
+        train = self._training()
+        encoder = encoder_for(variable, train[variable], design, self._project)
+        self._project.design.variables[variable] = design
+        return self._display(
+            self._encoder_preview(train, variable, encoder),
+            f"Training curve support — {variable}",
+        )
+
     def categories(
         self,
         variable: str,

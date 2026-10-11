@@ -33,7 +33,7 @@ async function createGlmThenVehiclePlan(page) {
     await expect(page.getByRole('heading', { name: 'Fit models', exact: true })).toBeVisible();
 }
 
-async function createTwoGlmPlan(page) {
+async function createTwoGlmPlan(page, { aglmDriverAge = false } = {}) {
     await page.goto('/');
     await step(page, 'Model structure').click();
     await page.getByRole('button', { name: 'Build in stages', exact: true }).click();
@@ -43,6 +43,9 @@ async function createTwoGlmPlan(page) {
     await page.getByLabel('Model 2 name').press('Tab');
     await page.getByRole('button', { name: 'Choose variables', exact: true }).click();
     await page.getByLabel('Use DriverAge').check();
+    if (aglmDriverAge) {
+        await page.getByLabel('Type for DriverAge').selectOption('aglm');
+    }
     await page.getByLabel('Use Region').check();
     await page
         .getByRole('button', { name: 'Save variables for Main effects and continue', exact: true })
@@ -52,6 +55,89 @@ async function createTwoGlmPlan(page) {
         .getByRole('button', { name: 'Save variables for Vehicle and open Fit', exact: true })
         .click();
 }
+
+test('an AGLM factor previews its interaction grid and can use coarser pair-only bands', async ({
+    page,
+}) => {
+    await createTwoGlmPlan(page, { aglmDriverAge: true });
+    await fitMainEffects(page);
+
+    const review = await ensureInteractionsOpen(page);
+    await review.getByLabel('Pair first column').selectOption('DriverAge');
+    await review.getByLabel('Pair second column').selectOption('AnnualMileage');
+    const grid = review.getByRole('region', { name: 'Projected interaction grid' });
+    await expect(grid).toContainText('cells', { timeout: 10000 });
+    await review.getByText('Interaction fitting and table bands', { exact: true }).click();
+    await expect(review.getByText(/AGLM factor’s break grid sets this interaction table/)).toBeVisible();
+    await expect(
+        review.getByText('Uses this factor’s AGLM break grid. An override uses pair-only step bands.'),
+    ).toBeVisible();
+
+    const coarserBands = review.getByLabel('Use coarser interaction table bands for DriverAge');
+    await expect(coarserBands).not.toBeChecked();
+    // Check the normal pointer path, then turn it back off before exercising Space.
+    await coarserBands.click();
+    const pairBands = review.getByLabel('DriverAge interaction table bands');
+    await expect(pairBands).toBeVisible();
+    await coarserBands.click();
+    await expect(coarserBands).not.toBeChecked();
+    await expect(pairBands).toHaveCount(0);
+    await coarserBands.focus();
+    await page.keyboard.press('Space');
+    await expect(pairBands).toBeVisible();
+    await pairBands.fill('2');
+    await pairBands.press('Tab');
+    await expect(grid).toHaveCount(0);
+    await expect(review.getByRole('button', { name: 'Add interaction', exact: true })).toBeEnabled();
+
+    await review.getByLabel('Fitting approach').selectOption('manual');
+    await review.getByLabel('Iterations').fill('12');
+    await review.getByLabel('Depth').fill('2');
+    await review.getByLabel('Learning rate').fill('0.1');
+    await review.getByRole('button', { name: 'Add interaction', exact: true }).click();
+
+    const session = await (await page.request.get('/api/session')).json();
+    const plan = await (
+        await page.request.get('/api/model-plan', {
+            headers: { 'X-EasyGLM-Token': session.token },
+        })
+    ).json();
+    const modelId = plan.plan.models[0].model_id;
+    const interactionState = await (
+        await page.request.get(`/api/core-models/${modelId}/interactions`, {
+            headers: { 'X-EasyGLM-Token': session.token },
+        })
+    ).json();
+    const recipe = interactionState.candidates[0].recipe;
+    expect(recipe.design.variables.DriverAge).toMatchObject({
+        kind: 'step',
+        knots: 'quantile',
+        n_bins: 2,
+        breaks: null,
+        n_breaks: null,
+        extrapolation: null,
+    });
+    expect(interactionState.core.design.variables.DriverAge).toMatchObject({
+        kind: 'aglm',
+        n_breaks: 100,
+        extrapolation: 'extend',
+    });
+
+    await review.getByRole('button', { name: 'Fit interaction', exact: true }).click();
+    await expect(review.getByRole('button', { name: 'Keep interaction', exact: true })).toBeEnabled({
+        timeout: 120000,
+    });
+    await review.getByRole('button', { name: 'Keep interaction', exact: true }).click();
+    const acceptedPlan = await (
+        await page.request.get('/api/model-plan', {
+            headers: { 'X-EasyGLM-Token': session.token },
+        })
+    ).json();
+    expect(acceptedPlan.plan.models[0].pair_corrections[0].design.variables.DriverAge).toMatchObject(
+        recipe.design.variables.DriverAge,
+    );
+    expect(acceptedPlan.plan.models[0].core.design.variables.DriverAge.kind).toBe('aglm');
+});
 
 async function ensureInteractionsOpen(page, modelName = 'Main effects') {
     const review = page.getByRole('region', { name: `Review ${modelName}`, exact: true });
@@ -243,13 +329,12 @@ test('an interaction-only candidate remains isolated until Keep then advances th
     ).toBeVisible();
 
     await page.getByRole('button', { name: 'Continue to Vehicle', exact: true }).click();
-    const vehicleVariables = page.getByRole('region', { name: 'Variables', exact: true });
-    await expect(vehicleVariables).toContainText('Variables for Vehicle');
-    await expect(vehicleVariables).toContainText('AnnualMileage × DriverAge');
-    await step(page, 'Fit').click();
     await expect(
         page.getByRole('heading', { name: 'Fit Model 2 — Vehicle', exact: true }),
     ).toBeVisible();
+    await expect(modelRow(page, 2, 'Vehicle')).toContainText(
+        'including AnnualMileage × DriverAge',
+    );
 });
 
 test('discarding a fitted candidate leaves the accepted scorer and downstream fit eligibility unchanged', async ({
@@ -384,7 +469,9 @@ test('an upstream score revision invalidates a hidden downstream GLM candidate',
     await addAndFitInteraction(page, 'AnnualMileage', 'DriverAge');
     await page.getByRole('button', { name: 'Keep interaction', exact: true }).click();
     await page.getByRole('button', { name: 'Continue to Vehicle', exact: true }).click();
-    await step(page, 'Fit').click();
+    await expect(
+        page.getByRole('heading', { name: 'Fit Model 2 — Vehicle', exact: true }),
+    ).toBeVisible();
     await page.getByRole('button', { name: 'Fit Model 2 — Vehicle', exact: true }).click();
     await expect(page.getByText('Fitted and kept as a saved version.')).toHaveCount(2, {
         timeout: 120000,

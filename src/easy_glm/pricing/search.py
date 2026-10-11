@@ -92,6 +92,12 @@ def _design_bands(
                     max_levels=maximum,
                     weights=frame[weight_col] if weight_col else None,
                 )
+        elif kind in ("aglm", "aglm_l"):
+            from easy_glm.workflow.run import encoder_for
+
+            knots[variable] = encoder_for(
+                variable, frame[variable], design, model._project
+            ).band_edges()
         elif design is not None and isinstance(design.knots, (list, tuple)):
             knots[variable] = [float(value) for value in design.knots]
         else:

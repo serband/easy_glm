@@ -1,4 +1,4 @@
-"""``StepMatrix`` — step (O-dummy) design columns stored as one bin index per row.
+"""``StepMatrix`` — threshold-indicator design columns stored as one bin index per row.
 
 A step term with knots ``k_1 < ... < k_K`` contributes ``K`` columns
 ``1{x >= k_j}`` to the design matrix. Written out densely that is

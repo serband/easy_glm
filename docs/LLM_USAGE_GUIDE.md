@@ -279,6 +279,45 @@ to that factor's own curve. It does not make a categorical factor or a pair
 table monotone. Categorical `max_levels` retains the most common **training
 weight**, not simply the most rows, then sends the rest to `Other`.
 
+### Optional AGLM curves in current source work
+
+The following calls are part of the current source work, not PyPI v0.472. Use
+them only after checking the installed version. They give a numeric factor an
+AGLM curve rather than step bands. `n_breaks` asks for a training-data grid;
+the default is 100 points including the first and last training values. This
+does not change the model's normal `n_bins` setting for step bands.
+
+```python
+# Keep the fitted model unchanged. This sets the curve for the next refit.
+work.numeric(
+    "DrivAge",
+    kind="aglm",
+    breaks=[18, 25, 35, 50, 65, 80],
+    extrapolation="flat",
+).show()
+```
+
+`flat` holds the curve at each end of that grid. Use `extend` when the fitted
+outer slope should continue outside the grid. `kind="aglm_l"` is the other
+AGLM curve option. Neither AGLM option supports a monotone constraint.
+
+The same choice in a project recipe is a `VariableDesign`. The list is the
+complete grid, including both endpoints:
+
+```python
+from easy_glm.workflow import VariableDesign
+
+project.design.variables["DrivAge"] = VariableDesign(
+    kind="aglm",
+    breaks=[18, 25, 35, 50, 65, 80],
+    extrapolation="flat",
+)
+```
+
+See [Numeric curves](../examples/numeric_curves.md) for a complete comparison
+with step bands, review and export. The project still follows the same
+`Project.from_dict` → `prepare` → `run_model` recipe workflow above.
+
 ## Screening and variable importance
 
 Use a one-way screen or residual-factor search to decide what to investigate.

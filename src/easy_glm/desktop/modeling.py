@@ -44,7 +44,8 @@ class ModelEdit(Revision):
     source_fit_id: str | None = None
     fields: dict[str, Any] = Field(default_factory=dict)
     designs: dict[
-        str, Literal["step", "linear", "continuous", "categorical"] | None
+        str,
+        Literal["step", "linear", "continuous", "categorical", "aglm", "aglm_l"] | None,
     ] = Field(default_factory=dict)
     n_bins: int | None = Field(default=None, ge=2, le=200)
     min_level_share: float | None = Field(default=None, ge=0, lt=1)
@@ -511,6 +512,19 @@ def edit_model(project: Project, edit: ModelEdit) -> Project:
         if name not in candidate.predictors:
             raise ValueError(f"{name!r} is not a predictor-role column.")
         existing = candidate.design.variables.get(name, VariableDesign())
+        if kind in ("aglm", "aglm_l") and existing.kind not in ("aglm", "aglm_l"):
+            existing.knots, existing.n_bins, existing.clamp, existing.monotone = (
+                "quantile",
+                None,
+                None,
+                None,
+            )
+        elif kind not in ("aglm", "aglm_l"):
+            existing.breaks, existing.n_breaks, existing.extrapolation = (
+                None,
+                None,
+                None,
+            )
         existing.kind = kind
         candidate.design.variables[name] = existing
     if edit.n_bins is not None:

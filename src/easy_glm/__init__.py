@@ -39,6 +39,8 @@ except PackageNotFoundError:  # pragma: no cover - source checkout without metad
     __version__ = "0.0.0"
 
 from .core import (
+    AglmLEncoder,
+    AglmOEncoder,
     CategoricalEncoder,
     DesignSpec,
     EasyGLM,
@@ -75,6 +77,8 @@ __all__ = [
     "launch_workbench",
     # Building blocks
     "DesignSpec",
+    "AglmOEncoder",
+    "AglmLEncoder",
     "StepEncoder",
     "CategoricalEncoder",
     "InteractionEncoder",

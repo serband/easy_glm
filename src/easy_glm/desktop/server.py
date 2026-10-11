@@ -144,6 +144,15 @@ class CoreInteractionCreate(Revision):
     design: dict[str, Any] | None = None
 
 
+class InteractionGridRequest(BaseModel):
+    """A read-only preview of a candidate's table axes."""
+
+    model_config = ConfigDict(extra="forbid")
+    a: str = Field(min_length=1)
+    b: str = Field(min_length=1)
+    design: dict[str, Any] | None = None
+
+
 class CoreInteractionCandidateEdit(Revision):
     candidate_id: str = Field(min_length=1)
 
@@ -2522,6 +2531,44 @@ def create_app(
                     "session_id": session_id,
                     "revision": revision,
                 }
+            except (ValueError, KeyError, OSError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/core-models/{model_id}/interaction-grid")
+    def preview_interaction_grid(
+        model_id: str, request: InteractionGridRequest
+    ) -> dict[str, Any]:
+        """Check candidate resolution before starting CatBoost work."""
+        from easy_glm.workflow.pair_stages import interaction_grid
+        from easy_glm.workflow.prep import prepare, train_holdout
+        from easy_glm.workflow.stack import _project_for_recipe
+
+        with lock:
+            try:
+                plan = current.model_plan
+                if plan is None:
+                    raise ValueError("Define the model plan first.")
+                core = _core_recipe(_logical_model(plan, model_id))
+                frame = prepare(current, raw)
+                groups = pair_candidate_groups(current, raw, set(frame.columns))
+                eligible = set(groups["predictors"] + groups["unassigned"])
+                if request.a not in eligible or request.b not in eligible:
+                    raise ValueError("Choose eligible predictor or unassigned columns.")
+                if request.design is None:
+                    project = _project_for_recipe(current, core)
+                else:
+                    recipe = ComponentRecipe(
+                        "grid-preview",
+                        "Interaction grid",
+                        "interaction",
+                        (request.a, request.b),
+                        design=request.design,
+                    )
+                    project = _project_for_recipe(current, recipe)
+                train, _ = train_holdout(frame, current.data.split)
+                return interaction_grid(
+                    project, train, request.a, request.b, current.weight
+                )
             except (ValueError, KeyError, OSError) as exc:
                 raise HTTPException(422, str(exc)) from exc
 

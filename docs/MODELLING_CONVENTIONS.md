@@ -33,5 +33,46 @@ example is [Building a pricing model](../examples/pricing_walkthrough.md).
   the exposure-weighted mean of log relativities without preserving total expected
   claims. Rebalancing the base rate is a separate, explicit action.
 
+## Optional AGLM numeric curves
+
+`aglm` and `aglm_l` are opt-in numeric designs. They are separate from the
+default step bands and from EasyGLM's existing `linear`/`continuous` designs.
+For an AGLM curve, `n_breaks` and `breaks` control a full grid including both
+endpoints. They do not reuse `n_bins` or `knots`, which remain the controls for
+step bands and piecewise-linear designs.
+
+- `aglm` is the AGLM O/C basis: raw `x` plus one capped, normalised ramp for
+  every adjacent pair in the grid.
+- `aglm_l` is the AGLM L basis: raw `x` plus `abs(x - break)` for each interior
+  grid point.
+- An automatic grid uses the training values only, with R type-7 quantiles.
+  The default requests 100 points including the endpoints; ties can leave fewer
+  distinct points. A stated `breaks` list replaces that automatic grid.
+- `extend` is the default tail behaviour: it leaves the raw value outside the
+  grid and so continues the fitted outer slope. `flat` clips first and holds
+  the curve level beyond the endpoints.
+- Missing values have all finite-basis columns set to zero and use the usual
+  optional null indicator. Infinite values are rejected. AGLM curves do not
+  support monotone constraints.
+
+The columns deliberately remain the literal, redundant AGLM basis. Unlike the
+existing piecewise-linear band-slope rule, AGLM columns use the standard
+uniform `P1=1` before a variable's explicit `penalty_weight` multiplier is
+applied. The band-rise penalty rule is therefore not silently applied to an
+AGLM curve. With `scale_predictors=True`, fitting standardises those columns as
+glmnet does; this changes the coefficient scale used for regularisation but
+not the retained basis or the scorer.
+
+The R reference is generated from CRAN `aglm` 0.4.1 and glmnet by
+[`scripts/generate_aglm_reference.R`](../scripts/generate_aglm_reference.R).
+[`tests/fixtures/aglm_0_4_1_reference.json`](../tests/fixtures/aglm_0_4_1_reference.json)
+records the matrices, weighted standardisation and fixed-penalty fits. The
+tests compare a common penalised objective and use documented prediction
+tolerances after strict solver controls. They do **not** claim bit-for-bit
+agreement with glmnet's default stopping rule: on the intentionally collinear
+O/C basis, that rule can stop at a different point. See
+[the numeric-curves example](../examples/numeric_curves.md) for the actuarial
+workflow.
+
 Detailed encoder, scoring and cache invariants are maintained in
 [AGENTS.md](../AGENTS.md) and enforced by the regression tests.

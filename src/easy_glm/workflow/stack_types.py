@@ -33,6 +33,7 @@ _VARIABLE_DESIGN_KEYS = {
     "monotone",
     "penalty_weight",
 }
+_AGLM_DESIGN_KEYS = {"breaks", "n_breaks", "extrapolation"}
 
 
 def _finite_number(value: Any) -> bool:
@@ -159,11 +160,28 @@ def validate_component_design(
             "Component design default max_integer_knots must be a positive integer"
         )
     for name, definition in variables.items():
-        if not isinstance(definition, dict) or set(definition) != _VARIABLE_DESIGN_KEYS:
+        if (
+            not isinstance(definition, dict)
+            or not _VARIABLE_DESIGN_KEYS <= set(definition)
+            or not set(definition) <= _VARIABLE_DESIGN_KEYS | _AGLM_DESIGN_KEYS
+        ):
             raise ValueError(f"Component design for {name!r} is incomplete or invalid")
         kind = definition["kind"]
-        if kind not in (None, "step", "linear", "continuous", "categorical"):
+        if kind not in (
+            None,
+            "step",
+            "linear",
+            "continuous",
+            "categorical",
+            "aglm",
+            "aglm_l",
+        ):
             raise ValueError(f"Component design kind for {name!r} is invalid")
+        from .project import VariableDesign, numeric_method_problems
+
+        curve_problems = numeric_method_problems(name, VariableDesign(**definition))
+        if curve_problems:
+            raise ValueError("; ".join(curve_problems))
         knots = definition["knots"]
         if not (
             knots in ("quantile", "integer")

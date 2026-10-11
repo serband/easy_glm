@@ -37,7 +37,13 @@
             min_weight_share: 0.0025,
         },
         candidateDesign = { defaults: normaliseDefaults(), variables: {} },
-        designSourceKey = '';
+        designSourceKey = '',
+        interactionGrid = null,
+        interactionGridError = '',
+        interactionGridLoading = false,
+        interactionGridKey = '',
+        interactionGridTimer = null,
+        interactionGridEpoch = 0;
     let mounted = false;
     const pollingCandidates = new Set();
     let planSyncEpoch = 0;
@@ -55,6 +61,25 @@
             variables: {},
         };
     }
+    // Keep the candidate overrides explicit in reactive/template expressions.
+    // Svelte cannot infer a dependency hidden inside the design helper functions.
+    $: candidateVariables = candidateDesign.variables || {};
+    $: pairGridDesign =
+        left && right && left !== right ? pairDesign(candidateVariables) : null;
+    $: pairGridUsesAglm = Boolean(
+        pairGridDesign &&
+            Object.values(pairGridDesign.variables || {}).some((definition) =>
+                isAglmKind(definition?.kind),
+            ),
+    );
+    $: nextInteractionGridKey = pairGridUsesAglm
+        ? JSON.stringify({ modelId, left, right, design: pairGridDesign })
+        : '';
+    $: if (nextInteractionGridKey !== interactionGridKey) {
+        interactionGridKey = nextInteractionGridKey;
+        queueInteractionGridPreview(nextInteractionGridKey);
+    }
+    $: interactionGridBlocksAdd = interactionGrid?.allowed === false;
     $: accepted = detail?.pair_corrections || model?.pair_corrections || [];
     $: acceptedTables = detail?.accepted_tables || {};
     $: partialRef = (planState?.partial_fit_refs || []).find((item) => item.model_id === modelId);
@@ -294,6 +319,7 @@
     });
     onDestroy(() => {
         mounted = false;
+        if (interactionGridTimer) clearTimeout(interactionGridTimer);
     });
     $: if (modelId && detail?.model_id && detail.model_id !== modelId) void refresh();
     async function action(operation, extra = {}) {
@@ -457,6 +483,10 @@
             error = 'Choose two different variables.';
             return;
         }
+        if (interactionGridBlocksAdd) {
+            error = 'Reduce the interaction table resolution before adding this pair.';
+            return;
+        }
         candidateSettings = {
             ...candidateSettings,
             tune: tuningMode === 'automatic',
@@ -468,20 +498,61 @@
             design: pairDesign(),
         });
     }
-    function pairDesign() {
+    function pairDesign(overrides = candidateVariables) {
         const sourceVariables = owningDesign?.variables || {};
         return {
             defaults: normaliseDefaults(candidateDesign.defaults),
             variables: Object.fromEntries(
                 [left, right].map((factor) => [
                     factor,
-                    completeVariableDesign(factor, sourceVariables, candidateDesign.variables),
+                    completeVariableDesign(factor, sourceVariables, overrides),
                 ]),
             ),
         };
     }
-    function usesAutomaticBands(factor) {
-        return candidateDesign.variables?.[factor]?.n_bins != null;
+    function isAglmKind(kind) {
+        return kind === 'aglm' || kind === 'aglm_l';
+    }
+    function queueInteractionGridPreview(key) {
+        if (interactionGridTimer) clearTimeout(interactionGridTimer);
+        interactionGrid = null;
+        interactionGridError = '';
+        interactionGridLoading = Boolean(key);
+        if (!key) {
+            interactionGridLoading = false;
+            return;
+        }
+        const requestedModelId = modelId;
+        const requestedEpoch = ++interactionGridEpoch;
+        interactionGridTimer = setTimeout(async () => {
+            try {
+                const fresh = await api(
+                    `core-models/${encodeURIComponent(requestedModelId)}/interaction-grid`,
+                    { a: left, b: right, design: pairDesign() },
+                );
+                if (
+                    !mounted ||
+                    requestedEpoch !== interactionGridEpoch ||
+                    requestedModelId !== modelId ||
+                    key !== interactionGridKey
+                ) return;
+                interactionGrid = fresh;
+            } catch (cause) {
+                if (
+                    mounted &&
+                    requestedEpoch === interactionGridEpoch &&
+                    requestedModelId === modelId &&
+                    key === interactionGridKey
+                ) interactionGridError = cause.message;
+            } finally {
+                if (
+                    mounted &&
+                    requestedEpoch === interactionGridEpoch &&
+                    requestedModelId === modelId &&
+                    key === interactionGridKey
+                ) interactionGridLoading = false;
+            }
+        }, 250);
     }
     function setAutomaticBands(factor, enabled) {
         const variables = { ...candidateDesign.variables };
@@ -491,6 +562,11 @@
                 kind: 'step',
                 knots: 'quantile',
                 n_bins: candidateDesign.defaults.n_bins,
+                clamp: null,
+                monotone: null,
+                breaks: null,
+                n_breaks: null,
+                extrapolation: null,
             };
         } else {
             delete variables[factor];
@@ -509,6 +585,11 @@
                     kind: 'step',
                     knots: 'quantile',
                     n_bins: bands,
+                    clamp: null,
+                    monotone: null,
+                    breaks: null,
+                    n_breaks: null,
+                    extrapolation: null,
                 },
             },
         };
@@ -978,9 +1059,24 @@
                     ><button
                         class="primary"
                         onclick={startCandidate}
-                        disabled={busy || loading || !sourceConfirmed}>Add interaction</button
+                        disabled={busy || loading || !sourceConfirmed || interactionGridBlocksAdd}
+                        >Add interaction</button
                     >
                 </div>
+                {#if pairGridUsesAglm}<section class="interaction-grid-preview" aria-label="Projected interaction grid">
+                        <h4>Projected interaction grid</h4>
+                        {#if interactionGridLoading}<p>Calculating the table cells from the training-data grid…</p>
+                        {:else if interactionGridError}<p class="message error">{interactionGridError}</p>
+                        {:else if interactionGrid}<p>
+                                <strong>{interactionGrid.rows_a} × {interactionGrid.rows_b} = {interactionGrid.cells} cells</strong>
+                                {#if interactionGrid.limit != null} (limit {interactionGrid.limit}){/if}.
+                            </p>
+                            <p>{interactionGrid.message || 'This uses the selected AGLM grid for the interaction table.'}</p>
+                            {#if interactionGridBlocksAdd}<p class="message error">
+                                    Reduce the interaction table resolution before adding this pair.
+                                </p>{/if}
+                        {/if}
+                    </section>{/if}
                 <details class="interaction-settings">
                     <summary>Interaction fitting and table bands</summary>
                     <p>
@@ -1053,24 +1149,37 @@
                                 bind:value={candidateDesign.defaults.n_bins}
                             /></label
                         >
+                        {#if pairGridUsesAglm}<p class="aglm-pair-note">
+                                An AGLM factor’s break grid sets this interaction table’s resolution.
+                                Choose an override below to use coarser pair bands without changing the
+                                fitted main effect.
+                            </p>{/if}
                         {#each [left, right].filter(Boolean) as factor}<label
                                 class="pair-band-override"
                                 ><span
                                     ><input
                                         type="checkbox"
-                                        checked={usesAutomaticBands(factor)}
-                                        onchange={(event) =>
-                                            setAutomaticBands(factor, event.currentTarget.checked)}
+                                        checked={candidateVariables[factor]?.n_bins != null}
+                                        onchange={() =>
+                                            setAutomaticBands(
+                                                factor,
+                                                candidateVariables[factor]?.n_bins == null,
+                                            )}
                                     />
-                                    Override {factor} table bands</span
-                                >{#if usesAutomaticBands(factor)}<input
+                                    {isAglmKind(owningDesign?.variables?.[factor]?.kind)
+                                        ? `Use coarser interaction table bands for ${factor}`
+                                        : `Override ${factor} table bands`}</span
+                                >{#if candidateVariables[factor]?.n_bins != null}<input
                                         aria-label={`${factor} interaction table bands`}
                                         type="number"
                                         min="2"
-                                        value={candidateDesign.variables[factor].n_bins}
+                                        value={candidateVariables[factor].n_bins}
                                         onchange={(event) =>
                                             setPairBandCount(factor, event.currentTarget.value)}
-                                    />{:else}<small
+                                    />{:else if isAglmKind(owningDesign?.variables?.[factor]?.kind)}<small
+                                        >Uses this factor’s AGLM break grid. An override uses pair-only
+                                        step bands.</small
+                                    >{:else}<small
                                         >Uses the model default bands unless this factor already has
                                         saved cuts.</small
                                     >{/if}</label
@@ -1179,11 +1288,31 @@
         margin: 10px 0 0;
         color: #526e5d;
     }
+    .interaction-grid-preview {
+        margin-top: 14px;
+        padding: 12px;
+        border: 1px solid var(--border, #d8e3dc);
+        background: #f7faf7;
+    }
+    .interaction-grid-preview h4,
+    .interaction-grid-preview p {
+        margin: 0;
+    }
+    .interaction-grid-preview p + p {
+        margin-top: 7px;
+    }
     .settings-grid {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 12px;
         margin-top: 12px;
+    }
+    .aglm-pair-note {
+        grid-column: 1 / -1;
+        margin: 0;
+        color: #526e5d;
+        font-size: 13px;
+        line-height: 1.45;
     }
     .pair-band-override span {
         display: flex;
