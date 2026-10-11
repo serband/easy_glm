@@ -33,9 +33,9 @@ or delivery order. For released changes, see the [changelog](../CHANGELOG.md).
 
 ## Worked examples
 
-- Add Gamma severity, Tweedie, external-offset and binary workflows.
-- Add wide-data, predictor-screening, step-versus-linear, monotonic-constraint
-  and candidate-comparison workflows.
+- Add an external-offset workflow.
+- Add examples for wide datasets, predictor screening, comparisons of step
+  and linear effects, and monotonic constraints.
 - Add a keyed lookup workflow using public data.
 
 Each example should use short public calls, make its modelling decisions

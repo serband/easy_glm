@@ -8,7 +8,7 @@ The code follows the order you would use while modelling. Each new fit gets a
 name, so you can return to an earlier model and try a different change. Run the
 blocks in order in the same notebook or Python session.
 
-For vehicle, occupation and postcode files, or the browser workflow, see
+For more worked examples and the browser workflow, see
 [Examples and workflows](workflows.md).
 
 ## Load the data
@@ -179,6 +179,8 @@ basic.ae("VehAge").show()
 The charts show actual and predicted frequency, with exposure bars behind
 them. The table also shows claim counts and A/E. An A/E above one means the
 model underpredicts claims in that band.
+
+### Try revised bands
 
 Look at where actual and expected differ, and how much exposure supports the
 gap. To try another set of driver-age bands, change the settings and refit:

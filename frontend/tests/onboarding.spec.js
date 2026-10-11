@@ -12,6 +12,17 @@ async function snapshot(page, endpoint = 'variables') {
     return response.json();
 }
 
+async function openDataStep(page) {
+    await expect(page.locator('.portfolio')).not.toHaveText('Opening portfolio…');
+    const loaded = page.getByRole('region', { name: 'Current dataset' });
+    const steps = page.getByRole('navigation', { name: 'Project setup steps' });
+    if (await loaded.count()) {
+        await expect(steps).toBeVisible();
+        await steps.getByRole('button', { name: /Data/ }).click();
+    }
+    await expect(page.getByRole('heading', { name: 'Open data', exact: true })).toBeVisible();
+}
+
 test('opening data is visible, explicit, and supports files, projects and both examples', async ({
     page,
 }, info) => {
@@ -128,6 +139,7 @@ test('opening data is visible, explicit, and supports files, projects and both e
         project.name = 'Fleet renewal 2027';
         await writeFile(projectPath, JSON.stringify(project));
         await nav('Project & data').click();
+        await openDataStep(page);
         await page.getByRole('radio', { name: 'Saved project', exact: true }).check();
         await page.getByLabel('Project file', { exact: true }).setInputFiles(projectPath);
         await expect(button('Open project')).toBeDisabled();
@@ -140,7 +152,7 @@ test('opening data is visible, explicit, and supports files, projects and both e
         );
         await button('Open project').click();
         expect((await projectUpload).ok()).toBe(true);
-        await expect(button('Open project')).toBeDisabled();
+        await expect(button('Open project')).toHaveCount(0);
         await expect(page.getByRole('region', { name: 'Current dataset' })).toContainText(
             'portfolio.csv',
         );
@@ -148,12 +160,16 @@ test('opening data is visible, explicit, and supports files, projects and both e
         await expect(page.getByRole('region', { name: 'Shared column assignments' })).toBeVisible();
         await expect(page.getByLabel('Role for Age', { exact: true })).toHaveValue('unassigned');
         await nav('Project & data').click();
+        await openDataStep(page);
         await expect(page.getByRole('complementary')).toContainText('Fleet renewal 2027');
         await expect(page.getByText('portfolio.csv', { exact: true })).toBeVisible();
 
         // The path alternative reads the same saved project; field changes alone never replace it.
         await page.getByLabel('File selection').selectOption('path');
-        await page.getByLabel('File path', { exact: true }).fill(projectPath);
+        await page
+            .getByRole('region', { name: 'Open data', exact: true })
+            .getByRole('textbox', { name: 'File path', exact: true })
+            .fill(projectPath);
         const beforePath = await snapshot(page);
         await expect(button('Open project')).toBeDisabled();
         await replace();
@@ -164,7 +180,7 @@ test('opening data is visible, explicit, and supports files, projects and both e
         );
         await button('Open project').click();
         expect((await projectOpen).ok()).toBe(true);
-        await expect(button('Open project')).toBeDisabled();
+        await expect(button('Open project')).toHaveCount(0);
         await expect(page.getByRole('region', { name: 'Current dataset' })).toContainText(
             'portfolio.csv',
         );
@@ -175,6 +191,7 @@ test('opening data is visible, explicit, and supports files, projects and both e
             ['swedish_motorcycle', 'ClaimAmount'],
         ]) {
             await nav('Project & data').click();
+            await openDataStep(page);
             await page.getByRole('radio', { name: 'Example dataset', exact: true }).check();
             await page
                 .getByRole('combobox', { name: 'Example dataset', exact: true })
@@ -192,7 +209,7 @@ test('opening data is visible, explicit, and supports files, projects and both e
             );
             await button('Load example').click();
             expect((await exampleOpened).ok()).toBe(true);
-            await expect(button('Load example')).toBeDisabled();
+            await expect(button('Load example')).toHaveCount(0);
             await expect(
                 page.getByRole('heading', { name: 'Project & data', exact: true }),
             ).toBeVisible();
@@ -226,6 +243,7 @@ test('opening data is visible, explicit, and supports files, projects and both e
 
 async function openCsv(page, name, contents) {
     await page.goto('/?view=project');
+    await openDataStep(page);
     await page.getByLabel('Data file', { exact: true }).setInputFiles({
         name,
         mimeType: 'text/csv',
@@ -249,6 +267,7 @@ for (const failedRead of ['session', 'variables']) {
         await openCsv(page, 'prior.csv', 'OldTarget,OldFactor\n0,20\n1,30\n');
         await page.getByLabel('Role for OldFactor', { exact: true }).selectOption('ignore');
         await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+        await openDataStep(page);
         await page.getByLabel('Data file', { exact: true }).setInputFiles({
             name: 'confirmed.csv',
             mimeType: 'text/csv',
@@ -311,6 +330,7 @@ test('a stale opener reconnects without losing its draft or replaying Open', asy
     await openCsv(page, 'two-tabs.csv', 'Response,Exposure,Rating\n0,1,20\n1,1,30\n');
     await page.getByLabel('Role for Rating', { exact: true }).selectOption('ignore');
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await openDataStep(page);
     await page.getByLabel('Data file', { exact: true }).setInputFiles({
         name: 'after-reconnect.csv',
         mimeType: 'text/csv',
@@ -343,6 +363,7 @@ test('a stale opener reconnects without losing its draft or replaying Open', asy
         expect((await snapshot(page)).project_id).toBe(before.project_id);
         await expect(page.getByLabel('Role for Rating', { exact: true })).toHaveValue('ignore');
         await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+        await openDataStep(page);
         await page.getByLabel('Replace this session.', { exact: false }).check();
         await page.getByRole('button', { name: 'Open data', exact: true }).click();
         await expect(page.getByRole('region', { name: 'Current dataset' })).toContainText(

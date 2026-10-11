@@ -1,99 +1,123 @@
 # EasyGLM
 
-Build GLMs and CatBoost models, review diagnostics and export scorers and model
-tables. EasyGLM works in a local browser workbench or from Python.
+EasyGLM is a python package that makes fitting regularised generalised linear models (GLMs) for use in general insurance pricing a cinch. It produces factor relativity tables to inspect, amend and use in a way that naturally fit into standard pricing workflows. It can be used both programmatically within a python session or in the local browser using the GUI workbench.
 
-## Install and open
+## Install
 
-Requires Python 3.10–3.14. Run in a terminal:
+Requires Python 3.10–3.14. The installation includes the local workbench and
+CatBoost.
 
 ```bash
 python -m pip install --upgrade easy-glm
+```
+
+Install as `easy-glm`; import as `easy_glm`.
+
+## Use the workbench
+
+```bash
 easy-glm-workbench
 ```
 
-Your browser opens automatically. Keep the terminal open while you work.
-Restart the workbench after upgrading.
+The workbench opens in your browser and runs locally. Keep the terminal open
+while you work.
 
-Install as `easy-glm`; import in Python as `easy_glm`. The standard installation
-includes the workbench, GLM fitting, CatBoost interactions and Optuna tuning.
+In **Project & data**, load your data, choose a single model or a sequence of
+models, and assign the target and any exposure, weight, ID or train/test columns.
+Choose the model family and predictors. For GLM numeric factors, use automatic
+bands, set your own cuts or choose a curve, then fit the model.
 
-## Build a model
+Inspect the relativities and A/E, search for missing factors or interactions,
+and compare candidate models. You can amend rates, preview the effect of a
+change before applying it, and export the tables to Excel.
 
-Open data, then choose the route in **Project & data**:
+The [workbench walkthrough](examples/workbench_walkthrough.md) shows this
+process on screen.
 
-- **Single model** for one GLM, CatBoost or keyed lookup model (**Catalogue** in
-  the interface).
-- **Build in stages** for a sequence of models built from the same data.
+## Use it from Python
 
-Next, set the columns shared by the work: target, exposure or weight, ID, and
-the train/holdout split. Mark columns that must never be used as **Ignore**.
-For a staged model, name each model and choose its type before selecting any
-factors. Every model has its own factor selection. EasyGLM carries the complete
-prediction from earlier models into the next fit as an offset.
+`PricingSession` keeps the data, target, exposure, split and band settings
+together while you build models. Each fit returns a named model you can inspect,
+compare or build on.
 
-A sequence can combine models in the order you choose. For example:
+This example fits driver age and vehicle age to the public French motor
+claim-frequency data. EasyGLM downloads the data and caches it for later use.
 
-```text
-GLM main effects + reviewed interaction tables
-    → CatBoost correction
-    → GLM correction
+```python
+from easy_glm import PricingSession, load_external_dataframe
+
+data = load_external_dataframe().sample(n=10_000, seed=42)
+
+study = PricingSession(
+    data,
+    family="poisson",
+    claims="ClaimNb",
+    exposure="Exposure",
+    id="IDpol",
+)
+model = study.fit_glm("Age model", factors=["DrivAge", "VehAge"])
+
+model.summary()
+model.relativities("DrivAge").show()
+model.ae("DrivAge").show()
 ```
 
-Fit each model on **Model** before moving to the next one. A GLM owns its
-interaction tables: fit the GLM, inspect A/E and missing-factor results, then
-choose any interactions worth keeping. In **Diagnostics**, inspect the cumulative
-score through the model or interaction you select, or the completed model chain.
+The session creates a 70/30 train/holdout split, keeping rows with the same ID
+together. Fitting and searches use training data; the A/E above is also on
+training data. Earlier named fits remain available when you change bands or
+fit another model.
 
-Fitting, searches and CatBoost tuning use training rows. Keep holdout rows for
-the validation check once you have a candidate worth testing.
+Export the tables and save the fitted model:
 
-GLMs support Poisson, Gamma, Tweedie, Gaussian, binomial and inverse Gaussian
-families. CatBoost and staged models use a log link and currently support
-Poisson, Tweedie and Gaussian.
+```python
+model.to_excel("age_model.xlsx")
+model.save("age_model.easyglm")
+```
 
-## Export and keep your work
-
-| Export | What you get |
-| --- | --- |
-| Project JSON | The setup: source-data location, shared columns, model definitions and factor choices. It does not contain data or fitted rates. |
-| Fitted scorer | A single-model `.easyglm` file, a stacked-model JSON bundle or a Python scorer. Each scores without fitting again. |
-| Python workflow | A script that fits the accepted workflow again from source data. Fresh fits can differ slightly. |
-| Excel | A single-model table workbook or a stacked-model component workbook. |
-| Keyed lookup file | A full CSV lookup for each fitted keyed lookup model. |
-| HTML report | A single-model report with summaries, model factors and diagnostics. |
-
-For a staged model, use **Score on new data** to choose a saved fitted version,
-the dataset and whether you need one model component or the cumulative score.
-Download CSV or Parquet results after checking the required columns.
-
-Save both the project JSON and a fitted scorer. The project keeps the setup;
-keep the scorer to reuse the saved rates without refitting.
-
-## Already working in Python?
-
-Open a pandas or Polars dataframe in the workbench:
+To open the same data in the workbench:
 
 ```python skip-test
 import easy_glm
 
-easy_glm.launch_workbench(data=df)
+easy_glm.launch_workbench(data=data)
 ```
 
-For interactive Python modelling, use
-[PricingSession](examples/pricing_walkthrough.md). For a reproducible settings
-file, use the [Project workflow](examples/project_workflow.md). For model
-chains, keyed lookup data and scoring new data, use the
-[worked workflows](examples/workflows.md).
+The [pricing walkthrough](examples/pricing_walkthrough.md) continues with
+custom bands, missing-factor searches, interactions, rate amendments and
+holdout validation.
 
-[Workbench walkthrough](examples/workbench_walkthrough.md) ·
-[Python examples](examples/README.md) · [Changelog](CHANGELOG.md)
+## Add interactions or further models
+
+Add and review interaction tables after fitting the main effects. Each new
+interaction uses the GLM and earlier tables as its offset, keeping their rates
+fixed.
+
+You can also fit CatBoost on its own or combine GLMs and CatBoost in a sequence.
+Each model has its own predictors and uses the complete prediction from all
+earlier models as its offset. Sequential models support Poisson, Tweedie and
+Gaussian with a log link.
+
+See the [model workflow examples](examples/model_variations.md) for different
+orders and tuning settings. The [model family examples](examples/model_families.md)
+cover severity, pure premium and claim occurrence.
+
+## Save and score
+
+A saved fitted model reuses the rates without refitting. In the workbench you
+can also export the project settings and a Python script that repeats the fits.
+
+In **Score on new data**, select the new data and the saved model or sequence
+to apply. Check the required columns, score the data, and download the results
+as CSV or Parquet. The [scoring example](examples/new_data_scoring.md) shows
+this in Python and the workbench.
+
+[All examples and workflows](examples/workflows.md) · [Changelog](CHANGELOG.md)
 
 ## Why I built this
 
 This started with my wish to port R's [aglm](https://CRAN.R-project.org/package=aglm)
 to Python and give it a GUI. It's built primarily for my own pricing work and will
-probably have plenty of bugs, because… vibecode yo. Check the results before
+be buggy, because… vibecode yo. Check the results before
 using them.
 
 [MIT licence](LICENSE).

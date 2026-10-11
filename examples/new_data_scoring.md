@@ -1,8 +1,8 @@
 # Score new data and export rating files
 
-Use this page when you have fitted a model and need outputs for another dataset.
-It builds main effects, vehicle, occupation and postcode models from one
-experience dataset, then produces:
+This worked example uses invented motor data to demonstrate scoring other
+datasets. It builds main effects, vehicle, occupation and postcode models from
+one experience dataset, then produces:
 
 - a renewal extract with the complete fitted chain;
 - each full rating file with its own accepted model;

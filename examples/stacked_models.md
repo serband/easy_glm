@@ -13,9 +13,10 @@ by expected claims. It uses training rows unless you ask for holdout.
 
 ## Load experience and the complete catalogues
 
-The package provides synthetic motor experience and complete vehicle, occupation
-and postcode catalogues. Some catalogue codes are deliberately absent from the
-experience, so we can check that the finished files still contain them.
+For this worked example, `load_motor_catalogue_example` creates invented motor
+data and vehicle, occupation and postcode catalogues. Some catalogue codes are
+deliberately absent from the experience, so we can check that the finished files
+still contain them.
 
 ```python
 import polars as pl

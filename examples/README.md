@@ -18,6 +18,6 @@ Other examples:
 | [Export rate tables](export_rate_tables.py) | Write fitted tables to Excel and create a portable scorer. |
 | [Score new data](score_new_data.py) | Load a saved rate model and apply it to another dataset. |
 
-The main [README](../README.md) contains the shortest install and first-fit
-route. The pricing walkthrough includes all the code on the page;
+The main [README](../README.md) covers installation and the workbench route.
+The pricing walkthrough includes all the code on the page;
 the workbench walkthrough covers the graphical interface.

@@ -10,7 +10,8 @@ Use the setup navigation in **Project & data** to work on one decision at a time
 Open data and choose **Single model** or **Build in stages**. Assign the target,
 weight/exposure, ID, train/test split and any ignored columns. These assignments
 apply to the whole project. If the data has a split column, choose its training
-and holdout values explicitly.
+value; the other value becomes holdout. The column must contain exactly two
+values and no missing values.
 
 For a single model, choose its predictors, then define its method, family/link
 and variable treatment. For models in stages, define the shared response

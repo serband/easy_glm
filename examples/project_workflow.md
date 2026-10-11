@@ -17,8 +17,8 @@ current directory.
 
 ## Load the example data
 
-The package supplies a small invented motor dataset and complete vehicle,
-occupation and postcode catalogues, so there is no separate download. The
+For this worked example, `load_motor_catalogue_example` creates invented motor
+data and vehicle, occupation and postcode catalogues. The
 [rating-file walkthrough](stacked_models.md) explains the catalogue workflow.
 
 ```python

@@ -47,9 +47,9 @@ agent run or local test session.
 
 ## Pricing actuary workflow
 
-EasyGLM is a general modelling package. Insurance datasets and vehicle,
-occupation or postcode files in worked examples illustrate uses of the tools;
-they are not built-in package products and must not be described as features.
+EasyGLM is a general modelling package. Domain-specific datasets and outputs
+belong in explicitly identified worked examples, not general package descriptions.
+Do not present an example use case as a built-in product or feature.
 
 The primary user is a pricing actuary working interactively. Use
 `examples/pricing_walkthrough.md` as the public acceptance scenario.

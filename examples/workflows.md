@@ -22,7 +22,7 @@ scoring new data.
 | Fit CatBoost alone, GLM then CatBoost, or CatBoost then GLM | [Other model workflows](model_variations.md) |
 | Model count, positive or binary outcomes | [Model families](model_families.md) |
 | Choose Optuna trials, a tuning-time limit or manual CatBoost settings | [CatBoost fitting controls](model_variations.md#standalone-catboost-with-a-trial-budget) |
-| Change bands, keep earlier models and compare candidates | [Revised numeric bands](pricing_walkthrough.md#fit-the-first-glm) |
+| Change bands, keep earlier models and compare candidates | [Revised numeric bands](pricing_walkthrough.md#try-revised-bands) |
 | Understand, save and run `Project.from_dict` recipes | [Save, edit and run a model recipe](project_workflow.md) |
 | Take a fitted GUI workflow into Python, or score without refitting | [Project and scorer exports](project_workflow.md#export-the-accepted-setup-and-the-fitted-scorer) |
 | Give an LLM the package's current conventions | [Usage guide](../docs/LLM_USAGE_GUIDE.md) |

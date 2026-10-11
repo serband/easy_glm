@@ -15,7 +15,7 @@ Choose the example that matches the job:
 
 - [Workflow map](../examples/workflows.md)
 - [Interactive pricing walkthrough](../examples/pricing_walkthrough.md)
-- [Stacked vehicle, occupation and postcode models](../examples/stacked_models.md)
+- [Stacked model workflow](../examples/stacked_models.md)
 - [Model variations](../examples/model_variations.md)
 - [Frequency, pure premium, severity and binary models](../examples/model_families.md)
 - [Project recipe workflow](../examples/project_workflow.md)
@@ -111,13 +111,14 @@ An offset is already on the link scale. With a log link, a baseline premium
 amount normally becomes `log(baseline_premium)`, not the raw premium column.
 Exposure weighting is not an exposure offset.
 
-## A practical Python session
+## Worked example: French motor frequency
 
 `PricingSession` is the public interactive API. It retains the shared data,
 roles, split and future-fit settings; each `PricingModel` returned by a fit is
 a named checkpoint. This is a good route for an analyst working in a notebook.
-The cells below are deliberately progressive: load `data` first, then run them
-in order in the same notebook.
+The cells below use the columns in the
+[French motor walkthrough](../examples/pricing_walkthrough.md). Load its data
+first, then run these cells in order in the same notebook.
 
 ```python
 import polars as pl
@@ -174,13 +175,14 @@ with_pair = with_rating_factors.fit_interaction(
 print(with_pair.ae("DrivAge", "Area"))
 ```
 
-Use `fit_catboost` or `fit_catalogue` when the next correction is a model or a
-rating file rather than a pair table. Both append a named component after the
-complete current score:
+Use `fit_catboost` when the next correction is a model rather than a pair
+table. Use `fit_catalogue` to learn from attributes in a separate keyed dataset
+and produce a lookup score for every key. Both append a named component after
+the complete current score:
 
 ```python
-vehicle = with_pair.fit_catboost(
-    "Vehicle correction",
+correction = with_pair.fit_catboost(
+    "CatBoost correction",
     factors=["VehBrand", "VehPower"],
     tune=True,
     tuning_budget="trials",
@@ -188,7 +190,7 @@ vehicle = with_pair.fit_catboost(
     cv=5,
 )
 
-print(vehicle.validate_holdout(compare_with=with_pair))
+print(correction.validate_holdout(compare_with=with_pair))
 ```
 
 The `trials` or time budget controls CatBoost tuning on training folds. It is
@@ -243,8 +245,8 @@ the automatic count. They are not competing settings:
 ```python
 # Illustrative project configuration; put this in the named model's design.
 # Default: eight training-data bands for numeric factors in this model.
-# VehAge: six automatic training-data bands for this model.
-# DrivAge: fixed actuarial cuts; the default does not change these cuts.
+# FactorA: six automatic training-data bands for this model.
+# FactorB: explicit cuts; the default does not change these cuts.
 ```
 
 Do not use a global `for` loop to mutate every variable just because it makes a
@@ -267,7 +269,8 @@ weight**, not simply the most rows, then sends the rest to `Other`.
 
 ### Optional AGLM curves
 
-These calls give a numeric factor an AGLM curve rather than step bands.
+In the French motor example above, these calls give driver age an AGLM curve
+rather than step bands.
 `n_breaks` asks for a training-data grid; the default is 100 points including
 the first and last training values. This does not change the model's normal
 `n_bins` setting for step bands.
@@ -324,7 +327,8 @@ The workbench follows this modelling order:
    model plan.
 2. **Shared columns:** assign target, exposure/weight, ID, split and columns to
    ignore. Apply this shared setup before modelling.
-3. **Models:** name the ordered models and choose GLM, CatBoost or catalogue.
+3. **Models:** name the ordered models and choose GLM, CatBoost or Catalogue
+   (a lookup built from a separate keyed dataset).
    Later models use the complete accepted score before them as their offset.
 4. **Variables:** choose factors and their treatment for the selected model.
    A model's choices do not change another model's factor list.
@@ -358,25 +362,26 @@ score is part of the prediction. Label training diagnostics as in-sample.
 Tuning is a training-fold exercise. Holdout is a separate request:
 
 ```python
-print(vehicle.validate_holdout(compare_with=with_pair))
+print(correction.validate_holdout(compare_with=with_pair))
 ```
 
 Use A/E to check calibration and Gini/lift to check ranking. Neither replaces
 the other. Before calling a poor group result a modelling issue, inspect its
 exposure and claim count.
 
-## Catalogue models and rating files
+## Catalogue models
 
-A catalogue component represents a vehicle, occupation or postcode file with
-many raw fields that needs to be implemented as one named correction.
+A catalogue model learns from training rows using attributes joined by key
+from a separate dataset. It then scores every key in that dataset and stores
+the results as a lookup. The model chain keeps this as one named component.
 
-The score from a catalogue component is usually **incremental**: it multiplies
-the complete score entering the component. Use the full stack scorer for a
-premium or an overall A/E. Do not mistake the catalogue multiplier for the
-whole vehicle or occupation price.
+The score from a catalogue component is usually **incremental**: it multiplies the
+complete score entering the component. Use the full stack scorer for an overall
+prediction or A/E. Do not mistake one component's multiplier for the full
+score.
 
 A first component can instead be a complete scorer when it is deliberately the
-starting model. State which one it is. Pin the catalogue content and key used
+starting model. State which one it is. Pin the auxiliary dataset and key used
 for a fitted model. If the live source file changes later, that is a new model
 input, not a reason to rewrite an old fitted checkpoint.
 
@@ -397,7 +402,7 @@ history.
 Preview a table edit before applying it. Save both the accepted result and the
 reason for the adjustment.
 
-For an ordinary GLM checkpoint, address the row you want to change explicitly:
+For the French motor GLM above, address the row you want to change explicitly:
 
 ```python
 review = main.edit_rates("Driver-age review")
@@ -425,28 +430,30 @@ result.preview()
 result.export("renewal_scores.parquet")
 ```
 
-Omit `exposure_col` for unit predictions. `scope="through", model="Vehicle"`
-scores cumulatively through Vehicle. `scope="model", model="Vehicle"` returns
-the accepted vehicle contribution only. A named GLM in a logical workbench plan
-includes its accepted owned interaction tables; legacy flat components stay
-separate. `scope="catalogue", model="Vehicle"` scores a refreshed master with
-its retained native fit as a candidate, excluding accepted lookup amendments.
-Older lookup-only bundles cannot produce native candidates.
+Omit `exposure_col` for unit predictions. `scope="through", model="Component"`
+scores cumulatively through that named component. `scope="model",
+model="Component"` returns the accepted component contribution only. A named
+GLM in a logical workbench plan includes its accepted owned interaction tables;
+legacy flat components stay separate. `scope="catalogue", model="Component"`
+scores a refreshed keyed dataset with its retained native fit as a candidate,
+excluding accepted lookup amendments. Older lookup-only bundles cannot produce
+native candidates.
 
 In the GUI, add files under **Project & data → Data → Additional scoring
-datasets**, then open **Score on new data**. Choose the dataset, then **Overall
-prediction** for the combined pricing model or **One rating model** for an
-individual vehicle, occupation or postcode multiplier. The summary names the
-dataset, models and output; required columns are shown before checking values
-and keys. Earlier combined scores are under **Advanced cumulative checkpoints**.
-Native refreshed-master candidates are separate from the selected accepted
-lookup. Preview and download the scored file with its details JSON.
-`launch(data=experience, scoring_data={"Vehicles": vehicles})` registers a
-Python frame separately from the modelling source. Local-file references can
-persist in the project; uploaded files and Python frames are session-only.
+datasets**, then open **Score on new data**. Choose the dataset and the saved
+model to score. Choose **Overall prediction** for the complete saved model, or
+**One rating model** for a named model's contribution. The summary
+names the dataset, model and output; required columns are shown before checking
+values and keys. Earlier cumulative scores are under **Advanced cumulative
+checkpoints**. Native refreshed-dataset candidates are separate from the
+selected accepted lookup. Preview and download the scored file with its details
+JSON. `launch(data=experience, scoring_data={"Additional data": scoring_data})`
+registers a Python frame separately from the modelling source. Local-file
+references can persist in the project; uploaded files and Python frames are
+session-only.
 
-The [complete scoring example](../examples/new_data_scoring.md) builds and
-scores vehicle, occupation and postcode files.
+The [complete scoring example](../examples/new_data_scoring.md) shows the
+end-to-end workflow on additional datasets.
 
 ## Export: workflow versus scorer
 

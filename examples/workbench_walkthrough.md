@@ -78,7 +78,7 @@ Use these types:
 | --- | --- |
 | GLM | Fit main effects as rating tables. Add interaction tables after reviewing the fit. |
 | CatBoost | Fit a flexible model from the selected raw variables. |
-| Catalogue | Build a full vehicle, occupation or postcode file, including codes with no training experience. |
+| Catalogue | Fit from attributes in a separate keyed dataset, then produce a lookup score for every key, including keys without training rows. |
 
 For this claim-frequency model, choose Poisson, Log and **Divide target by
 weight**. Staged models use a log link so their corrections multiply. The
