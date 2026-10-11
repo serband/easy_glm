@@ -2,7 +2,7 @@
 
 This is the user-facing record of useful new features and fixes.
 
-## Unreleased
+## 0.473 — 11 October 2026
 
 - Add single-model and staged-model routes. A staged plan gives each named model
   its own factors and fits later models on the complete score from earlier ones.

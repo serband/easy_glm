@@ -8,7 +8,13 @@ from typing import Any
 
 import polars as pl
 
-from easy_glm.core.design import NUMERIC_DTYPES, frequent_levels, quantile_knots
+from easy_glm.core.design import (
+    NUMERIC_DTYPES,
+    AglmLEncoder,
+    AglmOEncoder,
+    frequent_levels,
+    quantile_knots,
+)
 from easy_glm.workflow.diagnostics import (
     pearson_dispersion,
     residual_factor_search,
@@ -95,9 +101,10 @@ def _design_bands(
         elif kind in ("aglm", "aglm_l"):
             from easy_glm.workflow.run import encoder_for
 
-            knots[variable] = encoder_for(
-                variable, frame[variable], design, model._project
-            ).band_edges()
+            encoder = encoder_for(variable, frame[variable], design, model._project)
+            if not isinstance(encoder, (AglmOEncoder, AglmLEncoder)):
+                raise TypeError(f"{variable!r} does not have numeric band edges")
+            knots[variable] = encoder.band_edges()
         elif design is not None and isinstance(design.knots, (list, tuple)):
             knots[variable] = [float(value) for value in design.knots]
         else:

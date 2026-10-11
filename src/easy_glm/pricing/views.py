@@ -12,7 +12,13 @@ import plotly.graph_objects as go
 import polars as pl
 from plotly.subplots import make_subplots
 
-from easy_glm.core.design import NUMERIC_DTYPES, frequent_levels, quantile_knots
+from easy_glm.core.design import (
+    NUMERIC_DTYPES,
+    AglmLEncoder,
+    AglmOEncoder,
+    frequent_levels,
+    quantile_knots,
+)
 from easy_glm.core.excel import pair_table_frames, rate_model_tables
 from easy_glm.engine._scoring import row_index
 from easy_glm.engine.models import FromToRow, VariableConfig, level_label
@@ -181,7 +187,10 @@ def _candidate_axis(model: Any, train: pl.DataFrame, variable: str) -> VariableC
         if kind in ("aglm", "aglm_l"):
             from easy_glm.workflow.run import encoder_for
 
-            cuts = encoder_for(variable, series, design, model._project).band_edges()
+            encoder = encoder_for(variable, series, design, model._project)
+            if not isinstance(encoder, (AglmOEncoder, AglmLEncoder)):
+                raise TypeError(f"{variable!r} does not have numeric band edges")
+            cuts = encoder.band_edges()
         elif design is not None and isinstance(design.knots, (list, tuple)):
             cuts = [float(value) for value in design.knots]
         elif design is not None and design.knots == "integer":

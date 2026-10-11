@@ -141,12 +141,19 @@ jobs:
           npx playwright test --config playwright.model-variables.config.js
           npx playwright test --config playwright.legacy-models.config.js
           npx playwright test --config playwright.model-plan.config.js
+          npx playwright test --config playwright.guided-setup.config.js
+          npx playwright test --config playwright.model-flow.config.js
+          npx playwright test --config playwright.model-recovery.config.js
+          npx playwright test --config playwright.model-retry.config.js
           npx playwright test --config playwright.model-variables-wide.config.js
           npx playwright test --config playwright.reviews.config.js
           npx playwright test --config playwright.interactions.config.js
+          npx playwright test --config playwright.core-interactions.config.js
           npx playwright test --config playwright.pair-editor.config.js
           npx playwright test --config playwright.pair-fit.config.js
           npx playwright test --config playwright.exports.config.js
+          npx playwright test --config playwright.stack-workflow-export.config.js
+          npx playwright test --config playwright.scoring.config.js
           npx playwright test --config playwright.session.config.js
           npx playwright test --config playwright.split.config.js
           npx playwright test --config playwright.binning.config.js
