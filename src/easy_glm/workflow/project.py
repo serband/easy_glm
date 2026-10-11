@@ -622,6 +622,9 @@ class Project:
     #: intentionally not changed when this plan changes.
     model_plan: ModelPlan | None = None
     champion: str | None = None
+    # Saved descriptors for optional new-data scoring sources.  They are outside
+    # DataConfig because they must never change a training fit fingerprint.
+    scoring_sources: list[dict[str, Any]] = field(default_factory=list)
     exploration: dict[str, Any] = field(
         default_factory=lambda: {"leakage": {"ignored": [], "acknowledged": []}}
     )
@@ -1400,6 +1403,8 @@ class Project:
         )
         if self.model_plan is None:
             d.pop("model_plan", None)
+        if not self.scoring_sources:
+            d.pop("scoring_sources", None)
         for m in d["models"].values():
             if m.get("design") is None:
                 m.pop("design", None)
@@ -1605,6 +1610,7 @@ class Project:
             models=models,
             model_plan=plan,
             champion=raw.get("champion"),
+            scoring_sources=list(raw.get("scoring_sources", [])),
             exploration=exploration,
         )
 

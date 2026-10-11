@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import re
 from collections.abc import Sequence
 from html import escape
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import polars as pl
@@ -28,6 +30,9 @@ from .validation import (
     validate_factors,
     validate_holdout_models,
 )
+
+if TYPE_CHECKING:
+    from easy_glm.workflow.scoring import ScoringResult
 
 
 class PricingModel:
@@ -574,6 +579,86 @@ class PricingModel:
             if column:
                 prediction = prediction * frame[column].cast(pl.Float64).to_numpy()
         return np.asarray(prediction, dtype=float)
+
+    def score(
+        self,
+        data: pl.DataFrame | Any,
+        *,
+        scope: str = "full",
+        model: str | None = None,
+        exposure_col: str | None = None,
+        column_prefix: str = "easyglm_",
+    ) -> ScoringResult:
+        """Score a new book from this frozen checkpoint without refitting it.
+
+        ``model`` is an accepted physical component name or id for ``through``,
+        ``model`` and ``catalogue`` scopes.  The returned result keeps every
+        input row and column and can be exported as CSV or Parquet.
+        """
+        from easy_glm.workflow.scoring import score_data
+
+        scorer = self._scorer
+        if scorer is None:
+            raise ValueError("This saved model has no accepted scorer")
+        component_ids: tuple[str, ...] = ()
+        through: str | None = None
+        if model is not None and getattr(self._run, "stack", None) is not None:
+            plan = self._project.model_plan
+            logical = (
+                next(
+                    (
+                        item
+                        for item in plan.models
+                        if item.model_id == model or item.name == model
+                    ),
+                    None,
+                )
+                if plan is not None and plan.is_logical_models_plan
+                else None
+            )
+            if logical is not None:
+                component_ids = tuple(
+                    item.component_id for item in logical.physical_components
+                )
+                through = logical.physical_components[-1].component_id
+            else:
+                # Legacy plans expose physical accepted components directly.
+                physical_id = scorer.component(model).recipe.component_id
+                component_ids = (physical_id,)
+                through = physical_id
+        elif model is not None:
+            component_ids = (model,)
+        result = score_data(
+            scorer,
+            data,
+            project=self._project,
+            scope=scope,  # type: ignore[arg-type]
+            component_ids=component_ids,
+            through=through if scope == "through" else None,
+            exposure_col=exposure_col,
+            column_prefix=column_prefix,
+        )
+        result.metadata.update(
+            {
+                "saved_model_name": self.name,
+                "saved_model_created_at": self._run.created_at,
+                "saved_model_scorer_fingerprint": (
+                    scorer.fingerprint()
+                    if hasattr(scorer, "fingerprint")
+                    else hashlib.sha256(
+                        json.dumps(scorer.to_dict(), sort_keys=True).encode()
+                    ).hexdigest()
+                ),
+                "requested_model": model,
+                "logical_model_name": (
+                    logical.name
+                    if "logical" in locals() and logical is not None
+                    else None
+                ),
+                "logical_component_ids": list(component_ids),
+            }
+        )
+        return result
 
     def summary(self) -> dict[str, Any]:
         """Training-only fit summary; holdout stays closed until requested."""

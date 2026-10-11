@@ -413,6 +413,10 @@ class LookupScorer:
     table: pl.DataFrame
     attributes: tuple[str, ...] = ()
     fallback: float | None = None
+    #: The unamended fitted teacher used to make a fresh catalogue/master
+    #: output.  Accepted scoring deliberately uses ``table`` instead.  Older
+    #: saved artifacts omit this field and therefore cannot recreate it.
+    native_scorer: CatBoostScorer | None = None
 
     def coverage(self, frame: pl.DataFrame) -> dict[str, Any]:
         """Count missing keys and explicit fallback use on this scoring book."""
@@ -477,7 +481,7 @@ class LookupScorer:
         return np.log(values)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "type": "lookup",
             "key": self.key,
             "table": self.table.to_dict(as_series=False),
@@ -485,16 +489,21 @@ class LookupScorer:
             "attributes": list(self.attributes),
             "fallback": self.fallback,
         }
+        if self.native_scorer is not None:
+            result["native_scorer"] = self.native_scorer.to_dict()
+        return result
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> LookupScorer:
         from .catalogue import restore_schema, validate_catalogue
 
+        native = raw.get("native_scorer")
         result = cls(
             raw["key"],
             restore_schema(pl.DataFrame(raw["table"]), raw.get("schema")),
             tuple(raw.get("attributes", ())),
             raw.get("fallback"),
+            None if native is None else CatBoostScorer.from_dict(native),
         )
         validate_catalogue(result.table, result.key, result.attributes)
         if "multiplier" not in result.table.columns:

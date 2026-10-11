@@ -6,7 +6,7 @@
 
 | Purpose | Checkout and state |
 | --- | --- |
-| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/actuary-worked-examples`, based on `4190fb0`; named models in Project & data, GLM-owned interactions and accepted workflow exports |
+| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/score-new-datasets`, based on `59ace19`; new-data scoring alongside named models, GLM-owned interactions and accepted workflow exports |
 | User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
 | Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
 
@@ -129,6 +129,44 @@ The Model builder work is local, unpushed and unreleased. Fresh validation for t
 Known first-version boundaries: each named model scores a linear sequence; the diagram can show alternatives but does not combine two parent models; one-key, user-supplied catalogues; no arbitrary imported estimators, automatic hierarchical credibility, geographic smoothing, or mixed-stack HTML report. A direct CatBoost component requires its saved model artifact to score and cannot be represented exactly by GLM rate tables alone. Confirm any further limit in code before asserting it.
 
 ## Source map and checks
+
+**New-data scoring, 11 October.** The workbench separates the modelling source
+from named additional scoring datasets. Local CSV/Parquet references are optional
+`Project.scoring_sources`; uploads and frames passed through
+`launch(data=..., scoring_data={...})` are private session snapshots. These sources
+do not enter a fit key. **Score on new data** selects a saved fitted version and
+scores its complete chain, a cumulative checkpoint, an individual accepted model,
+or a separate native catalogue candidate. Frozen column transformations apply;
+training filters and split generation do not. Requirements follow the selected
+scope. Exposure is optional and applied once; contributions and catalogue
+candidates exclude it. Original rows and columns are retained.
+
+`PricingModel.score` returns a `ScoringResult` with `preview`, `frame`, metadata
+and CSV/Parquet `export`. Exports have a neighbouring JSON metadata file. The GUI
+also downloads score details with the scored file. Accepted catalogue rates remain
+lookup-based, including amendments. Newly fitted catalogues retain their native
+model for scoring refreshed masters as candidates; older lookup-only artifacts
+report that this option is unavailable. Neither candidate scoring nor registering
+a dataset changes an accepted model. See
+[`examples/new_data_scoring.md`](../examples/new_data_scoring.md).
+
+Independent software, adversarial, rendered design and pricing-actuary reviews
+passed. The full Python suite found one existing binomial/logit results-page
+regression: 1,707 passed, one failed, one skipped and one deselected. That
+regression was repaired, and the affected model-plan and scoring checks passed
+on recheck. Final scoring, desktop and worked-workflow checks passed: 29 tests
+from source and 24 scoring/API tests against the final installed wheel. The
+full suite was not repeated after the narrow repair. Black, Ruff and mypy passed.
+
+Five isolated browser cases passed, covering complete-book CSV scoring,
+missing-input blocking, key-only vehicle-file Parquet scoring with numeric
+read-back parity, separate native candidate output, delayed-response
+invalidation, details JSON and the 797px layout. All six public workflow guides,
+including this new scoring example, ran from their literal Python blocks
+against an installed wheel, using the full example datasets. The launcher also
+registered Polars and pandas scoring frames in a separate process. These are
+local checks, not remote CI or release approval. The user's workbench on 8881
+was preserved; the isolated scoring preview is on 8891.
 
 **Documentation and worked workflows, 11 October.** Start at
 [`examples/workflows.md`](../examples/workflows.md). The current GUI walkthrough

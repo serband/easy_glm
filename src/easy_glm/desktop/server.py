@@ -11,6 +11,7 @@ import json
 import pickle
 import secrets
 import shutil
+import tempfile
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -26,6 +27,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.background import BackgroundTask
 
 from easy_glm.desktop.binning import (
     apply_binning_setup,
@@ -43,6 +45,7 @@ from easy_glm.desktop.core_interactions import (
     replace_candidate,
 )
 from easy_glm.desktop.core_search import discover as discover_core_residuals
+from easy_glm.desktop.datasets import ScoringDatasets
 from easy_glm.desktop.exploration import ExplorationCache
 from easy_glm.desktop.exports import ExportRequest, export_attachment
 from easy_glm.desktop.feature_selection import (
@@ -96,6 +99,7 @@ from easy_glm.workflow.project import (
     ModelLineage,
     Project,
     pair_stage_fingerprint,
+    safe_filename,
 )
 from easy_glm.workflow.stack_types import ComponentRecipe
 from easy_glm.workflow.variables import (
@@ -160,6 +164,22 @@ class CoreSearchEdit(Revision):
     top: int = Field(default=20, ge=1, le=200)
 
 
+class ScoringDatasetFile(Revision):
+    name: str = Field(min_length=1, max_length=255)
+    path: str = Field(min_length=1)
+    replace_id: str | None = None
+
+
+class ScoringRequest(Revision):
+    dataset_id: str = Field(min_length=1)
+    model_id: str = Field(min_length=1)
+    scope: Literal["full", "through", "model", "catalogue"] = "full"
+    component_ids: list[str] = Field(default_factory=list)
+    through: str | None = None
+    exposure_col: str | None = None
+    column_prefix: str = Field(default="easyglm_", max_length=100)
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -175,6 +195,7 @@ def create_app(
     port: int,
     launch_id: str = "",
     restore_folder: Path | None = None,
+    scoring_frames: dict[str, pl.DataFrame] | None = None,
 ) -> FastAPI:
     """Serve one local, in-memory project and bundled assets."""
     jobs = FitJobs()
@@ -184,8 +205,21 @@ def create_app(
     exploration = ExplorationCache()
     screenings = ScreeningJobs()
     feature_selections = FeatureSelectionJobs()
+    scoring_datasets = ScoringDatasets()
+    for descriptor in project.scoring_sources:
+        if isinstance(descriptor, dict):
+            scoring_datasets.restore_descriptor(descriptor)
+    for dataset_name, scoring_frame in (scoring_frames or {}).items():
+        scoring_datasets.add_frame(dataset_name, scoring_frame)
     undo_steps = {}
     redo_steps = {}
+
+    def persist_scoring_sources() -> None:
+        """Only explicit local-file recipes survive an exported project."""
+        current.scoring_sources = [
+            item for item in scoring_datasets.descriptors() if item["source"] == "file"
+        ]
+
     catalogue_sources: dict[str, str] = {}
     # Schema collection avoids loading a master file just to restore the Variables
     # page after a project is reopened.  The pinned source/hash remains part of the
@@ -303,6 +337,7 @@ def create_app(
         feature_selections.close()
         reviews.close()
         jobs.close()
+        scoring_datasets.close()
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     current = deepcopy(project)
@@ -730,6 +765,11 @@ def create_app(
                             )
                             break
                     persist_plan_refs()
+                    # This job record is the immutable accepted checkpoint used
+                    # by new-data scoring.  Persist the just-issued logical
+                    # ownership reference with it; the worker's fit snapshot was
+                    # written before the asynchronous completion callback.
+                    job["project"] = deepcopy(current)
             jobs.remember_complete(name)
 
     jobs.on_complete = complete_fit
@@ -1383,6 +1423,7 @@ def create_app(
             upload = request.url.path in {
                 "/api/project/upload",
                 "/api/catalogues/upload",
+                "/api/datasets/upload",
             }
             required_type = "application/octet-stream" if upload else "application/json"
             if request.headers.get("content-type", "").split(";")[0] != required_type:
@@ -1437,6 +1478,94 @@ def create_app(
     @app.get("/api/session")
     def session() -> dict[str, str]:
         return {"token": token, "session_id": session_id}
+
+    @app.get("/api/datasets")
+    def datasets() -> dict[str, Any]:
+        with lock:
+            return {
+                "datasets": scoring_datasets.descriptors(),
+                "session_id": session_id,
+                "revision": revision,
+            }
+
+    @app.post("/api/datasets/file")
+    def scoring_file(edit: ScoringDatasetFile) -> dict[str, Any]:
+        with lock:
+            check_revision(edit)
+            try:
+                item = scoring_datasets.add_file(
+                    edit.name, edit.path, replace_id=edit.replace_id
+                )
+                persist_scoring_sources()
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            return {
+                "dataset": item.descriptor(),
+                "session_id": session_id,
+                "revision": revision,
+            }
+
+    @app.post("/api/datasets/upload")
+    async def scoring_upload(
+        request: Request,
+        filename: str = Query(min_length=1, max_length=255),
+        name: str = Query(min_length=1, max_length=255),
+        session_id: str = Query(min_length=1),
+        revision: int = Query(ge=0),
+        replace_id: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        edit = Revision(session_id=session_id, revision=revision)
+        with lock:
+            check_revision(edit)
+        if (length := request.headers.get("content-length", "")).isdigit() and int(
+            length
+        ) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "The upload exceeds 512 MiB.")
+        folder = new_input_folder()
+        source = folder / upload_basename(filename)
+        received = 0
+        try:
+            with source.open("xb") as destination:
+                async for chunk in request.stream():
+                    received += len(chunk)
+                    if received > MAX_UPLOAD_BYTES:
+                        raise HTTPException(413, "The upload exceeds 512 MiB.")
+                    await run_in_threadpool(destination.write, chunk)
+            if not received:
+                raise ValueError("Choose a non-empty scoring file.")
+            with lock:
+                check_revision(edit)
+                item = scoring_datasets.add_upload(
+                    name, filename, source, replace_id=replace_id
+                )
+                persist_scoring_sources()
+            shutil.rmtree(folder, ignore_errors=True)
+            return {
+                "dataset": item.descriptor(),
+                "session_id": session_id,
+                "revision": revision,
+            }
+        except HTTPException:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
+        except Exception as exc:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise HTTPException(422, f"Could not read scoring data: {exc}") from exc
+
+    @app.post("/api/datasets/{dataset_id}/remove")
+    def remove_scoring_dataset(dataset_id: str, edit: Revision) -> dict[str, Any]:
+        with lock:
+            check_revision(edit)
+            try:
+                scoring_datasets.remove(dataset_id)
+                persist_scoring_sources()
+            except ValueError as exc:
+                raise HTTPException(404, str(exc)) from exc
+            return {
+                "removed": dataset_id,
+                "session_id": session_id,
+                "revision": revision,
+            }
 
     @app.get("/api/variables")
     def variables() -> dict[str, Any]:
@@ -3391,10 +3520,51 @@ def create_app(
         saved, frame, fitted = stack_artifact(name)
         return json_safe(stack_result(saved, frame, fitted, result.get("warnings")))
 
+    def frozen_artifact(fit_id: str) -> tuple[str, Project, Any]:
+        """Read one immutable private fit without consulting the live plan/data."""
+        with lock, jobs.lock:
+            matches = [
+                (name, job)
+                for name, job in jobs.jobs.items()
+                if job.get("id") == fit_id
+                and job.get("status") == "complete"
+                and jobs._artifact_available(job)
+            ]
+        if len(matches) != 1:
+            raise ValueError("The selected saved fit is no longer available.")
+        name, job = matches[0]
+        source = Path(jobs.folder.name) / fit_id
+        with (source / "fit.pkl").open("rb") as handle:
+            fitted = pickle.load(handle)
+        if fitted.name != name:
+            raise ValueError("The fitted artifact does not match its saved identity.")
+        recorded = job.get("project")
+        snapshot = getattr(fitted, "project_snapshot", None)
+        # ``job.project`` is updated at publication with server-issued logical
+        # fit references.  It is otherwise the same fit-time copy as the worker
+        # snapshot and remains immutable when the live draft changes.
+        saved = (
+            deepcopy(recorded)
+            if isinstance(recorded, Project)
+            else (Project.from_dict(snapshot) if isinstance(snapshot, dict) else None)
+        )
+        if not isinstance(saved, Project):
+            raise ValueError("This older fit has no saved project snapshot.")
+        if getattr(fitted, "stack", None) is None:
+            from easy_glm.workflow.run import rate_model_for
+            from easy_glm.workflow.stack import stack_from_legacy
+
+            fitted = deepcopy(fitted)
+            fitted.rate_model = rate_model_for(saved, fitted)
+            fitted.config = saved.models.get(name, fitted.config)
+            if fitted.rate_model.metadata.link == "log":
+                fitted.stack = stack_from_legacy(saved, fitted)
+        return name, saved, fitted
+
     def stack_artifact(name: str) -> tuple[Project, pl.DataFrame, Any]:
         with lock:
             try:
-                source = jobs.artifact(current, name)
+                jobs.artifact(current, name)
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
             # The result has to be inspected against the project that fitted
@@ -3402,38 +3572,400 @@ def create_app(
             # stage or changed bands.  Reusing ``current`` here made a saved
             # checkpoint silently borrow those later settings.
             saved_raw = raw.clone()
-        with (source / "fit.pkl").open("rb") as handle:
-            fitted = pickle.load(handle)  # private artifact from our fit worker
-        if fitted.name != name:
+        with lock, jobs.lock:
+            fit_id = jobs.jobs[name]["id"]
+        try:
+            _frozen_name, saved, fitted = frozen_artifact(fit_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        if getattr(fitted, "stack", None) is None:
+            # A standalone non-log fit is scoreable through the new-data API as
+            # a RateModel, but cannot be represented as a multiplicative stack
+            # for the historical stack diagnostics/results view.
             raise HTTPException(
-                409, "The fitted artifact does not match the selected model."
+                404, "This fitted model is not a compatible component stack."
             )
-        snapshot = getattr(fitted, "project_snapshot", None)
-        if isinstance(snapshot, dict):
-            saved = Project.from_dict(snapshot)
-        else:
-            # Older artifacts predate snapshots.  Keep their established
-            # behaviour, but make the fallback explicit rather than claiming
-            # that it is an immutable historical reconstruction.
-            saved = deepcopy(current)
         from easy_glm.workflow.prep import prepare
 
         frame = prepare(saved, saved_raw)
-        if getattr(fitted, "stack", None) is None:
-            from easy_glm.workflow.run import rate_model_for
-            from easy_glm.workflow.stack import stack_from_legacy
-
-            # Expose a compatible single scorer for stack inspection without
-            # changing its fitted artifact or the ordinary single-model result.
-            fitted.rate_model = rate_model_for(saved, fitted)
-            fitted.config = saved.models.get(name, fitted.config)
-            try:
-                fitted.stack = stack_from_legacy(saved, fitted)
-            except ValueError as exc:
-                raise HTTPException(
-                    404, "This fitted model is not a compatible component stack."
-                ) from exc
         return saved, frame, fitted
+
+    def scoring_model(
+        model_id: str,
+    ) -> tuple[str, Project, Any, str, list[dict[str, Any]], str]:
+        """Resolve an opaque public ID using the fit's own saved plan snapshot."""
+        try:
+            fit_id, logical_id = model_id.split(":", 1)
+        except ValueError:
+            fit_id, logical_id = model_id, ""
+        name, saved, fitted = frozen_artifact(fit_id)
+        stack = getattr(fitted, "stack", None)
+        plan = saved.model_plan
+        if logical_id and plan is not None and plan.is_logical_models_plan:
+            logical = _logical_model(plan, logical_id)
+            references = [
+                item
+                for item in plan.fit_refs
+                if item.get("model_id") == logical_id
+                and item.get("model_name") == name
+                and item.get("fit_id") == fit_id
+            ]
+            if len(references) != 1:
+                raise ValueError(
+                    "This frozen logical model is not available from the saved fit."
+                )
+            through = references[0]["through_component_id"]
+            physical = list(logical.physical_components)
+            endpoint = next(
+                (
+                    index
+                    for index, item in enumerate(physical)
+                    if item.component_id == through
+                ),
+                None,
+            )
+            if endpoint is None:
+                raise ValueError(
+                    "The saved fit has an invalid logical ownership checkpoint."
+                )
+            return (
+                name,
+                saved,
+                fitted,
+                through,
+                [item.to_dict() for item in physical[: endpoint + 1]],
+                logical.name,
+            )
+        components = (
+            []
+            if stack is None
+            else [item.recipe.to_dict() for item in stack.diagnostic_components()]
+        )
+        return name, saved, fitted, "", components, name
+
+    @app.get("/api/scoring/models")
+    def scoring_models() -> dict[str, Any]:
+        with lock:
+            scope_labels = [
+                {
+                    "id": "full",
+                    "label": "Complete accepted score",
+                    "description": "All accepted components.",
+                },
+                {
+                    "id": "through",
+                    "label": "Accepted checkpoint",
+                    "description": "Score through a physical component.",
+                },
+                {
+                    "id": "model",
+                    "label": "One model component",
+                    "description": "Inspect one accepted component.",
+                },
+                {
+                    "id": "catalogue",
+                    "label": "Catalogue candidate",
+                    "description": "Native catalogue output for review only.",
+                },
+            ]
+            models: list[dict[str, Any]] = []
+            with jobs.lock:
+                fit_ids = [
+                    job["id"]
+                    for job in jobs.jobs.values()
+                    if jobs._artifact_available(job)
+                ]
+            for fit_id in fit_ids:
+                try:
+                    name, saved, fitted = frozen_artifact(fit_id)
+                except ValueError:
+                    continue
+                plan = saved.model_plan
+                choices: list[tuple[str, str, list[dict[str, Any]], str]] = []
+                if plan is not None and plan.is_logical_models_plan:
+                    for reference in plan.fit_refs:
+                        if (
+                            reference.get("model_name") != name
+                            or reference.get("fit_id") != fit_id
+                        ):
+                            continue
+                        try:
+                            _n, _s, _f, through, components, label = scoring_model(
+                                f"{fit_id}:{reference['model_id']}"
+                            )
+                        except ValueError:
+                            continue
+                        choices.append(
+                            (reference["model_id"], through, components, label)
+                        )
+                if not choices:
+                    choices = [
+                        (
+                            "",
+                            "",
+                            (
+                                []
+                                if getattr(fitted, "stack", None) is None
+                                else [
+                                    item.recipe.to_dict()
+                                    for item in fitted.stack.diagnostic_components()
+                                ]
+                            ),
+                            name,
+                        )
+                    ]
+                for logical_id, through, components, label in choices:
+                    public_scorer = getattr(fitted, "stack", None) or fitted.rate_model
+                    public_link = (
+                        public_scorer.link
+                        if getattr(fitted, "stack", None) is not None
+                        else fitted.rate_model.metadata.link
+                    )
+                    saved_config = saved.models.get(name)
+                    preferred_exposure = (
+                        saved_config.weight
+                        if saved_config is not None and public_link != "logit"
+                        else None
+                    )
+                    catalogue_components = [
+                        item
+                        for item in (
+                            fitted.stack.components
+                            if getattr(fitted, "stack", None) is not None
+                            else []
+                        )
+                        if item.recipe.component_id
+                        in {component["component_id"] for component in components}
+                        and item.recipe.kind == "catalogue"
+                    ]
+                    native_available = any(
+                        getattr(item.scorer, "native_scorer", None) is not None
+                        for item in catalogue_components
+                    )
+                    scopes = scope_labels[:3] if components else scope_labels[:1]
+                    if catalogue_components:
+                        scopes = [*scopes, scope_labels[3]]
+                    models.append(
+                        {
+                            "id": f"{fit_id}:{logical_id}" if logical_id else fit_id,
+                            "name": label,
+                            "fit_id": fit_id,
+                            "kind": "logical" if logical_id else "physical",
+                            "scopes": scopes,
+                            "through": through or None,
+                            "through_components": components,
+                            "components": components,
+                            "owned_component_ids": [
+                                item["component_id"] for item in components
+                            ],
+                            "root_component_id": (
+                                components[0]["component_id"] if components else None
+                            ),
+                            "external_offset_column": (
+                                public_scorer.offset_col
+                                if getattr(fitted, "stack", None) is not None
+                                else fitted.rate_model.metadata.offset_col
+                            ),
+                            "exposure_column": preferred_exposure,
+                            "allowed_exposure_columns": (
+                                [preferred_exposure] if preferred_exposure else []
+                            ),
+                            "probability": public_link == "logit",
+                            "output_basis": (
+                                "probability" if public_link == "logit" else "rate"
+                            ),
+                            "catalogue_refresh_available": native_available,
+                            "catalogue_refresh_unavailable": bool(catalogue_components)
+                            and not native_available,
+                        }
+                    )
+            return {"models": models, "session_id": session_id, "revision": revision}
+
+    def score_request(
+        edit: ScoringRequest,
+    ) -> tuple[Any, pl.DataFrame, Project, dict[str, Any]]:
+        """Pin all mutable choices before CPU work; callers never score a draft."""
+        with lock:
+            check_revision(edit)
+            name, saved, fitted, accepted_through, components, label = scoring_model(
+                edit.model_id
+            )
+            item, scoring_frame = scoring_datasets.get(edit.dataset_id)
+            if edit.scope == "catalogue":
+                known = {str(component["component_id"]) for component in components}
+                if len(edit.component_ids) != 1 or edit.component_ids[0] not in known:
+                    raise ValueError(
+                        "Choose one component owned by this accepted model."
+                    )
+                if not any(
+                    item.recipe.component_id == edit.component_ids[0]
+                    and item.recipe.kind == "catalogue"
+                    for item in (
+                        fitted.stack.components
+                        if getattr(fitted, "stack", None) is not None
+                        else []
+                    )
+                ):
+                    raise ValueError(
+                        "Catalogue scoring requires an owned catalogue component."
+                    )
+            elif edit.scope == "model":
+                known = {str(component["component_id"]) for component in components}
+                logical_choice = ":" in edit.model_id
+                if not edit.component_ids and logical_choice:
+                    edit.component_ids = [
+                        str(component["component_id"]) for component in components
+                    ]
+                if not edit.component_ids and not logical_choice:
+                    raise ValueError("Choose one physical component to inspect.")
+                ordered = [str(component["component_id"]) for component in components]
+                selected = [
+                    ordered.index(component_id)
+                    for component_id in edit.component_ids
+                    if component_id in known
+                ]
+                if (
+                    not selected
+                    or len(selected) != len(edit.component_ids)
+                    or selected != list(range(min(selected), max(selected) + 1))
+                    or (not logical_choice and len(selected) != 1)
+                ):
+                    raise ValueError("Choose accepted components owned by this model.")
+            elif edit.component_ids:
+                known = {str(component["component_id"]) for component in components}
+                if not set(edit.component_ids).issubset(known):
+                    raise ValueError(
+                        "A selected component is not owned by this accepted model."
+                    )
+            if edit.scope == "through":
+                if not edit.through:
+                    raise ValueError("Choose the accepted component to score through.")
+                if edit.through not in {
+                    str(component["component_id"]) for component in components
+                }:
+                    raise ValueError(
+                        "The selected checkpoint is not owned by this accepted model."
+                    )
+            elif edit.through is not None:
+                raise ValueError(
+                    "A checkpoint is only valid when scoring through a component."
+                )
+            scorer = getattr(fitted, "stack", None) or fitted.rate_model
+            if not edit.column_prefix.strip() or edit.column_prefix == "easyglm_":
+                suffix = (
+                    "full_chain"
+                    if edit.scope == "full"
+                    else safe_filename(label, "model")
+                    + ("_candidate" if edit.scope == "catalogue" else "")
+                )
+                edit.column_prefix = f"easyglm_{suffix}_"
+            saved_config = saved.models.get(name)
+            allowed_exposure = (
+                saved_config.weight
+                if saved_config is not None and getattr(scorer, "link", None) != "logit"
+                else None
+            )
+            if edit.exposure_col is not None and edit.exposure_col != allowed_exposure:
+                raise ValueError(
+                    "Expected amounts can only use this saved model's exposure column."
+                )
+            pinned = {
+                "dataset": item.descriptor(),
+                "model_name": name,
+                "fit_id": edit.model_id.split(":", 1)[0],
+                "accepted_through": accepted_through or None,
+                "preparation_id": hashlib.sha256(
+                    json.dumps(saved.to_dict()["data"], sort_keys=True).encode()
+                ).hexdigest(),
+                "scorer_id": scorer_fingerprint(scorer),
+            }
+        return scorer, scoring_frame, saved, pinned
+
+    def run_score(edit: ScoringRequest) -> tuple[Any, dict[str, Any]]:
+        from easy_glm.workflow.scoring import score_data
+
+        scorer, data, saved, pinned = score_request(edit)
+        result = score_data(
+            scorer,
+            data,
+            project=saved,
+            scope=edit.scope,
+            component_ids=tuple(edit.component_ids),
+            through=edit.through,
+            exposure_col=edit.exposure_col,
+            column_prefix=edit.column_prefix,
+        )
+        return result, pinned
+
+    @app.post("/api/scoring/check")
+    def scoring_check(edit: ScoringRequest) -> dict[str, Any]:
+        from easy_glm.workflow.scoring import validate_scoring_data
+
+        try:
+            scorer, data, saved, pinned = score_request(edit)
+            check = validate_scoring_data(
+                scorer,
+                data,
+                project=saved,
+                scope=edit.scope,
+                component_ids=tuple(edit.component_ids),
+                through=edit.through,
+                exposure_col=edit.exposure_col,
+                column_prefix=edit.column_prefix,
+            )
+            return {
+                **check,
+                "pinned": pinned,
+                "session_id": edit.session_id,
+                "revision": edit.revision,
+            }
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/scoring/preview")
+    def scoring_preview(edit: ScoringRequest) -> dict[str, Any]:
+        from easy_glm.desktop.fit_worker import json_safe
+
+        try:
+            result, pinned = run_score(edit)
+            result.metadata["pinned"] = pinned
+            return json_safe(
+                {
+                    "metadata": {**result.metadata, "pinned": pinned},
+                    "issues": result.issues,
+                    "columns": list(result.frame.columns),
+                    "rows": result.preview(20).to_dicts(),
+                    "total_rows": result.frame.height,
+                    "warnings": result.warnings,
+                    "session_id": edit.session_id,
+                    "revision": edit.revision,
+                }
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/scoring/export")
+    def scoring_export(
+        edit: ScoringRequest, format: Literal["csv", "parquet"] = "csv"
+    ) -> Response:
+        try:
+            result, pinned = run_score(edit)
+            result.metadata["pinned"] = pinned
+            suffix = ".csv" if format == "csv" else ".parquet"
+            folder = Path(tempfile.mkdtemp(prefix="easyglm_scoring_export_"))
+            filename = f"{safe_filename(pinned['dataset']['name'], 'scoring')}_{safe_filename(pinned['model_name'])}{suffix}"
+            path = folder / filename
+            result.export(path)
+            media = "text/csv" if format == "csv" else "application/vnd.apache.parquet"
+            return FileResponse(
+                path,
+                media_type=media,
+                filename=filename,
+                background=BackgroundTask(shutil.rmtree, folder, ignore_errors=True),
+                headers={"X-EasyGLM-Scoring-Metadata": json.dumps(result.metadata)},
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @app.get("/api/stack/{name}/diagnostics")
     def stack_diagnostic_view(

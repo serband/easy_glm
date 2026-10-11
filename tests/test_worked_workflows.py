@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -41,6 +42,50 @@ def _quiet_notebook_output(monkeypatch) -> None:
 def _small_catalogue_book(*_args, **_kwargs):
     """Keep CI fast while the page itself still calls the public loader literally."""
     return load_motor_catalogue_example(rows=600, seed=42)
+
+
+def test_new_data_scoring_page_preserves_accepted_rates_and_exposure(
+    tmp_path, monkeypatch
+):
+    """Execute the published scoring actions, including native-master candidates."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(easy_glm, "load_motor_catalogue_example", _small_catalogue_book)
+    _quiet_notebook_output(monkeypatch)
+
+    namespace = _run_page(ROOT / "examples" / "new_data_scoring.md")
+    complete = namespace["complete"]
+    renewals = namespace["renewals"]
+    assert "Claims" not in renewals.columns
+    assert "traintest" not in renewals.columns
+    unit = complete.predict(renewals)
+    np.testing.assert_allclose(
+        namespace["renewal_rates"].frame["renewal_prediction"].to_numpy(), unit
+    )
+    np.testing.assert_allclose(
+        namespace["renewal_counts"].frame["renewal_expected"].to_numpy(),
+        unit * renewals["Exposure"].to_numpy(),
+    )
+    accepted = namespace["vehicle_rates"].frame
+    assert accepted.height == namespace["vehicles"].height
+    assert accepted["vehicle_multiplier"].min() >= 0.85
+    assert accepted["vehicle_multiplier"].max() <= 1.15
+    assert accepted["VehicleCode"].dtype == pl.String
+    assert accepted.filter(pl.col("VehicleCode") == "0061").height == 1
+    candidate = namespace["vehicle_candidate"].frame
+    assert candidate["VehicleCode"].to_list() == ["NEW-001", "NEW-002"]
+    assert np.isfinite(candidate["vehicle_candidate_multiplier"].to_numpy()).all()
+    approved = pl.read_parquet(tmp_path / "scoring_output/approved_renewals.parquet")
+    np.testing.assert_allclose(
+        approved["approved_expected"].to_numpy(),
+        namespace["renewal_counts"].frame["renewal_expected"].to_numpy(),
+    )
+    metadata = json.loads(
+        (tmp_path / "scoring_output/vehicle_rates.csv.metadata.json").read_text()
+    )
+    assert metadata["scope"] == "model"
+    assert metadata["scorer_fingerprint"]
+    assert metadata["dataset_digest"]
+    assert metadata["saved_model_name"] == complete.name
 
 
 def test_stacked_models_page_runs_literal_chain_and_scores_unseen_catalogue_key(

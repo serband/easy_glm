@@ -376,7 +376,17 @@ def _fit_catalogue(
     table = table.join(support, on=key, how="left").with_columns(
         pl.col("train_rows").fill_null(0)
     )
-    lookup = LookupScorer(key, table, recipe.factors, settings.get("fallback"))
+    # Keep the native teacher separately from the deployed lookup.  Amendments
+    # only ever touch the latter; scoring a new complete master needs the
+    # original raw-feature CatBoost model and must not reverse-engineer it from
+    # amended keys.
+    lookup = LookupScorer(
+        key,
+        table,
+        recipe.factors,
+        settings.get("fallback"),
+        native_scorer=scorer,
+    )
     evidence.update(
         {
             "catalogue_rows": table.height,

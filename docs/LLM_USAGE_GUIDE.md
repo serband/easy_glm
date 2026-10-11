@@ -391,6 +391,36 @@ table only after inspecting support and before/after A/E; preserve the preview
 and the reason for the change. Smoothing, capping and rounding are pricing
 decisions, not automatic repair tools.
 
+## Score additional datasets
+
+Use a frozen `PricingModel` to score new data. No target or training split is
+needed. `score` retains the input rows and columns, applies the saved column
+transformations, and skips training filters and split creation.
+
+```python
+result = approved.score(renewals, exposure_col="Exposure", column_prefix="renewal_")
+result.preview()
+result.export("renewal_scores.parquet")
+```
+
+Omit `exposure_col` for unit predictions. `scope="through", model="Vehicle"`
+scores cumulatively through Vehicle. `scope="model", model="Vehicle"` returns
+the accepted vehicle contribution only. A named GLM in a logical workbench plan
+includes its accepted owned interaction tables; legacy flat components stay
+separate. `scope="catalogue", model="Vehicle"` scores a refreshed master with
+its retained native fit as a candidate, excluding accepted lookup amendments.
+Older lookup-only bundles cannot produce native candidates.
+
+In the GUI, add files under **Project & data → Data → Additional scoring
+datasets**, then open **Score on new data**. Choose the saved version and scope,
+check inputs, preview and download the scored file with its details JSON.
+`launch(data=experience, scoring_data={"Vehicles": vehicles})` registers a
+Python frame separately from the modelling source. Local-file references can
+persist in the project; uploaded files and Python frames are session-only.
+
+The [complete scoring example](../examples/new_data_scoring.md) builds and
+scores vehicle, occupation and postcode files. These controls are unreleased.
+
 ## Export: workflow versus scorer
 
 Choose the export based on what must be reproduced.

@@ -24,6 +24,7 @@ def main() -> None:
     parser.add_argument("--restore-session", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--launch-id", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--scoring-data", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.project and args.demo:
         parser.error("choose --project or --demo, not both")
@@ -64,6 +65,17 @@ def main() -> None:
         }
     else:
         project, raw = Project(name="Untitled project"), pl.DataFrame()
+    scoring_frames: dict[str, pl.DataFrame] = {}
+    if args.scoring_data:
+        try:
+            sources = __import__("json").loads(args.scoring_data.read_text())
+            if not isinstance(sources, dict):
+                raise ValueError("invalid scoring source manifest")
+            scoring_frames = {
+                str(name): pl.read_parquet(path) for name, path in sources.items()
+            }
+        except Exception as exc:
+            parser.error(f"Could not load scoring data: {exc}")
     print(f"EasyGLM workbench: http://127.0.0.1:{args.port}", flush=True)
     uvicorn.run(
         create_app(
@@ -72,6 +84,7 @@ def main() -> None:
             port=args.port,
             launch_id=args.launch_id,
             restore_folder=args.restore_session,
+            scoring_frames=scoring_frames,
         ),
         host="127.0.0.1",
         port=args.port,

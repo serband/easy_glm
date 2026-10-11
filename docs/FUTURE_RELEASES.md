@@ -10,7 +10,7 @@ mean a feature has been built or assigned a release version.
 - Searchable, alphabetically sorted variable lists for Explore, fitted A/E
   plots and rate-table plots.
 
-## Built, awaiting review: stack GLMs, CatBoost models and rating files
+## Built, awaiting release: stack GLMs, CatBoost models and rating files
 
 Implemented in Python and the workbench, with software, statistical and actuarial checks completed. See [the worked example](../examples/stacked_models.md) and [the agreed design](plans/STACKED_MODELS.md). Not yet released.
 
@@ -63,6 +63,11 @@ Implemented in Python and the workbench, with software, statistical and actuaria
   show the selected settings or unchanged preceding model in Results.
 - Test both GLM → CatBoost and CatBoost → GLM, full-stack validation, lookup
   coverage, save/reload and export parity.
+- Register additional scoring datasets separately from the modelling source.
+  Score accepted model contributions, cumulative checkpoints or the full fitted
+  version; export CSV/Parquet with score details. Score refreshed catalogue
+  masters with retained native fits as separate candidates. See
+  [the scoring example](../examples/new_data_scoring.md).
 
 This replaces the earlier staged-recipe and specialist-CatBoost proposals.
 Jointly fitting groups of interactions is no longer the proposed next step:

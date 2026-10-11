@@ -12,6 +12,8 @@
     import FeatureSelection from './FeatureSelection.svelte';
     import SplitSettings from './SplitSettings.svelte';
     import BinningSettings from './BinningSettings.svelte';
+    import AdditionalDatasets from './AdditionalDatasets.svelte';
+    import ScoreNewData from './ScoreNewData.svelte';
     import {
         canonicalPlanPayload,
         isLogicalPlan,
@@ -72,9 +74,11 @@
         compare: 'Compare',
         tables: 'Rate tables',
         export: 'Export',
+        scoring: 'Score on new data',
     };
     let projectInfo = null,
-        projectError = '';
+        projectError = '',
+        scoringDatasets = [];
     let planState = null,
         planStageId = '',
         planVariablesDirty = false,
@@ -422,6 +426,7 @@
                 projectError = e.message;
             }
         }
+        if (next === 'project' || next === 'scoring') await refreshScoringDatasets();
         return true;
     }
     function confirmDiscardStageDraft() {
@@ -630,6 +635,7 @@
             return {
                 blob: await response.blob(),
                 filename: encoded ? decodeURIComponent(encoded) : plain || 'easyglm-export',
+                scoringMetadata: response.headers.get('x-easyglm-scoring-metadata'),
             };
         }
         return data;
@@ -688,6 +694,35 @@
         const data = await response.json();
         if (!response.ok) throw responseError(data, 'Could not read catalogue.');
         return data;
+    }
+    async function uploadScoringDataset(file, body) {
+        if (differentProject) throw new Error('Reconnect to the current project before adding a scoring dataset.');
+        if (!token) await bootstrap();
+        const query = new URLSearchParams({
+            session_id: body.session_id,
+            revision: body.revision,
+            name: body.name,
+            filename: file.name,
+            ...(body.replace_id ? { replace_id: body.replace_id } : {}),
+        });
+        const response = await fetch('/api/datasets/upload?' + query, {
+            method: 'POST', cache: 'no-store', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/octet-stream', 'X-EasyGLM-Token': token }, body: file,
+        });
+        const data = await response.json();
+        if (!response.ok) throw responseError(data, 'Could not add scoring dataset.');
+        return data;
+    }
+    async function refreshScoringDatasets() {
+        if (!state?.columns?.length) { scoringDatasets = []; return; }
+        try {
+            const response = await api('datasets');
+            scoringDatasets = response.datasets || [];
+        } catch (e) {
+            // Older local servers do not have this optional workbench feature yet.
+            scoringDatasets = [];
+            if (view === 'scoring') error = e.message;
+        }
     }
     function projectName(name) {
         return name === 'French motor · Svelte review'
@@ -1718,6 +1753,15 @@
                             onOpened={projectOpened}
                             onReconnect={reconnectForOpen}
                         />
+                        {#if state?.columns.length}
+                            <AdditionalDatasets
+                                {api}
+                                upload={uploadScoringDataset}
+                                {state}
+                                datasets={scoringDatasets}
+                                onChanged={(next) => (scoringDatasets = next)}
+                            />
+                        {/if}
                     </section>
                 {/if}
                 {#if state?.columns.length}
@@ -1967,6 +2011,9 @@
                         requestedModel={requestedPlanModel}
                         onRequestedModelConsumed={() => (requestedPlanModel = '')}
                     />{/key}{/if}
+            {#if state && view === 'scoring'}
+                <ScoreNewData {api} {state} datasets={scoringDatasets} {saveDownload} />
+            {/if}
         </main>
     </div>
 </div>

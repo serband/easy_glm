@@ -17,6 +17,7 @@ the browser.
 | Set up shared roles and different variables for each GUI model | [Workbench walkthrough](workbench_walkthrough.md) |
 | Build vehicle, occupation and postcode files after a GLM and its interactions | [Stacking models and building rating files](stacked_models.md) |
 | Score every entry in a catalogue, including codes with no training rows | [Full-file scoring and exports](stacked_models.md#export-reopen-and-score-an-unseen-catalogue-code) |
+| Score a renewal extract, an individual rating file or a refreshed master | [Score new data and export rating files](new_data_scoring.md) |
 | Fit CatBoost alone, GLM then CatBoost, or CatBoost then GLM | [Other model workflows](model_variations.md) |
 | Model pure premium, paid severity or claim occurrence | [Model families](model_families.md) |
 | Choose Optuna trials, a tuning-time limit or manual CatBoost settings | [CatBoost fitting controls](model_variations.md#standalone-catboost-with-a-trial-budget) |
