@@ -6,7 +6,7 @@
 
 | Purpose | Checkout and state |
 | --- | --- |
-| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/scoring-model-selection`, based on `e377a27`; scoring-screen correction alongside named models, GLM-owned interactions and accepted workflow exports |
+| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/scoring-model-selection`; scoring-screen correction alongside named models, GLM-owned interactions and accepted workflow exports. Its implementation revision is `33d8cd79d9cb35d5031d52a33940c93bdb37b2d6`; check `HEAD` for later documentation commits. |
 | User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
 | Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
 
@@ -19,6 +19,57 @@ and method per model. The previous selected-model builder is a historical
 baseline, not the current screen layout.
 
 The primary workspace carries an older copy of this handover and selected guidance, but its code does **not** contain the current stack. Read the [workflow map](../examples/workflows.md), `docs/plans/STACKED_MODELS.md`, `docs/LLM_USAGE_GUIDE.md`, and the source/tests **in the implementation checkout**; the primary workspace's documents may differ. `examples/pricing_walkthrough.md` covers the earlier released pricing flow. The updated usage guide separates released features from the current staged work. The locally available `v0.472` Git tag provides the release source for comparison (`git show v0.472:<path>` from the stack checkout); verify remote state separately when network access returns.
+
+## Resume here
+
+The latest completed work is the revised **Score on new data** screen. A modeller
+chooses the dataset first, then either the overall accepted stack or one named
+rating model; the page states the dataset, models and output before checking or
+exporting CSV/Parquet. The scoring implementation and bundled frontend assets are
+at revision `33d8cd79d9cb35d5031d52a33940c93bdb37b2d6`. Documentation commits may
+advance `HEAD`; the work remains local and unreleased.
+
+Start by confirming the checkout rather than relying on an environment that may
+point elsewhere:
+
+```bash
+cd /private/tmp/easyglm-model-variable-setup
+git status --short --branch
+git rev-parse HEAD
+```
+
+For a clean source environment, create an isolated virtual environment and
+install this checkout. Do not reuse or repair the old `.venv` by hand:
+
+```bash
+env_dir=$(mktemp -d /private/tmp/easyglm-handover-env.XXXXXX)
+python3 -m venv "$env_dir"
+"$env_dir/bin/python" -m pip install -e ".[dev]"
+"$env_dir/bin/python" -c "import easy_glm; print(easy_glm.__file__)"
+```
+
+The focused scoring checks are:
+
+```bash
+PYTHONPATH=src "$env_dir/bin/python" -m pytest -q \
+  tests/test_scoring_choices.py tests/test_desktop_scoring.py tests/test_scoring.py \
+  tests/test_worked_workflows.py
+```
+
+The review fixture is deliberately separate from any existing workbench session.
+It starts a small synthetic project at `http://127.0.0.1:8896`:
+
+```bash
+env EASYGLM_SCORING_PORT=8896 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+  PYTHONPATH=src "$env_dir/bin/python" \
+  frontend/tests/scoring_server.py
+```
+
+The previous correction was tested from source and an installed wheel, including
+the six browser cases and literal worked-example blocks. Those results are
+historical evidence below. Before any release, rerun the release checks from a
+fresh wheel, run the public examples against that wheel, verify remote/PyPI state,
+and obtain explicit release approval.
 
 ## What the package does
 
@@ -526,50 +577,40 @@ PYBLOCKS
 ```
 
 Do not skip display or export blocks. Inspect the exported full-catalogue keys and accepted multipliers, and run `examples/pricing_walkthrough.md` against the installed wheel as a regression scenario. The old reported counts are not a substitute for this fresh check.
-The 30 September iCloud incident left recovery bundles/patches/manifests at `/Users/serban/Documents/Projects/easy_glm/.internal/recovery-20260930` and `/private/tmp/easyglm-recovery-20260930`. Tracked stack files and Git history survived. The old stack worktree directory is no longer present. The visual-flow worktree was created from its surviving Git branch, with dependencies in a fresh isolated environment. Rebuild dependencies without deleting preserved source or unrelated work. Some old worktrees are prunable; no pruning is required for this handover. These handover edits were created after the recovery bundle and are not contained in it.
+The 30 September iCloud incident left recovery bundles/patches/manifests at `/Users/serban/Documents/Projects/easy_glm/.internal/recovery-20260930` and `/private/tmp/easyglm-recovery-20260930`. Tracked stack files and Git history survived. The old stack worktree directory is no longer present. The visual-flow worktree was created from its surviving Git branch, with dependencies in a fresh isolated environment. Rebuild dependencies without deleting preserved source or unrelated work. Some old worktrees are prunable; no pruning is required for this handover. Those earlier recovery bundles predate the current scoring correction.
 
 ## Transfer to another machine or provider
 
 This stack branch is unpushed. Check that all required changes are committed before creating a transfer bundle. The
 implementation checkout is a linked Git worktree: copying its directory or
 `.git` pointer alone will not transfer the repository. For local continuation,
-open `/private/tmp/easyglm-model-variable-setup` directly. For another machine, make a
-packet containing a Git bundle **and today's seven guidance files**. This is a
-local backup/transfer operation, not a commit, push or release:
+open `/private/tmp/easyglm-model-variable-setup` directly. For another machine or
+provider, transfer a Git bundle containing the committed branch and release tag.
+This is a local backup/transfer operation, not a commit, push or release:
 
 ```bash
 source_checkout=/private/tmp/easyglm-model-variable-setup
-packet=/Users/serban/Documents/Projects/easy_glm/.internal/handover-20261010
-mkdir -p "$packet/docs/plans"
-git -C "$source_checkout" bundle create "$packet/easyglm.bundle" refs/heads/codex/model-review-placement refs/tags/v0.472
+packet=/Users/serban/Documents/Projects/easy_glm/.internal/handover-20261011
+mkdir -p "$packet"
+expected_revision=$(git -C "$source_checkout" rev-parse HEAD)
+git -C "$source_checkout" bundle create "$packet/easyglm.bundle" \
+  refs/heads/codex/scoring-model-selection refs/tags/v0.472
 git -C "$source_checkout" bundle verify "$packet/easyglm.bundle"
-cp "$source_checkout/AGENTS.md" "$packet/AGENTS.md"
-cp "$source_checkout/docs/HANDOVER.md" "$packet/docs/HANDOVER.md"
-cp "$source_checkout/docs/MODEL_FLOW.md" "$packet/docs/MODEL_FLOW.md"
-cp "$source_checkout/docs/FUTURE_RELEASES.md" "$packet/docs/FUTURE_RELEASES.md"
-cp "$source_checkout/docs/PRICING_WORKFLOW_BUILD.md" "$packet/docs/PRICING_WORKFLOW_BUILD.md"
-cp "$source_checkout/docs/plans/STACKED_MODELS.md" "$packet/docs/plans/STACKED_MODELS.md"
-cp "$source_checkout/docs/plans/PROJECT_MODEL_WORKFLOW.md" "$packet/docs/plans/PROJECT_MODEL_WORKFLOW.md"
+git bundle list-heads "$packet/easyglm.bundle"
 ```
 
-Check that the bundle contains the current `codex/model-review-placement` commit
-(`git rev-parse codex/model-review-placement`) and the locally verified `v0.472` tag. Copy the packet to the other machine, clone the bundle into a
-**new** directory with the stack branch selected, then copy the seven guidance
-files into that clone and inspect `git status` before work. Keep the packet's
-directory structure; its docs are newer than the 30 September recovery bundle.
+Record `expected_revision`, then check the output of `git bundle list-heads`
+contains that revision on `codex/scoring-model-selection` and the locally
+verified `v0.472` tag. Copy the packet to the other machine, then clone the
+bundle into a **new** directory with the scoring branch selected and compare its
+`HEAD` with the recorded revision. The handover, workflow documents and source
+are committed in this branch; do not layer copied guidance files over the clone.
 For example, with transferred packet and destination paths chosen by the
 operator:
 
 ```bash
-git clone --branch codex/model-review-placement "$packet/easyglm.bundle" "$destination"
-cp "$packet/AGENTS.md" "$destination/AGENTS.md"
-cp "$packet/docs/HANDOVER.md" "$destination/docs/HANDOVER.md"
-cp "$packet/docs/MODEL_FLOW.md" "$destination/docs/MODEL_FLOW.md"
-cp "$packet/docs/FUTURE_RELEASES.md" "$destination/docs/FUTURE_RELEASES.md"
-cp "$packet/docs/PRICING_WORKFLOW_BUILD.md" "$destination/docs/PRICING_WORKFLOW_BUILD.md"
-mkdir -p "$destination/docs/plans"
-cp "$packet/docs/plans/STACKED_MODELS.md" "$destination/docs/plans/STACKED_MODELS.md"
-cp "$packet/docs/plans/PROJECT_MODEL_WORKFLOW.md" "$destination/docs/plans/PROJECT_MODEL_WORKFLOW.md"
+git clone --branch codex/scoring-model-selection "$packet/easyglm.bundle" "$destination"
+git -C "$destination" rev-parse HEAD
 git -C "$destination" status --short --branch
 ```
 
@@ -578,12 +619,11 @@ A bundle clone's `origin` points to that local bundle. Before checking live GitH
 state, run `git remote set-url origin https://github.com/serband/easy_glm.git`
 inside the clone and then `git fetch origin` (read-only);
 this does not authorize pushing, merging or release. Do not copy the raw
-worktree, broken environment links, primary checkout's
-unrelated files, private data, or `.git` pointer. Rebuild dependencies in fresh
-environments as above. The bundle contains committed source and history; the
-separately copied docs carry the current handover. If code changes after
-this snapshot without a commit, package those explicitly or commit them to a
-branch before relying on a Git bundle.
+worktree, broken environment links, primary checkout's unrelated files, private
+data, or `.git` pointer. Rebuild dependencies in fresh environments as above.
+The bundle contains committed source, history and handover documentation. If code
+changes after this snapshot without a commit, commit it to a branch before relying
+on a Git bundle.
 
 ## Working and release rules
 

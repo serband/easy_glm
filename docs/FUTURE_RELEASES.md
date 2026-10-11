@@ -64,9 +64,10 @@ Implemented in Python and the workbench, with software, statistical and actuaria
 - Test both GLM → CatBoost and CatBoost → GLM, full-stack validation, lookup
   coverage, save/reload and export parity.
 - Register additional scoring datasets separately from the modelling source.
-  Score accepted model contributions, cumulative checkpoints or the full fitted
-  version; export CSV/Parquet with score details. Score refreshed catalogue
-  masters with retained native fits as separate candidates. See
+  Score the overall accepted stack or one named rating model, with advanced
+  cumulative checkpoints available when needed; export CSV/Parquet with score
+  details. Score refreshed catalogue masters with retained native fits as
+  separate candidates. See
   [the scoring example](../examples/new_data_scoring.md).
 
 This replaces the earlier staged-recipe and specialist-CatBoost proposals.
