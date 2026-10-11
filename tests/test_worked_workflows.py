@@ -9,12 +9,12 @@ from pathlib import Path
 import numpy as np
 import plotly.graph_objects as go
 import polars as pl
+from desktop_onboarding_fixtures import example_frames
 
 import easy_glm
 from easy_glm.datasets import load_motor_catalogue_example
 from easy_glm.pricing.review import ReviewPreview
 from easy_glm.pricing.views import DisplayResult
-from tests.desktop_onboarding_fixtures import example_frames
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_FENCE = re.compile(r"(?ms)^```python[^\n]*\n(.*?)^```[ \t]*$")
