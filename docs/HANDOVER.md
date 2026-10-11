@@ -6,7 +6,7 @@
 
 | Purpose | Checkout and state |
 | --- | --- |
-| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/score-new-datasets`, based on `59ace19`; new-data scoring alongside named models, GLM-owned interactions and accepted workflow exports |
+| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/scoring-model-selection`, based on `e377a27`; scoring-screen correction alongside named models, GLM-owned interactions and accepted workflow exports |
 | User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
 | Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
 
@@ -150,8 +150,29 @@ report that this option is unavailable. Neither candidate scoring nor registerin
 a dataset changes an accepted model. See
 [`examples/new_data_scoring.md`](../examples/new_data_scoring.md).
 
-Independent software, adversarial, rendered design and pricing-actuary reviews
-passed. The full Python suite found one existing binomial/logit results-page
+The preceding implementation passed software and browser checks, but user
+acceptance reopened the scoring screen: its saved-version and scope controls
+did not clearly connect a dataset to the model producing its scores. The revised
+screen uses Overall prediction and One rating model, direct named model choices,
+and a visible dataset → models → output summary. Checkpoints remain advanced;
+native catalogue candidates remain separate. The new presentation metadata does
+not change saved scorers or scoring scopes. A root GLM's own score is now exported
+with a `prediction` suffix; later corrections retain `multiplier`. Prediction
+values are unchanged.
+
+Fresh correction checks: 34 focused Python tests passed from source and against
+an installed wheel. Six scoring browser cases passed against the wheel, including
+same-minute named-version selection, stale checks, checkpoint switching, missing
+inputs, candidate scoring and CSV/Parquet exports. Svelte check/build, Black,
+Ruff and mypy passed. All ten Python blocks in `examples/new_data_scoring.md` ran
+unchanged against the wheel; exported catalogue keys, metadata, reopened scores
+and exposure applied once were checked. Independent design, actuarial and
+adversarial reviews passed the revised flow; the designer also reviewed the
+rendered 797px screenshot. This is local review, not user acceptance or release
+approval. The full Python suite, Windows, GitHub CI and the 5M-row scale test were
+not rerun for this screen correction. Nothing was pushed or released.
+
+The original full Python suite found one existing binomial/logit results-page
 regression: 1,707 passed, one failed, one skipped and one deselected. That
 regression was repaired, and the affected model-plan and scoring checks passed
 on recheck. Final scoring, desktop and worked-workflow checks passed: 29 tests

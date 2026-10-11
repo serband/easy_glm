@@ -412,8 +412,13 @@ its retained native fit as a candidate, excluding accepted lookup amendments.
 Older lookup-only bundles cannot produce native candidates.
 
 In the GUI, add files under **Project & data → Data → Additional scoring
-datasets**, then open **Score on new data**. Choose the saved version and scope,
-check inputs, preview and download the scored file with its details JSON.
+datasets**, then open **Score on new data**. Choose the dataset, then **Overall
+prediction** for the combined pricing model or **One rating model** for an
+individual vehicle, occupation or postcode multiplier. The summary names the
+dataset, models and output; required columns are shown before checking values
+and keys. Earlier combined scores are under **Advanced cumulative checkpoints**.
+Native refreshed-master candidates are separate from the selected accepted
+lookup. Preview and download the scored file with its details JSON.
 `launch(data=experience, scoring_data={"Vehicles": vehicles})` registers a
 Python frame separately from the modelling source. Local-file references can
 persist in the project; uploaded files and Python frames are session-only.

@@ -556,6 +556,9 @@ def score_data(
         # A conditional root is part of its first correction's deployed level.
         value = np.ones(frame.height, dtype=float)
         index = scorer.components.index(targets[0])
+        root_model = (index == 0 and targets[0].recipe.kind in {"glm", "legacy"}) or (
+            index == 1 and isinstance(scorer.components[0].scorer, ConstantScorer)
+        )
         if index == 1 and isinstance(scorer.components[0].scorer, ConstantScorer):
             value *= np.exp(scorer.components[0].scorer.linear_predictor(working))
         dependencies = []
@@ -568,7 +571,9 @@ def score_data(
             working = artifact.scorer.enrich(working)
         for selected in targets:
             value *= np.exp(selected.scorer.linear_predictor(working))
-        label = "multiplier"
+        # The first selected model is the fitted rate/frequency itself.  Later
+        # selected models are corrections to an already fitted score.
+        label = "prediction" if root_model else "multiplier"
         values = value
     else:
         selected_scorer = (

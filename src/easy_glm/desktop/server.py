@@ -3645,6 +3645,8 @@ def create_app(
 
     @app.get("/api/scoring/models")
     def scoring_models() -> dict[str, Any]:
+        from easy_glm.desktop.scoring_choices import scoring_targets
+
         with lock:
             scope_labels = [
                 {
@@ -3669,6 +3671,7 @@ def create_app(
                 },
             ]
             models: list[dict[str, Any]] = []
+            targets: dict[str, dict[str, Any]] = {}
             with jobs.lock:
                 fit_ids = [
                     job["id"]
@@ -3779,7 +3782,14 @@ def create_app(
                             and not native_available,
                         }
                     )
-            return {"models": models, "session_id": session_id, "revision": revision}
+                    for target in scoring_targets(saved, fitted, models[-1]):
+                        targets.setdefault(target["id"], target)
+            return {
+                "models": models,
+                "targets": list(targets.values()),
+                "session_id": session_id,
+                "revision": revision,
+            }
 
     def score_request(
         edit: ScoringRequest,

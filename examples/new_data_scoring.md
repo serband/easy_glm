@@ -252,15 +252,18 @@ approved.score(
 1. Build and fit the models from the modelling dataset as usual.
 2. In **Project & data → Data**, use **Additional scoring datasets** to add a
    named CSV or Parquet file. It does not replace the modelling data or reset fits.
-3. Open **Score on new data**. Choose the dataset and the saved fitted version.
-4. Choose the complete version, the combined score through a model, or a model's
-   own accepted contribution. For a refreshed master, choose the native catalogue
-   candidate option separately.
-5. Select exposure only when you want expected amounts. Choose a score-column
-   prefix that identifies the output.
+3. Open **Score on new data** and choose the dataset.
+4. For renewals, choose **Overall prediction** and the pricing model whose listed
+   models you want to use. For a vehicle file, choose **One rating model** and
+   **Vehicle**. That returns the vehicle multiplier without the other models.
+5. Read the summary of the dataset, models and output. The screen shows the
+   required columns before you score. Use exposure when you want expected claims
+   or amounts. Earlier combined scores are under **Advanced cumulative
+   checkpoints**; a refreshed-master candidate is a separate option under its
+   rating model.
 6. Click **Check inputs**. Resolve missing factors, wrong types or uncovered keys.
 7. Preview the first 20 rows, then download CSV or Parquet and its score-details
-   JSON. Check that the displayed saved version and scope are the ones you want.
+   JSON. The preview repeats which dataset and model produced the scores.
 
 Uploaded files and Python frames belong to this running session. Local-file
 references can be saved with the project; reopening reports missing or changed
