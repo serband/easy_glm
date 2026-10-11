@@ -14,10 +14,14 @@ test('time role survives JSON and shows all-row chronological diagnostics and fa
     const roles = JSON.parse(await page.getByLabel('Variables JSON', { exact: true }).inputValue());
     expect(roles.time).toBe('Year');
     await button('Table').click();
+    await page
+        .getByRole('navigation', { name: 'Project setup steps' })
+        .getByRole('button', { name: /Variables/ })
+        .click();
     await page.getByLabel('Use DriverAge').check();
     await button('Continue to model details').click();
     await button('Continue to variable treatment').click();
-    await button('Save model setup').click();
+    await button('Save Main effects setup and open Fit').click();
     await button('Model').click();
     await button(/^Fit /).click();
     await expect(page.getByText('Fitted and kept as a saved version.')).toBeVisible({ timeout: 45000 });
@@ -47,6 +51,10 @@ test('time role survives JSON and shows all-row chronological diagnostics and fa
         page.getByRole('img', { name: 'DriverAge · A/E by period', exact: true }),
     ).toBeVisible();
     await button('Project & data').click();
+    await page
+        .getByRole('navigation', { name: 'Project setup steps' })
+        .getByRole('button', { name: /Data/ })
+        .click();
     await page.getByRole('radio', { name: 'Example dataset', exact: true }).check();
     for (const example of ['french_motor', 'swedish_motorcycle']) {
         await page
@@ -62,6 +70,10 @@ test('time role survives JSON and shows all-row chronological diagnostics and fa
         await expect(
             page.getByRole('heading', { name: 'Project & data', exact: true }),
         ).toBeVisible();
+        await page
+            .getByRole('navigation', { name: 'Project setup steps' })
+            .getByRole('button', { name: /Data/ })
+            .click();
         await expect(button('Load example')).toBeVisible();
         const session = await (await page.request.get('/api/session')).json();
         const headers = { 'X-EasyGLM-Token': session.token };

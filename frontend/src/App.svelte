@@ -489,7 +489,9 @@
         state?.project_id,
         state?.revision,
         draft,
-        jsonText,
+        // JSON text is an unapplied Project-editor draft. It is not part of an
+        // Explore scan's canonical setup or its cancellation identity.
+        view === 'project' ? jsonText : '',
     ]);
     $: filtered = state
         ? state.columns.filter(
@@ -979,8 +981,10 @@
                 split = randomSplitDraft();
             }
             const nextDraft = { ...draft, assignments, roles: grouped, split, binning };
-            if (!unchangedJson) preview = null;
-            draft = nextDraft;
+            if (!unchangedJson) {
+                preview = null;
+                draft = nextDraft;
+            }
             error = '';
             binningError = '';
             return true;
@@ -1138,7 +1142,10 @@
         }
     }
     function prepareScreening() {
-        return !busy && !differentProject && !binningError && (tab !== 'json' || parseRoles());
+        // The JSON editor is a local, unapplied draft. Explore must keep using the
+        // last valid shared setup rather than make a saved screening result depend
+        // on an unfinished edit left in that editor.
+        return !busy && !differentProject && !binningError;
     }
     async function removeScreenedPredictors(names, expectedContext) {
         const current = JSON.stringify([
@@ -1146,7 +1153,7 @@
             state?.project_id,
             state?.revision,
             draft,
-            jsonText,
+            view === 'project' ? jsonText : '',
         ]);
         if (busy || differentProject || current !== expectedContext)
             throw new Error('Settings changed. Check predictors again before removing them.');
@@ -1164,7 +1171,7 @@
             state?.project_id,
             state?.revision,
             draft,
-            jsonText,
+            view === 'project' ? jsonText : '',
         ]);
         if (busy || differentProject || binningError || current !== expectedContext)
             throw new Error('Settings changed. Run feature selection again before changing roles.');

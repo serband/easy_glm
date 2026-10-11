@@ -22,6 +22,8 @@
 - Fixed the Continue button when the next model already has variables set.
 - Made one-way selectors searchable and alphabetical.
 - Fixed rare binary bands and rounding for very small ranges.
+- Fixed screening after unfinished JSON edits and fitting after viewing
+  unchanged Variables JSON.
 
 ## 0.472 — 23 September 2026
 

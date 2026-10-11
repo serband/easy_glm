@@ -33,6 +33,8 @@ test('downloads applied artifacts and excludes unsaved adjustment previews', asy
     await saveLegacyGlm(page, `Imported legacy ${Date.now()}`);
     await page.reload();
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await page.getByRole('navigation', { name: 'Project setup steps' })
+        .getByRole('button', { name: /Shared columns/ }).click();
     await page.getByLabel('Training fraction', { exact: true }).fill('0.7');
     await button('Preview changes').click();
     await button('Apply changes').click();

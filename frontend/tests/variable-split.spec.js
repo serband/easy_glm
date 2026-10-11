@@ -47,14 +47,22 @@ test('explicit split maps table and JSON and reaches exploration and fit', async
     await expect(page.locator('.split-settings')).toHaveCount(0);
     await expect(page.getByRole('heading', { name: 'Fit models', exact: true })).toBeVisible();
     await button('Project & data').click();
+    await page
+        .getByRole('navigation', { name: 'Project setup steps' })
+        .getByRole('button', { name: /Variables/ })
+        .click();
     await page.getByLabel('Use DriverAge').check();
     await button('Continue to model details').click();
     await button('Continue to variable treatment').click();
-    await button('Save model setup').click();
+    await button('Save Main effects setup and open Fit').click();
     await button('Model').click();
     await page.getByRole('button', { name: /^Fit / }).click();
     await expect(page.getByText('Fitted and kept as a saved version.')).toBeVisible({ timeout: 45000 });
     await button('Project & data').click();
+    await page
+        .getByRole('navigation', { name: 'Project setup steps' })
+        .getByRole('button', { name: /Shared columns/ })
+        .click();
     await page.locator('.split-row-values').scrollIntoViewIfNeeded();
     await page.screenshot({
         path: testInfo.outputPath('variables-split.png'),

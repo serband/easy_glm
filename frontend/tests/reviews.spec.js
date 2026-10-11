@@ -25,6 +25,8 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     ]);
     await page.reload();
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await page.getByRole('navigation', { name: 'Project setup steps' })
+        .getByRole('button', { name: /Shared columns/ }).click();
     await page.getByLabel('Role for AnnualMileage', { exact: true }).selectOption('unassigned');
     await button('Preview changes').click();
     await button('Apply changes').click();
@@ -158,6 +160,8 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await expect(page.getByLabel('Include AnnualMileage', { exact: true })).toBeChecked();
     await expect(page.getByText('Fit needs updating', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await page.getByRole('navigation', { name: 'Project setup steps' })
+        .getByRole('button', { name: /Shared columns/ }).click();
     await expect(page.getByLabel('Role for AnnualMileage', { exact: true })).toHaveValue(
         'predictor',
     );

@@ -115,6 +115,12 @@ async function readProject() {
         await fetch(base + '/api/project', { headers: { 'X-EasyGLM-Token': session.token } })
     ).json();
 }
+async function openSharedColumns(page) {
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    const steps = page.getByRole('navigation', { name: 'Project setup steps' });
+    await steps.getByRole('button', { name: /Shared columns/ }).click();
+    await expect(page.getByRole('region', { name: 'Shared column assignments' })).toBeVisible();
+}
 
 test.beforeEach(start);
 test.afterEach(stop);
@@ -140,13 +146,13 @@ test('bare URL, refresh and new tabs use independent bootstrap without rotating 
     await second.close();
 });
 
-test('actual server restart reconnects plot while retaining names, types, roles and raw JSON draft', async ({
+test('actual server restart reconnects plot while retaining names, roles and raw JSON draft', async ({
     page,
 }) => {
     await page.goto('/?view=variables');
+    await openSharedColumns(page);
     await page.getByLabel('Name for DriverAge', { exact: true }).fill('DraftAge');
     await page.getByLabel('Name for DriverAge', { exact: true }).press('Tab');
-    await page.getByLabel('Type for DriverAge', { exact: true }).selectOption('categorical');
     await page.getByLabel('Role for VehicleAge', { exact: true }).selectOption('unassigned');
     await page.getByRole('button', { name: 'Variables JSON', exact: true }).click();
     const editor = page.getByLabel('Variables JSON', { exact: true });
@@ -159,13 +165,12 @@ test('actual server restart reconnects plot while retaining names, types, roles 
     await expect(
         page.getByRole('img', { name: 'One-way effects of Region', exact: true }),
     ).toBeVisible();
-    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await openSharedColumns(page);
     await page.getByRole('button', { name: 'Variables JSON', exact: true }).click();
     await expect(editor).toHaveValue(raw + '\n');
     await expect(page.getByRole('alert')).toHaveCount(0);
     await page.getByRole('button', { name: 'Table', exact: true }).click();
     await expect(page.getByLabel('Name for DriverAge', { exact: true })).toHaveValue('DraftAge');
-    await expect(page.getByLabel('Type for DriverAge', { exact: true })).toHaveValue('categorical');
     await expect(page.getByLabel('Role for VehicleAge', { exact: true })).toHaveValue('unassigned');
     await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
     await page.getByRole('button', { name: 'Apply changes', exact: true }).click();
@@ -177,6 +182,7 @@ test('restart clears a previously previewed Apply even when revision is again ze
     page,
 }) => {
     await page.goto('/?view=variables');
+    await openSharedColumns(page);
     await page.getByLabel('Role for Region', { exact: true }).selectOption('ignore');
     await page.getByRole('button', { name: 'Preview changes', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeVisible();
@@ -219,6 +225,7 @@ test('incomplete JSON survives reconnection and a changed project cannot receive
     page,
 }) => {
     await page.goto('/?view=variables');
+    await openSharedColumns(page);
     await page.getByRole('button', { name: 'Variables JSON', exact: true }).click();
     const editor = page.getByLabel('Variables JSON', { exact: true });
     await editor.fill('{unfinished');
@@ -229,7 +236,7 @@ test('incomplete JSON survives reconnection and a changed project cannot receive
     await expect(
         page.getByRole('img', { name: 'One-way effects of Region', exact: true }),
     ).toBeVisible();
-    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await openSharedColumns(page);
     await page.getByRole('button', { name: 'Variables JSON', exact: true }).click();
     await expect(editor).toHaveValue('{unfinished');
     await expect(page.getByRole('alert')).toHaveCount(0);
@@ -249,11 +256,11 @@ test('incomplete JSON survives reconnection and a changed project cannot receive
     await start();
     await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await page.getByLabel('Plot variable', { exact: true }).selectOption('DriverAge');
-    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await openSharedColumns(page);
     await expect(
         page.getByRole('alert').filter({ visible: true, hasText: 'different project' }).first(),
     ).toBeVisible();
-    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await openSharedColumns(page);
     await page.getByRole('button', { name: 'Variables JSON', exact: true }).click();
     await expect(editor).toHaveValue(kept);
     await expect(page.getByRole('button', { name: 'Preview changes', exact: true })).toBeDisabled();
@@ -261,5 +268,6 @@ test('incomplete JSON survives reconnection and a changed project cannot receive
     await page.unroute('**/api/variables');
     await page.getByRole('button', { name: 'Discard draft and reload', exact: true }).click();
     await expect(page.getByRole('alert')).toHaveCount(0);
+    await openSharedColumns(page);
     await expect(page.getByRole('button', { name: 'Preview changes', exact: true })).toBeEnabled();
 });

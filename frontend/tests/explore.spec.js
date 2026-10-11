@@ -436,5 +436,8 @@ test('missing training split links directly to Project & data', async ({ page })
     await expect(page.getByRole('alert')).toContainText('Split column');
     await page.getByRole('button', { name: 'Set up train / holdout', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Project & data', exact: true })).toBeVisible();
-    await expect(page.getByRole('region', { name: 'Model setup' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Model structure', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Single model', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Shared column assignments' })).toBeVisible();
+    await expect(page.getByLabel('Training fraction', { exact: true })).toBeVisible();
 });
