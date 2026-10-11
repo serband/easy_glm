@@ -1,13 +1,11 @@
 # Examples and workflows
 
-These walkthroughs show how to build and review models interactively: fit main
-effects, check what they miss, try an interaction, add a specialist model,
-amend rates and export the result. Each modelling action is shown explicitly.
+Start with [Building a pricing model](pricing_walkthrough.md): fit a small GLM,
+check A/E, add missing factors and interactions, amend rates and export to Excel.
+For the browser version, use the [Workbench walkthrough](workbench_walkthrough.md).
 
-**Start with [Building a pricing model](pricing_walkthrough.md)** for a GLM and
-two interaction tables on French motor data. Use the
-[Workbench walkthrough](workbench_walkthrough.md) for the same decisions in
-the browser.
+Use the guides below for other model orders, full vehicle, occupation and postcode
+files, and scoring new data.
 
 | What you want to do | Worked example |
 | --- | --- |
@@ -27,24 +25,19 @@ the browser.
 | Take a fitted GUI workflow into Python, or score without refitting | [Project and scorer exports](project_workflow.md#export-the-accepted-setup-and-the-fitted-scorer) |
 | Give an LLM the package's current conventions | [Usage guide](../docs/LLM_USAGE_GUIDE.md) |
 
-The French motor pricing walkthrough covers the published v0.472 interactive
-API. The current staged GUI, mixed-model API and workflow exports described in
-the other guides are unreleased. They have been checked against the current
-implementation; installing v0.472 does not add those features. See
-[release and implementation status](../docs/HANDOVER.md) before assuming a
-published version contains them.
+The pricing walkthrough uses the published v0.472 API. Staged models, numeric
+curves and the new workbench screens are [unreleased](../docs/HANDOVER.md).
 
 ## Which API should I use?
 
-| You are working on… | Use… |
+| What you want to do | Use |
 | --- | --- |
-| The next modelling decision, with charts and named fitted candidates | `PricingSession` and `PricingModel` |
-| A stored setup, workbench project JSON or generated fitting workflow | `Project`, then `prepare` and `run_model` for a named fitting recipe |
-| An approved set of fitted rates | A saved fitted model or Python scorer |
+| Build and review models one step at a time | `PricingSession` sets up the data; each fit returns a `PricingModel` to inspect, amend or build on. |
+| Run or edit the workbench's saved settings in Python | `Project` reads the setup; `prepare` prepares the data and `run_model` fits a named model. |
+| Apply fitted rates to data | Load the saved model or use its exported Python scorer. |
 
-`Project.from_dict` reads settings. It does not fit a model. A project recipe
-and its fitted scorer are different files: keep both if you want to continue
-modelling and retain the approved prices.
+Save both the project setup and fitted model if you want to return to the
+modelling work and keep the existing rates.
 
 ## Read the model chain
 
@@ -60,32 +53,19 @@ flowchart LR
     F --> G[Postcode file]
 ```
 
-The first two interaction tables belong to the GLM in the GUI. You add them
-after inspecting the fitted main effects; they are not separate model types
-in project planning. Each later fit uses the **complete preceding accepted
-score** as its offset. For example, occupation uses the GLM, both interaction
+In the workbench, add interaction tables inside the GLM after reviewing its
+main effects. Each later fit uses the combined prediction from everything
+before it as its offset. Occupation therefore corrects the GLM, both interaction
 tables and the reviewed vehicle file.
 
-A/E for each named checkpoint uses the original response and the combined
-prediction through that point. A vehicle multiplier by itself is a component
-rate, not the complete predicted frequency.
+A/E after Vehicle checks that combined prediction against actual claims.
+The Vehicle file alone contains multipliers to apply to the preceding score.
 
 ## How to work through the examples
 
-Run the Python blocks on a page in order in the same notebook or session.
-Inspect the displayed tables and plots before choosing the next change. The
-named candidates remain available; continuing from one does not overwrite the
-others. Commented alternatives show a choice you can try separately.
+Run a page's blocks in order in the same notebook or session. Inspect each fit
+before deciding what to change. Named models remain available for comparison,
+and commented blocks show alternatives you can try.
 
-The examples use training data for fitting, residual searches and tuning.
-`cv=True` evaluates held-back training folds. Holdout results are shown only
-in the explicit validation steps. An example's selected factors and rate caps
-demonstrate the controls; they are not recommendations for another portfolio.
-
-For GUI actions, use the current labels and order in the
-[Workbench walkthrough](workbench_walkthrough.md). It covers starting a new
-plan, revising an existing fit, adding a model and returning to diagnostics.
-
-For more detail on accepted model ownership and saved versions, see
-[Model flow](../docs/MODEL_FLOW.md). That reference supports the walkthroughs;
-you do not need to read it before fitting the first GLM.
+Use training data for model development and the explicit holdout steps for
+the final check. `cv=True` compares models on held-back training folds.

@@ -6,7 +6,7 @@
 
 | Purpose | Checkout and state |
 | --- | --- |
-| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/aglm-numeric-methods`; optional AGLM numeric curves on top of the reviewed scoring/model-stack work. Branch base is `1a99dadc09fdd3d8186f9f100445ceb1bf53bcf8`; inspect `HEAD` and `git status` for the latest implementation. |
+| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/actuarial-example-writing`; rewritten examples on top of the AGLM implementation at `a2362df52f8c19ce3212baeb1a492aa88a7b57ca`. Inspect `HEAD` and `git status` for the latest changes. |
 | User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
 | Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
 
@@ -21,6 +21,17 @@ baseline, not the current screen layout.
 The primary workspace carries an older copy of this handover and selected guidance, but its code does **not** contain the current stack. Read the [workflow map](../examples/workflows.md), `docs/plans/STACKED_MODELS.md`, `docs/LLM_USAGE_GUIDE.md`, and the source/tests **in the implementation checkout**; the primary workspace's documents may differ. `examples/pricing_walkthrough.md` covers the earlier released pricing flow. The updated usage guide separates released features from the current staged work. The locally available `v0.472` Git tag provides the release source for comparison (`git show v0.472:<path>` from the stack checkout); verify remote state separately when network access returns.
 
 ## Resume here
+
+The latest change rewrites the nine example guides for interactive pricing work:
+explain the modelling choice, show the call, then describe what to inspect.
+Optional AGLM basis and Project-setting snippets now live in the method reference.
+No model code changed. All 99 code fences were preserved, including the two moved
+snippets; local links and anchors were checked. The five worked-workflow tests
+passed using their small CI fixtures, and the revised eight-block numeric guide
+ran exactly as written against the installed wheel, including Excel export and
+prediction agreement after reopening. An independent actuarial readability
+review accepted the revised guides. Earlier implementation checks below describe
+the AGLM code, before this documentation-only pass.
 
 The current change adds **optional AGLM numeric curves**. The existing `step`,
 `linear` and `continuous` encodings keep their meaning and defaults. The new
@@ -644,11 +655,11 @@ This is a local backup/transfer operation, not a commit, push or release:
 
 ```bash
 source_checkout=/private/tmp/easyglm-model-variable-setup
-packet=/Users/serban/Documents/Projects/easy_glm/.internal/handover-aglm-20261011
+packet=/Users/serban/Documents/Projects/easy_glm/.internal/handover-examples-20261011
 mkdir -p "$packet"
 transfer_branch=$(git -C "$source_checkout" branch --show-current)
-# This snapshot includes the AGLM work, not only the earlier scoring branch.
-test "$transfer_branch" = codex/aglm-numeric-methods || exit 1
+# This branch includes the example rewrites and the AGLM implementation.
+test "$transfer_branch" = codex/actuarial-example-writing || exit 1
 expected_revision=$(git -C "$source_checkout" rev-parse HEAD)
 git -C "$source_checkout" bundle create "$packet/easyglm.bundle" \
   "refs/heads/$transfer_branch" refs/tags/v0.472
@@ -657,16 +668,16 @@ git bundle list-heads "$packet/easyglm.bundle"
 ```
 
 Record `expected_revision`, then check the output of `git bundle list-heads`
-contains that revision on `codex/aglm-numeric-methods` and the locally
+contains that revision on `codex/actuarial-example-writing` and the locally
 verified `v0.472` tag. Copy the packet to the other machine, then clone the
-bundle into a **new** directory with the AGLM branch selected and compare its
+bundle into a **new** directory with the examples branch selected and compare its
 `HEAD` with the recorded revision. The handover, workflow documents and source
 are committed in this branch; do not layer copied guidance files over the clone.
 For example, with transferred packet and destination paths chosen by the
 operator:
 
 ```bash
-git clone --branch codex/aglm-numeric-methods "$packet/easyglm.bundle" "$destination"
+git clone --branch codex/actuarial-example-writing "$packet/easyglm.bundle" "$destination"
 git -C "$destination" rev-parse HEAD
 git -C "$destination" status --short --branch
 ```

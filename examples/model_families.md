@@ -1,18 +1,16 @@
 # Choosing model families with real motorcycle experience
 
-This page uses the built-in Swedish motorcycle loader, which downloads once and
-then uses its local cache. It shows three distinct outcomes, each in a separate
-`PricingSession`: total claim cost per policy-year, claim severity conditional on
-a paid claim, and claim occurrence probability. Do not compare their A/E or
-deviance values as if they measured the same outcome. Fit and inspection below
-use training data first; holdout is requested explicitly afterwards. See
-[workflows.md](workflows.md) for the workflow hub.
+This page uses the built-in Swedish motorcycle data. It builds three different
+models from the same source: pure premium per policy-year, severity per paid
+claim, and the probability of at least one claim. They have different targets
+and populations, so their A/E and deviance figures are not competing measures.
+Each model is fitted on training rows first, then checked on holdout.
 
 ## Load and inspect the portfolio
 
-`ClaimAmount` is total payment, `ClaimNb` is claim count and `Exposure` is
-policy-years. Some rows have zero exposure, so remove them before modelling a
-policy-year outcome.
+`ClaimAmount` is total paid claims, `ClaimNb` is the claim count, and `Exposure`
+is policy-years. A per-policy-year model cannot use a row with zero exposure, so
+remove those rows first.
 
 ```python
 import polars as pl
@@ -26,11 +24,11 @@ positive_exposure.select("Exposure", "ClaimNb", "ClaimAmount").head()
 
 ## Tweedie pure premium
 
-Tweedie is appropriate for a non-negative aggregate cost with a mass at zero and
-a positive right tail. The target is total policy payment (`ClaimAmount`), and
-`Exposure` is the weight. `divide_target_by_weight=True` tells EasyGLM to fit a
-per-policy-year response, while expected values convert back to total payment.
-`ClaimNb` is ignored so count is not used as a predictor of its own aggregate cost.
+Use Tweedie for total claim cost when many policies have no cost and the positive
+amounts are skewed. The target is total payment (`ClaimAmount`).
+`divide_target_by_weight=True` tells EasyGLM to fit cost per policy-year using
+`Exposure`, then turn predictions back into total expected cost for A/E. We mark
+`ClaimNb` as ignored so the claim count cannot sneak into the predictors.
 
 ```python
 pure_premium_session = PricingSession(
@@ -54,8 +52,9 @@ pure_premium.summary()
 pure_premium.ae("RiskClass").show()
 ```
 
-The training A/E uses total observed and expected payments. It assesses aggregate
-calibration; review deviance and factor support alongside it.
+The A/E shown here is total observed payment divided by total expected payment on
+the training rows. Look at the supporting exposure and deviance as well before
+changing a factor.
 
 ```python
 pure_premium.validate_holdout()
@@ -66,11 +65,10 @@ pure_premium.save("swedish_tweedie_pure_premium.easyglm")
 
 ## Gamma severity, conditional on a claim
 
-Severity uses a different population: rows with `ClaimNb > 0` and a positive
-payment. This is a conditional-paid-claim example, so claim-free and zero-payment
-claim rows are excluded. The target remains total payment, but `ClaimNb` is now
-the weight and the fitted unit is payment **per claim**. Exposure is irrelevant
-to this conditional outcome and is ignored. This is not a pure-premium model.
+Severity answers a different question: how large is payment once there has been
+a paid claim? Keep only rows with a positive claim count and payment. The target
+is still total payment, but `ClaimNb` is now the weight, making the fitted unit
+payment per claim. Exposure is not part of this conditional model.
 
 ```python
 severity_data = positive_exposure.filter(
@@ -96,8 +94,8 @@ severity.summary()
 severity.ae("RiskClass").show()
 ```
 
-Here A/E is total observed payment divided by total expected payment on claim
-records, with claim count as the weight. It does not include claim-free policies.
+Here A/E uses paid-claim rows only and weights them by claim count. It says
+nothing about the claim-free policies left out of the severity population.
 
 ```python
 severity.validate_holdout()
@@ -108,10 +106,10 @@ severity.save("swedish_gamma_severity.easyglm")
 
 ## Binomial claim occurrence
 
-For occurrence, create an explicit 0/1 target. There is no exposure multiplication:
-the fitted quantity is a probability per observed policy record. Ignore the count,
-aggregate amount and exposure so none of those outcome measures can leak into the
-predictors.
+For occurrence, turn the count into a 0/1 question: did this record have at least
+one claim? The model returns a probability for a policy record, so it does not use
+exposure multiplication. We explicitly ignore count, payment and exposure to keep
+outcome measures out of the predictor list.
 
 ```python
 occurrence_data = positive_exposure.with_columns(
@@ -135,10 +133,9 @@ occurrence.summary()
 occurrence.ae("RiskClass").show()
 ```
 
-For binomial work, inspect calibration and deviance as well as the A/E ratio.
-The expected values are expected numbers of records with at least one claim in
-the selected rows. They are not claim counts, payment amounts, or annualised
-frequency.
+For binomial work, read calibration and deviance alongside A/E. Expected values
+here mean expected records with at least one claim. They are not claim counts,
+payment amounts or annualised frequency.
 
 ```python
 occurrence.validate_holdout()

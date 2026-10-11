@@ -1,15 +1,18 @@
 # Numeric curves
 
-This example compares driver-age bands with an AGLM smooth curve on French motor
-data, changes the curve's grid, fits an interaction, amends a relativity and
-exports the result. The new curve choices are part of the
-[current unreleased implementation](../docs/HANDOVER.md).
+Fit driver age as bands, then as a continuous curve. We will compare the rates,
+choose the ages where the curve can change direction, add a driver-age/vehicle-age
+interaction, and amend and export the rates.
+
+These curve options are [unreleased](../docs/HANDOVER.md).
 
 ## Set up
 
-`PricingSession` holds the data, response, split and variable settings. Each fit
-gets a name and keeps its own settings. All the following blocks run in the same
-notebook or session.
+`PricingSession` keeps the data and modelling settings together. Here we use
+8,000 rows of French motor data, with claim counts in `ClaimNb` and exposure in
+`Exposure`. We reserve 30% for holdout and use the rest to build the model.
+
+Run the blocks in order in the same notebook or session.
 
 ```python
 from easy_glm import PricingSession, load_external_dataframe
@@ -28,8 +31,9 @@ work = PricingSession(
 
 ## Fit driver-age bands
 
-Numeric variables use step bands by default: each band has its own relativity.
-We supply the driver-age cuts and use six automatic vehicle-age bands.
+Start with a two-factor frequency model: driver age and vehicle age. The
+driver-age cuts below give ages 25–34 the same relativity, ages 35–49 another,
+and so on. Vehicle age gets six bands chosen from the training data.
 
 ```python
 work.bands("DrivAge", cuts=[25, 35, 50, 65])
@@ -39,20 +43,21 @@ banded.relativities("DrivAge").show()
 banded.ae("DrivAge").show()
 ```
 
-This example fixes the penalty at `alpha=0.001` to make the comparison quick.
-Leave out `alpha` to select it using training cross-validation.
+Look at the driver-age rates alongside A/E. A gap between actual and expected
+frequency may suggest that a band is too wide or that another factor is missing.
+
+`alpha` controls how strongly the fit pulls effects towards zero. We use
+`alpha=0.001` here; omit it to let training cross-validation choose the penalty.
 
 ## Try a smooth driver-age curve
 
-`work.numeric` selects an AGLM curve for a numeric variable. With `kind="aglm"`,
-the fit combines a straight-line effect with a smooth adjustment between grid
-points. Unlike step bands, the relativity is continuous at the grid points.
-Regularisation acts on those fitted columns; it is different from EasyGLM's
-existing band-slope `linear` method.
+A curve lets the driver-age rate vary within a band. With `kind="aglm"`, the
+log-relativity follows a continuous curve that can change slope at chosen age
+points. The fitted rates therefore have no jumps at those points.
 
-Automatic grid points use interpolated quantiles of the **training** values.
-`n_breaks=6` requests six points, including both endpoints; ties may reduce that
-number. Omitting it requests 100 points. It does not use the step-band default.
+Ask for six age points with `n_breaks=6`. EasyGLM spaces them by quantiles of the
+training ages, including the youngest and oldest. Repeated ages can give fewer
+points. The default is 100 points if you leave out `n_breaks`.
 
 ```python
 work.numeric("DrivAge", kind="aglm", n_breaks=6, extrapolation="flat").show()
@@ -62,16 +67,19 @@ automatic.ae("DrivAge").show()
 automatic.compare(banded)
 ```
 
-`flat` holds the curve level beyond its first and last points. The other option,
-`extend`, continues its fitted outer slopes and is the AGLM default. Choose the
-tail behaviour deliberately, especially when scoring ages outside the data range.
-`banded` is still available and unchanged.
+Compare the age curve and A/E with the banded fit. These charts and comparisons
+use training data. Look at where the curve closes a gap between actual and
+expected, and whether the fitted age pattern is suitable for your rates.
+
+`extrapolation="flat"` keeps the rate constant outside the first and last age
+points. `"extend"` continues the fitted trend at each end. This determines, for
+example, the rate for an age older than any age used to fit the curve.
 
 ## Set an explicit grid
 
-Here we replace the automatic grid with `[18, 25, 35, 50, 80]`. The first and last
-values are endpoints, so this is four intervals. Explicit points take precedence
-over the requested automatic count.
+To choose the ages yourself, pass `breaks`. Below, the curve can change slope
+at 25, 35 and 50, between endpoints 18 and 80. Five points give four intervals.
+These explicit ages replace the automatic points.
 
 ```python
 work.numeric(
@@ -86,35 +94,20 @@ fixed.ae("DrivAge").show()
 fixed.compare(automatic)
 ```
 
-These comparisons show in-sample training results. They are not independent
-validation. Once you have chosen candidates, request
-`fixed.validate_holdout(compare_with=[banded, automatic])` to inspect the reserved
-holdout. If those results inform more fitting choices, it is no longer untouched.
-
-The advanced `kind="aglm_l"` option uses a different bend basis, including the
-raw numeric value. To try it as a separate candidate:
-
-```python
-work.numeric(
-    "DrivAge", kind="aglm_l", breaks=[18, 25, 35, 50, 80], extrapolation="flat"
-)
-l_curve = fixed.refit("Alternative driver-age curve")
-l_curve.ae("DrivAge").show()
-l_curve.compare(fixed)
-```
+Look for an age pattern you can use in the rating structure, as well as a good
+fit. `fixed` keeps these ages and its fitted rates; the earlier models remain
+available for comparison.
 
 ## Add an interaction to the fixed curve
 
-The interaction starts from `fixed`, including its saved driver-age grid and
-complete fitted score. It does not use the later settings used for `l_curve`.
-CatBoost fits against that score as an offset, and its correction becomes a
-two-factor rating table.
+Suppose the remaining driver-age pattern varies with vehicle age. Fit the pair
+on top of `fixed`. CatBoost uses that model's predictions as its offset, then
+EasyGLM converts the correction into a two-factor rating table. The GLM rates
+stay fixed.
 
-The parent grids also define the interaction-table intervals. We deliberately
-used a small driver-age grid so the table can be inspected. Two 100-point grids
-would require over 10,000 cells and are refused before fitting. In the workbench,
-the interaction panel previews the cell count and lets you choose coarser table
-bands without changing the fitted GLM curve.
+The table uses our driver-age intervals and vehicle-age bands. A small grid
+makes the cells easier to review. In the workbench you can choose coarser bands
+for the interaction table while keeping the GLM curve.
 
 ```python
 interaction = fixed.fit_interaction(
@@ -125,13 +118,18 @@ interaction.ae("DrivAge", "VehAge").show()
 interaction.compare(fixed)
 ```
 
+Inspect the interaction rates and A/E by cell. Check the exposure behind a
+large correction before deciding to keep it. `interaction.compare(fixed)`
+shows how the combined model compares with the GLM alone.
+
 ## Amend a curve and inspect A/E
 
-An AGLM table's relativity is at the start of each finite interval. Changing that
-node changes the adjacent slopes to keep the curve continuous. With `extend`,
-the outer slopes stay fixed while their endpoint levels move.
+For a curve, an interval's table relativity is the rate at its starting age.
+The edit below sets the rate at age 25 to 0.95. It does not make every age from
+25 to 34 equal to 0.95: the adjoining sections change to keep the curve
+continuous.
 
-We try 0.95 at age 25. This is an example edit, not a recommended rate.
+Preview the proposed rates and their effect on A/E and expected claims:
 
 ```python
 review = interaction.edit_rates("Reviewed driver-age curve")
@@ -139,7 +137,8 @@ review.set_relativity("DrivAge", lower=25, upper=35, value=0.95)
 review.preview().show()
 ```
 
-Apply it to a new model, keeping the interaction table fixed:
+If you want to keep the edit, apply it to a new model. Here we keep the fitted
+interaction table as it is:
 
 ```python
 amended = review.apply(refit_later_interactions=False)
@@ -147,10 +146,15 @@ amended.ae("DrivAge").show()
 amended.compare(interaction)
 ```
 
+Compare `amended` with `interaction` to see the effect of the rate change.
+The original fit is still available. Once you have chosen the age treatment,
+request `amended.validate_holdout(compare_with=[banded, automatic, fixed, interaction])`
+to check the candidates on the reserved rows.
+
 ## Export and reopen
 
-The workbook includes the current curves, tail settings and interaction table.
-The saved model scores the same curve, including values beyond the grid.
+Export the reviewed curves and interaction table to Excel. Save the fitted
+model as well so you can reopen and score it without fitting again:
 
 ```python
 amended.to_excel("numeric_curves.xlsx")
@@ -164,33 +168,17 @@ reopened.ae("DrivAge").show()
 
 ## Workbench and stored recipes
 
-Under **Project & data**, select the modelling path, assign the shared target,
-weight and split, then select the GLM's variables. In **How this model uses it**,
-choose **AGLM smooth curve**. Choose automatic grid points or enter the full grid,
-then choose Extend or Flat. Apply the variables and fit on **Model**. Changing a
-grid requires a new fit; saved fitted versions retain their original curve.
-
-In a `Project` recipe, the equivalent variable setting is:
-
-```python
-from easy_glm.workflow import VariableDesign
-
-driver_age = VariableDesign(
-    kind="aglm", breaks=[18, 25, 35, 50, 80], extrapolation="extend"
-)
-```
-
-Put that definition under `project.design.variables["DrivAge"]` before fitting,
-or use the workbench's model-specific Variables JSON. Existing step `knots` and
-`n_bins` are separate controls; do not combine them with an AGLM curve.
+In the workbench's GLM variable settings, choose **AGLM smooth curve**, set the
+age points and tail behaviour, then apply and refit. For saved settings in
+Python, use the [Project guide](project_workflow.md) and
+[curve settings reference](../docs/plans/AGLM_NUMERIC_METHODS.md#example-settings).
 
 ## R comparison
 
-The basis and weighted penalised objective are checked against R `aglm` 0.4.1
-and `glmnet` 5.1 using explicit convergence settings. Default fitted outputs can
-differ: glmnet may stop earlier on the redundant AGLM columns. EasyGLM uses glum
-for fitting; it does not reproduce glmnet's default stopping point.
+For the fitting methods and checks against R `aglm`, see the
+[method reference](../docs/plans/AGLM_NUMERIC_METHODS.md). The defaults can give
+different fitted results from R.
 
-Missing values use an additional null indicator by default. With that indicator
-disabled, AGLM methods reject missing values. Infinite values and monotone
-constraints on these methods are rejected.
+Missing ages get a separate effect by default. If you disable that setting,
+these curve methods require complete age values. They do not support infinite
+values or monotone constraints.

@@ -1,18 +1,20 @@
 # Model variations from one pricing book
 
-Use this page when you want to compare different **orders** of model components.
-Each named result is a separate checkpoint. A later component fits the original
-response with the complete earlier score as its offset, so `GLM → CatBoost` and
-`CatBoost → GLM` are not the same allocation of effect.
+Use this page when the same data could support more than one modelling order.
+For example, you may want a conventional GLM first and a flexible correction
+afterwards, or want to see what happens when the flexible model comes first.
+Each fit below starts with the same claim outcome and training split. A model
+added later is fitted to what the earlier models have not explained, so
+`GLM → CatBoost` and `CatBoost → GLM` answer different questions.
 
-> **Scope.** Mixed stacks are current local work and are not in published v0.472.
-> See [workflows.md](workflows.md) for the workflow hub. The packaged motor data
-> is synthetic and the examples demonstrate API choices, not an approved tariff.
+> Mixed stacks are unreleased work; see [the current status](../docs/HANDOVER.md).
 
-All fitted and searched models below use only the supplied training rows. Holdout
-is not displayed unless you explicitly request it.
+Fitting and tuning use training rows. The last comparison asks for holdout
+results separately.
 
 ## Load one reproducible book
+
+This uses synthetic motor data so the results are repeatable.
 
 ```python
 import polars as pl
@@ -24,10 +26,10 @@ data, _, _, _ = load_motor_catalogue_example(rows=900, seed=73)
 
 ## Standalone CatBoost with a trial budget
 
-Set `tune=True` when you want Optuna to choose settings on training folds.
-`tuning_budget="trials"` means the cap is the number of candidate trials, rather
-than elapsed fitting time. The final selected tree is then fitted on all training
-rows; holdout rows are not used for either step.
+Start with CatBoost on its own. `tune=True` asks Optuna to try settings on
+training folds. `trials=2` keeps this example short; use a larger number for
+real work. Once it has chosen settings, EasyGLM fits the selected model on the
+training rows. Holdout rows are left alone.
 
 ```python
 tree_session = PricingSession(
@@ -54,9 +56,10 @@ tree_only.ae("DriverAge").show()
 
 ## GLM followed by a manual CatBoost correction
 
-This is useful when you want a stable, inspectable main-effects GLM and a
-separate flexible correction. `tune=False` is explicit: the supplied tree
-settings are fitted once, with no Optuna search or fold selection.
+Here the GLM carries driver age and region. The CatBoost model is then used for
+bonus-malus only. `tune=False` means: fit one model with the settings shown,
+without an Optuna search. This is useful when you have already agreed the tree
+settings or are trying a quick candidate.
 
 ```python
 glm_first_session = PricingSession(
@@ -88,15 +91,16 @@ glm_then_tree.summary()
 glm_then_tree.ae("BonusMalus").show()
 ```
 
-The CatBoost component is a correction to the GLM score. Its contribution is not
-a replacement for the GLM's driver-age or region rate tables.
+The CatBoost result is an extra multiplier on top of the GLM. The driver-age and
+region GLM tables remain the GLM tables; CatBoost has not refitted them.
 
 ## CatBoost followed by a GLM correction
 
-A time budget is the other explicit tuning policy. `tuning_budget="time"` counts
-CatBoost fitting time over the training folds. A candidate already running may
-finish after the limit; preparation, scoring and the final full-training fit do
-not count against it.
+This time CatBoost takes bonus-malus and region first, then a GLM is fitted for
+driver age on the remaining signal. `tuning_budget="time"` limits the time spent
+trying CatBoost settings on training folds. A trial already under way can finish;
+the limit does not include preparing the data, scoring candidates or the final
+fit on all training rows.
 
 ```python
 tree_first_session = PricingSession(
@@ -127,8 +131,9 @@ tree_then_glm.summary()
 tree_then_glm.ae("DriverAge").show()
 ```
 
-Compare only models built from the same response and split. `cv=True` compares
-them on shared training folds; request holdout separately when you are ready.
+Compare models only when they use the same response and split. The first call
+compares them on shared training folds. The second is the independent holdout
+check; use it after deciding which candidates are worth testing.
 
 ```python
 tree_then_glm.compare(tree_only, cv=True)
@@ -137,10 +142,11 @@ tree_then_glm.compare(tree_only, subset="holdout")
 
 ## Gaussian with a log link
 
-Mixed stacks support Gaussian models with a log link. This small example uses a
-strictly positive annualised claims proxy to demonstrate the response convention;
-it is **not** a claim-severity analysis. For severity work, use a defensible
-severity target and review its distribution and weights first.
+Gaussian models can be part of a stack when they use a log link. The log link is
+what lets the stages multiply together. This block creates a positive annualised
+claims proxy simply to show the mechanics. It is not a recommended severity
+model; choose a severity target, population and weights that match the question
+you are trying to answer.
 
 ```python
 gaussian_data = data.with_columns(
@@ -183,17 +189,16 @@ gaussian_complete.summary()
 gaussian_complete.ae("DriverAge").show()
 ```
 
-The interaction is fitted after the Gaussian main effects and the manual
-CatBoost is then fitted from that complete score. It therefore demonstrates the
-same ordered-offset rule under a supported Gaussian log response. Gamma and
-binomial GLMs need response definitions appropriate to their outcome; see
-[model_families.md](model_families.md) for real-data examples rather than choosing
-a family merely to make an API example run.
+The interaction is fitted after the Gaussian GLM, and CatBoost is fitted after
+both. The result is still a sequence of multipliers. For examples of a Gamma or
+binomial response defined from actual insurance outcomes, see
+[model_families.md](model_families.md).
 
 ## Revise a fitted table without overwriting it
 
-A rate review creates another named checkpoint. This one-row revision is only a
-mechanical example; inspect the preview before changing a real portfolio.
+Suppose the driver-age table needs a manual change. `edit_rates` starts a draft;
+the fitted model is not changed until `apply`. The preview shows the effect on
+the whole score, including the later tree.
 
 ```python
 main_rate_row = glm_then_tree.component("GLM main effects").show().table.row(
@@ -212,9 +217,10 @@ fixed_suffix = review.apply(refit_later_components=False)
 fixed_suffix.summary()
 ```
 
-`fixed_suffix` preserves the later tree as a historical suffix. To refit that
-suffix against the amended GLM instead, create a fresh review from the unamended
-checkpoint and choose `True` explicitly:
+`fixed_suffix` keeps the later tree as it was fitted. That may be appropriate
+when you are applying a final rate change and do not want to rebuild later files.
+If you want the tree to be fitted again after the GLM amendment, start again from
+the unamended model and use `True`:
 
 ```python
 refit_review = glm_then_tree.edit_rates("GLM and tree refitted")
@@ -229,4 +235,5 @@ refitted_suffix = refit_review.apply(refit_later_components=True)
 refitted_suffix.summary()
 ```
 
-These are different modelling decisions. Neither mutates `glm_then_tree`.
+Both results sit alongside `glm_then_tree`, so you can compare them before
+choosing one.

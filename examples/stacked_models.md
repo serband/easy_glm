@@ -1,25 +1,23 @@
 # Stacking models and building rating files
 
-This is an interactive pricing workflow. Run the blocks in order in one Python
-session and inspect each returned table or chart before making the next modelling
-decision. A fitted checkpoint is immutable: a later fit or a rate review creates
-a new named model.
+This example builds the sort of rating structure used when vehicle, occupation
+and postcode are maintained as separate files. We start with a small frequency
+GLM, add two interaction tables, then build a vehicle file, an occupation file
+and a postcode file. Run a block, look at its tables or A/E, then decide whether
+you want to carry that result into the next block.
 
-> **Scope.** The mixed-stack API in this page is current local work and is not in
-> the published v0.472 release. The API workflow hub is [workflows.md](workflows.md).
-> The data, catalogues and effects below are synthetic teaching material, not a
-> rating recommendation.
+> Stacked models are unreleased work; see [the current status](../docs/HANDOVER.md).
 
-A **component** is one fitted multiplier in the ordered score. A later component
-uses the complete prediction from all earlier accepted components as its offset.
-An **A/E** view compares actual with expected claims; it is shown on training rows
-unless you explicitly request holdout data.
+Each model after the first is a multiplier on the score built so far. For example,
+the occupation model is fitted after the GLM, the two interaction tables and the
+vehicle file; it learns what those have left unexplained. `ae` shows actual divided
+by expected claims. It uses training rows unless you ask for holdout.
 
 ## Load experience and the complete catalogues
 
-The packaged example has motor experience plus a complete vehicle, occupation and
-postcode catalogue. The training data intentionally omits some catalogue codes,
-so a later export can prove that the file still covers them.
+The package provides synthetic motor experience and complete vehicle, occupation
+and postcode catalogues. Some catalogue codes are deliberately absent from the
+experience, so we can check that the finished files still contain them.
 
 ```python
 import polars as pl
@@ -33,8 +31,8 @@ data, vehicles, occupations, postcodes = load_motor_catalogue_example(
 data.head()
 ```
 
-The identifier columns are strings. For example, vehicle code `"0061"` is a
-valid catalogue key even when it has no training rows.
+The identifiers are strings. `"0061"`, for example, is a valid vehicle code even
+when it has no claims history in this sample.
 
 ```python
 vehicles.head()
@@ -42,10 +40,10 @@ occupations.head()
 postcodes.head()
 ```
 
-To reproduce the same inputs in the workbench, write the source data and
-catalogues before fitting. Parquet preserves the string catalogue keys, including
-leading zeroes in `VehicleCode`. The catalogue keys are `VehicleCode`,
-`OccupationCode` and `Postcode`; keep those names when selecting each recipe.
+If you also want to run this in the workbench, save the experience and the three
+catalogues first. Parquet preserves string keys such as `"0061"`. The keys are
+`VehicleCode`, `OccupationCode` and `Postcode`; use those names when you choose
+the catalogue model.
 
 ```python
 data.write_parquet("motor_experience.parquet")
@@ -56,9 +54,10 @@ postcodes.write_parquet("postcode_catalogue.parquet")
 
 ## Set the response, split and GLM bands
 
-`PricingSession` records the response convention once. Here the response is claim
-count, exposure supplies policy-years, and the supplied split uses `1` for training
-and `0` for holdout. Searches, bands and fitting use training rows only.
+`PricingSession` is the working model session. It records the claim count,
+exposure, policy identifier and split once, so you do not repeat them for every
+fit. Here `traintest=1` means training and `0` means holdout. Searches, bands and
+fits use training rows.
 
 ```python
 work = PricingSession(
@@ -74,13 +73,14 @@ work.bands("DriverAge", cuts=[25, 35, 45, 55, 65, 75]).show()
 work.bands("BonusMalus", cuts=[60, 75, 90, 100, 125]).show()
 ```
 
-Those cuts are the deployed GLM and pair-table bands. Direct CatBoost components
-use raw values; a catalogue component stores one multiplier per catalogue key.
+The age and bonus-malus cuts are used by the GLM and interaction tables. CatBoost
+uses its numeric inputs as values rather than these bands. A catalogue model
+returns one rate for each code in its catalogue.
 
 ## Fit and inspect the main effects
 
-Start with a deliberately small main-effects GLM. `cv=3` chooses its penalty on
-three training folds; `n_alphas=8` keeps the example quick.
+Start with three understandable main effects. `cv=3` chooses the GLM penalty on
+three training folds; `n_alphas=8` keeps this example quick.
 
 ```python
 main = work.fit_glm(
@@ -94,8 +94,9 @@ main.relativities("DriverAge").show()
 main.ae("DriverAge").show()
 ```
 
-Search the main model's residuals before choosing an addition. Searches only rank
-candidates; they never add a factor or a table by themselves.
+Now inspect what the GLM has missed. The searches rank possible additions; they
+do not change the model. The A/E views let you see the pattern behind a result
+before you decide whether it is worth fitting.
 
 ```python
 main.find_missing_factors().show()
@@ -106,13 +107,10 @@ main.ae("DriverAge", "Region").show()
 
 ## Add two pair tables, one after the other
 
-A pair table is a separately fitted two-factor CatBoost correction converted to
-an inspectable table. In this Python API, `first_pair` and `second_pair` are named
-candidate checkpoints for review; there is no GUI-style **Keep** call. Continuing
-from a checkpoint with the next `fit_...` call is the explicit decision to proceed
-with it. `first_pair` offsets the main GLM. `second_pair` offsets the main GLM
-**and** the first table. The names below identify cumulative checkpoints, not just
-the last multiplier.
+A pair table is a two-factor CatBoost correction exported as a table you can
+inspect. The first table is fitted on top of the GLM. The second is fitted on top
+of the GLM and the first table. In the Python API, using a result as the parent of
+the next fit is how you take it forward; there is no separate Keep button.
 
 ```python
 first_pair = main.fit_interaction(
@@ -135,12 +133,11 @@ second_pair = first_pair.fit_interaction(
 second_pair.ae("BonusMalus", "Region").show()
 ```
 
-The second pair is a separate candidate table. It does not replace or jointly refit
-the first one. Choosing it as the parent of the vehicle fit is the explicit decision
-to continue from that checkpoint.
+The second pair adds to the first; it does not replace it or refit it. Before using
+both as the base for the vehicle file, compare the GLM-only and current A/E.
 
-Inspect the accepted components and the cumulative score before adding the vehicle
-file. Earlier named checkpoints remain unchanged.
+These calls show the separate tables and the combined score. `main` still gives
+the original GLM if you want to come back and compare it.
 
 ```python
 second_pair.component("Main effects").show()
@@ -153,10 +150,10 @@ main.compare(second_pair)
 
 ## Fit the complete vehicle catalogue
 
-A catalogue component learns from the listed attributes, then scores every key in
-the supplied catalogue. It therefore makes a complete vehicle rating file rather
-than a table limited to experienced vehicles. This example makes the tuning choice
-explicit: Optuna uses two candidate trials and three training folds.
+The vehicle model learns from make, model, power and body type in the experience.
+It then scores every `VehicleCode` in `vehicles`, including codes with no experience.
+That is how it produces a complete vehicle file. `tune=True` asks Optuna to choose
+settings on training folds; two trials are enough only to keep this example quick.
 
 ```python
 vehicle = second_pair.fit_catalogue(
@@ -176,14 +173,15 @@ vehicle.component("Vehicle").coverage(data)
 vehicle.ae("Power").show()
 ```
 
-The vehicle component has the whole main-and-pair scorer as its incoming offset.
-The lookup itself is only the additional vehicle multiplier.
+The vehicle rates are extra multipliers after the GLM and both pair tables. They
+are not complete policy prices on their own.
 
 ## Preview and accept a vehicle amendment
 
-A rate review is a draft. Cap and round the lookup, inspect the effect on the
-**complete** score, then publish a new named checkpoint. `vehicle` remains
-available unchanged for comparison.
+Suppose the vehicle rates are too wide for implementation. Start a review, cap
+and round the vehicle table, then use the preview to see what this does to the
+complete score. `apply` returns the reviewed result and leaves `vehicle` unchanged
+for comparison.
 
 ```python
 review = vehicle.edit_rates(name="Reviewed vehicle")
@@ -196,17 +194,15 @@ accepted_vehicle.compare(vehicle)
 accepted_vehicle.component("Vehicle").show()
 ```
 
-There are no later components at this point. If an earlier component already had
-a suffix, `refit_later_components=False` would preserve that suffix as historical
-rates; `True` would refit the affected suffix against the amended score. Choose
-one deliberately, because the two policies can give different results.
+There is nothing later to refit here. If you amend an earlier model in a longer
+chain, `False` keeps later files as previously fitted; `True` rebuilds them from
+the amended score. Those choices give different files.
 
 ## Add occupation and postcode files
 
-The occupation component is fitted from the reviewed, capped vehicle checkpoint,
-including both pair tables. It uses manual CatBoost settings: `tune=False` means
-one full training fit with the stated parameters, without Optuna or
-cross-validation.
+Next build occupation from the reviewed vehicle result. It is fitted after the
+GLM and both interaction tables too. `tune=False` means use the settings shown for
+one training fit rather than run Optuna.
 
 ```python
 occupation = accepted_vehicle.fit_catalogue(
@@ -226,8 +222,7 @@ occupation.component("Occupation").show()
 occupation.ae("OccupationGroup").show()
 ```
 
-Postcode is one more incremental catalogue. It offsets the complete accepted
-score through occupation.
+Then build postcode on top of everything through occupation.
 
 ```python
 complete = occupation.fit_catalogue(
@@ -250,9 +245,9 @@ complete.ae("DriverAge", "Region").show()
 
 ## Inspect the cumulative score, then request holdout
 
-A/E below is for the complete score: main effects, both pair tables, vehicle,
-occupation and postcode. The comparison with `cv=True` rebuilds the chosen
-recipes inside training folds. It is tuning evidence, not independent validation.
+The A/E below uses the full score: GLM, both pair tables, vehicle, occupation and
+postcode. `cv=True` refits the recipes in training folds to compare candidates;
+use it to choose what should go forward, not as the final independent check.
 
 ```python
 complete.summary()
@@ -261,8 +256,7 @@ occupation.ae("DriverAge").show()
 complete.compare(occupation, cv=True)
 ```
 
-Holdout is deliberately separate. Ask for it only after the modelling decision
-is ready to evaluate.
+When you have a candidate worth testing, request the untouched holdout rows.
 
 ```python
 complete.compare(occupation, subset="holdout")
@@ -271,8 +265,9 @@ complete.ae("OccupationGroup", subset="holdout").show()
 
 ## Export, reopen and score an unseen catalogue code
 
-The three lookup exports contain the full supplied catalogues. Saving preserves
-the complete accepted scorer. Reopening does not refit it.
+The three lookup exports contain every supplied code. Saving the model keeps the
+fitted GLM, interaction tables and catalogue files together. Loading it later
+does not fit anything again.
 
 ```python
 complete.export_lookup("Vehicle", "vehicle_factors.csv")
@@ -286,9 +281,8 @@ saved.predict(data.head())
 saved.predict(data.head(), expected=True)
 ```
 
-Vehicle code `"0061"` is in the supplied catalogue but absent from the training
-experience in this synthetic example. Full-model scoring still works because the
-vehicle lookup was built from the complete catalogue.
+`"0061"` is in the vehicle catalogue but absent from the training data. It still
+scores because the vehicle file was built for the complete catalogue.
 
 ```python
 vehicle_rates = saved.component("Vehicle").show().table
@@ -298,5 +292,5 @@ unseen_vehicle = data.head(1).with_columns(pl.lit("0061").alias("VehicleCode"))
 saved.predict(unseen_vehicle)
 ```
 
-The score above is an annual unit prediction; `expected=True` multiplies it by
-that row's exposure. Keep all three lookup keys when scoring the full model.
+The first prediction is a yearly unit rate. `expected=True` multiplies it by the
+row's exposure to give expected claims. A full score needs all three catalogue keys.

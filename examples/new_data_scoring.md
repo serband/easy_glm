@@ -1,30 +1,30 @@
 # Score new data and export rating files
 
-Use a fitted model on another dataset without refitting it. This example builds
-main effects, vehicle, occupation and postcode models from one experience
-dataset, then scores:
+Use this page when you have fitted a model and need outputs for another dataset.
+It builds main effects, vehicle, occupation and postcode models from one
+experience dataset, then produces:
 
 - a renewal extract with the complete fitted chain;
 - each full rating file with its own accepted model;
 - a new vehicle master with the saved CatBoost model, as a candidate file.
 
-The accepted rating files can contain manual rate amendments. Scoring a new
-master with CatBoost produces new candidate rates; it does not replace those
-amendments.
+There are two different vehicle-file jobs here. An accepted vehicle file returns
+the rates you have reviewed and signed off. A refreshed vehicle master is scored
+with the saved CatBoost fit to create a candidate file for review; it does not
+alter the accepted file.
 
 > These new scoring controls are unreleased branch work. They are not in PyPI
 > v0.472. See [the current status](../docs/HANDOVER.md).
 
-Run the blocks in order in one notebook or session. The data below is synthetic.
-For the fitting and review decisions in more detail, see
-[building rating files](stacked_models.md).
+Run the blocks in one notebook or Python session. The data is synthetic. For the
+reasoning behind the modelling steps, see [building rating files](stacked_models.md).
 
 ## Build a small fitted chain
 
-The loader returns experience and three complete catalogues. `PricingSession`
-holds the response, exposure and training split. Each `fit_catalogue` call learns
-from the experience, using the complete preceding model as its offset, then
-stores a rate for every catalogue key.
+The loader returns experience plus complete vehicle, occupation and postcode
+catalogues. `PricingSession` holds the response, exposure and split. Each
+`fit_catalogue` call learns from the experience, after the preceding models, and
+then produces a rate for every code in its catalogue.
 
 ```python
 import polars as pl  # Select columns and construct a small new vehicle file.
@@ -55,9 +55,9 @@ main = work.fit_glm(
 )
 ```
 
-Manual settings keep this scoring demonstration quick. For a modelling exercise,
-use [Optuna tuning](model_variations.md#standalone-catboost-with-a-trial-budget).
-Neither method fits on holdout rows.
+The manual tree settings make this page quick to run. When you are choosing a
+model, use [Optuna tuning](model_variations.md#standalone-catboost-with-a-trial-budget)
+instead. Both approaches fit on training rows, not holdout.
 
 ```python
 vehicle = main.fit_catalogue(
@@ -74,8 +74,8 @@ vehicle = main.fit_catalogue(
 vehicle.component("Vehicle").show()
 ```
 
-Preview a vehicle cap, then apply it as a new named model. Later fits use the
-amended vehicle rates.
+Cap the vehicle rates, inspect the preview, then carry the reviewed vehicle file
+into the occupation and postcode fits.
 
 ```python
 review = vehicle.edit_rates(name="Reviewed vehicle")
@@ -109,12 +109,11 @@ complete = occupation.fit_catalogue(
 
 ## Score a renewal extract with the complete chain
 
-`score` returns the input rows and columns with one added score column. It uses
-the saved fits and accepted rates. It does not fit, create a training split or
-apply the row filters used to select the training experience.
+`score` keeps the rows you provide and adds score columns. It uses the fitted
+models and reviewed rates; it does not refit anything or create a new split.
 
-This extract has the required rating factors and catalogue keys. It has no
-claims or training split.
+This renewal extract has the rating factors and catalogue keys needed by the full
+model. It does not need claims or a training/holdout flag.
 
 ```python
 renewals = data.head(20).drop("Claims", "traintest")
@@ -123,8 +122,8 @@ renewal_rates.preview()
 renewal_rates.export("scoring_output/renewal_rates.parquet")
 ```
 
-`renewal_prediction` is claim frequency. To produce expected claim counts, name
-the exposure column. This adds `renewal_expected` instead.
+`renewal_prediction` is a claim frequency per year. Pass the exposure column when
+you want expected claim counts; that produces `renewal_expected`.
 
 ```python
 renewal_counts = complete.score(
@@ -136,16 +135,15 @@ renewal_counts.preview()
 renewal_counts.export("scoring_output/renewal_expected.csv")
 ```
 
-Every Python export writes the data file and a neighbouring `.metadata.json`
-file recording what was scored. Keep both. CSV and Parquet retain the source
-row order; Parquet also retains the source column types.
+Each export writes the requested data file and a nearby `.metadata.json` file
+describing the score. Keep them together. CSV and Parquet keep row order; Parquet
+also retains column types.
 
 ## Score an individual rating file
 
-`scope="model"` returns the selected model's own contribution. For Vehicle,
-that is its accepted multiplier, including the cap above. It does not include
-main effects, occupation, postcode or exposure. A vehicle file therefore needs
-only its vehicle key; it does not need driver age or other catalogue keys.
+For a vehicle rating file, you want the vehicle multiplier only, including the
+reviewed cap. It does not need driver age, occupation or postcode, so the input
+can contain only `VehicleCode`. `scope="model"` asks for that one model's rate.
 
 ```python
 vehicle_rates = complete.score(
@@ -175,21 +173,15 @@ postcode_rates.export("scoring_output/postcode_rates.parquet")
 ```
 
 The added columns are `vehicle_multiplier`, `occupation_multiplier` and
-`postcode_multiplier`. Codes such as `"0061"` remain strings, including their
-leading zeroes. An unknown key blocks accepted-file scoring unless that saved
-lookup has an explicit fallback.
-
-For a GLM, its own contribution includes its base rate but excludes an external
-offset. In a workbench plan,
-selecting a named GLM also includes its accepted interaction tables. Older flat
-recipes expose their separately named components; no ownership is inferred.
+`postcode_multiplier`. Keep codes such as `"0061"` as strings so their leading
+zeroes survive. Accepted-file scoring stops on an unknown code unless the saved
+file defines a fallback.
 
 ## Inspect the combined score through an earlier model
 
-`scope="through"` includes all accepted components up to the selected model.
-Here it returns main effects and the reviewed vehicle file, before occupation
-and postcode. Unlike the vehicle multiplier alone, it needs driver age,
-bonus-malus, region and the vehicle key.
+Sometimes you want to see the combined rate after Vehicle but before Occupation
+and Postcode. That needs the GLM factors as well as `VehicleCode`.
+`scope="through"` asks for this point in the chain.
 
 ```python
 through_vehicle = complete.score(
@@ -204,10 +196,10 @@ through_vehicle.export("scoring_output/through_vehicle.parquet")
 
 ## Score a refreshed master as a candidate file
 
-Accepted lookup scoring returns the stored rates by key. To score new vehicle
-attributes or genuinely new codes, use `scope="catalogue"`. This uses the saved
-native CatBoost fit for Vehicle. Supply its key and the attributes it learned
-from; claims and the preceding GLM factors are not needed.
+A refreshed vehicle master needs a new candidate file, not the reviewed rates
+from the old lookup. `scope="catalogue"` calls the saved CatBoost vehicle model.
+Give it `VehicleCode` and the fields it learnt from; claims and GLM fields are
+not required.
 
 ```python
 new_vehicles = pl.DataFrame({
@@ -226,16 +218,15 @@ vehicle_candidate.preview()
 vehicle_candidate.export("scoring_output/new_vehicle_candidate.parquet")
 ```
 
-`vehicle_candidate_multiplier` contains the native fitted correction. It does
-not carry the manual vehicle cap. Review this file separately; scoring it does
-not replace the accepted file or change later models. A saved lookup from before
-native fits were retained can still score its accepted keys, but cannot produce
-this candidate file; refit that catalogue model to enable it.
+`vehicle_candidate_multiplier` is the CatBoost vehicle correction before the
+manual cap. Review it as a new candidate; creating it does not replace the
+accepted file or change later models. Older saved files can still return their
+accepted rates, but must be refitted before they can score a refreshed master.
 
 ## Reopen the fit without the training data
 
-Save the complete fitted bundle. Reopening it needs no training dataset to score
-new data, including a new native catalogue candidate.
+Save the complete fitted model when you need to score later without loading the
+training data.
 
 ```python
 complete.save("scoring_output/approved_model.easyglm")
@@ -249,25 +240,23 @@ approved.score(
 
 ## Use the workbench
 
-1. Build and fit the models from the modelling dataset as usual.
-2. In **Project & data → Data**, use **Additional scoring datasets** to add a
-   named CSV or Parquet file. It does not replace the modelling data or reset fits.
-3. Open **Score on new data** and choose the dataset.
-4. For renewals, choose **Overall prediction** and the pricing model whose listed
-   models you want to use. For a vehicle file, choose **One rating model** and
-   **Vehicle**. That returns the vehicle multiplier without the other models.
-5. Read the summary of the dataset, models and output. The screen shows the
-   required columns before you score. Use exposure when you want expected claims
-   or amounts. Earlier combined scores are under **Advanced cumulative
-   checkpoints**; a refreshed-master candidate is a separate option under its
-   rating model.
-6. Click **Check inputs**. Resolve missing factors, wrong types or uncovered keys.
-7. Preview the first 20 rows, then download CSV or Parquet and its score-details
-   JSON. The preview repeats which dataset and model produced the scores.
+1. Fit the model chain from the experience dataset.
+2. In **Project & data → Data**, add a named CSV or Parquet file under
+   **Additional scoring datasets**. It is separate from the modelling data.
+3. Open **Score on new data** and choose the dataset first, then the saved model.
+4. For renewals choose **Overall prediction**. For a vehicle file choose
+   **One rating model** then **Vehicle**; this returns only the vehicle multiplier.
+5. Read the required columns shown on screen. Select exposure if you need expected
+   claims or amounts. **Advanced cumulative checkpoints** gives a combined score
+   part-way through the chain. A refreshed-master candidate sits under its rating
+   model.
+6. Click **Check inputs**, fix any missing columns, types or keys, then preview
+   the first 20 rows.
+7. Download CSV or Parquet with its score-details JSON.
 
-Uploaded files and Python frames belong to this running session. Local-file
-references can be saved with the project; reopening reports missing or changed
-files. Replacing a scoring dataset changes that dataset only.
+Uploaded files and Python frames belong to the running session. Saved local-file
+references are checked when you reopen a project. Replacing one scoring dataset
+does not change the others or the fitted model.
 
 If you open the workbench from Python, pass the additional frames by name:
 
@@ -284,5 +273,4 @@ If you open the workbench from Python, pass the additional frames by name:
 # )
 ```
 
-The launcher snapshots those frames for the session. It does not send them into
-the modelling fit merely because they are available for scoring.
+The workbench keeps these frames available for scoring. It does not fit them.
