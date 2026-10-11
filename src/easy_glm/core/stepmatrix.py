@@ -10,8 +10,7 @@ for a null, which contributes zeros to every step column and carries its own
 ``4 * n`` bytes **regardless of the number of knots**.
 
 Every operation glum asks a design matrix for can be computed from the index
-with a cumulative sum, so nothing is ever expanded (see the spike report,
-``docs/spikes/g-scale/SPIKE_REPORT.md`` appendix B):
+with a cumulative sum, so nothing is ever expanded:
 
 ``X beta``
     ``c = [0, cumsum(beta), 0]``; the answer is ``c[b]`` — one gather.
@@ -29,11 +28,11 @@ sum along the bin axis).
 
 Two rules the rest of the package depends on
 --------------------------------------------
-* **float64 only.** The spike found that float32 designs stop converging past
-  1M rows under glum 3.4.1, return a float32 ``coef_``, and segfault tabmat
-  when handed an uncast float64 ``sample_weight``. The dtype argument exists
+* **float64 only.** Large float32 designs can fail to converge under glum 3.4.1,
+  return float32 coefficients, and segfault tabmat when handed an uncast
+  float64 ``sample_weight``. The dtype argument exists
   because tabmat's interface has one; ``DesignSpec.build`` never passes
-  anything but float64. See ``SPIKE_REPORT.md`` §4.2 before reconsidering.
+  anything but float64.
 * **StepMatrix blocks must come first** in a ``SplitMatrix``.
   ``SplitMatrix.sandwich`` only ever calls ``matrices[i]._cross_sandwich(
   matrices[j])`` for ``i < j``, and tabmat's own blocks raise ``TypeError`` on
@@ -381,8 +380,7 @@ def install_glum_shim() -> None:
     one-line ``isinstance(mat, tabmat.MatrixBase)`` pass-through in that
     function. If a future glum removes or renames the function this raises
     immediately rather than silently densifying a 5M-row design, and the
-    fallback is ``DesignSpec.build(..., sparse=False)``. The measured scale
-    behavior is recorded in ``docs/spikes/g-scale/SPIKE_REPORT.md``.
+    fallback is ``DesignSpec.build(..., sparse=False)``.
 
     Idempotent and safe to call on every fit.
     """

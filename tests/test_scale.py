@@ -1,7 +1,6 @@
-"""Piece G — the compact design matrix, and that it changes no number.
+"""Verify numerical equivalence and memory use of the compact design matrix.
 
-The whole point of piece G is that a 5M-row book fits in memory *without the
-answers moving*. So almost every test here is an equivalence test: the compact
+Most tests here compare the compact
 tabmat ``SplitMatrix`` against the dense float64 matrix it stands for, and a
 fit on one against a fit on the other.
 
@@ -774,7 +773,7 @@ def test_five_million_rows_fit_inside_three_gigabytes():
 
 
 # --------------------------------------------------------------------------
-# 8. everything piece A2 settled, on the compact path
+# 8. Two-stage fitting on the compact path
 # --------------------------------------------------------------------------
 def two_stage_spec(data: pl.DataFrame) -> DesignSpec:
     """Mains plus one interaction, small enough to fit four times in a test."""
@@ -793,10 +792,8 @@ def two_stage_spec(data: pl.DataFrame) -> DesignSpec:
 
 
 class TestTwoStageBehaviourOnTheCompactPath:
-    """Piece A2's final behaviour was settled against the dense matrix. Each of
-    its three load-bearing routes — an offset passed as an array, an
-    :class:`EasyGLM` bundle holding both stages, and the exported script — is
-    re-checked here with the fit forced through the ``SplitMatrix``."""
+    """Check array offsets, saved two-stage bundles and exported scripts with
+    fitting forced through the compact ``SplitMatrix``."""
 
     FIT_KW = {
         "family": "poisson",
@@ -1085,7 +1082,7 @@ class TestRateChangeWithWeightsOnTheCompactPath:
         )
 
         # the main tables and the base rate of the compact fit are unmoved by
-        # adding the interaction (piece A2's promise), on the compact path
+        # adding the interaction, on the compact path
         compact_mains_only = fit_glm(
             data, spec.main_effects_spec(), "ClaimNb", sparse=True, **self.FIT_KW
         )

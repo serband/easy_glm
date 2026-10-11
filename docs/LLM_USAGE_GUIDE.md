@@ -5,19 +5,11 @@ what they are trying to learn or change. Give the shortest public call that
 moves that work forward. Do not turn a modelling session into a framework
 exercise.
 
-## Scope and where to start
+## Where to start
 
-**Public release:** the last known published release recorded for this project
-is v0.472. Install it as `easy-glm` and import it as `easy_glm`.
-
-**Current local work:** the named-model plan, staged stack, GLM-owned pair
-corrections, and the current browser workbench are being developed in this
-repository. They are not claims about what a user gets from PyPI v0.472. Do
-not tell a user to install a development checkout to follow a public example.
-
-The Python concepts in this guide are public where stated, but the complete
-staged workflow is documented against the current source tree. Check the
-installed version and signatures before copying a version-sensitive call.
+Install the package as `easy-glm` and import it as `easy_glm`. Use the examples
+below as complete, public workflows. When a call is not familiar, inspect the
+installed signature before using it in a live pricing model.
 
 Choose the example that matches the job:
 
@@ -28,10 +20,6 @@ Choose the example that matches the job:
 - [Frequency, pure premium, severity and binary models](../examples/model_families.md)
 - [Project recipe workflow](../examples/project_workflow.md)
 - [Browser workbench walkthrough](../examples/workbench_walkthrough.md)
-
-The runnable smoke-test companion is [docs/examples/llm_workflow.py](examples/llm_workflow.py).
-It uses synthetic data. It is useful for checking an environment; it does not
-validate a company's model or data.
 
 ## Rules for the assisting LLM
 
@@ -53,10 +41,8 @@ validate a company's model or data.
 
 ## Installation and a quick check
 
-This installs the released package only:
-
 ```bash
-python -m pip install easy-glm==0.472
+python -m pip install easy-glm
 ```
 
 Check which package the notebook or script will use:
@@ -279,13 +265,12 @@ to that factor's own curve. It does not make a categorical factor or a pair
 table monotone. Categorical `max_levels` retains the most common **training
 weight**, not simply the most rows, then sends the rest to `Other`.
 
-### Optional AGLM curves in current source work
+### Optional AGLM curves
 
-The following calls are part of the current source work, not PyPI v0.472. Use
-them only after checking the installed version. They give a numeric factor an
-AGLM curve rather than step bands. `n_breaks` asks for a training-data grid;
-the default is 100 points including the first and last training values. This
-does not change the model's normal `n_bins` setting for step bands.
+These calls give a numeric factor an AGLM curve rather than step bands.
+`n_breaks` asks for a training-data grid; the default is 100 points including
+the first and last training values. This does not change the model's normal
+`n_bins` setting for step bands.
 
 ```python
 # Keep the fitted model unchanged. This sets the curve for the next refit.
@@ -333,9 +318,7 @@ was selected before looking at the results.
 
 ## Browser workbench: the short route
 
-The current local workbench uses a guided setup rather than a Streamlit page
-sequence. The exact labels may change while it is under development, but the
-modelling order should not:
+The workbench follows this modelling order:
 
 1. **Project & data:** load the data and choose a single model or a staged
    model plan.
@@ -463,7 +446,7 @@ Python frame separately from the modelling source. Local-file references can
 persist in the project; uploaded files and Python frames are session-only.
 
 The [complete scoring example](../examples/new_data_scoring.md) builds and
-scores vehicle, occupation and postcode files. These controls are unreleased.
+scores vehicle, occupation and postcode files.
 
 ## Export: workflow versus scorer
 
@@ -512,7 +495,7 @@ realistic memory and time budget.
 | A JSON file loaded successfully but fitting fails | `Project.from_dict` parsed a recipe. Run `prepare`, validate prepared columns, then fit an explicit model. |
 | A feature search changed the model | A search should only produce evidence. Check whether somebody explicitly applied its recommendation. |
 
-## A useful handover to another LLM
+## Continue a modelling session with another LLM
 
 Provide this alongside the project JSON and fitted artefacts:
 
@@ -536,7 +519,5 @@ it the saved fit or frozen scorer as well when exact scoring matters.
 
 ## Reference checks
 
-This guide deliberately separates the public v0.472 interface from the current
-unreleased model-plan work. Before using a version-specific call, check the
-installed signature and the relevant example. For the implementation record of
-the current workbench model flow, see [MODEL_FLOW.md](MODEL_FLOW.md).
+Before using a version-specific call, check the installed signature and the
+relevant example. For the workbench flow, see [Model flow](MODEL_FLOW.md).

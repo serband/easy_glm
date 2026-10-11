@@ -1,9 +1,8 @@
 """Workbench state-preservation and error-recovery hardening tests.
 
-Each blocking finding (1–13) reproduces the original breakage on the pre-W3
-tree (a traceback or silently wrong project state) and passes only with the
-fix. Pure rules (grid application, recode mapping, model names, column
-checks) are unit-tested; page behaviour runs under Streamlit's AppTest.
+Pure rules for grid application, recode mapping, model names and column checks
+are unit-tested; state preservation and error recovery on pages run under
+Streamlit's AppTest.
 """
 
 from __future__ import annotations

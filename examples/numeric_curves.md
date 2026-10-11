@@ -169,13 +169,13 @@ reopened.ae("DrivAge").show()
 In the workbench's GLM variable settings, choose **AGLM smooth curve**, set the
 age points and tail behaviour, then apply and refit. For saved settings in
 Python, use the [Project guide](project_workflow.md) and
-[curve settings reference](../docs/plans/AGLM_NUMERIC_METHODS.md#example-settings).
+[curve settings reference](../docs/MODELLING_CONVENTIONS.md#optional-aglm-numeric-curves).
 
 ## R comparison
 
 For the fitting methods and checks against R `aglm`, see the
-[method reference](../docs/plans/AGLM_NUMERIC_METHODS.md). The defaults can give
-different fitted results from R.
+[method reference](../docs/MODELLING_CONVENTIONS.md#optional-aglm-numeric-curves).
+The defaults can give different fitted results from R.
 
 Missing ages get a separate effect by default. If you disable that setting,
 these curve methods require complete age values. They do not support infinite

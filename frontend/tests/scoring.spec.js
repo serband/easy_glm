@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 const steps = (page) => page.getByRole('navigation', { name: 'Project setup steps' });
 const execFile = promisify(execFileCallback);
 
-test('separate CSV data is checked, previewed and downloaded without changing training data', async ({ page }) => {
+test('separate CSV data is checked, previewed and downloaded without changing training data', async ({ page }, testInfo) => {
     await page.goto('/');
     await page.getByRole('button', { name: 'Score on new data', exact: true }).click();
     await page.getByLabel('Scoring dataset', { exact: true }).selectOption({ label: 'Renewal extract' });
@@ -25,7 +25,7 @@ test('separate CSV data is checked, previewed and downloaded without changing tr
     await page.getByText('Advanced cumulative checkpoints', { exact: true }).click();
     await page.getByRole('button', { name: 'Check inputs', exact: true }).click();
     await expect(page.getByText(/Ready to score 4 rows/)).toBeVisible();
-    await page.screenshot({ path: '/private/tmp/easyglm-scoring-overall-final.png', fullPage: true });
+    await page.screenshot({ path: testInfo.outputPath('scoring-overall.png'), fullPage: true });
     await page.getByRole('button', { name: 'Preview first 20 rows', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Score preview', exact: true })).toBeVisible();
     const downloaded = page.waitForEvent('download');
@@ -37,7 +37,7 @@ test('separate CSV data is checked, previewed and downloaded without changing tr
     expect((await details).suggestedFilename()).toMatch(/\.json$/);
 });
 
-test('missing predictors are a preflight failure and narrow scoring layout has no page overflow', async ({ page }) => {
+test('missing predictors are a preflight failure and narrow scoring layout has no page overflow', async ({ page }, testInfo) => {
     await page.goto('/');
     await steps(page).getByRole('button', { name: /Data/ }).click();
     await page.getByLabel('Scoring dataset name').fill('No rating inputs');
@@ -55,7 +55,7 @@ test('missing predictors are a preflight failure and narrow scoring layout has n
     await expect(page.getByRole('button', { name: 'Download scored data', exact: true })).toHaveCount(0);
     await page.setViewportSize({ width: 797, height: 792 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    await page.screenshot({ path: '/private/tmp/easyglm-scoring-797.png', fullPage: true });
+    await page.screenshot({ path: testInfo.outputPath('scoring-narrow.png'), fullPage: true });
 });
 
 test('a key-only vehicle extract scores an accepted component and downloads matching Parquet metadata', async ({ page }, testInfo) => {
@@ -73,7 +73,7 @@ test('a key-only vehicle extract scores an accepted component and downloads matc
     await expect(page.getByText(/Score Vehicle key extract using Vehicle file/)).toBeVisible();
     await page.getByRole('button', { name: 'Check inputs', exact: true }).click();
     await expect(page.getByText(/Ready to score 1 rows/)).toBeVisible();
-    await page.screenshot({ path: '/private/tmp/easyglm-scoring-vehicle-final.png', fullPage: true });
+    await page.screenshot({ path: testInfo.outputPath('scoring-vehicle.png'), fullPage: true });
     const previewResponse = page.waitForResponse((response) => response.url().includes('/api/scoring/preview') && response.request().method() === 'POST');
     await page.getByRole('button', { name: 'Preview first 20 rows', exact: true }).click();
     const preview = await (await previewResponse).json();

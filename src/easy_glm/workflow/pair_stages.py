@@ -762,9 +762,8 @@ def preflight_pair_stages(
         if train.height >= SPARSE_ROW_THRESHOLD
         else train.height * design.n_features * 8
     )
-    # Conservative workload estimate, calibrated above the 371 MiB observed
-    # on 4k training rows in the Phase 0 CPU spike.  Native library overhead
-    # can vary by platform, so this is a refusal gate, not a peak-RSS guarantee.
+    # Conservative workload estimate with an allowance for native-library
+    # overhead. This is a refusal gate, not a peak-RSS guarantee.
     estimated_peak_bytes = (
         512 * 1024**2
         + train.height * 512

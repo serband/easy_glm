@@ -1,4 +1,4 @@
-"""Piece C1 — foundations: format versions, strict dispatch, offsets in the
+"""Format versions, strict dispatch, offsets in the
 RateModel, snapshot diff, editor argument order, adjusted-table exports and
 tolerant project loading."""
 

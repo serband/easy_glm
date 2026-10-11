@@ -74,5 +74,34 @@ O/C basis, that rule can stop at a different point. See
 [the numeric-curves example](../examples/numeric_curves.md) for the actuarial
 workflow.
 
-Detailed encoder, scoring and cache invariants are maintained in
-[AGENTS.md](../AGENTS.md) and enforced by the regression tests.
+### Alternative AGLM basis
+
+`aglm_l` uses absolute-distance columns rather than the capped interval ramps
+of `aglm`. Both can represent a continuous piecewise-linear log-relativity,
+but regularisation acts on different columns, so their fitted curves can differ.
+After running the numeric-curves walkthrough, use the same age points and
+inspect the resulting curve and A/E:
+
+```python
+work.numeric(
+    "DrivAge", kind="aglm_l", breaks=[18, 25, 35, 50, 80], extrapolation="flat"
+)
+l_curve = fixed.refit("Alternative driver-age curve")
+l_curve.ae("DrivAge").show()
+l_curve.compare(fixed)
+```
+
+### Project variable definition
+
+When editing a Project recipe, assign a `VariableDesign` to
+`project.design.variables["DrivAge"]` before fitting. This definition supplies
+the method, complete age grid and extrapolation policy. Use curve `breaks`
+instead of the step-band `knots` or `n_bins` controls:
+
+```python
+from easy_glm.workflow import VariableDesign
+
+driver_age = VariableDesign(
+    kind="aglm", breaks=[18, 25, 35, 50, 80], extrapolation="extend"
+)
+```

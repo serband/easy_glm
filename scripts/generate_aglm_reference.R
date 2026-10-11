@@ -7,8 +7,9 @@
 # transformed matrices and fitted glmnet results.  Install into an isolated
 # library, for example:
 #
-#   R CMD INSTALL -l /private/tmp/easyglm-aglm-r-library aglm_0.4.1.tar.gz
-#   R_LIBS=/private/tmp/easyglm-aglm-r-library Rscript \
+#   mkdir -p aglm-reference-library
+#   R CMD INSTALL -l aglm-reference-library aglm_0.4.1.tar.gz
+#   R_LIBS=aglm-reference-library Rscript \
 #     scripts/generate_aglm_reference.R tests/fixtures/aglm_0_4_1_reference.json
 
 args <- commandArgs(trailingOnly = TRUE)

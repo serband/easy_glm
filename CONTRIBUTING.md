@@ -8,7 +8,7 @@ Thanks for taking the time to contribute!
    ```bash
    python -m venv venv
    source venv/bin/activate
-   pip install -e .[dev]
+   pip install -e ".[dev]"
    ```
 3. Create a feature branch: `git checkout -b feat/my-feature`
 4. Run tests & linters before committing:
@@ -45,13 +45,18 @@ Checklist before opening:
 - [ ] New / changed logic is covered by tests
 - [ ] Docs / README updated if API changes
 - [ ] No stray debug prints
+- [ ] No local handovers, agent reviews or one-off verification reports; keep them in gitignored `.internal/`
 
 ## Releasing
-1. Bump version in `pyproject.toml`
-2. Update `CHANGELOG.md` (create if missing)
-3. Tag: `git tag -a vX.Y.Z -m "Release vX.Y.Z"`
-4. Push tags: `git push --tags`
-5. Publish (e.g. `pipx run build && pipx run twine upload dist/*`)
+Releases require the owner's explicit authorization. Every pushed `v*` tag
+automatically publishes to PyPI through GitHub Actions Trusted Publishing.
+
+1. Verify the remote base and latest public version, finish review and CI, and
+   update `pyproject.toml` and `CHANGELOG.md`.
+2. Build a wheel, install it in a fresh environment, and run the public examples
+   against that installation.
+3. After authorization, merge the reviewed change into `main`, create its
+   release tag, and push that specific tag. Confirm the publish workflow succeeds.
 
 ## Code Style
 Configured via Black & Ruff (see `pyproject.toml`). If in doubt, run the formatters.

@@ -41,11 +41,11 @@ is what keeps the rate tables, the interaction cells and the scorer aligned.
 Two ways to build the matrix
 ----------------------------
 :meth:`DesignSpec.build` returns either a dense float64 numpy array (small
-books, and what every existing caller got) or a **tabmat**
+books) or a **tabmat**
 :class:`~tabmat.SplitMatrix` that stores one integer code per row per variable
 instead of the columns those codes stand for (big books). The two are the same
 matrix: ``build(df, sparse=True).toarray()`` equals ``build(df, sparse=False)``
-exactly, and a fit on either gives the same coefficients (piece G;
+exactly, and a fit on either gives the same coefficients (see
 ``tests/test_scale.py``). Which one you get by default is decided by the row
 count — see :data:`SPARSE_ROW_THRESHOLD`.
 

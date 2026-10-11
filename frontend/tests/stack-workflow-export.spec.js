@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { mkdir, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 
 test.use({ viewport: { width: 1120, height: 900 } });
 
@@ -164,9 +164,8 @@ test('exports separate frozen scorer and replayable stacked Python workflow with
     expect(await (await page.request.get('/api/jobs', { headers })).json()).toEqual(beforeJobs);
     expect(errors).toEqual([]);
 
-    await mkdir('/private/tmp/easyglm-workflow-export-review', { recursive: true });
     await page.screenshot({
-        path: '/private/tmp/easyglm-workflow-export-review/stack-workflow-export-desktop.png',
+        path: testInfo.outputPath('stack-workflow-export-desktop.png'),
         fullPage: true,
     });
     await page.setViewportSize({ width: 390, height: 780 });
@@ -174,7 +173,7 @@ test('exports separate frozen scorer and replayable stacked Python workflow with
         true,
     );
     await page.screenshot({
-        path: '/private/tmp/easyglm-workflow-export-review/stack-workflow-export-narrow.png',
+        path: testInfo.outputPath('stack-workflow-export-narrow.png'),
         fullPage: true,
     });
 });

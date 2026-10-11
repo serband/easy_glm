@@ -1,9 +1,4 @@
-"""The release gate: every code block on the README actually runs (piece R11).
-
-The owner's rule, verbatim: "everything shown on the README HAS TO WORK". In
-0.3 the README examples did not all run and that cost trust, so this test is
-what makes it a *build failure*, not a documentation nit, when a README block
-stops working.
+"""Execute README code blocks and the example scripts as readers would run them.
 
 Two things are checked:
 

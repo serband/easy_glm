@@ -74,7 +74,7 @@ french_motor.easyglm
 # collected by pytest
 * 2.*
 
-# Svelte experiment build tooling
+# Frontend dependencies and generated browser-test output
 node_modules/
 frontend/test-results/
 frontend/playwright-report/

@@ -336,8 +336,7 @@ class TestRateTables:
         assert rm_override.base_rate == 0.05
 
     def test_a_logit_link_gives_odds_relativities(self, messy_data):
-        """Piece E3 (Q7): a binomial fit *does* have rate tables — the numbers
-        multiply the odds instead of the rate. Before E3 this raised."""
+        """Binomial rate tables multiply odds and reproduce fitted probabilities."""
         train = messy_data.filter(pl.col("traintest") == 1).with_columns(
             (pl.col("ClaimNb") > 0).cast(pl.Float64).alias("AnyClaim")
         )

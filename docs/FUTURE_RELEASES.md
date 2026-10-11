@@ -1,145 +1,45 @@
 # Roadmap
 
-This separates completed work from proposed work. A place on this list does not
-mean a feature has been built or assigned a release version.
+This is a list of proposed work. It does not promise a release date, priority
+or delivery order. For released changes, see the [changelog](../CHANGELOG.md).
 
-## Built, awaiting release
+## Modelling methods
 
-- CatBoost interactions for Gaussian models with a log link. Other Gaussian
-  links remain unsupported for these interactions.
-- Searchable, alphabetically sorted variable lists for Explore, fitted A/E
-  plots and rate-table plots.
-
-## Built, awaiting release: stack GLMs, CatBoost models and rating files
-
-Implemented in Python and the workbench, with software, statistical and actuarial checks completed. See [the worked example](../examples/stacked_models.md) and [the agreed design](plans/STACKED_MODELS.md). Not yet released.
-
-- Allow any ordering or repetition of supported multiplicative components:
-  GLMs, CatBoost models, interaction tables and rating-file lookups. The vehicle
-  then occupation sequence is an example, not a required order.
-- Fit each new component against the complete preceding prediction, keeping
-  earlier components fixed. A correction-only first component gets an internal
-  fitted baseline without requiring a separate user-built GLM.
-- Combine main effects, separate interaction tables, and vehicle, occupation
-  or postcode components in the order chosen by the modeller.
-- Fit every new component against the complete preceding model, using the
-  tables and files actually used for scoring, including applied amendments.
-- Score complete vehicle, occupation and postcode catalogues into lookup
-  files. Use those same files for later fitting, diagnostics and deployment.
-- Preserve named models. Make changing an earlier component explicit, with a
-  choice to keep or refit later components.
-- Provide short Python calls and a workbench view showing the fitting order.
-  Both interfaces are included in this build.
-- Select variables independently for each stage from the starting data, including
-  unassigned columns, without changing global roles. Search lists alphabetically
-  and retain selected variables while filtering.
-- Define each model's variables through matching Table and JSON views. Store its
-  own GLM/interaction bands and raw CatBoost types. Downstream target, split and
-  response settings stay fixed; the preceding complete score supplies its offset.
-- Show named models in a visual flow. Extend a complete fitted model or create
-  an alternative from the same parent, keeping earlier fits unchanged. Preserve
-  those connections in project JSON and label historical parents explicitly.
-- Define the single/staged plan, names, methods and order in Project & data.
-  Follow focused setup steps for shared roles, numbered models and independent
-  Table/JSON variable editors; fit in order on Model with named Fit actions. Change the working model structure,
-  append a stage, or explicitly revise the fitted setup; preserve saved results
-  and reuse only the exact unchanged fitted prefix. Adopt an existing complete
-  scorer as a frozen starting point when continuing earlier work.
-- Plan named GLM, CatBoost and Catalogue models. Add optional interaction
-  tables inside a fitted GLM after residual review, rather than planning them
-  as separate models. Existing flat plans retain their saved order.
-- Fit interaction candidates separately, inspect their tables and training
-  evidence, then Keep or Discard. Pair-only variables do not become main effects.
-  The next table and named model use the complete accepted table scorer.
-- Preview and apply interaction-table amendments. Keep the accepted prefix
-  visible and refit affected later tables and models without refitting the
-  unchanged GLM. Preserve the earlier complete fitted version.
-- Identify the saved chain on Diagnostics and choose its final fit or the score
-  after an individual model. A/E, lift and metrics include the earlier offsets;
-  grouped A/E uses factors available at that point in the chain. Within a GLM,
-  inspect the cumulative score through its main effects or an accepted table.
-- Default new CatBoost models and catalogue fits to training-only Optuna tuning,
-  with a trial count or tuning-time budget. Keep manual settings available and
-  show the selected settings or unchanged preceding model in Results.
-- Test both GLM → CatBoost and CatBoost → GLM, full-stack validation, lookup
-  coverage, save/reload and export parity.
-- Register additional scoring datasets separately from the modelling source.
-  Score the overall accepted stack or one named rating model, with advanced
-  cumulative checkpoints available when needed; export CSV/Parquet with score
-  details. Score refreshed catalogue masters with retained native fits as
-  separate candidates. See
-  [the scoring example](../examples/new_data_scoring.md).
-
-This replaces the earlier staged-recipe and specialist-CatBoost proposals.
-Jointly fitting groups of interactions is no longer the proposed next step:
-existing pair interactions remain separately fitted and inspectable.
-No v0.5 commitment is implied.
-
-## Later modelling work
-
-- **Hierarchical rating factors:** let sparse vehicle variants borrow strength
-  from model/make, occupations from occupation groups, and postcodes from larger
-  areas. Show support and fallback rules; export leaf-level lookup files
-  alongside component detail.
+- **Hierarchical rating factors:** allow sparse vehicle variants to borrow
+  strength from model or make, occupations from occupation groups, and postcodes
+  from larger areas. Show support and fallback rules and export leaf-level
+  lookup files alongside component detail.
 - **Postcode smoothing:** assess geographic smoothing and local residual
   effects, with validation suited to new areas and future periods.
 - **Tweedie power selection:** investigate an optional training-only
   profile-likelihood search. Keep manual selection and show the powers and
   comparison before accepting a choice.
-- **Model selection:** assess the one-standard-error rule for the GLM penalty
-  and a raw linear trend alongside binned step effects. Neither is an accepted
-  statistical change yet.
+- **Model selection:** assess a one-standard-error rule for the GLM penalty and
+  a raw linear trend alongside binned step effects.
 - **Residual searches:** review family-specific variance and dispersion in
-  Gamma/Tweedie and Poisson searches. Test ranking and calibration on known
+  Gamma, Tweedie and Poisson searches. Test ranking and calibration on known
   examples before changing the method.
 
-## Further worked examples
+## Workflow and assurance
 
-The [interactive frequency walkthrough](../examples/pricing_walkthrough.md)
-ships in v0.472. Extend that style with:
+- Make time-based and grouped validation equally clear across the Python API,
+  exports and workbench.
+- Check that exported Python retains final roles, renames, recodes, derived
+  columns and split settings together.
+- Make leakage review treat absent, unassigned and ignored roles consistently,
+  while keeping reserved-column exclusions and any use of an unassigned column
+  explicit.
+- Improve messages for invalid Gamma and inverse-Gaussian evaluation targets
+  so affected rows and their treatment are visible.
 
-- Gamma severity, an expanded Swedish motorcycle Tweedie workflow,
-  existing-premium offsets, and a genuine yes/no binomial example.
-- Wide datasets, predictor screening, step versus linear effects, monotone
-  constraints, and comparing candidate models.
-- Extend the [stacking example](../examples/stacked_models.md) with real catalogue data.
+## Worked examples
 
-Use short public calls, explicit modelling decisions and reviewable outputs.
-Run each example from a fresh standard installation and check that exported
-scoring reproduces the accepted model on new data.
+- Add a Gamma severity workflow, an expanded Swedish motorcycle Tweedie
+  workflow, an existing-premium offset example and a genuine binary example.
+- Add wide-data, predictor-screening, step-versus-linear, monotonic-constraint
+  and candidate-comparison workflows.
+- Extend the catalogue example with real vehicle, occupation or postcode data.
 
-## Consistency checks to scope
-
-These are audits of remaining gaps, rather than claims that the whole feature
-is missing:
-
-- Existing split-column detection when launching the workbench from a
-  dataframe; keep training and holdout labels clear. Python sessions already
-  support an existing split and stable splits by ID.
-- Holdout visibility and grouped/time-based validation across interfaces.
-  Python's interactive workflow already keeps holdout evaluation explicit.
-- Exported Python setup: check final roles, renames, recodes, derived columns
-  and split settings together, rather than adding another export format.
-- Leakage-review candidates: make absent, unassigned and ignored roles
-  consistent with shared assignments; preserve reserved-column exclusions and make any
-  inclusion of unassigned columns explicit.
-- Invalid evaluation targets for Gamma and inverse Gaussian: report affected
-  rows and agreed treatment without silently dropping them from a headline
-  metric. Keep family/link explanations consistent across examples.
-
-## Recently completed
-
-See [the changelog](../CHANGELOG.md) for released details.
-
-- **v0.472:** interactive pricing workflow; family-specific metrics; sampled
-  importance; categorical/mixed associations; Gaussian screening fix;
-  unassigned interaction variables; per-interaction tuning limits; Windows
-  progress-update fix; CatBoost and Optuna in the standard installation.
-- **v0.470–0.471:** one-way feature selection, separately fitted CatBoost
-  interaction tables, automatic tuning, full-table diagnostics and exports,
-  and removal of feature-selection temporary files.
-- **v0.464:** shared numeric bin settings, custom cuts and Variables JSON.
-
-Older entries marked only “implemented on the feature branch” have been removed
-from the future-work list. Current behaviour and the changelog take precedence
-over those old status notes.
+Each example should use short public calls, make its modelling decisions
+explicit and run from a standard installation. Exported scoring should reproduce
+the accepted model on new data.

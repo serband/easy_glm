@@ -1,6 +1,6 @@
 """Fit a penalised GLM on the design matrix of a :class:`DesignSpec`.
 
-Three things here are about **size** rather than statistics (piece G):
+Three choices control memory use without changing the statistical model:
 
 * the design handed to glum is whatever :meth:`DesignSpec.build` returns — a
   dense float64 array for a small book, a compact tabmat ``SplitMatrix`` for a
@@ -935,7 +935,7 @@ def fit_glm(
         upper = mup if upper is None else np.minimum(np.asarray(upper, float), mup)
     # float64 for everything the solver touches: a float32 design silently
     # stops converging past a million rows and segfaults tabmat when the
-    # sample weight is not cast to match (docs/spikes/g-scale, §4.2)
+    # sample weight is not cast to match.
     if lower is not None:
         lower = np.asarray(lower, dtype=np.float64)
     if upper is not None:
