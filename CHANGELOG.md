@@ -4,11 +4,29 @@ This is the user-facing record of useful new features and fixes.
 
 ## Unreleased
 
-- Add optional AGLM numeric curves, with automatic training-data grids or your own grid and a choice of flat or extended tails. Existing bands and curves keep their defaults.
-- Preserve these curves in rating tables, amendments, saved models, Excel and Python exports. Add a worked example for fitting and reviewing them.
-- Preview interaction-table sizes before fitting, with coarser table bands available without changing the GLM curve.
-- Continue directly to fitting when the next model already has its variables set.
-- Fix numeric bands for rare binary values and rounding for very small numeric ranges.
+- Add single-model and staged-model routes. A staged plan gives each named model
+  its own factors and fits later models on the complete score from earlier ones.
+- Keep interaction tables with their GLM. Review main effects first, then add,
+  inspect and retain interaction tables before moving to the next model.
+- Allow CatBoost interactions after a Gaussian GLM when it uses a log link.
+- Make one-way variable selectors in Explore and model results searchable and
+  alphabetical.
+- Add catalogue models for vehicle, occupation and postcode files, including
+  rates for catalogue codes without training experience.
+- Show diagnostics for a selected point in a fitted sequence or for the complete
+  score, and export the accepted workflow as a Python script, frozen scorer and
+  component workbooks.
+- Score new data with a saved fitted model. Choose one rating model, a score
+  through a point in the sequence or the complete score, then export CSV or
+  Parquet results.
+- Add optional AGLM numeric curves. Choose automatic training-data grids or your
+  own grid, and flat or extended tails. Existing bands and curves keep defaults.
+- Keep curves in rating tables, amendments, saved models, Excel and Python
+  exports. Add a worked example for fitting and reviewing them.
+- Preview interaction-table sizes before fitting. Use coarser table bands without
+  changing the GLM curve.
+- Continue to fitting when the next model already has variables set.
+- Fix numeric bands for rare binary values and rounding for very small ranges.
 
 ## 0.472 — 23 September 2026
 

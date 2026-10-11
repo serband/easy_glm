@@ -7,6 +7,9 @@ Other examples:
 | Example | What it demonstrates |
 | --- | --- |
 | [Workbench walkthrough](workbench_walkthrough.md) | A practical path through roles, splitting, model design, fitting, diagnostics, comparisons, rate tables and export. |
+| [Pricing workflows](workflows.md) | Find the right worked guide for GLMs, interactions, model chains, rating files, scoring and exports. |
+| [Build rating files](stacked_models.md) | Build and review vehicle, occupation and postcode files after a GLM and its interaction tables. |
+| [Score new data](new_data_scoring.md) | Score a renewal extract, full rating file or refreshed catalogue, then export CSV or Parquet results. |
 | [Basic usage](basic_usage.py) | Poisson claim frequency and Tweedie incurred-claims fits from Python. |
 | [Ready-to-open project](easy_glm_demo.py) | Build a French motor workbench project in Python, then open it in the browser. |
 | [Advanced pipeline](advanced_pipeline.py) | Use the lower-level design, fit and rate-table building blocks. |

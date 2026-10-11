@@ -1,7 +1,7 @@
 # EasyGLM
 
-Fit insurance pricing GLMs, check model performance and export rating tables
-from a local browser workbench.
+Build insurance pricing GLMs and rating files, check A/E and export rating
+tables. EasyGLM works in a local browser workbench or from Python.
 
 ## Install and open
 
@@ -18,39 +18,57 @@ Restart the workbench after upgrading.
 Install as `easy-glm`; import in Python as `easy_glm`. The standard installation
 includes the workbench, GLM fitting, CatBoost interactions and Optuna tuning.
 
-## Build a model
+## Build a pricing model
 
-1. **Load data.** Open your file or try the French motor claim-frequency or
-   Swedish motorcycle claim-cost example. Supports CSV, Parquet, Excel,
-   Arrow/Feather and SAS files.
-2. **Choose variables.** Set the target, exposure/weight and predictors. Check
-   for missing data, possible leakage and redundant predictors before fitting.
-3. **Explore.** See observed rates and exposure by variable.
-4. **Fit.** Choose a model family, training/holdout split, factor shapes and
-   interactions, then click **Fit model**.
-5. **Review.** Check actual versus expected, lift, Gini and variable importance.
-   Compare alternative models.
-6. **Adjust.** Smooth, cap/floor or edit relativities, then apply your changes.
-   The original fit stays available for comparison.
+Open data, then choose the route in **Project & data**:
 
-Supports Poisson, Gamma, Tweedie, Gaussian, binomial and inverse Gaussian GLMs,
-with regularisation and two-stage interactions.
+- **Single model** for one GLM, CatBoost or catalogue model.
+- **Build in stages** for a sequence of models built from the same data.
 
-![Model design in EasyGLM](docs/images/workbench-model-design.png)
+Next, set the columns shared by the work: target, exposure or weight, ID, and
+the train/holdout split. Mark columns that must never be used as **Ignore**.
+For a staged model, name each model and choose its type before selecting any
+factors. Every model has its own factor selection. EasyGLM carries the complete
+prediction from earlier models into the next fit as an offset.
+
+A typical motor sequence is:
+
+```text
+GLM main effects + reviewed interaction tables
+    → Vehicle model or catalogue
+    → Occupation model or catalogue
+    → Postcode model or catalogue
+```
+
+Fit each model on **Model** before moving to the next one. A GLM owns its
+interaction tables: fit the GLM, inspect A/E and missing-factor results, then
+choose any interactions worth keeping. In **Diagnostics**, inspect the cumulative
+score through the model or interaction you select, or the completed model chain.
+
+Fitting, searches and CatBoost tuning use training rows. Keep holdout rows for
+the validation check once you have a candidate worth testing.
+
+GLMs support Poisson, Gamma, Tweedie, Gaussian, binomial and inverse Gaussian
+families. CatBoost and staged models use a log link and currently support
+Poisson, Tweedie and Gaussian.
 
 ## Export and keep your work
 
 | Export | What you get |
 | --- | --- |
-| Excel | Applied rating tables |
-| Scorer (`.easyglm`) | Applied rates for scoring new data |
-| Project JSON | Model setup, applied adjustments and named snapshots |
-| HTML report | Data summaries, importance, coefficient paths, rating factors and diagnostics |
-| Python script | Reproduce the model from its source data |
+| Project JSON | The setup: source-data location, shared columns, model definitions and factor choices. It does not contain data or fitted rates. |
+| Fitted scorer | A single-model `.easyglm` file, a stacked-model JSON bundle or a Python scorer. Each scores without fitting again. |
+| Python workflow | A script that fits the accepted workflow again from source data. Fresh fits can differ slightly. |
+| Excel | A single-model rating-table workbook or a stacked-model component workbook. |
+| Catalogue lookup file | A full CSV lookup for each fitted catalogue model. |
+| HTML report | A single-model report with summaries, rating factors and diagnostics. |
 
-Before closing, save the **project JSON** and **scorer**. Reopening a project
-requires its source data and a refit; fitted runs and session Undo are not saved
-in project JSON.
+For a staged model, use **Score on new data** to choose a saved fitted version,
+the dataset and whether you need one rating model or the cumulative score.
+Download CSV or Parquet results after checking the required columns.
+
+Save both the project JSON and a fitted scorer. The project keeps the setup;
+keep the scorer to reuse the saved rates without refitting.
 
 ## Already working in Python?
 
@@ -61,6 +79,12 @@ import easy_glm
 
 easy_glm.launch_workbench(data=df)
 ```
+
+For interactive Python modelling, use
+[PricingSession](examples/pricing_walkthrough.md). For a reproducible settings
+file, use the [Project workflow](examples/project_workflow.md). For model
+chains, catalogue files and scoring new data, use the
+[worked workflows](examples/workflows.md).
 
 [Workbench walkthrough](examples/workbench_walkthrough.md) ·
 [Python examples](examples/README.md) · [Changelog](CHANGELOG.md)
