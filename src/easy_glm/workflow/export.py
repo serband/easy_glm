@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import pprint
 from pathlib import Path
@@ -122,16 +123,47 @@ def _stack_training_script(
 ) -> str:
     """Replay every ordered recipe using pinned catalogue contents."""
     from .catalogue import load_catalogue
+    from .stack_types import LookupScorer
 
-    snapshot = project.copy()
+    run_snapshot = getattr(run, "project_snapshot", None) if run is not None else None
+    snapshot = (
+        Project.from_dict(copy.deepcopy(run_snapshot))
+        if isinstance(run_snapshot, dict)
+        else project.copy()
+    )
     if run is not None:
-        snapshot.models[model] = run.config
+        # ``run.config`` is the accepted recipe.  The export then replaces a
+        # file-backed catalogue with its accepted contents, so it must be a
+        # private copy rather than a surprising mutation of the fitted run.
+        snapshot.models[model] = copy.deepcopy(run.config)
+
+    accepted = {
+        item.recipe.component_id: item
+        for item in (run.stack.components if run is not None and run.stack else [])
+    }
     for recipe in snapshot.models[model].components:
         if recipe.kind != "catalogue":
             continue
         settings = recipe.settings
         if "catalogue" not in settings:
-            master = load_catalogue(settings)
+            artifact = accepted.get(recipe.component_id)
+            if artifact is not None and isinstance(artifact.scorer, LookupScorer):
+                # The accepted lookup carries the source master plus fitted
+                # multiplier/support columns.  Retain every source field and
+                # discard only scorer-specific columns, so this workflow can
+                # still be replayed after the uploaded catalogue has gone.
+                master = artifact.scorer.table.drop(
+                    [
+                        column
+                        for column in ("multiplier", "train_rows")
+                        if column in artifact.scorer.table.columns
+                    ]
+                )
+                required = {str(settings["key"]), *recipe.factors}
+                if not required.issubset(master.columns):
+                    master = load_catalogue(settings)
+            else:
+                master = load_catalogue(settings)
             settings["catalogue"] = master.to_dict(as_series=False)
             settings["catalogue_schema"] = {
                 name: str(dtype) for name, dtype in master.schema.items()
@@ -139,16 +171,53 @@ def _stack_training_script(
             settings.pop("source_path", None)
             settings.pop("source_sha256", None)
     encoded = json.dumps(snapshot.to_dict(), ensure_ascii=False, default=str)
+    split = snapshot.data.split
+    source_path = snapshot.data.source.path
+    component_lines = []
+    if run is not None and run.stack is not None:
+        components = [item.recipe for item in run.stack.components]
+    else:
+        components = snapshot.models[model].components
+    for index, recipe in enumerate(components, start=1):
+        if recipe.kind == "legacy":
+            description = f"Accepted frozen source: {recipe.name!r} (legacy scorer)"
+        elif recipe.kind == "baseline":
+            description = f"Starting level: {recipe.name!r} (internal baseline)"
+        else:
+            description = f"{recipe.name!r} ({recipe.kind!r})"
+        component_lines.append(f"# {index}. {description}")
     return "\n".join(
         [
-            f'"""{snapshot.name}: refit ordered model {model!r} and export its accepted scorer."""',
+            '"""Refit an ordered EasyGLM model and export its scorer."""',
+            f"# Project: {snapshot.name!r}; model: {model!r}",
+            "",
+            "# Refitting uses the source data and can change fitted values.",
             "",
             "import json",
             "from easy_glm.workflow import Project, prepare, run_model",
             "from easy_glm.workflow.export import write_stack_bundle",
             "from easy_glm.pricing.excel import export_stack_excel",
             "",
+            "# Change this path to rebuild from another copy of the same source data.",
+            f"SOURCE_PATH = {source_path!r}",
+            "",
+            "# Accepted component order used for the replay:",
+            *component_lines,
+            "",
+            "# Saved split (retained by the project snapshot): "
+            + repr(
+                {
+                    "mode": split.mode,
+                    "column": split.column,
+                    "train_value": split.train_value,
+                    "holdout_value": split.holdout_value,
+                    "fraction": split.fraction,
+                    "seed": split.seed,
+                }
+            ),
+            "",
             f"project = Project.from_dict(json.loads({encoded!r}))",
+            "project.data.source.path = SOURCE_PATH",
             "prepared = prepare(project)",
             f"run = run_model(project, prepared, {model!r})",
             f"write_stack_bundle(project, run, {prefix + '.easyglm'!r})",

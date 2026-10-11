@@ -1,12 +1,12 @@
 # EasyGLM handover
 
-**Snapshot: 10 October 2026.** Start here when taking over without the previous chat. Check Git and the current package registry before changing a status claim: this is a local snapshot, not proof of today's remote state.
+**Snapshot: 11 October 2026.** Start here when taking over without the previous chat. Check Git and the current package registry before changing a status claim: this is a local snapshot, not proof of today's remote state.
 
 ## Start in the right checkout
 
 | Purpose | Checkout and state |
 | --- | --- |
-| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/model-review-placement`, based on `ab6c0a7`; named models in Project & data, with interactions owned by a GLM |
+| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/stack-workflow-script-export`, based on `d0d5811`; named models in Project & data, with interactions owned by a GLM |
 | User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
 | Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
 
@@ -129,6 +129,29 @@ The Model builder work is local, unpushed and unreleased. Fresh validation for t
 Known first-version boundaries: each named model scores a linear sequence; the diagram can show alternatives but does not combine two parent models; one-key, user-supplied catalogues; no arbitrary imported estimators, automatic hierarchical credibility, geographic smoothing, or mixed-stack HTML report. A direct CatBoost component requires its saved model artifact to score and cannot be represented exactly by GLM rate tables alone. Confirm any further limit in code before asserting it.
 
 ## Source map and checks
+
+**Workflow export, 11 October.** The stacked Export page now separates
+**Score new data** from **Rebuild this model**. **Download Python workflow**
+returns a `*_workflow.py` script that refits the selected accepted component
+recipe in order, retaining its saved preparation, split, amendments and incoming
+offsets. A frozen adopted starting scorer remains frozen. `SOURCE_PATH` is
+editable near the top; the script writes a fitted bundle and Excel workbook.
+Refitting can change fitted values. The existing Python scorer uses the saved
+fits without refitting. Exploratory searches and discarded candidates are not
+part of the accepted recipe replay.
+
+The generator reads the fitted project snapshot and deep-copies its accepted
+configuration. Catalogue data is pinned from the saved lookup when its source
+file is unavailable. Downloads leave project, jobs and fitted artifacts unchanged.
+Fresh validation: **29 Python export tests**, including a fresh-process
+GLM → capped pair table → refitted CatBoost replay matching the accepted score
+at `rtol=1e-6`, and a deleted-catalogue-source replay; a browser download check
+with desktop and 390px layout review; Black, Ruff, mypy (39 source files),
+Svelte check and production build. Independent design, adversarial and pricing
+actuary reviews passed. The full Python suite and installed-wheel examples were
+not rerun for this correction. Preview `127.0.0.1:8881` was upgraded with all
+four current fitted versions restored; scoring values were verified unchanged.
+Nothing was pushed or released.
 
 **Review placement, 10 October.** Each fitted GLM's review is now directly
 inside its own Model row, with a heading such as **Review Main effects**. The

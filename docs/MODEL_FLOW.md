@@ -155,6 +155,13 @@ stage. Inspecting an earlier stage does not refit it.
 **Compare**, **Rate tables** and **Export** use the selected saved fitted version.
 Table changes require preview and explicit application. Exports can contain the
 complete scorer, Excel component tables or complete catalogue lookup files.
+
+On **Export**, **Download Python workflow** rebuilds the selected model chain
+from its source data. It includes accepted interaction tables, amendments and
+the offset order. Change `SOURCE_PATH` in the script if the data file has moved.
+The script keeps the saved training split and writes a new fitted scorer and
+Excel workbook. Refitting can change the fitted values. **Download Python
+scorer** uses the saved fits to score new rows without refitting.
 Complete-score export uses the selected accepted fitted version, not an unfinished
 planned suffix. Incremental table and file exports identify their required
 preceding score.

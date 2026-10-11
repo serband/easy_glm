@@ -110,10 +110,11 @@ def export_attachment(
         )
     run = runs[name]
     if getattr(run, "stack", None) is not None:
-        if format not in {"easyglm", "python_score", "xlsx"}:
+        if format not in {"easyglm", "python", "python_score", "xlsx"}:
             raise ValueError(
                 "This stack exports as an Excel component workbook, a self-contained scorer bundle, "
-                "or a Python scoring entry point. Export individual catalogue files from the component table."
+                "a Python workflow, or a Python scoring entry point. Export individual catalogue files "
+                "from the component table."
             )
         prefix = f"{safe_filename(project.name, 'project')}_{safe_filename(name)}"
         if format == "xlsx":
@@ -132,6 +133,12 @@ def export_attachment(
         if format == "easyglm":
             return ExportAttachment(
                 serialized.encode("utf-8"), prefix + "_stack.json", "application/json"
+            )
+        if format == "python":
+            return ExportAttachment(
+                to_script(project, name, run=run, output_prefix=prefix).encode("utf-8"),
+                prefix + "_workflow.py",
+                "text/x-python",
             )
         script = (
             '"""Score the accepted EasyGLM component stack."""\n'

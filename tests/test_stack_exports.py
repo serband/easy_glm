@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -14,7 +15,7 @@ import polars as pl
 
 from easy_glm.cli import main
 from easy_glm.pricing import PricingModel
-from easy_glm.workflow import Project, run_model, to_scoring_script
+from easy_glm.workflow import Project, prepare, run_model, to_scoring_script, to_script
 from easy_glm.workflow.project import ModelConfig
 from easy_glm.workflow.stack_types import ComponentRecipe
 
@@ -155,18 +156,26 @@ def test_training_script_pins_catalogue_source(tmp_path: Path) -> None:
     recipe.settings["source_sha256"] = hashlib.sha256(
         master_path.read_bytes()
     ).hexdigest()
-    project.to_json(project_path)
-    out = tmp_path / "out"
-    assert main(["run", str(project_path), "--out", str(out)]) == 0
-    training_script = out / "Stack CLI_Mixed.py"
-    source = training_script.read_text()
+    run = run_model(project, prepare(project), "Mixed")
+    saved_config = copy.deepcopy(run.config)
+    # The current working project is deliberately changed after fitting.  A
+    # workflow export must retain the captured preparation/split snapshot.
+    project.data.split.seed = 99
+    saved_project = project.to_dict()
+    master_path.unlink()
+    source = to_script(project, "Mixed", run=run, output_prefix="pinned")
     assert "catalogue_schema" in source
     assert str(master_path) not in source
-    master_path.unlink()
+    assert '"seed": 42' in source
+    assert '"seed": 99' not in source
+    assert run.config == saved_config
+    assert project.to_dict() == saved_project
+    training_script = tmp_path / "pinned.py"
+    training_script.write_text(source)
     subprocess.run(
         [sys.executable, str(training_script)],
         cwd=tmp_path,
         env=_python_env(),
         check=True,
     )
-    assert (tmp_path / "Stack CLI_Mixed.easyglm").is_file()
+    assert (tmp_path / "pinned.easyglm").is_file()
