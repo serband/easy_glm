@@ -1,5 +1,8 @@
 # Building a pricing model
 
+For the staged GUI, specialist rating files, other model orders and saved
+project recipes, see [Examples and workflows](workflows.md).
+
 This walkthrough demonstrates an interactive modelling workflow for a pricing actuary using EasyGLM. We use French motor data to build a claim-frequency model, starting with two main effects and adding to the model as we review the results.
 
 We will cover:

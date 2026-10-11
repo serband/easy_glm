@@ -42,9 +42,10 @@ and human-readable, and release only with explicit authorization.
 ## Current state
 
 Read `docs/HANDOVER.md` before work on the mixed model stack. The last known public
-release is v0.472. The current project setup work is on `codex/explicit-model-stages` in
-`/private/tmp/easyglm-model-variable-setup`, based on consolidated setup revision
-`6b15bbb`. The user's primary checkout contains separate work. Verify the actual
+release is v0.472. The current documentation and worked-example work is on
+`codex/actuary-worked-examples` in `/private/tmp/easyglm-model-variable-setup`,
+based on accepted workflow-export revision `4190fb0`. The user's primary checkout
+contains separate work. Verify the actual
 checkout and preserve its existing changes. Model-flow connections record how named
 candidates were fitted; the complete ordered component recipe remains the scorer.
 
@@ -53,6 +54,12 @@ candidates were fitted; the complete ordered component recipe remains the scorer
 The primary user is a pricing actuary working interactively. Use
 `examples/pricing_walkthrough.md` as the public acceptance scenario and track the
 current stack status in `docs/HANDOVER.md`. `docs/PRICING_WORKFLOW_BUILD.md` is a historical record of the earlier pricing workflow.
+
+`examples/workflows.md` is the map of current GUI, interactive API and Project
+recipe examples. `Project.from_dict` parses settings; `prepare` loads/applies
+data setup; `run_model` fits an explicit `project.models` entry. The editable
+GUI `model_plan` is not itself a public Python fitting executor. Keep this
+distinction and the unreleased stack scope clear in documentation.
 
 - Start from the user's next modelling decision: fit main effects, inspect A/E,
   investigate missing factors, add an interaction, compare, amend, or export.

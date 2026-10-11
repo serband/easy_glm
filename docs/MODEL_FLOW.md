@@ -1,5 +1,9 @@
 # Build a model plan
 
+For worked steps, start with the [Workbench walkthrough](../examples/workbench_walkthrough.md).
+The [workflow map](../examples/workflows.md) links the GUI, interactive API,
+rating-file examples and [Project recipe guide](../examples/project_workflow.md).
+
 Set up the model in **Project & data**, then fit it on **Model**.
 
 Use the setup navigation in **Project & data** to work on one decision at a time.

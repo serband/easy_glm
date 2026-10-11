@@ -6,7 +6,7 @@
 
 | Purpose | Checkout and state |
 | --- | --- |
-| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/stack-workflow-script-export`, based on `d0d5811`; named models in Project & data, with interactions owned by a GLM |
+| Current implementation | `/private/tmp/easyglm-model-variable-setup`, `codex/actuary-worked-examples`, based on `4190fb0`; named models in Project & data, GLM-owned interactions and accepted workflow exports |
 | User's primary workspace | `/Users/serban/Documents/Projects/easy_glm`, `codex/variable-screening`, `cb66d3648d47ebf62f39c0461daff6d2e18dbc69`; contains unrelated modified and untracked work |
 | Last known public release | `v0.472`, locally verified tag at `132e1e14433f849517fc225d2efea5b76209ef23` (23 September 2026) |
 
@@ -18,7 +18,7 @@ uncommitted changes must not be assumed recovered. The current plan has one name
 and method per model. The previous selected-model builder is a historical
 baseline, not the current screen layout.
 
-The primary workspace carries a copy of this handover and selected guidance, but its code does **not** contain the current stack. Read `examples/stacked_models.md`, `docs/plans/STACKED_MODELS.md`, `docs/LLM_USAGE_GUIDE.md`, and the source/tests **in the implementation checkout**; the example and usage guide are absent from the primary workspace, while its untracked copy of the stack plan may differ from the implementation checkout. `examples/pricing_walkthrough.md` covers the earlier released pricing flow. The usage guide describes v0.472, not takeover. The locally available `v0.472` Git tag provides the release source for comparison (`git show v0.472:<path>` from the stack checkout); verify remote state separately when network access returns.
+The primary workspace carries an older copy of this handover and selected guidance, but its code does **not** contain the current stack. Read the [workflow map](../examples/workflows.md), `docs/plans/STACKED_MODELS.md`, `docs/LLM_USAGE_GUIDE.md`, and the source/tests **in the implementation checkout**; the primary workspace's documents may differ. `examples/pricing_walkthrough.md` covers the earlier released pricing flow. The updated usage guide separates released features from the current staged work. The locally available `v0.472` Git tag provides the release source for comparison (`git show v0.472:<path>` from the stack checkout); verify remote state separately when network access returns.
 
 ## What the package does
 
@@ -129,6 +129,43 @@ The Model builder work is local, unpushed and unreleased. Fresh validation for t
 Known first-version boundaries: each named model scores a linear sequence; the diagram can show alternatives but does not combine two parent models; one-key, user-supplied catalogues; no arbitrary imported estimators, automatic hierarchical credibility, geographic smoothing, or mixed-stack HTML report. A direct CatBoost component requires its saved model artifact to score and cannot be represented exactly by GLM rate tables alone. Confirm any further limit in code before asserting it.
 
 ## Source map and checks
+
+**Documentation and worked workflows, 11 October.** Start at
+[`examples/workflows.md`](../examples/workflows.md). The current GUI walkthrough
+replaces obsolete Variables-sidebar instructions with guided Project & data
+setup, independent model variables, inline GLM-owned pair review, cumulative
+diagnostics, revisions and distinct scoring/rebuilding exports. The rating-file
+example works through main effects, two pair checkpoints, vehicle review,
+occupation and postcode catalogues, including keys absent from training.
+Model-order examples cover standalone CatBoost, GLM → CatBoost, CatBoost → GLM,
+tuning limits and fixed/refitted suffix amendments. The Project guide explains
+`from_dict` → preparation → validation → fitting, and executes both frozen-score
+and accepted-recipe exports. `model_plan` alone is not a public `run_model`
+executor; that function fits explicit entries in `project.models`.
+The model-family examples use the built-in Swedish motorcycle loader for
+Tweedie pure premium, positive-payment Gamma severity and binomial claim
+occurrence, with separate response and weight conventions.
+
+These guides describe current source behaviour where marked and do not imply
+that unreleased stack features ship in PyPI v0.472. No development installation
+instructions or release changes were added.
+
+The Python blocks were executed from the markdown, including the full French
+motor sample, the 6,000-row catalogue example and the cached 64,548-row Swedish
+motorcycle data. Four new regression tests cover catalogue coverage, rate
+amendment policies, family units, and frozen-score/rebuilt-recipe prediction
+parity; the two existing French walkthrough tests also pass. CI uses smaller
+local fixtures for the new tests. Independent documentation and actuarial
+reviews passed; Black, Ruff and local-link checks passed. The full Python suite
+and installed-wheel checks were not rerun for this documentation change.
+
+Both documented GUI exercises passed on an isolated workbench: the French
+motor chain with an accepted interaction, every diagnostic checkpoint, and
+syntax-checked Python scorer/workflow downloads; and four catalogue-workflow
+fits with full lookup exports of 80 vehicles, 30 occupations and 120 postcodes.
+The catalogue exercise now includes the required training-value selection and
+Preview/Apply steps. The temporary validation server and environment symlink
+were removed; the user's workbench on 8881 was not replaced.
 
 **Workflow export, 11 October.** The stacked Export page now separates
 **Score new data** from **Rebuild this model**. **Download Python workflow**
