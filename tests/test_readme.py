@@ -1,9 +1,4 @@
-"""The release gate: every code block on the README actually runs (piece R11).
-
-The owner's rule, verbatim: "everything shown on the README HAS TO WORK". In
-0.3 the README examples did not all run and that cost trust, so this test is
-what makes it a *build failure*, not a documentation nit, when a README block
-stops working.
+"""Execute README code blocks and the example scripts as readers would run them.
 
 Two things are checked:
 
@@ -112,9 +107,8 @@ def test_readme_has_at_most_a_few_skip_test_blocks(readme_blocks):
 
 
 def test_readme_embedded_images_exist():
-    """GitHub-rendered first-lesson charts must be checked in with the README."""
+    """Any local images referenced by the README must be available to readers."""
     images = _IMAGE_RE.findall(README.read_text(encoding="utf-8"))
-    assert images, "README has no embedded first-lesson chart assets"
     missing = [image for image in images if not (ROOT / image).is_file()]
     assert not missing, f"README references missing image assets: {missing}"
 

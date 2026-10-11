@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { saveLegacyGlm } from './legacy-models.helpers.js';
 test.use({ viewport: { width: 884, height: 773 }, actionTimeout: 15000 });
 test('pair A/E follows latest selections and context without stale heatmaps', async ({ page }) => {
     const button = (n) => page.getByRole('button', { name: n, exact: true });
@@ -15,10 +16,14 @@ test('pair A/E follows latest selections and context without stale heatmaps', as
             starts.push({ ...r.postDataJSON(), model: r.url().split('/').at(-1) });
     });
     await page.goto('/');
+    await saveLegacyGlm(page, `Imported legacy ${Date.now()}`);
+    await page.reload();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await page.getByLabel('Role for AnnualMileage', { exact: true }).selectOption('unassigned');
     await button('Preview changes').click();
     await button('Apply changes').click();
     await button('Model').click();
+    await page.getByLabel('Model selection', { exact: true }).selectOption('__new__');
     await button('Create model').click();
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 30000 });

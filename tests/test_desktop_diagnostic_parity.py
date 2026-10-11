@@ -126,6 +126,7 @@ def test_signed_gini_and_upgrade_without_solver(model_session, tmp_path, monkeyp
         "elapsed": 1.25,
         "key": model_key(project, "Frequency"),
         "applicable": True,
+        "artifact_available": True,
     }
     (tmp_path / "jobs.json").write_text(json.dumps({"Frequency": record}))
     import easy_glm.workflow.run as workflow_run

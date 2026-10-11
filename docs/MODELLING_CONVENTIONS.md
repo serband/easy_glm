@@ -15,6 +15,11 @@ example is [Building a pricing model](../examples/pricing_walkthrough.md).
 - Main effects stay fixed when an interaction is added. Legacy GLM interactions
   fit cell adjustments against the main-effects offset. Each CatBoost interaction
   uses the GLM and every preceding deployed interaction table as its offset.
+- Gaussian interactions require a log link. The Gaussian family default is log;
+  explicit non-log links cannot be used with interactions. Observed values may
+  be negative or zero, but fitted means and table multipliers remain positive.
+  Gaussian interaction selection uses weighted squared error on the original
+  response scale, including when comparing a proposed table with no interaction.
 - Sparse or unseen interaction cells use the neutral adjustment. Support and
   minimum-weight rules determine which cells can receive an estimated adjustment.
 - Frequency A/E uses claim counts and exposure consistently. A rate-change model
@@ -28,5 +33,75 @@ example is [Building a pricing model](../examples/pricing_walkthrough.md).
   the exposure-weighted mean of log relativities without preserving total expected
   claims. Rebalancing the base rate is a separate, explicit action.
 
-Detailed encoder, scoring and cache invariants are maintained in
-[AGENTS.md](../AGENTS.md) and enforced by the regression tests.
+## Optional AGLM numeric curves
+
+`aglm` and `aglm_l` are opt-in numeric designs. They are separate from the
+default step bands and from EasyGLM's existing `linear`/`continuous` designs.
+For an AGLM curve, `n_breaks` and `breaks` control a full grid including both
+endpoints. They do not reuse `n_bins` or `knots`, which remain the controls for
+step bands and piecewise-linear designs.
+
+- `aglm` is the AGLM O/C basis: raw `x` plus one capped, normalised ramp for
+  every adjacent pair in the grid.
+- `aglm_l` is the AGLM L basis: raw `x` plus `abs(x - break)` for each interior
+  grid point.
+- An automatic grid uses the training values only, with R type-7 quantiles.
+  The default requests 100 points including the endpoints; ties can leave fewer
+  distinct points. A stated `breaks` list replaces that automatic grid.
+- `extend` is the default tail behaviour: it leaves the raw value outside the
+  grid and so continues the fitted outer slope. `flat` clips first and holds
+  the curve level beyond the endpoints.
+- Missing values have all finite-basis columns set to zero and use the usual
+  optional null indicator. Infinite values are rejected. AGLM curves do not
+  support monotone constraints.
+
+The columns deliberately remain the literal, redundant AGLM basis. Unlike the
+existing piecewise-linear band-slope rule, AGLM columns use the standard
+uniform `P1=1` before a variable's explicit `penalty_weight` multiplier is
+applied. The band-rise penalty rule is therefore not silently applied to an
+AGLM curve. With `scale_predictors=True`, fitting standardises those columns as
+glmnet does; this changes the coefficient scale used for regularisation but
+not the retained basis or the scorer.
+
+The R reference is generated from CRAN `aglm` 0.4.1 and glmnet by
+[`scripts/generate_aglm_reference.R`](../scripts/generate_aglm_reference.R).
+[`tests/fixtures/aglm_0_4_1_reference.json`](../tests/fixtures/aglm_0_4_1_reference.json)
+records the matrices, weighted standardisation and fixed-penalty fits. The
+tests compare a common penalised objective and use documented prediction
+tolerances after strict solver controls. They do **not** claim bit-for-bit
+agreement with glmnet's default stopping rule: on the intentionally collinear
+O/C basis, that rule can stop at a different point. See
+[the numeric-curves example](../examples/numeric_curves.md) for the actuarial
+workflow.
+
+### Alternative AGLM basis
+
+`aglm_l` uses absolute-distance columns rather than the capped interval ramps
+of `aglm`. Both can represent a continuous piecewise-linear log-relativity,
+but regularisation acts on different columns, so their fitted curves can differ.
+After running the numeric-curves walkthrough, use the same age points and
+inspect the resulting curve and A/E:
+
+```python
+work.numeric(
+    "DrivAge", kind="aglm_l", breaks=[18, 25, 35, 50, 80], extrapolation="flat"
+)
+l_curve = fixed.refit("Alternative driver-age curve")
+l_curve.ae("DrivAge").show()
+l_curve.compare(fixed)
+```
+
+### Project variable definition
+
+When editing a Project recipe, assign a `VariableDesign` to
+`project.design.variables["DrivAge"]` before fitting. This definition supplies
+the method, complete age grid and extrapolation policy. Use curve `breaks`
+instead of the step-band `knots` or `n_bins` controls:
+
+```python
+from easy_glm.workflow import VariableDesign
+
+driver_age = VariableDesign(
+    kind="aglm", breaks=[18, 25, 35, 50, 80], extrapolation="extend"
+)
+```

@@ -22,6 +22,7 @@ from easy_glm.workflow.project import (
     premium_offset_column,
     validate_model_name,
 )
+from easy_glm.workflow.stack_types import ComponentRecipe
 
 
 class Revision(BaseModel):
@@ -30,12 +31,21 @@ class Revision(BaseModel):
     revision: int = Field(ge=0)
 
 
+class FitRequest(Revision):
+    #: Refit this saved branch from its complete recipe.  This is deliberately
+    #: distinct from the guarded in-session frozen-prefix optimisation.
+    full_refit: bool = False
+
+
 class ModelEdit(Revision):
     name: str
     create: bool = False
+    source_name: str | None = None
+    source_fit_id: str | None = None
     fields: dict[str, Any] = Field(default_factory=dict)
     designs: dict[
-        str, Literal["step", "linear", "continuous", "categorical"] | None
+        str,
+        Literal["step", "linear", "continuous", "categorical", "aglm", "aglm_l"] | None,
     ] = Field(default_factory=dict)
     n_bins: int | None = Field(default=None, ge=2, le=200)
     min_level_share: float | None = Field(default=None, ge=0, lt=1)
@@ -85,6 +95,108 @@ def pair_candidate_groups(
     return groups
 
 
+def stack_factor_stages(
+    project: Project,
+    raw: pl.DataFrame,
+    prepared_columns: set[str],
+    config: ModelConfig,
+) -> list[list[str]]:
+    """Canonical factor scope before every component in a stack.
+
+    Only raw predictor/unassigned columns enter at the root.  Model controls,
+    protected project roles, derived columns and generated premium/split fields
+    cannot leak in through a hand-edited component recipe.  A catalogue's key
+    is an input at its own stage; its pinned attributes become available only
+    to following components.
+    """
+    groups = pair_candidate_groups(project, raw, prepared_columns)
+    protected = _stack_protected_columns(project, config)
+    available = {
+        name
+        for name in [*groups["predictors"], *groups["unassigned"]]
+        if name not in protected
+    }
+    stages: list[list[str]] = []
+    for component in config.components:
+        stages.append(sorted(available, key=str.casefold))
+        if component.kind == "catalogue":
+            available.update(set(component.factors) - protected)
+    stages.append(sorted(available, key=str.casefold))
+    return stages
+
+
+def _stack_protected_columns(project: Project, config: ModelConfig) -> set[str]:
+    """All columns that cannot become raw or lookup-derived stack factors."""
+    protected_roles = {
+        name
+        for name, role in project.data.roles.items()
+        if role not in (None, "predictor")
+    }
+    protected = protected_roles | {
+        value
+        for value in (
+            config.target,
+            config.weight,
+            config.offset,
+            project.data.split.column,
+        )
+        if isinstance(value, str)
+    }
+    premium = project.current_premium
+    if premium is not None:
+        protected.update((premium, premium_offset_column(premium)))
+    protected.update(item.name for item in project.data.derived)
+    return protected
+
+
+def validate_stack_factor_scope(
+    project: Project,
+    raw: pl.DataFrame,
+    prepared_columns: set[str],
+    config: ModelConfig,
+    *,
+    start_index: int = 0,
+) -> None:
+    """Refuse unsafe/new stack factors while allowing repeated corrections."""
+    stages = stack_factor_stages(project, raw, prepared_columns, config)
+    protected = _stack_protected_columns(project, config)
+    catalogue_id_keys = {
+        project.data.renames.get(source, source)
+        for source in raw.columns
+        if project.data.roles.get(project.data.renames.get(source, source)) == "id"
+        and project.data.renames.get(source, source) in prepared_columns
+    }
+    for index, component in enumerate(config.components):
+        if index < start_index:
+            continue
+        available = set(stages[index])
+        if component.kind == "catalogue":
+            key = component.settings.get("key")
+            if not isinstance(key, str) or key not in available | catalogue_id_keys:
+                raise ValueError(
+                    f"Catalogue component {component.name!r} needs an eligible source key or ID."
+                )
+            if not component.factors or not all(
+                isinstance(value, str) and value.strip() for value in component.factors
+            ):
+                raise ValueError(
+                    f"Catalogue component {component.name!r} needs pinned attribute names."
+                )
+            collisions = sorted(set(component.factors) & protected)
+            if collisions:
+                raise ValueError(
+                    f"Catalogue component {component.name!r} cannot introduce protected columns: {collisions}"
+                )
+            continue
+        if component.kind == "legacy":
+            continue
+        invalid = [factor for factor in component.factors if factor not in available]
+        if invalid:
+            raise ValueError(
+                f"Component {component.name!r} uses factors unavailable at this stage: {invalid}"
+            )
+
+
 def setup_info(project: Project, raw: pl.DataFrame) -> dict[str, Any]:
     """Readiness uses prepared data, including a generated random split."""
     problems: list[str] = []
@@ -114,11 +226,14 @@ def setup_info(project: Project, raw: pl.DataFrame) -> dict[str, Any]:
     except (ValueError, TypeError, KeyError, pl.exceptions.PolarsError) as exc:
         problems.append(str(exc))
     if not project.target:
-        problems.append("Assign a target role on Variables and apply it.")
+        problems.append("Assign a target role in Project & data and apply it.")
     if not project.predictors and not any(
-        config.pair_stages for config in project.models.values()
+        config.pair_stages or getattr(config, "components", ())
+        for config in project.models.values()
     ):
-        problems.append("Assign at least one predictor role on Variables and apply it.")
+        problems.append(
+            "Assign at least one predictor role in Project & data and apply it."
+        )
     pair_search_preflight = {
         name: [
             {
@@ -139,6 +254,22 @@ def setup_info(project: Project, raw: pl.DataFrame) -> dict[str, Any]:
         for name, config in project.models.items()
         if config.pair_stages
     }
+    eligible_groups = pair_candidate_groups(project, raw, prepared_columns)
+    base_stack_factors = stack_factor_stages(
+        project,
+        raw,
+        prepared_columns,
+        ModelConfig(
+            target=project.target,
+            weight=project.weight,
+            offset=project.offset_column,
+        ),
+    )[0]
+    stack_candidates: dict[str, list[list[str]]] = {}
+    for model_name, config in project.models.items():
+        stack_candidates[model_name] = stack_factor_stages(
+            project, raw, prepared_columns, config
+        )
     return {
         "columns": columns,
         "split": asdict(project.data.split),
@@ -146,7 +277,9 @@ def setup_info(project: Project, raw: pl.DataFrame) -> dict[str, Any]:
         "problems": problems,
         "models": project.to_dict()["models"],
         "predictors": project.predictors,
-        "pair_candidates": pair_candidate_groups(project, raw, prepared_columns),
+        "pair_candidates": eligible_groups,
+        "stack_candidates": stack_candidates,
+        "stack_base_candidates": base_stack_factors,
         "target": project.target,
         "weight": project.weight,
         "offset": project.offset_column,
@@ -307,6 +440,13 @@ def edit_model(project: Project, edit: ModelEdit) -> Project:
     if edit.name not in candidate.models:
         raise ValueError("Choose an existing model or create a new one.")
     cfg = candidate.models[edit.name]
+    if ("components" in edit.fields or cfg.components) and (
+        edit.designs or edit.n_bins is not None or edit.min_level_share is not None
+    ):
+        raise ValueError(
+            "Stack model definitions carry their own variables and bands; "
+            "change them on the model component instead."
+        )
     allowed = {
         "family",
         "link",
@@ -319,6 +459,7 @@ def edit_model(project: Project, edit: ModelEdit) -> Project:
         "pair_method",
         "pair_time_limit_minutes",
         "pair_stages",
+        "components",
         "penalty",
         "tweedie_power",
         "base",
@@ -332,6 +473,12 @@ def edit_model(project: Project, edit: ModelEdit) -> Project:
             _edit_interactions(cfg, value)
         elif key == "pair_stages":
             _edit_pair_stages(cfg, value)
+        elif key == "components":
+            if not isinstance(value, list) or not all(
+                isinstance(item, dict) for item in value
+            ):
+                raise ValueError("Components must be an ordered list of recipes.")
+            cfg.components = [ComponentRecipe.from_dict(item) for item in value]
         elif key == "penalty":
             if not isinstance(value, dict) or set(value) - {
                 "alpha",
@@ -365,6 +512,19 @@ def edit_model(project: Project, edit: ModelEdit) -> Project:
         if name not in candidate.predictors:
             raise ValueError(f"{name!r} is not a predictor-role column.")
         existing = candidate.design.variables.get(name, VariableDesign())
+        if kind in ("aglm", "aglm_l") and existing.kind not in ("aglm", "aglm_l"):
+            existing.knots, existing.n_bins, existing.clamp, existing.monotone = (
+                "quantile",
+                None,
+                None,
+                None,
+            )
+        elif kind not in ("aglm", "aglm_l"):
+            existing.breaks, existing.n_breaks, existing.extrapolation = (
+                None,
+                None,
+                None,
+            )
         existing.kind = kind
         candidate.design.variables[name] = existing
     if edit.n_bins is not None:

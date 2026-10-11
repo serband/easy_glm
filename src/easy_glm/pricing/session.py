@@ -25,7 +25,12 @@ from easy_glm.workflow.project import (
 )
 from easy_glm.workflow.run import build_design, run_model
 
-from .validation import require_column, validate_factors, validate_setup
+from .validation import (
+    protected_columns,
+    require_column,
+    validate_factors,
+    validate_setup,
+)
 
 _GENERATED_SPLIT = "__easy_glm_split__"
 
@@ -251,6 +256,42 @@ class PricingSession:
             f"Training band support — {variable}",
         )
 
+    def numeric(
+        self,
+        variable: str,
+        *,
+        kind: str = "aglm",
+        breaks: Sequence[float] | None = None,
+        n_breaks: int = 100,
+        extrapolation: str = "extend",
+    ) -> Any:
+        """Choose an AGLM curve for future fits; preview its training grid.
+
+        ``breaks`` includes both endpoints. Otherwise ``n_breaks`` interpolated
+        training quantiles supply the grid. Earlier named models are unchanged.
+        """
+        require_column(self._data, variable, "Numeric curve")
+        if kind not in ("aglm", "aglm_l"):
+            raise ValueError(
+                "Choose kind='aglm' or kind='aglm_l'; use bands for step bands"
+            )
+        design = VariableDesign(
+            kind=kind,
+            breaks=list(breaks) if breaks is not None else None,
+            n_breaks=n_breaks,
+            extrapolation=extrapolation,
+        )
+        # Validate and construct first: a failed edit must not change the session.
+        from easy_glm.workflow.run import encoder_for
+
+        train = self._training()
+        encoder = encoder_for(variable, train[variable], design, self._project)
+        self._project.design.variables[variable] = design
+        return self._display(
+            self._encoder_preview(train, variable, encoder),
+            f"Training curve support — {variable}",
+        )
+
     def categories(
         self,
         variable: str,
@@ -352,6 +393,226 @@ class PricingSession:
             project,
             name,
             history=[{"action": "fit_glm", "name": name, "factors": list(factors)}],
+        )
+
+    def _fit_stack(
+        self,
+        project: Project,
+        name: str,
+        *,
+        history: list[dict[str, Any]],
+        frozen_prefix: Any | None = None,
+        evidence: dict[str, Any] | None = None,
+    ) -> Any:
+        """Fit an ordered recipe while retaining its accepted prefix scorer."""
+        from easy_glm.workflow.stack import fit_stack
+
+        from .model import PricingModel
+
+        checkpoint = Project.from_dict(project.to_dict())
+        training = train_holdout(self._data, checkpoint.data.split)[0]
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            run = fit_stack(
+                checkpoint,
+                training,
+                checkpoint.models[name],
+                frozen_prefix=frozen_prefix,
+            )
+        run.name = name
+        # Tuning returns the selected, replayable recipe in run.config.
+        checkpoint.models[name] = copy.deepcopy(run.config)
+        run.project_snapshot = checkpoint.to_dict()
+        captured = copy.deepcopy(evidence or {})
+        captured["data_fingerprint"] = self._data_fingerprint
+        fit_warnings = list(
+            dict.fromkeys(
+                f"{item.category.__name__}: {item.message}" for item in caught
+            )
+        )
+        if fit_warnings:
+            captured["fit_warnings"] = fit_warnings
+        self._project.models[name] = copy.deepcopy(checkpoint.models[name])
+        self._project.champion = self._project.champion or name
+        return PricingModel(self, checkpoint, run, history=history, evidence=captured)
+
+    def _first_component(
+        self,
+        name: str,
+        *,
+        kind: str,
+        factors: Sequence[str],
+        settings: dict[str, Any],
+    ) -> Any:
+        from easy_glm.workflow.stack_types import ComponentRecipe
+
+        project = Project.from_dict(self._project.to_dict())
+        selected = (
+            [str(factor) for factor in factors]
+            if kind == "catalogue"
+            else validate_factors(project, self._data, factors)
+        )
+        problem = validate_model_name(name, project.models)
+        if problem:
+            raise ValueError(problem)
+        config = ModelConfig(
+            family=self._family,
+            tweedie_power=self._tweedie_power,
+            link=self._link,
+            target=project.target,
+            weight=self._weight,
+            offset=project.offset_column,
+            divide_target_by_weight=self._divide_target_by_weight,
+        )
+        config.components = [
+            ComponentRecipe(
+                component_id=f"{kind}_1",
+                name=name,
+                kind=kind,
+                factors=tuple(selected),
+                settings=settings,
+            )
+        ]
+        project.models[name] = config
+        return self._fit_stack(
+            project,
+            name,
+            history=[{"action": f"fit_{kind}", "name": name, "factors": selected}],
+        )
+
+    def fit_catboost(
+        self,
+        name: str,
+        *,
+        factors: Sequence[str],
+        iterations: int = 300,
+        depth: int = 6,
+        learning_rate: float = 0.05,
+        l2_leaf_reg: float = 3.0,
+        seed: int | None = None,
+        thread_count: int = 2,
+        time_limit_minutes: float | None = None,
+        trials: int = 8,
+        cv: int = 5,
+        tune: bool | None = None,
+        tuning_budget: str | None = None,
+    ) -> Any:
+        """Fit a direct CatBoost component as the first model component.
+
+        ``tune=True`` uses training-fold tuning with a ``"trials"`` or
+        ``"time"`` budget and keeps the unchanged model if no tree improves it.
+        ``tune=False`` fits the supplied settings once on all training rows.
+        """
+        explicit = tune is not None or tuning_budget is not None
+        settings: dict[str, Any] = (
+            {
+                "iterations": iterations,
+                "depth": depth,
+                "learning_rate": learning_rate,
+                "l2_leaf_reg": l2_leaf_reg,
+                "seed": self._project.data.split.seed if seed is None else seed,
+                "thread_count": thread_count,
+                "time_limit_minutes": time_limit_minutes,
+                "trials": trials,
+                "cv": cv,
+            }
+            if explicit
+            else {
+                "iterations": int(iterations),
+                "depth": int(depth),
+                "learning_rate": float(learning_rate),
+                "l2_leaf_reg": float(l2_leaf_reg),
+                "seed": int(self._project.data.split.seed if seed is None else seed),
+                "thread_count": int(thread_count),
+                "time_limit_minutes": time_limit_minutes,
+                "trials": int(trials),
+                "cv": int(cv),
+            }
+        )
+        if explicit:
+            settings["tune"] = True if tune is None else tune
+            if tune is True or tune is None:
+                settings["tuning_budget"] = (
+                    "trials" if tuning_budget is None else tuning_budget
+                )
+            elif tuning_budget is not None:
+                settings["tuning_budget"] = tuning_budget
+        return self._first_component(
+            name,
+            kind="catboost",
+            factors=factors,
+            settings=settings,
+        )
+
+    def fit_catalogue(
+        self,
+        name: str,
+        *,
+        catalogue: pl.DataFrame | Any,
+        key: str,
+        factors: Sequence[str],
+        method: str = "catboost",
+        fallback: float | None = None,
+        **catboost_settings: Any,
+    ) -> Any:
+        """Fit a key-only lookup from the supplied complete catalogue."""
+        table = (
+            catalogue
+            if isinstance(catalogue, pl.DataFrame)
+            else pl.DataFrame(catalogue)
+        )
+        if key not in table.columns:
+            raise KeyError(f"Catalogue key {key!r} is missing")
+        forbidden = [
+            column
+            for column in (key, *factors)
+            if column in protected_columns(self._project)
+        ]
+        if forbidden:
+            raise ValueError(f"Catalogue uses protected columns: {forbidden}")
+        if any(factor not in table.columns for factor in factors):
+            raise KeyError("Every catalogue factor must be a catalogue column")
+        return self._first_component(
+            name,
+            kind="catalogue",
+            factors=factors,
+            settings={
+                "key": key,
+                "attributes": list(factors),
+                "method": method,
+                "catalogue": table.to_dict(as_series=False),
+                "catalogue_schema": {
+                    column: str(dtype) for column, dtype in table.schema.items()
+                },
+                "fallback": fallback,
+                **catboost_settings,
+            },
+        )
+
+    def fit_interaction(
+        self,
+        a: str,
+        b: str,
+        *,
+        name: str,
+        trials: int = 8,
+        prefix_trials: int = 4,
+        min_weight_share: float = 0.001,
+        seed: int | None = None,
+        time_limit_minutes: float | None = None,
+    ) -> Any:
+        """Fit a first pair correction with an internal training-only baseline."""
+        return self._first_component(
+            name,
+            kind="interaction",
+            factors=(a, b),
+            settings={
+                "trials": trials,
+                "prefix_trials": prefix_trials,
+                "min_weight_share": min_weight_share,
+                "seed": int(self._project.data.split.seed if seed is None else seed),
+                "time_limit_minutes": time_limit_minutes,
+            },
         )
 
     def _fit(

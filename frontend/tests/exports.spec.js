@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+import { saveLegacyGlm } from './legacy-models.helpers.js';
 
 test.use({ viewport: { width: 919, height: 773 } });
 test('downloads applied artifacts and excludes unsaved adjustment previews', async ({
@@ -27,11 +28,18 @@ test('downloads applied artifacts and excludes unsaved adjustment previews', asy
         JSON.parse((await download('Download project JSON', '.easyglm-project.json')).toString())
             .models,
     ).toEqual({});
-    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
+    // Export's empty-project state is part of the public first-run journey.
+    // The subsequent fit deliberately uses the imported-model compatibility editor.
+    await saveLegacyGlm(page, `Imported legacy ${Date.now()}`);
+    await page.reload();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await page.getByRole('navigation', { name: 'Project setup steps' })
+        .getByRole('button', { name: /Shared columns/ }).click();
     await page.getByLabel('Training fraction', { exact: true }).fill('0.7');
     await button('Preview changes').click();
     await button('Apply changes').click();
     await button('Model').click();
+    await page.getByLabel('Model selection', { exact: true }).selectOption('__new__');
     await button('Create model').click();
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 45000 });

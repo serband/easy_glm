@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import pprint
+from pathlib import Path
 from typing import Any
 
 from easy_glm.core.design import (
+    AglmLEncoder,
+    AglmOEncoder,
     CategoricalEncoder,
     DesignSpec,
     InteractionEncoder,
@@ -25,6 +29,28 @@ def to_scoring_script(run: ModelRun, *, output_prefix: str | None = None) -> str
     This is a frozen scoring artefact. :func:`to_script` instead re-runs the
     training workflow, which may select different parameters on changed data.
     """
+    if run.stack is not None:
+        payload = json.dumps(run.stack.to_dict(), ensure_ascii=False, allow_nan=False)
+        prefix = output_prefix or run.name
+        return "\n".join(
+            [
+                f'"""Frozen accepted ordered scorer for {run.name!r}."""',
+                "",
+                "import json",
+                "from pathlib import Path",
+                "from easy_glm.workflow.stack_types import StackScorer",
+                "",
+                f"stack = StackScorer.from_dict(json.loads({payload!r}))",
+                "",
+                "def predict(data, *, exposure_col=None):",
+                '    """Score prepared rows, returning unit predictions by default."""',
+                "    return stack.predict(data, exposure_col=exposure_col)",
+                "",
+                "if __name__ == '__main__':",
+                f"    Path({prefix + '_stack.json'!r}).write_text(json.dumps(stack.to_dict(), ensure_ascii=False))",
+                "",
+            ]
+        )
     payload = json.dumps(run.rate_model.to_dict(), ensure_ascii=False, default=str)
     prefix = output_prefix or run.name
     return "\n".join(
@@ -54,6 +80,150 @@ def to_scoring_script(run: ModelRun, *, output_prefix: str | None = None) -> str
             "if __name__ == '__main__':",
             f"    rate_model.to_json({prefix + '.easyglm'!r})",
             f"    rate_model.to_excel({prefix + '_rate_tables.xlsx'!r})",
+            "",
+        ]
+    )
+
+
+def write_stack_bundle(project: Project, run: ModelRun, path: str | Path) -> Path:
+    """Save the accepted stack in the same portable format as PricingModel.save."""
+    if run.stack is None:
+        raise ValueError("This run has no ordered stack")
+    from easy_glm.pricing.persistence import BUNDLE_FORMAT, BUNDLE_VERSION, _json_value
+
+    snapshot = project.copy()
+    snapshot.models[run.name] = run.config
+    payload = {
+        "format": BUNDLE_FORMAT,
+        "format_version": BUNDLE_VERSION,
+        "name": run.name,
+        "project": snapshot.to_dict(),
+        "rate_model": None,
+        "stack": run.stack.to_dict(),
+        "run": {
+            "metrics": run.metrics,
+            "created_at": run.created_at,
+            "train_rows": run.train_rows,
+            "holdout_rows": run.holdout_rows,
+            "dropped_predictors": run.dropped_predictors,
+            "pair_stages": [],
+        },
+        "history": [],
+        "evidence": {},
+        "frozen_stages": [],
+        "data_fingerprint": None,
+    }
+    destination = Path(path)
+    destination.write_text(
+        json.dumps(_json_value(payload), indent=2, ensure_ascii=False, allow_nan=False)
+    )
+    return destination
+
+
+def _stack_training_script(
+    project: Project, model: str, run: ModelRun | None, prefix: str
+) -> str:
+    """Replay every ordered recipe using pinned catalogue contents."""
+    from .catalogue import load_catalogue
+    from .stack_types import LookupScorer
+
+    run_snapshot = getattr(run, "project_snapshot", None) if run is not None else None
+    snapshot = (
+        Project.from_dict(copy.deepcopy(run_snapshot))
+        if isinstance(run_snapshot, dict)
+        else project.copy()
+    )
+    if run is not None:
+        # ``run.config`` is the accepted recipe.  The export then replaces a
+        # file-backed catalogue with its accepted contents, so it must be a
+        # private copy rather than a surprising mutation of the fitted run.
+        snapshot.models[model] = copy.deepcopy(run.config)
+
+    accepted = {
+        item.recipe.component_id: item
+        for item in (run.stack.components if run is not None and run.stack else [])
+    }
+    for recipe in snapshot.models[model].components:
+        if recipe.kind != "catalogue":
+            continue
+        settings = recipe.settings
+        if "catalogue" not in settings:
+            artifact = accepted.get(recipe.component_id)
+            if artifact is not None and isinstance(artifact.scorer, LookupScorer):
+                # The accepted lookup carries the source master plus fitted
+                # multiplier/support columns.  Retain every source field and
+                # discard only scorer-specific columns, so this workflow can
+                # still be replayed after the uploaded catalogue has gone.
+                master = artifact.scorer.table.drop(
+                    [
+                        column
+                        for column in ("multiplier", "train_rows")
+                        if column in artifact.scorer.table.columns
+                    ]
+                )
+                required = {str(settings["key"]), *recipe.factors}
+                if not required.issubset(master.columns):
+                    master = load_catalogue(settings)
+            else:
+                master = load_catalogue(settings)
+            settings["catalogue"] = master.to_dict(as_series=False)
+            settings["catalogue_schema"] = {
+                name: str(dtype) for name, dtype in master.schema.items()
+            }
+            settings.pop("source_path", None)
+            settings.pop("source_sha256", None)
+    encoded = json.dumps(snapshot.to_dict(), ensure_ascii=False, default=str)
+    split = snapshot.data.split
+    source_path = snapshot.data.source.path
+    component_lines = []
+    if run is not None and run.stack is not None:
+        components = [item.recipe for item in run.stack.components]
+    else:
+        components = snapshot.models[model].components
+    for index, recipe in enumerate(components, start=1):
+        if recipe.kind == "legacy":
+            description = f"Accepted frozen source: {recipe.name!r} (legacy scorer)"
+        elif recipe.kind == "baseline":
+            description = f"Starting level: {recipe.name!r} (internal baseline)"
+        else:
+            description = f"{recipe.name!r} ({recipe.kind!r})"
+        component_lines.append(f"# {index}. {description}")
+    return "\n".join(
+        [
+            '"""Refit an ordered EasyGLM model and export its scorer."""',
+            f"# Project: {snapshot.name!r}; model: {model!r}",
+            "",
+            "# Refitting uses the source data and can change fitted values.",
+            "",
+            "import json",
+            "from easy_glm.workflow import Project, prepare, run_model",
+            "from easy_glm.workflow.export import write_stack_bundle",
+            "from easy_glm.pricing.excel import export_stack_excel",
+            "",
+            "# Change this path to rebuild from another copy of the same source data.",
+            f"SOURCE_PATH = {source_path!r}",
+            "",
+            "# Accepted component order used for the replay:",
+            *component_lines,
+            "",
+            "# Saved split (retained by the project snapshot): "
+            + repr(
+                {
+                    "mode": split.mode,
+                    "column": split.column,
+                    "train_value": split.train_value,
+                    "holdout_value": split.holdout_value,
+                    "fraction": split.fraction,
+                    "seed": split.seed,
+                }
+            ),
+            "",
+            f"project = Project.from_dict(json.loads({encoded!r}))",
+            "project.data.source.path = SOURCE_PATH",
+            "prepared = prepare(project)",
+            f"run = run_model(project, prepared, {model!r})",
+            f"write_stack_bundle(project, run, {prefix + '.easyglm'!r})",
+            f"export_stack_excel(run, {prefix + '_rate_tables.xlsx'!r})",
             "",
         ]
     )
@@ -156,6 +326,12 @@ def _spec_code(spec: DesignSpec) -> str:
             parts.append(
                 f"    {var!r}: CategoricalEncoder({var!r}, {_list(enc.levels)}"
                 f"{_penalty_arg(enc)}),"
+            )
+        elif isinstance(enc, AglmOEncoder | AglmLEncoder):
+            parts.append(
+                f"    {var!r}: {type(enc).__name__}({var!r}, {_list(enc.breaks)}, "
+                f"extrapolation={enc.extrapolation!r}, "
+                f"null_indicator={enc.null_indicator}{_penalty_arg(enc)}),"
             )
         elif isinstance(enc, LinearEncoder):
             parts.append(
@@ -389,6 +565,8 @@ def to_script(
             "Save the source data to a file and select it before exporting a Python script."
         )
     prefix = output_prefix or model
+    if cfg.components:
+        return _stack_training_script(project, model, run, prefix)
     if cfg.pair_stages:
         return _pair_training_script(project, model, prefix)
     uses_sas = d.source.type.lower() == "sas7bdat"
@@ -417,6 +595,8 @@ def to_script(
     lines += [
         "",
         "from easy_glm import (",
+        "    AglmOEncoder,",
+        "    AglmLEncoder,",
         "    CategoricalEncoder,",
         "    DesignSpec,",
         "    InteractionEncoder,",

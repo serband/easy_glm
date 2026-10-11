@@ -10,6 +10,7 @@
     import DiagnosticPlot from './DiagnosticPlot.svelte';
     import PathChart from './PathChart.svelte';
     import DiagnosticTable from './DiagnosticTable.svelte';
+    import SearchableVariableSelect from './SearchableVariableSelect.svelte';
     export let fitIdentity = '',
         comparisonFitIdentity = '',
         table = null,
@@ -31,7 +32,8 @@
         onNavigate,
         onManual = () => {},
         tableKind = '',
-        rateLabel = 'relativity';
+        rateLabel = 'relativity',
+        showBothDiagnosticSubsets = true;
     let activeDiagnosticTab = 'variable',
         inspectedResidual = false;
     let bins = 10,
@@ -337,7 +339,14 @@
     );
     $: if (analysis?.chart_kind === 'importance' && analysis.fit_context !== importanceContext)
         analysis = null;
-    $: desiredVariableKey = JSON.stringify([key, selectedVariable, bins, diagnosticTab]);
+    $: desiredVariableKey = JSON.stringify([
+        key,
+        selectedVariable,
+        bins,
+        diagnosticTab,
+        subset,
+        showBothDiagnosticSubsets,
+    ]);
     $: if (
         !busy &&
         loadedKey === key &&
@@ -454,7 +463,7 @@
                 aeContext,
                 extra.variable || selectedVariable,
                 subset,
-                view === 'diagnostics',
+                view === 'diagnostics' && showBothDiagnosticSubsets && subset === 'train',
             );
             if (ready) {
                 runSerial++;
@@ -521,7 +530,10 @@
                 challenger: challenger || null,
                 n_bins: Number(bins),
                 tolerance: Number(tolerance),
-                options: { both_subsets: view === 'diagnostics' },
+                options: {
+                    both_subsets:
+                        view === 'diagnostics' && showBothDiagnosticSubsets && subset === 'train',
+                },
                 ...extra,
             };
             if (action === 'importance') {
@@ -924,9 +936,7 @@
             </div>{/if}
         {#if error && view !== 'tables'}<div class="message error" role="alert">{error}</div>{/if}
         {#if view === 'diagnostics'}
-            {#if diagnosticTab === 'importance'}<div
-                    class="results-toolbar diagnostic-controls"
-                >
+            {#if diagnosticTab === 'importance'}<div class="results-toolbar diagnostic-controls">
                     <label
                         >Training rows to score (%)<input
                             aria-label="Importance sample percentage"
@@ -987,18 +997,22 @@
                 </div>{/if}
 
             <div class="results-toolbar" hidden={diagnosticTab !== 'variable'}>
-                <label
-                    >Variable<select
-                        aria-label="Diagnostic variable"
-                        bind:value={diagnosticVariable}
-                        onchange={() => run('variable', { variable: diagnosticVariable })}
-                        >{#each info.variables as v}<option value={v}
-                                >{v}{info.variable_info?.find((x) => x.name === v)?.kind
-                                    ? ''
-                                    : ' (not in model)'}</option
-                            >{/each}</select
-                    ></label
-                >
+                <SearchableVariableSelect
+                    options={info.variables.map((v) => ({
+                        value: v,
+                        label:
+                            v +
+                            (info.variable_info?.find((x) => x.name === v)?.kind
+                                ? ''
+                                : ' (not in model)'),
+                    }))}
+                    bind:value={diagnosticVariable}
+                    label="Variable"
+                    selectLabel="Diagnostic variable"
+                    searchLabel="Search diagnostic variables"
+                    contextKey={key}
+                    onChange={(chosen) => run('variable', { variable: chosen })}
+                />
             </div>
             <div>
                 <div class="pair-controls" hidden={diagnosticTab !== 'pair'}>

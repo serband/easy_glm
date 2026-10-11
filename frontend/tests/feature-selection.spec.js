@@ -20,12 +20,36 @@ async function variablesSnapshot(page) {
     });
 }
 
+async function openSharedSetup(page) {
+    const loaded = page.waitForResponse(
+        (response) =>
+            response.url().includes('/api/model-plan') && response.request().method() === 'GET',
+    );
+    await page.goto('/?view=project');
+    await loaded;
+    const shared = page.getByRole('region', { name: 'Shared column assignments' });
+    const steps = page.getByRole('navigation', { name: 'Project setup steps' });
+    if (!(await shared.count())) {
+        let route = page.getByRole('button', { name: 'Single model', exact: true });
+        if (!(await route.count())) {
+            await steps.getByRole('button', { name: /Model structure/ }).click();
+            route = page.getByRole('button', { name: 'Single model', exact: true });
+        }
+        await route.click();
+    }
+    await steps.getByRole('button', { name: /Shared columns/ }).click();
+    await expect(shared).toBeVisible();
+    await steps.getByRole('button', { name: /Variables/ }).click();
+    await page.getByRole('button', { name: 'Explore', exact: true }).click();
+    await expect(page.getByRole('group', { name: 'One-way feature selection' })).toBeVisible();
+}
+
 test('one-way screen uses training rows and stages reviewed role changes', async ({
     page,
 }, testInfo) => {
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
-    await page.goto('/');
+    await openSharedSetup(page);
     const panel = page.getByRole('group', { name: 'One-way feature selection' });
     await panel.locator(':scope > summary').click();
     await expect(panel).toContainText('4 variables to test');
@@ -123,6 +147,11 @@ test('one-way screen uses training rows and stages reviewed role changes', async
     await first.check();
     const action = previousRole === 'predictor' ? 'Ignore selected' : 'Make selected predictors';
     await panel.getByRole('button', { name: action, exact: true }).click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await page
+        .getByRole('navigation', { name: 'Project setup steps' })
+        .getByRole('button', { name: /Shared columns/ })
+        .click();
     await expect(page.getByRole('button', { name: 'Apply changes' })).toBeVisible();
     expect((await project(page)).data.roles).toEqual(before.data.roles);
     const intended = previousRole === 'predictor' ? 'ignore' : 'predictor';
@@ -141,7 +170,7 @@ test('one-way screen uses training rows and stages reviewed role changes', async
 test('ranked chart shares a numeric scale, filters and pages without inventing skipped scores', async ({
     page,
 }) => {
-    await page.goto('/');
+    await openSharedSetup(page);
     const panel = page.getByRole('group', { name: 'One-way feature selection' });
     await panel.locator(':scope > summary').click();
     const snapshot = await variablesSnapshot(page);
@@ -298,10 +327,10 @@ test('ranked chart shares a numeric scale, filters and pages without inventing s
     ).toHaveCount(1);
 });
 
-test('cancelled or changed drafts suppress late reports, and invalid JSON cannot start', async ({
+test('cancelled or changed drafts suppress late reports, and unfinished JSON uses the valid shared draft', async ({
     page,
 }) => {
-    await page.goto('/');
+    await openSharedSetup(page);
     const panel = page.getByRole('group', { name: 'One-way feature selection' });
     await panel.locator(':scope > summary').click();
     let release;
@@ -317,18 +346,36 @@ test('cancelled or changed drafts suppress late reports, and invalid JSON cannot
     await panel.getByRole('button', { name: 'Run one-way feature selection' }).click();
     await request;
     await panel.getByRole('button', { name: 'Cancel feature selection' }).click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await page
+        .getByRole('navigation', { name: 'Project setup steps' })
+        .getByRole('button', { name: /Shared columns/ })
+        .click();
     await page.getByLabel('Role for Noise').selectOption('ignore');
+    const appliedSetup = (await variablesSnapshot(page)).setup;
+    const expectedSetup = structuredClone(appliedSetup);
+    expectedSetup.roles.predictor = expectedSetup.roles.predictor.filter((name) => name !== 'Noise');
+    expectedSetup.roles.ignore = [...expectedSetup.roles.ignore, 'Noise'];
     const lateResponse = page.waitForResponse('**/api/variables/feature-selection');
     release();
     await lateResponse;
     await expect(panel.getByText(/of .* variables tested/)).toHaveCount(0);
     await page.getByRole('button', { name: 'Variables JSON' }).click();
     await page.getByLabel('Variables JSON').fill('{unfinished');
-    let starts = 0;
+    const starts = [];
     page.on('request', (item) => {
-        if (item.url().endsWith('/api/variables/feature-selection')) starts++;
+        if (item.url().endsWith('/api/variables/feature-selection'))
+            starts.push(item.postDataJSON());
     });
+    await page.getByRole('button', { name: 'Explore', exact: true }).click();
     await panel.getByRole('button', { name: 'Run one-way feature selection' }).click();
-    await expect(page.getByRole('alert')).toContainText('JSON');
-    expect(starts).toBe(0);
+    await expect(panel).toContainText(/of .* variables tested/);
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await page
+        .getByRole('navigation', { name: 'Project setup steps' })
+        .getByRole('button', { name: /Shared columns/ })
+        .click();
+    await expect(page.getByLabel('Variables JSON')).toHaveValue('{unfinished');
+    expect(starts).toHaveLength(1);
+    expect(starts[0].setup).toEqual(expectedSetup);
 });

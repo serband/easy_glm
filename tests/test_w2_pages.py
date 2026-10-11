@@ -188,9 +188,19 @@ class TestDesignPage:
         at = _run(_script("pages_design", workspace["project"], fit=False))
         at.selectbox(key=wk(at, "design_detail_var")).set_value("Density").run()
         kind = at.selectbox(key=wk(at, "kind_Density"))
-        assert kind.options == ["auto", "step", "linear", "continuous", "categorical"]
+        assert kind.options == [
+            "auto",
+            "step",
+            "linear",
+            "continuous",
+            "aglm",
+            "aglm_l",
+            "categorical",
+        ]
         for word in ("step —", "linear —", "continuous —", "categorical —"):
             assert word in kind.help
+        for label in ("AGLM smooth curve", "AGLM L curve"):
+            assert label in kind.help
         kind.set_value("continuous").run()
         assert not at.exception and not _errors(at)
         vd = at.session_state["_project"].design.variables["Density"]

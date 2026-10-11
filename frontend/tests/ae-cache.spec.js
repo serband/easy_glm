@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { saveLegacyGlm } from './legacy-models.helpers.js';
 test.use({ viewport: { width: 884, height: 773 }, actionTimeout: 15000 });
 test('fitted variable cache is immediate, invalidates after edits and rejects late misses', async ({
     page,
@@ -14,10 +15,25 @@ test('fitted variable cache is immediate, invalidates after edits and rejects la
             starts++;
     });
     await page.goto('/');
+    const session = await (await page.request.get('/api/session')).json();
+    const headers = { 'X-EasyGLM-Token': session.token };
+    const variables = await (await page.request.get('/api/variables', { headers })).json();
+    const setup = structuredClone(variables.setup);
+    setup.roles.unassigned = setup.roles.unassigned.filter((name) => name !== 'AnnualMileage');
+    setup.roles.predictor.push('AnnualMileage');
+    const assigned = await page.request.post('/api/variables/apply', {
+        headers,
+        data: { session_id: variables.session_id, revision: variables.revision, setup },
+    });
+    expect(assigned.ok(), await assigned.text()).toBe(true);
+    await saveLegacyGlm(page, `Imported legacy ${Date.now()}`);
+    await page.reload();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await page.getByLabel('Role for AnnualMileage', { exact: true }).selectOption('unassigned');
     await button('Preview changes').click();
     await button('Apply changes').click();
     await button('Model').click();
+    await page.getByLabel('Model selection', { exact: true }).selectOption('__new__');
     await button('Create model').click();
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible({ timeout: 30000 });

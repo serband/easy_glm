@@ -223,6 +223,9 @@ def variable_frame(cfg, *, fitted: list[Any] | None = None) -> pl.DataFrame:
             and float(r.from_) == float(cfg.x_base)
             for r in cfg.table
         ]
+        if cfg.curve_kind is not None:
+            columns["extrapolation"] = [cfg.extrapolation] * len(cfg.table)
+            columns["curve_kind"] = [cfg.curve_kind] * len(cfg.table)
     return pl.DataFrame(columns)
 
 

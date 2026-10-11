@@ -69,6 +69,77 @@ const waitColumn = (page, column) =>
             new URL(r.url()).searchParams.get('column') === column,
     );
 
+test('large unsorted plot list searches without changing the chart until a variable is selected', async ({
+    page,
+}, info) => {
+    await loadExample(page);
+    const initial = (await client(page)).snapshot;
+    const requests = [];
+    page.on('request', (request) => {
+        if (request.url().includes('/api/explore?') || request.method() !== 'GET')
+            requests.push([request.method(), request.url()]);
+    });
+    let decorated = false;
+    await page.route('**/api/explore?**', async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        if (!decorated) {
+            decorated = true;
+            body.columns = [
+                { name: 'Zzzzz Very Long Predictor Name for Narrow Windows', kind: 'numeric' },
+                ...Array.from({ length: 110 }, (_, index) => ({
+                    name: `Synthetic predictor ${String(110 - index).padStart(3, '0')}`,
+                    kind: 'numeric',
+                })),
+                ...body.columns,
+            ];
+        }
+        await route.fulfill({ response, json: body });
+    });
+    await explore(page);
+    const select = page.getByLabel('Plot variable', { exact: true });
+    const search = page.getByLabel('Search plot variables', { exact: true });
+    await expect(select).toHaveValue('DrivAge');
+    await expect(chart(page, 'DrivAge')).toBeVisible();
+    const initialOptions = await select.locator('option').allTextContents();
+    expect(initialOptions.length).toBeGreaterThan(100);
+    expect(initialOptions).toEqual(
+        [...initialOptions].sort((a, b) =>
+            a.localeCompare(b, undefined, { sensitivity: 'base' }) ||
+            (a < b ? -1 : a > b ? 1 : 0),
+        ),
+    );
+    const count = requests.length;
+    await search.fill('  rEg  ');
+    await expect(select.locator('option')).toHaveCount(2);
+    await expect(select.locator('option').last()).toHaveText('Region');
+    await expect(select).toHaveValue('DrivAge');
+    expect(requests).toHaveLength(count);
+    await search.fill('nothing matches this');
+    await expect(page.getByRole('status', { name: '' }).filter({ hasText: 'No matching variables' })).toBeVisible();
+    await expect(select.locator('option')).toHaveCount(1);
+    await expect(select).toHaveValue('DrivAge');
+    expect(requests).toHaveLength(count);
+    await page.getByRole('button', { name: 'Clear search plot variables' }).click();
+    await expect(select.locator('option')).toHaveCount(initialOptions.length);
+    await search.fill('region');
+    await search.press('Tab');
+    await expect(page.getByRole('button', { name: 'Clear search plot variables' })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(select).toBeFocused();
+    const selectedRead = waitColumn(page, 'Region');
+    await select.selectOption('Region');
+    await selectedRead;
+    await expect(chart(page, 'Region')).toBeVisible();
+    await expect(select).toHaveValue('Region');
+    await search.press('Escape');
+    await expect(search).toHaveValue('');
+    await page.setViewportSize({ width: 390, height: 800 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    await page.screenshot({ path: info.outputPath('searchable-plot-390.png'), fullPage: true });
+    expect((await client(page)).snapshot.revision).toBe(initial.revision);
+});
+
 test('training observed rates share an aligned chart with exposure and update without fitting', async ({
     page,
 }, info) => {
@@ -86,7 +157,7 @@ test('training observed rates share an aligned chart with exposure and update wi
     ]);
     const numeric = await numericResponse.json();
     expect(numeric.column).toBe('DrivAge');
-    await expect(page.getByLabel('Plot variable')).toHaveValue('DrivAge');
+    await expect(page.getByLabel('Plot variable', { exact: true })).toHaveValue('DrivAge');
     await expect(chart(page, 'DrivAge')).toBeVisible();
     await expect(chart(page, 'DrivAge').locator('.observed-line')).toHaveCount(1);
     await expect(chart(page, 'DrivAge').locator('.exposure-bar')).toHaveCount(numeric.table.length);
@@ -117,7 +188,7 @@ test('training observed rates share an aligned chart with exposure and update wi
     await page.locator('.one-way-panel summary').click();
     const [categoricalResponse] = await Promise.all([
         waitColumn(page, 'Region'),
-        page.getByLabel('Plot variable').selectOption('Region'),
+        page.getByLabel('Plot variable', { exact: true }).selectOption('Region'),
     ]);
     const categorical = await categoricalResponse.json();
     await expect(page.getByLabel('Bands', { exact: true })).toBeDisabled();
@@ -126,12 +197,12 @@ test('training observed rates share an aligned chart with exposure and update wi
         categorical.table.length,
     );
     const cachedRequests = requests.length;
-    await page.getByLabel('Plot variable').selectOption('DrivAge');
+    await page.getByLabel('Plot variable', { exact: true }).selectOption('DrivAge');
     await expect(chart(page, 'DrivAge')).toBeVisible();
-    await page.getByLabel('Plot variable').selectOption('Region');
+    await page.getByLabel('Plot variable', { exact: true }).selectOption('Region');
     await expect(chart(page, 'Region')).toBeVisible();
     expect(requests).toHaveLength(cachedRequests);
-    await page.getByLabel('Plot variable').selectOption('DrivAge');
+    await page.getByLabel('Plot variable', { exact: true }).selectOption('DrivAge');
     const bandsRead = page.waitForResponse(
         (r) =>
             r.url().includes('/api/explore?') &&
@@ -151,10 +222,7 @@ test('training observed rates share an aligned chart with exposure and update wi
     expect(model.divide_target_by_weight).toBe(false);
     await expect(page.locator('.response-basis')).toContainText('Density');
     const count = requests.length;
-    await page
-        .getByRole('navigation', { name: 'Workbench' })
-        .getByRole('button', { name: /^Variables\s*\d*$/ })
-        .click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     const freshRead = page.waitForResponse((r) => r.url().includes('/api/explore?'));
     await explore(page);
     await freshRead;
@@ -171,7 +239,7 @@ test('training observed rates share an aligned chart with exposure and update wi
 test('late variable responses cannot replace the current selection', async ({ page }) => {
     await loadExample(page);
     await explore(page);
-    await expect(page.getByLabel('Plot variable')).toBeEnabled();
+    await expect(page.getByLabel('Plot variable', { exact: true })).toBeEnabled();
     let release,
         held = false;
     await page.route('**/api/explore?**', async (route) => {
@@ -184,16 +252,16 @@ test('late variable responses cannot replace the current selection', async ({ pa
             await route.fulfill({ response });
         } else await route.continue();
     });
-    await page.getByLabel('Plot variable').selectOption('BonusMalus');
+    await page.getByLabel('Plot variable', { exact: true }).selectOption('BonusMalus');
     await expect.poll(() => held).toBe(true);
     await expect(page.locator('.one-way-chart')).toHaveCount(0);
-    await page.getByLabel('Plot variable').selectOption('Region');
+    await page.getByLabel('Plot variable', { exact: true }).selectOption('Region');
     await expect(chart(page, 'Region')).toBeVisible();
     const oldRead = waitColumn(page, 'BonusMalus');
     release();
     await oldRead;
     await expect(chart(page, 'Region')).toBeVisible();
-    await expect(page.getByLabel('Plot variable')).toHaveValue('Region');
+    await expect(page.getByLabel('Plot variable', { exact: true })).toHaveValue('Region');
     await expect(chart(page, 'BonusMalus')).toHaveCount(0);
 });
 
@@ -215,21 +283,21 @@ test('unassigned target still shows row exposure and a direct setup action', asy
     expect(response.ok()).toBe(true);
     await page.goto('/');
     await explore(page);
-    await expect(page.getByLabel('Plot variable')).toBeEnabled();
-    await page.getByLabel('Plot variable').selectOption('Age');
+    await expect(page.getByLabel('Plot variable', { exact: true })).toBeEnabled();
+    await page.getByLabel('Plot variable', { exact: true }).selectOption('Age');
     await expect(chart(page, 'Age')).toBeVisible();
     await expect(chart(page, 'Age').locator('.observed-point')).toHaveCount(0);
     await expect(chart(page, 'Age').locator('.rate-tick')).toHaveCount(0);
     await expect(chart(page, 'Age').locator('.exposure-axis-label')).toHaveText('Rows');
     await expect(
-        page.getByRole('button', { name: 'Assign target in Variables', exact: true }),
+        page.getByRole('button', { name: 'Assign target in Project & data', exact: true }),
     ).toBeVisible();
     await page.screenshot({
         path: info.outputPath('exposure-without-target-884.png'),
         fullPage: true,
     });
-    await page.getByRole('button', { name: 'Assign target in Variables', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Assign target in Project & data', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Project & data', exact: true })).toBeVisible();
 });
 
 test('negative responses, missing-rate gaps, numeric null and single groups render honestly', async ({
@@ -269,7 +337,7 @@ test('negative responses, missing-rate gaps, numeric null and single groups rend
     await explore(page);
     const svg = chart(page, 'Derived risk');
     await expect(svg).toBeVisible();
-    await expect(page.getByLabel('Plot variable')).toHaveValue('Derived risk');
+    await expect(page.getByLabel('Plot variable', { exact: true })).toHaveValue('Derived risk');
     await expect(svg.locator('.observed-point')).toHaveCount(3);
     await expect(svg.locator('.rate-tick').first()).toHaveText('-2');
     const path = await svg.locator('.observed-line').getAttribute('d');
@@ -359,7 +427,7 @@ test('long categorical labels stay separated through the final category', async 
     });
 });
 
-test('missing training split links directly to Variables', async ({ page }) => {
+test('missing training split links directly to Project & data', async ({ page }) => {
     await loadExample(page);
     await page.route('**/api/explore?**', (route) =>
         route.fulfill({ status: 422, json: { detail: "Split column 'train_test' is missing." } }),
@@ -367,6 +435,9 @@ test('missing training split links directly to Variables', async ({ page }) => {
     await explore(page);
     await expect(page.getByRole('alert')).toContainText('Split column');
     await page.getByRole('button', { name: 'Set up train / holdout', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Variables', exact: true })).toBeVisible();
-    await expect(page.getByRole('region', { name: 'Variable settings' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Project & data', exact: true })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Model structure', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Single model', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Shared column assignments' })).toBeVisible();
+    await expect(page.getByLabel('Training fraction', { exact: true })).toBeVisible();
 });

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { openNewLegacyDraft } from './legacy-models.helpers.js';
 
 test('interaction definitions are visible, editable drafts and fitted only on request', async ({
     page,
@@ -19,7 +20,7 @@ test('interaction definitions are visible, editable drafts and fitted only on re
         if (request.url().endsWith('/fit')) fits++;
     });
     await page.goto('/');
-    await button('Model').click();
+    await openNewLegacyDraft(page);
     await button('Legacy GLM interactions').click();
     await expect(interactions).toContainText('No interactions defined.');
     await page.getByLabel('Interaction first factor', { exact: true }).selectOption('DriverAge');
@@ -80,6 +81,7 @@ test('interaction definitions are visible, editable drafts and fitted only on re
     expect(fits).toBe(fitCount);
     await page.reload();
     await button('Model').click();
+    await page.getByLabel('Model selection').selectOption(payloads.at(-1).name);
     await expect(interactions).toContainText('No interactions defined.');
     expect(errors).toEqual([]);
 });

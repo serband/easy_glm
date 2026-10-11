@@ -11,6 +11,8 @@ import streamlit as st
 
 from easy_glm.core.design import (
     NUMERIC_DTYPES,
+    AglmLEncoder,
+    AglmOEncoder,
     CategoricalEncoder,
     InteractionEncoder,
     LinearEncoder,
@@ -27,7 +29,15 @@ from . import state as S
 from . import ui
 
 KNOT_OPTIONS = ["quantile", "integer", "custom"]
-KIND_OPTIONS = ["auto", "step", "linear", "continuous", "categorical"]
+KIND_OPTIONS = [
+    "auto",
+    "step",
+    "linear",
+    "continuous",
+    "aglm",
+    "aglm_l",
+    "categorical",
+]
 MONO_OPTIONS = ["none", "increasing", "decreasing"]
 #: one line per kind, shown under the selector and in its help
 KIND_HELP = {
@@ -38,12 +48,17 @@ KIND_HELP = {
     "the data insists on a slope.",
     "continuous": "continuous — one straight line over the whole range (no "
     "knots): a single slope on the value itself.",
+    "aglm": "AGLM smooth curve — a flexible numeric curve. Its break-point "
+    "grid controls where the curve can change.",
+    "aglm_l": "AGLM L curve — a flexible numeric curve using the alternative "
+    "AGLM basis. Its break-point grid controls where the curve can change.",
     "categorical": "categorical — every value is its own level, plus an Other "
     "bucket.",
 }
 KIND_TOOLTIP = "\n\n".join(KIND_HELP.values())
 #: kinds that build a LinearEncoder
 LINEAR_KINDS = ("linear", "continuous")
+AGLM_KINDS = ("aglm", "aglm_l")
 
 
 # --------------------------------------------------------------------------
@@ -366,7 +381,9 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
         vd = p.design.variables.get(v, VariableDesign())
         numeric = v in train.columns and train[v].dtype in NUMERIC_DTYPES
         displayed_bins = (
-            len(vd.knots) + 1 if isinstance(vd.knots, list) else (vd.n_bins or 0)
+            0
+            if vd.kind in AGLM_KINDS
+            else (len(vd.knots) + 1 if isinstance(vd.knots, list) else (vd.n_bins or 0))
         )
         rows.append(
             {
@@ -469,28 +486,61 @@ def _grid(train: pl.DataFrame, predictors: list[str]) -> None:
                 selected_knots = vd.knots
             else:
                 selected_knots = []  # to be filled in the detail panel
-        new = VariableDesign(
-            kind=None if r["kind"] == "auto" else r["kind"],
-            knots=selected_knots,
-            n_bins=requested_bins or None,
-            null_indicator=(
-                None
-                if bool(r["null col"]) == p.design.defaults.null_indicator
-                else bool(r["null col"])
-            ),
-            min_level_share=(
-                None
-                if abs(float(r["min share"]) - p.design.defaults.min_level_share)
-                < 1e-12
-                else float(r["min share"])
-            ),
-            max_levels=vd.max_levels,
-            levels=vd.levels,
-            clamp=vd.clamp,  # detail-panel fields the grid does not show
-            monotone=None if r["monotone"] == "none" else r["monotone"],
-            penalty_weight=max(0.0, float(r["penalty"])),
-        )
+        kind = None if r["kind"] == "auto" else r["kind"]
+        if kind in AGLM_KINDS:
+            new = VariableDesign(
+                kind=kind,
+                knots="quantile",
+                n_bins=None,
+                null_indicator=(
+                    None
+                    if bool(r["null col"]) == p.design.defaults.null_indicator
+                    else bool(r["null col"])
+                ),
+                min_level_share=(
+                    None
+                    if abs(float(r["min share"]) - p.design.defaults.min_level_share)
+                    < 1e-12
+                    else float(r["min share"])
+                ),
+                max_levels=vd.max_levels,
+                levels=vd.levels,
+                clamp=None,
+                monotone=None,
+                penalty_weight=max(0.0, float(r["penalty"])),
+                breaks=vd.breaks if vd.kind in AGLM_KINDS else None,
+                n_breaks=vd.n_breaks if vd.kind in AGLM_KINDS else 100,
+                extrapolation=(vd.extrapolation if vd.kind in AGLM_KINDS else "extend"),
+            )
+        else:
+            new = VariableDesign(
+                kind=kind,
+                knots=selected_knots,
+                n_bins=requested_bins or None,
+                null_indicator=(
+                    None
+                    if bool(r["null col"]) == p.design.defaults.null_indicator
+                    else bool(r["null col"])
+                ),
+                min_level_share=(
+                    None
+                    if abs(float(r["min share"]) - p.design.defaults.min_level_share)
+                    < 1e-12
+                    else float(r["min share"])
+                ),
+                max_levels=vd.max_levels,
+                levels=vd.levels,
+                clamp=vd.clamp,  # detail-panel fields the grid does not show
+                monotone=None if r["monotone"] == "none" else r["monotone"],
+                penalty_weight=max(0.0, float(r["penalty"])),
+                breaks=None,
+                n_breaks=None,
+                extrapolation=None,
+            )
         numeric = v in train.columns and train[v].dtype in NUMERIC_DTYPES
+        if kind in AGLM_KINDS and not numeric:
+            ui.flash("error", f"{v}: AGLM curves require a numeric variable")
+            continue
         if new.monotone and (not numeric or new.kind == "categorical"):
             ui.flash(
                 "error",
@@ -527,10 +577,26 @@ def _kind_selector(var: str, vd: VariableDesign, numeric: bool) -> None:
     )
     st.caption(KIND_HELP[kind])
     if kind != current:
-        if kind in ("step", *LINEAR_KINDS) and not numeric:
+        if kind in ("step", *LINEAR_KINDS, *AGLM_KINDS) and not numeric:
             st.error(f"{var} is not numeric; a {kind} design needs numbers")
             return
         vd.kind = None if kind == "auto" else kind
+        if kind in AGLM_KINDS:
+            # AGLM has its own endpoint grid.  Do not let step/linear controls
+            # survive the switch as a design that cannot be fitted.
+            vd.knots = "quantile"
+            vd.n_bins = None
+            vd.clamp = None
+            vd.monotone = None
+            vd.breaks = None
+            vd.n_breaks = 100
+            vd.extrapolation = "extend"
+        else:
+            # These controls have no meaning outside AGLM and would make the
+            # project invalid if an old curve was changed back to a banded term.
+            vd.breaks = None
+            vd.n_breaks = None
+            vd.extrapolation = None
         p.design.variables[var] = vd
         S.touch()
         st.rerun()
@@ -819,6 +885,100 @@ def _linear_detail(
     )
 
 
+def _aglm_detail(
+    var: str,
+    vd: VariableDesign,
+    enc: AglmOEncoder | AglmLEncoder,
+    train: pl.DataFrame,
+    weight: str | None,
+) -> None:
+    """Edit an AGLM endpoint grid without borrowing step/linear controls."""
+    p = S.project()
+    custom = vd.breaks is not None
+    st.markdown(
+        "**AGLM curve.** The break-point grid is the set of endpoints used to "
+        "build this curve. More points allow more local movement. "
+        "It is separate from step-model bands and always includes both endpoints."
+    )
+    c1, c2 = st.columns([1, 1])
+    grid_source = c1.radio(
+        "Break-point grid",
+        ["Automatic from training data", "Custom full grid"],
+        index=1 if custom else 0,
+        key=S.widget_key(f"aglm_grid_{var}"),
+        help="Automatic points use the training values. A custom grid must include its first and last endpoints.",
+    )
+    n_breaks = c2.number_input(
+        "Automatic points",
+        min_value=2,
+        max_value=200,
+        value=int(vd.n_breaks or 100),
+        step=1,
+        disabled=grid_source != "Automatic from training data",
+        key=S.widget_key(f"aglm_nbreaks_{var}"),
+        help="The number of break points to calculate from the training data.",
+    )
+    breaks_text = st.text_area(
+        "Custom full grid (comma-separated endpoints)",
+        ", ".join(f"{value:g}" for value in enc.breaks),
+        height=90,
+        disabled=grid_source != "Custom full grid",
+        key=S.widget_key(f"aglm_breaks_{var}"),
+        help="For example: 18, 25, 35, 45, 60, 80. The first and last values are endpoints, not interior knots.",
+    )
+    tail = st.selectbox(
+        "Outside the grid",
+        ["Extend", "Flat"],
+        index=0 if (vd.extrapolation or "extend") == "extend" else 1,
+        key=S.widget_key(f"aglm_tail_{var}"),
+        help="Extend continues the fitted curve beyond the endpoint. Flat keeps the endpoint relativity outside the grid.",
+    )
+    st.caption(
+        f"Current grid: {len(enc.breaks)} points from {enc.breaks[0]:g} to "
+        f"{enc.breaks[-1]:g}. Outside the grid: {enc.extrapolation}."
+    )
+    if st.button("Apply AGLM curve", key=S.widget_key(f"apply_aglm_{var}")):
+        if grid_source == "Custom full grid":
+            try:
+                breaks = _parse_numbers(breaks_text)
+            except ValueError as exc:
+                st.error(f"Break-point grid: {exc}")
+                return
+            if len(breaks) < 2:
+                st.error("The full grid needs at least two endpoints")
+                return
+            n_breaks_value: int | None = None
+        else:
+            breaks = None
+            n_breaks_value = int(n_breaks)
+        candidate = VariableDesign(
+            kind=vd.kind,
+            knots="quantile",
+            n_bins=None,
+            null_indicator=vd.null_indicator,
+            min_level_share=vd.min_level_share,
+            max_levels=vd.max_levels,
+            levels=vd.levels,
+            clamp=None,
+            monotone=None,
+            penalty_weight=vd.penalty_weight,
+            breaks=breaks,
+            n_breaks=n_breaks_value,
+            extrapolation=tail.lower(),
+        )
+        weights = train[weight] if weight and weight in train.columns else None
+        try:
+            # Build before writing: an invalid grid never leaves the project in
+            # a state that the next fit cannot read.
+            encoder_for(var, train[var], candidate, p, weights=weights)
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Cannot use this AGLM curve: {exc}")
+            return
+        p.design.variables[var] = candidate
+        S.touch()
+        st.rerun()
+
+
 def _categorical_detail(
     var: str,
     vd: VariableDesign,
@@ -932,6 +1092,8 @@ def _detail(
             divide_target_by_weight,
             continuous=vd.kind == "continuous",
         )
+    elif isinstance(enc, (AglmOEncoder, AglmLEncoder)):
+        _aglm_detail(var, vd, enc, train, weight)
     elif isinstance(enc, CategoricalEncoder):
         _categorical_detail(
             var, vd, enc, preview, target, weight, divide_target_by_weight

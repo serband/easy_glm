@@ -47,6 +47,10 @@ def _weights(value: ArrayLike | None, length: int) -> NDArray[np.float64]:
 
 
 def _power(family: str, tweedie_power: float | None) -> float:
+    if family == "gaussian":
+        if tweedie_power is not None:
+            raise ValueError("tweedie_power is only valid for the Tweedie family")
+        return 0.0
     if family == "poisson":
         if tweedie_power is not None:
             raise ValueError("tweedie_power is only valid for the Tweedie family")
@@ -59,7 +63,7 @@ def _power(family: str, tweedie_power: float | None) -> float:
     ):
         return float(tweedie_power)
     raise ValueError(
-        "Pair training supports Poisson/log or Tweedie/log with 1 < power < 2"
+        "Pair training supports Gaussian/log, Poisson/log or Tweedie/log with 1 < power < 2"
     )
 
 
@@ -114,7 +118,8 @@ def distill_pair_cells(
 
     ``cell_ids`` are zero-based row-major IDs (axis A index * axis B size +
     axis B index).  Weighted Tweedie minimisation gives
-    sum(w*t*b**(1-p)) / sum(w*b**(2-p)); Poisson is the p=1 special case.
+    sum(w*t*b**(1-p)) / sum(w*b**(2-p)); Gaussian is p=0 and
+    Poisson is p=1. Both baseline and teacher means must be positive.
     Summands are accumulated in log space to handle extreme positive means.
     Empty and below-threshold cells remain neutral, with their reason recorded.
     Zero-weight rows are ignored for support and loss, but all supplied means
@@ -205,6 +210,62 @@ class CatBoostPairTeacher:
         )
 
 
+class _GaussianLogObjective:
+    """Response-scale squared error with a positive Gauss-Newton curvature.
+
+    CatBoost asks for the first and second derivatives of the *negative* loss.
+    The exact second derivative changes sign when y > 2*mu, so Newton leaves
+    use the positive Gauss-Newton curvature instead. Pool weights are supplied
+    by CatBoost and must be applied once here.
+    """
+
+    def calc_ders_range(
+        self, approxes: Any, targets: Any, weights: Any
+    ) -> list[tuple[float, float]]:
+        result: list[tuple[float, float]] = []
+        for index in range(len(targets)):
+            if not math.isfinite(approxes[index]) or approxes[index] > 700:
+                raise ValueError("Gaussian/log objective has a nonfinite prediction")
+            mean = math.exp(approxes[index])
+            if mean <= 0:
+                raise ValueError("Gaussian/log objective has an unrepresentable mean")
+            target = targets[index]
+            weight = 1.0 if weights is None else weights[index]
+            gradient = weight * mean * (target - mean)
+            curvature = -weight * mean * mean
+            if not math.isfinite(gradient) or not math.isfinite(curvature):
+                raise ValueError("Gaussian/log objective has nonfinite derivatives")
+            result.append((gradient, curvature))
+        return result
+
+
+class _GaussianLogMetric:
+    """Scaled response SSE; scaled and original losses rank fits identically."""
+
+    def is_max_optimal(self) -> bool:
+        return False
+
+    def evaluate(self, approxes: Any, target: Any, weight: Any) -> tuple[float, float]:
+        error = 0.0
+        weight_sum = 0.0
+        for index in range(len(target)):
+            row_weight = 1.0 if weight is None else weight[index]
+            if not math.isfinite(approxes[0][index]) or approxes[0][index] > 700:
+                raise ValueError("Gaussian/log metric has a nonfinite prediction")
+            mean = math.exp(approxes[0][index])
+            if mean <= 0:
+                raise ValueError("Gaussian/log metric has an unrepresentable mean")
+            difference = target[index] - mean
+            error += row_weight * difference * difference
+            weight_sum += row_weight
+        if not math.isfinite(error) or not math.isfinite(weight_sum):
+            raise ValueError("Gaussian/log metric is not finite")
+        return error, weight_sum
+
+    def get_final_error(self, error: float, weight: float) -> float:
+        return error / weight
+
+
 def fit_catboost_pair_raw(
     two_raw_features: Any,
     target: ArrayLike,
@@ -229,13 +290,55 @@ def fit_catboost_pair_raw(
     predicts on feature columns without a Pool baseline; its raw output is only
     the correction.  Validation and early stopping belong to a fold-local caller.
     """
+    return fit_catboost_raw(
+        two_raw_features,
+        target,
+        baseline_mean,
+        sample_weight=sample_weight,
+        family=family,
+        tweedie_power=tweedie_power,
+        target_scale=target_scale,
+        iterations=iterations,
+        depth=depth,
+        learning_rate=learning_rate,
+        l2_leaf_reg=l2_leaf_reg,
+        thread_count=thread_count,
+        seed=seed,
+        cat_features=cat_features,
+        required_features=2,
+    )
+
+
+def fit_catboost_raw(
+    raw_features: Any,
+    target: ArrayLike,
+    baseline_mean: ArrayLike,
+    *,
+    sample_weight: ArrayLike | None = None,
+    family: str = "poisson",
+    tweedie_power: float | None = None,
+    target_scale: float = 1.0,
+    iterations: int = 120,
+    depth: int = 3,
+    learning_rate: float = 0.05,
+    l2_leaf_reg: float = 3.0,
+    thread_count: int = 2,
+    seed: int = 0,
+    cat_features: Sequence[int] | None = None,
+    required_features: int | None = None,
+) -> CatBoostPairTeacher:
+    """Fit a raw CatBoost correction on any positive number of predictors."""
     power = _power(family, tweedie_power)
     if not math.isfinite(target_scale) or target_scale <= 0:
         raise ValueError("target_scale must be finite and strictly positive")
     baseline = _positive_means("baseline_mean", baseline_mean)
     y = _vector("target", target, len(baseline))
-    if not np.all(np.isfinite(y) & (y >= 0)):
-        raise ValueError("target must be finite and nonnegative")
+    if not np.all(np.isfinite(y)) or (power != 0 and np.any(y < 0)):
+        raise ValueError(
+            "target must be finite"
+            if power == 0
+            else "target must be finite and nonnegative"
+        )
     weight = _weights(sample_weight, len(y))
     positive = weight > 0
     if not np.any(positive):
@@ -256,17 +359,28 @@ def fit_catboost_pair_raw(
         or l2_leaf_reg < 0
     ):
         raise ValueError("learning_rate must be positive and l2_leaf_reg nonnegative")
-    x = np.asarray(two_raw_features)
-    if x.ndim != 2 or x.shape != (len(y), 2):
+    x = np.asarray(raw_features)
+    if (
+        x.ndim != 2
+        or x.shape[0] != len(y)
+        or x.shape[1] < 1
+        or (required_features is not None and x.shape[1] != required_features)
+    ):
         raise ValueError(
             "two_raw_features must contain exactly two columns and one row per target"
+            if required_features == 2
+            else "raw_features must have one or more columns and one row per target"
         )
-    if cat_features is not None and any(index not in (0, 1) for index in cat_features):
-        raise ValueError("cat_features must refer only to the two raw columns")
+    if cat_features is not None and any(
+        index < 0 or index >= x.shape[1] for index in cat_features
+    ):
+        raise ValueError("cat_features must refer only to the raw columns")
     scaled_y = y[positive] / target_scale
     scaled_baseline = baseline[positive] / target_scale
-    if not np.all(np.isfinite(scaled_y) & (scaled_y >= 0)) or not np.all(
-        np.isfinite(scaled_baseline) & (scaled_baseline > 0)
+    if (
+        not np.all(np.isfinite(scaled_y))
+        or (power != 0 and np.any(scaled_y < 0))
+        or not np.all(np.isfinite(scaled_baseline) & (scaled_baseline > 0))
     ):
         raise ValueError("target_scale makes target or baseline nonrepresentable")
     try:
@@ -276,7 +390,11 @@ def fit_catboost_pair_raw(
             "CatBoost is required to train pair corrections. Reinstall the "
             "standard package with `pip install --upgrade easy-glm`."
         ) from exc
-    loss = "Poisson" if power == 1 else f"Tweedie:variance_power={power:.16g}"
+    loss = (
+        _GaussianLogObjective()
+        if power == 0
+        else "Poisson" if power == 1 else f"Tweedie:variance_power={power:.16g}"
+    )
     pool = Pool(
         x[positive],
         label=scaled_y,
@@ -286,6 +404,10 @@ def fit_catboost_pair_raw(
     )
     model = CatBoostRegressor(
         loss_function=loss,
+        eval_metric=_GaussianLogMetric() if power == 0 else None,
+        leaf_estimation_method="Newton" if power == 0 else None,
+        leaf_estimation_iterations=1 if power == 0 else None,
+        leaf_estimation_backtracking="AnyImprovement" if power == 0 else None,
         iterations=iterations,
         depth=depth,
         learning_rate=learning_rate,

@@ -1,8 +1,9 @@
 <script>
-    import { onDestroy } from 'svelte';
+    import { onDestroy, tick } from 'svelte';
     import { formatNumber as num } from './format.js';
     import DiagnosticTable from './DiagnosticTable.svelte';
     import ExploreChart from './ExploreChart.svelte';
+    import SearchableVariableSelect from './SearchableVariableSelect.svelte';
     export let api,
         state,
         active = false,
@@ -78,6 +79,10 @@
                 if (column) query.set('column', column);
                 if (model) query.set('model', model);
                 fresh = await api('explore?' + query);
+                // A retry after a local-server restart updates the parent
+                // session while this request is in flight. Let that new state
+                // reach this component before comparing request contexts.
+                await tick();
                 if (sequence !== requestId || scope !== context) return;
                 cache.set(wanted, fresh);
             }
@@ -134,21 +139,21 @@
     {:else}
         <section class="model-card one-way-panel" aria-label="One-way effects">
             <div class="explore-controls">
-                <label class="variable-choice"
-                    >Variable
-                    <select
-                        aria-label="Plot variable"
+                <div class="variable-choice">
+                    <SearchableVariableSelect
+                        options={(metadata?.columns || []).map((item) => ({
+                            value: item.name,
+                            label: item.name,
+                        }))}
                         bind:value={column}
+                        label="Variable"
+                        selectLabel="Plot variable"
+                        searchLabel="Search plot variables"
                         disabled={!metadata?.columns.length}
-                    >
-                        {#if !metadata}<option value={column}
-                                >{column || 'Loading variables…'}</option
-                            >{/if}
-                        {#each metadata?.columns || [] as item}<option value={item.name}
-                                >{item.name}</option
-                            >{/each}
-                    </select>
-                </label>
+                        contextKey={`${context}:${model}`}
+                        emptyLabel={metadata ? 'No variables available' : 'Loading variables…'}
+                    />
+                </div>
                 <label class="band-choice"
                     >Bands
                     <input
@@ -184,7 +189,7 @@
                     <p>{error}</p>
                     <div>
                         {#if /split|train(?:ing)? (?:flag|column)|holdout/i.test(error)}
-                            <button onclick={() => onNavigate('variables')}
+                            <button onclick={() => onNavigate('project')}
                                 >Set up train / holdout</button
                             >
                         {:else}
@@ -211,8 +216,8 @@
                 </div>
                 {#if !result.target}<div class="target-missing">
                         <span>Assign a target to see the observed response.</span><button
-                            onclick={() => onNavigate('variables')}
-                            >Assign target in Variables</button
+                            onclick={() => onNavigate('project')}
+                            >Assign target in Project &amp; data</button
                         >
                     </div>{/if}
                 {#if result.column && result.table.length}

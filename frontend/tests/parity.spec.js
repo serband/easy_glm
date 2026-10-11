@@ -1,14 +1,30 @@
 import { test, expect } from '@playwright/test';
+import { saveLegacyGlm } from './legacy-models.helpers.js';
 test('two-model diagnostics, paths, champion and search to refit', async ({ page }) => {
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     const button = (name) => page.getByRole('button', { name, exact: true });
     const tab = (name) => page.getByRole('tab', { name, exact: true });
     await page.goto('/');
+    const session = await (await page.request.get('/api/session')).json();
+    const headers = { 'X-EasyGLM-Token': session.token };
+    const variables = await (await page.request.get('/api/variables', { headers })).json();
+    const setup = structuredClone(variables.setup);
+    setup.roles.unassigned = setup.roles.unassigned.filter((name) => name !== 'AnnualMileage');
+    setup.roles.predictor.push('AnnualMileage');
+    const assigned = await page.request.post('/api/variables/apply', {
+        headers,
+        data: { session_id: variables.session_id, revision: variables.revision, setup },
+    });
+    expect(assigned.ok(), await assigned.text()).toBe(true);
+    await saveLegacyGlm(page, `Imported legacy ${Date.now()}`);
+    await page.reload();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await page.getByLabel('Role for AnnualMileage', { exact: true }).selectOption('unassigned');
     await button('Preview changes').click();
     await button('Apply changes').click();
     await button('Model').click();
+    await page.getByLabel('Model selection').selectOption('__new__');
     await button('Legacy GLM interactions').click();
     await page.getByLabel('Penalty mode').selectOption('cv');
     await page.getByLabel('CV folds').fill('2');
@@ -23,8 +39,12 @@ test('two-model diagnostics, paths, champion and search to refit', async ({ page
     await expect(
         page.getByRole('img', { name: 'Actual fitted and adjusted by variable', exact: true }),
     ).toBeVisible();
-    await expect(page.getByRole('heading', { name: /DriverAge · train/ })).toBeVisible();
+    await page.getByLabel('Diagnostic subset', { exact: true }).selectOption('train');
+    await expect(
+        page.getByRole('heading', { name: 'DriverAge · Training', exact: true }),
+    ).toBeVisible();
     await page.getByLabel('Diagnostic variable', { exact: true }).selectOption('Region');
+    await page.getByLabel('Diagnostic subset', { exact: true }).selectOption('holdout');
     await expect(
         page.getByRole('heading', { name: 'Region · Holdout', exact: true }),
     ).toBeVisible();

@@ -78,9 +78,12 @@ class BandRow:
 
     def relativity_at(self, x: float) -> float:
         """Relativity at ``x`` inside this band (``x`` on the raw scale)."""
-        if self.from_ is None or self.to_ is None or self.slope == 0.0:
+        if self.slope == 0.0:
             return self.relativity
-        return float(self.relativity * np.exp(self.slope * (x - self.from_)))
+        anchor = self.to_ if self.from_ is None else self.from_
+        if anchor is None:
+            return self.relativity
+        return float(self.relativity * np.exp(self.slope * (x - anchor)))
 
     @property
     def relativity_to(self) -> float:
@@ -169,6 +172,10 @@ class VariableConfig:
     #: linear only: the x at which relativity is 1.00 (the base risk); None when
     #: the base row was the null row
     x_base: float | None = None
+    #: Curve tail policy. Existing piecewise-linear tables remain flat.
+    extrapolation: Literal["flat", "extend"] = "flat"
+    #: Optional encoding provenance (``linear``, ``aglm`` or ``aglm_l``).
+    curve_kind: str | None = None
 
 
 @dataclass

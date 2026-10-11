@@ -131,17 +131,13 @@ def apply_roles_grid(
         final = finals[raw_name]
         role = r.get("role") or "unassigned"
         if role == "unassigned":
-            if final in p.data.roles:
-                old_role = p.data.roles[final]
-                if old_role == "predictor":
-                    notices.extend(
-                        ("warning", n) for n in p.apply_role_change(final, "unassigned")
-                    )
-                elif old_role == "current_premium":
-                    notices.extend(
-                        ("warning", n) for n in _drop_premium_offset(p, final)
-                    )
-                p.data.roles.pop(final, None)
+            old_role = p.data.roles.get(final)
+            if old_role is not None:
+                role_notices = p.apply_role_change(final, "unassigned")
+            else:
+                role_notices = _drop_unassigned_legacy_factor(p, final)
+            if old_role is not None or role_notices:
+                notices.extend(("warning", n) for n in role_notices)
                 changed = True
         elif p.data.roles.get(final) != role:
             notices.extend(("warning", n) for n in p.apply_role_change(final, role))
@@ -394,6 +390,42 @@ def _drop_premium_offset(p: Project, column: str) -> list[str]:
                 "current premium any more"
             )
     return notes
+
+
+def _drop_unassigned_legacy_factor(p: Project, column: str) -> list[str]:
+    """Remove an already-unassigned factor from legacy model definitions.
+
+    Older saved GLMs can retain a predictor that is no longer in the shared
+    predictor role. A no-op shared role edit must repair only those legacy
+    definitions. Planned models intentionally permit unassigned local factors,
+    so their recipes and fitted inputs must remain untouched.
+    """
+    notices: list[str] = []
+    for name, cfg in p.models.items():
+        if (
+            cfg.allow_unassigned_factors
+            or cfg.components
+            or column not in cfg.predictors
+        ):
+            continue
+        cfg.predictors = [factor for factor in cfg.predictors if factor != column]
+        notices.append(
+            f"{column} was removed from model {name}: it is not a shared predictor"
+        )
+        dropped = [item for item in cfg.interactions if column in (item.a, item.b)]
+        if dropped:
+            cfg.interactions = [
+                item for item in cfg.interactions if item not in dropped
+            ]
+            notices.append(
+                f"Interaction(s) {', '.join(item.name for item in dropped)} removed from "
+                f"model {name}: {column} is not a shared predictor"
+            )
+        cfg.drop_adjustments_for(column)
+        for item in dropped:
+            cfg.drop_adjustments_for(item.name)
+        cfg.monotone.pop(column, None)
+    return notices
 
 
 def _drop_from_models(p: Project, column: str) -> list[str]:

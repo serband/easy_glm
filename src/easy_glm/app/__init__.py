@@ -17,6 +17,7 @@ exported as a Python script from the Export page. It is included in the normal
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -25,19 +26,23 @@ from pathlib import Path
 from typing import Any
 
 
-def _temporary_project_for(data: Any) -> Path:
-    """Persist an in-memory Polars or pandas frame for the workbench process."""
+def _as_frame(data: Any):
+    """Convert the two supported in-memory launch inputs without mutating them."""
     import polars as pl
 
     if isinstance(data, pl.DataFrame):
-        frame = data
-    else:
-        try:
-            frame = pl.from_pandas(data)
-        except Exception as exc:  # noqa: BLE001 - replace conversion internals
-            raise TypeError(
-                "data must be a Polars DataFrame or pandas DataFrame"
-            ) from exc
+        return data
+    try:
+        return pl.from_pandas(data)
+    except Exception as exc:  # noqa: BLE001 - replace conversion internals
+        raise TypeError("data must be a Polars DataFrame or pandas DataFrame") from exc
+
+
+def _temporary_project_and_scoring(
+    data: Any, scoring_data: dict[str, Any] | None = None
+) -> tuple[Path, Path | None]:
+    """Persist an in-memory Polars or pandas frame for the workbench process."""
+    frame = _as_frame(data)
 
     from easy_glm.workflow import Project
 
@@ -56,6 +61,27 @@ def _temporary_project_for(data: Any) -> Path:
         suffix += 1
     project.data.split.column = split_name
     project.to_json(project_path)
+    if not scoring_data:
+        return project_path, None
+    if not isinstance(scoring_data, dict) or not all(
+        isinstance(name, str) and name.strip() for name in scoring_data
+    ):
+        raise TypeError(
+            "scoring_data must map non-empty dataset names to pandas or Polars frames"
+        )
+    sources: dict[str, str] = {}
+    for index, (name, scoring_frame) in enumerate(scoring_data.items(), start=1):
+        path = folder / f"scoring_{index}.parquet"
+        _as_frame(scoring_frame).write_parquet(path)
+        sources[name] = str(path)
+    manifest = folder / "scoring_data.json"
+    manifest.write_text(json.dumps(sources), encoding="utf-8")
+    return project_path, manifest
+
+
+def _temporary_project_for(data: Any) -> Path:
+    """Persist an in-memory frame, retaining the historical Path return value."""
+    project_path, _manifest = _temporary_project_and_scoring(data)
     return project_path
 
 

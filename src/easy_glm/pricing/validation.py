@@ -171,12 +171,14 @@ def metric_row(model: PricingModel, subset: str) -> dict[str, Any]:
     return result
 
 
-def _cross_validated_row(model: PricingModel, *, folds: int = 5) -> dict[str, Any]:
+def _cross_validated_row(
+    model: PricingModel, *, folds: int = 5, seed: int | None = None
+) -> dict[str, Any]:
     """Refit the complete ordered model inside every training fold."""
     frame = model._frame("train")
     if folds < 2 or folds > frame.height:
         raise ValueError("folds must be between 2 and the number of training rows")
-    seed = int(model._project.data.split.seed)
+    seed = int(model._project.data.split.seed if seed is None else seed)
     assignment = np.random.default_rng(seed).permutation(frame.height) % folds
     predictions = np.empty(frame.height, dtype=float)
     split_column = "__easy_glm_pricing_cv__"
@@ -189,13 +191,24 @@ def _cross_validated_row(model: PricingModel, *, folds: int = 5) -> dict[str, An
             fold_project.data.roles.pop(old_split)
         fold_project.data.roles[split_column] = "split"
         fold_project.data.split.mode = "column"
+        fold_project.data.split.seed = seed
         fold_project.data.split.column = split_column
         fold_project.data.split.train_value = 1
         fold_project.data.split.holdout_value = 0
         marked = frame.with_columns(
             pl.Series(split_column, (assignment != fold).astype(np.int64))
         )
-        fold_run = run_model(fold_project, marked, model.name)
+        if getattr(model._run, "stack", None) is not None:
+            from easy_glm.workflow.stack import fit_stack
+
+            fold_run = fit_stack(
+                fold_project,
+                marked.filter(pl.col(split_column) == 1),
+                fold_project.models[model.name],
+                tuning=False,
+            )
+        else:
+            fold_run = run_model(fold_project, marked, model.name)
         validation = marked.filter(pl.col(split_column) == 0)
         predictions[assignment == fold] = fold_run.predict(validation)
     cfg = model._run.config
@@ -311,8 +324,13 @@ def compare_models(
             raise ValueError(
                 "Models must be assessed on the same ordered policy rows and split"
             )
+    shared_seed = int(model._project.data.split.seed)
     rows = [
-        (_cross_validated_row(item) if cv else metric_row(item, subset))
+        (
+            _cross_validated_row(item, seed=shared_seed)
+            if cv
+            else metric_row(item, subset)
+        )
         for item in models
     ]
     if cv:

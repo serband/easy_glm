@@ -7,9 +7,9 @@ polars column into design-matrix columns *and* what every column means
 tables can be read straight off the fitted coefficients (see
 :mod:`easy_glm.core.tables`) and the spec round-trips through JSON.
 
-Four encoders exist:
+Six encoders exist:
 
-* :class:`StepEncoder` -- AGLM-style "O-dummies": one column ``1{x >= k}`` per
+* :class:`StepEncoder` -- threshold indicators: one column ``1{x >= k}`` per
   knot. With an L1 penalty each coefficient is the *increment* of the effect
   at that knot, so unchanged increments are shrunk to exactly zero and the
   fitted curve is a piecewise-constant step function with data-driven bands.
@@ -18,7 +18,7 @@ Four encoders exist:
 * :class:`CategoricalEncoder` -- one column per kept level except the
   reference (the most frequent level), plus an ``Other`` column for lumped,
   unseen and null values.
-* :class:`LinearEncoder` -- piecewise-linear ("L-dummy") columns, one per
+* :class:`LinearEncoder` -- EasyGLM's piecewise-linear band-slope columns, one per
   *band* between consecutive knots: ``clip(x - k_j, 0, k_{j+1} - k_j)``, the
   amount of ``x`` that falls inside band ``j``. Each coefficient is therefore
   the *slope inside that band*, and with an L1 penalty the lasso sets slopes to
@@ -26,6 +26,10 @@ Four encoders exist:
   slope. The curve is continuous by construction and exactly flat outside the
   training range. A term with no interior knots (``kind="continuous"`` on the
   Design page) is one band: a single slope on the raw clamped value.
+* :class:`AglmOEncoder` -- the original AGLM O basis: raw ``x`` plus one
+  normalised capped ramp for each adjacent pair in a full breakpoint grid.
+* :class:`AglmLEncoder` -- the original AGLM L basis: raw ``x`` plus absolute
+  values at each interior breakpoint.
 * :class:`InteractionEncoder` -- a two-way interaction ``A × B`` on top of the
   two mains: one 0/1 column per *kept cell* of the parents' rate-table rows,
   so each coefficient is one cell's multiplicative adjustment.
@@ -37,11 +41,11 @@ is what keeps the rate tables, the interaction cells and the scorer aligned.
 Two ways to build the matrix
 ----------------------------
 :meth:`DesignSpec.build` returns either a dense float64 numpy array (small
-books, and what every existing caller got) or a **tabmat**
+books) or a **tabmat**
 :class:`~tabmat.SplitMatrix` that stores one integer code per row per variable
 instead of the columns those codes stand for (big books). The two are the same
 matrix: ``build(df, sparse=True).toarray()`` equals ``build(df, sparse=False)``
-exactly, and a fit on either gives the same coefficients (piece G;
+exactly, and a fit on either gives the same coefficients (see
 ``tests/test_scale.py``). Which one you get by default is decided by the row
 count — see :data:`SPARSE_ROW_THRESHOLD`.
 
@@ -81,7 +85,9 @@ NUMERIC_DTYPES = (
     pl.Float64,
 )
 
-FeatureKind = Literal["step", "band", "null", "level", "other", "cell"]
+FeatureKind = Literal[
+    "step", "band", "raw", "ramp", "absolute", "null", "level", "other", "cell"
+]
 
 #: Row count at or above which :meth:`DesignSpec.build` returns the compact
 #: tabmat ``SplitMatrix`` instead of a dense float64 array. Below it the dense
@@ -226,7 +232,7 @@ class Encoder(ABC):
 
 @dataclass
 class StepEncoder(Encoder):
-    """Step-function (O-dummy) encoding of a numeric variable.
+    """Step-function threshold-indicator encoding of a numeric variable.
 
     Parameters
     ----------
@@ -409,7 +415,10 @@ def _band_name(variable: str, lo: float, hi: float) -> str:
 
 @dataclass
 class LinearEncoder(Encoder):
-    """Piecewise-linear (L-dummy) encoding of a numeric variable.
+    """EasyGLM piecewise-linear band-slope encoding of a numeric variable.
+
+    This is not the AGLM ``L`` basis. Use :class:`AglmLEncoder` for that
+    separate raw-plus-absolute-value encoding.
 
     ``x`` is first clipped to ``clamp = (lo, hi)`` and then expanded into one
     column per **band** between consecutive edges ``[lo, k1, ..., km, hi]``:
@@ -590,6 +599,215 @@ class LinearEncoder(Encoder):
             "variable": self.variable,
             "knots": list(self.knots),
             "clamp": [self.lo, self.hi],
+            "null_indicator": self.null_indicator,
+            "penalty_weight": self.penalty_weight,
+        }
+
+
+@dataclass
+class _AglmEncoder(Encoder):
+    """Shared mechanics for the two AGLM numeric bases.
+
+    Unlike :class:`LinearEncoder`, these bases deliberately retain the raw
+    linear column.  Their grid contains *endpoints*, not interior knots.
+    """
+
+    variable: str
+    breaks: list[float]
+    extrapolation: Literal["extend", "flat"] = "extend"
+    null_indicator: bool = True
+    penalty_weight: float = 1.0
+
+    def __post_init__(self) -> None:
+        _check_penalty_weight(self)
+        values = [float(x) for x in self.breaks]
+        if (
+            len(values) < 2
+            or not all(np.isfinite(values))
+            or any(b <= a for a, b in zip(values[:-1], values[1:], strict=True))
+        ):
+            raise ValueError(
+                f"{type(self).__name__}({self.variable!r}) needs two finite breaks"
+            )
+        self.breaks = values
+        if self.extrapolation not in ("extend", "flat"):
+            raise ValueError("extrapolation must be 'extend' or 'flat'")
+
+    @property
+    def lo(self) -> float:
+        return self.breaks[0]
+
+    @property
+    def hi(self) -> float:
+        return self.breaks[-1]
+
+    def band_edges(self) -> list[float]:
+        return list(self.breaks)
+
+    def bins(self) -> list[tuple[float | None, float | None]]:
+        return [
+            (None, self.lo),
+            *zip(self.breaks[:-1], self.breaks[1:], strict=True),
+            (self.hi, None),
+        ]
+
+    def rows(self) -> list[tuple[Any, Any]]:
+        rows = list(self.bins())
+        if self.null_indicator:
+            rows.append((None, None))
+        return rows
+
+    def row_index(self, series: pl.Series) -> np.ndarray:
+        x = series.cast(pl.Float64).to_numpy()
+        missing = np.isnan(x)
+        if missing.any() and not self.null_indicator:
+            raise ValueError(
+                f"{self.variable!r} has missing values but null_indicator=False"
+            )
+        return np.where(
+            missing,
+            len(self.breaks) + 1,
+            np.searchsorted(np.asarray(self.breaks), x, side="right"),
+        ).astype(np.int64)
+
+    def _x(self, series: pl.Series) -> tuple[np.ndarray, np.ndarray]:
+        x = np.asarray(series.cast(pl.Float64).to_numpy(), dtype=np.float64)
+        if np.isinf(x).any():
+            raise ValueError(f"{self.variable!r} contains infinite values")
+        nan = np.isnan(x)
+        if nan.any() and not self.null_indicator:
+            raise ValueError(
+                f"{self.variable!r} has missing values but null_indicator=False"
+            )
+        values = np.where(nan, self.lo, x)
+        if self.extrapolation == "flat":
+            values = np.clip(values, self.lo, self.hi)
+        return values, nan
+
+    def aggregation_values(self, series: pl.Series) -> np.ndarray:
+        return self._x(series)[0]
+
+    def _tail_and_band_slopes(self, coef: np.ndarray) -> list[float]:
+        raise NotImplementedError
+
+
+@dataclass
+class AglmOEncoder(_AglmEncoder):
+    """AGLM ``O`` basis: raw ``x`` plus capped, normalised adjacent ramps."""
+
+    kind: ClassVar[str] = "aglm"
+
+    def features(self) -> list[Feature]:
+        out = [Feature(f"{self.variable} raw", self.variable, "raw")]
+        out.extend(
+            Feature(
+                f"{self.variable} ramp [{format_knot(a)}, {format_knot(b)})",
+                self.variable,
+                "ramp",
+                knot=a,
+            )
+            for a, b in zip(self.breaks[:-1], self.breaks[1:], strict=True)
+        )
+        if self.null_indicator:
+            out.append(Feature(f"{self.variable} is null", self.variable, "null"))
+        return out
+
+    def transform(self, series: pl.Series) -> np.ndarray:
+        x, nan = self._x(series)
+        starts, ends = np.asarray(self.breaks[:-1]), np.asarray(self.breaks[1:])
+        ramps = np.clip((x[:, None] - starts) / (ends - starts), 0.0, 1.0)
+        cols = np.column_stack([x, ramps])
+        cols[nan] = 0.0
+        if self.null_indicator:
+            cols = np.column_stack([cols, nan.astype(np.float64)])
+        return cols
+
+    def _tail_and_band_slopes(self, coef: np.ndarray) -> list[float]:
+        raw = float(coef[0])
+        return [
+            raw,
+            *[
+                raw + float(coef[j + 1]) / width
+                for j, width in enumerate(np.diff(self.breaks))
+            ],
+            raw,
+        ]
+
+    def contribution(self, data: pl.DataFrame, coef: np.ndarray) -> np.ndarray:
+        coef = np.asarray(coef, dtype=float)
+        x, nan = self._x(data[self.variable])
+        out = coef[0] * x
+        for j, (lo, hi) in enumerate(
+            zip(self.breaks[:-1], self.breaks[1:], strict=True)
+        ):
+            out += coef[j + 1] * np.clip((x - lo) / (hi - lo), 0.0, 1.0)
+        out[nan] = coef[-1] if self.null_indicator else 0.0
+        return out
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "variable": self.variable,
+            "breaks": self.breaks,
+            "extrapolation": self.extrapolation,
+            "null_indicator": self.null_indicator,
+            "penalty_weight": self.penalty_weight,
+        }
+
+
+@dataclass
+class AglmLEncoder(_AglmEncoder):
+    """AGLM ``L`` basis: raw ``x`` plus absolute values at interior breaks."""
+
+    kind: ClassVar[str] = "aglm_l"
+
+    def features(self) -> list[Feature]:
+        out = [Feature(f"{self.variable} raw", self.variable, "raw")]
+        out.extend(
+            Feature(
+                f"abs({self.variable} - {format_knot(k)})",
+                self.variable,
+                "absolute",
+                knot=k,
+            )
+            for k in self.breaks[1:-1]
+        )
+        if self.null_indicator:
+            out.append(Feature(f"{self.variable} is null", self.variable, "null"))
+        return out
+
+    def transform(self, series: pl.Series) -> np.ndarray:
+        x, nan = self._x(series)
+        cols = np.column_stack([x, np.abs(x[:, None] - np.asarray(self.breaks[1:-1]))])
+        cols[nan] = 0.0
+        if self.null_indicator:
+            cols = np.column_stack([cols, nan.astype(np.float64)])
+        return cols
+
+    def _tail_and_band_slopes(self, coef: np.ndarray) -> list[float]:
+        absolute = np.asarray(coef[1 : len(self.breaks) - 1], dtype=float)
+        slopes = [float(coef[0] - absolute.sum())]
+        current = slopes[0]
+        for value in absolute:
+            current += 2.0 * float(value)
+            slopes.append(current)
+        return [slopes[0], *slopes, slopes[-1]]
+
+    def contribution(self, data: pl.DataFrame, coef: np.ndarray) -> np.ndarray:
+        coef = np.asarray(coef, dtype=float)
+        x, nan = self._x(data[self.variable])
+        out = coef[0] * x
+        for j, knot in enumerate(self.breaks[1:-1]):
+            out += coef[j + 1] * np.abs(x - knot)
+        out[nan] = coef[-1] if self.null_indicator else 0.0
+        return out
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "variable": self.variable,
+            "breaks": self.breaks,
+            "extrapolation": self.extrapolation,
             "null_indicator": self.null_indicator,
             "penalty_weight": self.penalty_weight,
         }
@@ -806,6 +1024,8 @@ _ENCODERS: dict[str, type[Encoder]] = {
     StepEncoder.kind: StepEncoder,
     CategoricalEncoder.kind: CategoricalEncoder,
     LinearEncoder.kind: LinearEncoder,
+    AglmOEncoder.kind: AglmOEncoder,
+    AglmLEncoder.kind: AglmLEncoder,
 }
 
 
@@ -852,6 +1072,9 @@ def quantile_knots(
         knots = np.round(knots / round_to) * round_to
     knots = np.unique(knots)
     knots = knots[knots > x.min()]
+    x_min, x_max = float(x.min()), float(x.max())  # type: ignore[arg-type]
+    if not len(knots) and x_max > x_min:
+        knots = np.asarray([float(x.filter(x > x_min).min())])  # type: ignore[arg-type]
     return [float(k) for k in knots]
 
 
@@ -896,7 +1119,8 @@ def round_range_outward(lo: float, hi: float) -> tuple[float, float]:
     lo_r = float(np.floor(lo / step + 1e-9) * step)
     hi_r = float(np.ceil(hi / step - 1e-9) * step)
     # keep integers exact and avoid float noise like 79.99999999
-    return float(round(lo_r, 10)), float(round(hi_r, 10))
+    decimals = max(0, int(-np.floor(np.log10(step))) + 2)
+    return float(round(lo_r, decimals)), float(round(hi_r, decimals))
 
 
 def linear_encoder_from_data(
@@ -942,6 +1166,54 @@ def linear_encoder_from_data(
     )
 
 
+def aglm_encoder_from_data(
+    variable: str,
+    series: pl.Series,
+    *,
+    kind: Literal["aglm", "aglm_l"] = "aglm",
+    breaks: list[float] | None = None,
+    n_breaks: int = 100,
+    extrapolation: Literal["extend", "flat"] = "extend",
+    null_indicator: bool = True,
+    penalty_weight: float = 1.0,
+) -> AglmOEncoder | AglmLEncoder:
+    """Build an AGLM encoder from a full endpoint grid (not interior knots).
+
+    ``n_breaks`` must be an integer of at least two even when ``breaks`` is
+    supplied. Without ``breaks``, it creates up to ``n_breaks`` unique type-7
+    training quantiles, including both endpoints. A manual grid can be used
+    with constant non-null training data; an automatic grid cannot.
+    """
+    if isinstance(n_breaks, bool) or int(n_breaks) != n_breaks or n_breaks < 2:
+        raise ValueError("n_breaks must be an integer of at least 2")
+    raw = np.asarray(series.cast(pl.Float64).to_numpy(), dtype=float)
+    if np.isinf(raw).any():
+        raise ValueError(f"Cannot build AGLM term for {variable!r}: infinite values")
+    finite = raw[np.isfinite(raw)]
+    if finite.size == 0:
+        raise ValueError(
+            f"Cannot build AGLM term for {variable!r}: all values are missing"
+        )
+    if breaks is None:
+        if finite.size < 2 or float(finite.min()) == float(finite.max()):
+            raise ValueError(
+                f"Cannot build AGLM term for {variable!r}: fewer than two values"
+            )
+        count = min(int(n_breaks), finite.size)
+        breaks = [
+            float(x)
+            for x in np.unique(
+                np.quantile(finite, np.linspace(0.0, 1.0, count), method="linear")
+            )
+        ]
+    cls: type[AglmOEncoder] | type[AglmLEncoder] = (
+        AglmOEncoder if kind == "aglm" else AglmLEncoder
+    )
+    if kind not in ("aglm", "aglm_l"):
+        raise ValueError("kind must be 'aglm' or 'aglm_l'")
+    return cls(variable, list(breaks), extrapolation, null_indicator, penalty_weight)
+
+
 @dataclass
 class DesignSpec:
     """Ordered collection of encoders; builds the design matrix.
@@ -972,6 +1244,10 @@ class DesignSpec:
         linear: list[str] | None = None,
         clamp: dict[str, tuple[float, float]] | None = None,
         penalty_weight: dict[str, float] | None = None,
+        numeric_kinds: dict[str, Literal["aglm", "aglm_l"]] | None = None,
+        breaks: dict[str, list[float]] | None = None,
+        n_breaks: int = 100,
+        extrapolation: dict[str, Literal["extend", "flat"]] | None = None,
     ) -> DesignSpec:
         """Infer an encoder per predictor from (training) data.
 
@@ -984,6 +1260,13 @@ class DesignSpec:
         keeping levels with at least ``min_level_share`` of the (optionally
         ``weight_col``-weighted) rows. ``interactions`` adds ``A × B`` terms
         (both must be predictors) whose kept cells are decided from the same data.
+        ``numeric_kinds`` may instead select ``"aglm"`` (raw plus capped,
+        normalised ramps) or ``"aglm_l"`` (raw plus absolute interior-break
+        terms). Their ``breaks`` are complete endpoint grids, unlike the
+        existing interior ``knots``; absent a manual grid, up to ``n_breaks``
+        (default 100) interpolated training quantiles are used. ``extrapolation``
+        defaults to ``"extend"``; ``"flat"`` clips before evaluating the basis.
+        Existing ``n_bins`` remains the step/linear bin control.
         ``penalty_weight`` sets a variable's own L1 weight (1.0 = as the rest of
         the design, 0 = unpenalised; see
         :func:`easy_glm.core.fit.penalty_weights`).
@@ -993,6 +1276,9 @@ class DesignSpec:
         categorical_vars = set(categorical or [])
         linear_vars = set(linear or [])
         clamp = clamp or {}
+        numeric_kinds = numeric_kinds or {}
+        breaks = breaks or {}
+        extrapolation = extrapolation or {}
         weights = data[weight_col] if weight_col else None
         encoders: dict[str, Encoder] = {}
         for var in predictors:
@@ -1000,9 +1286,26 @@ class DesignSpec:
                 raise KeyError(f"Predictor {var!r} not found in data")
             s = data[var]
             is_numeric = s.dtype in NUMERIC_DTYPES and var not in categorical_vars
-            if var in linear_vars and not is_numeric:
+            if var in numeric_kinds and var in linear_vars:
+                raise ValueError(f"{var!r}: numeric_kinds conflicts with linear")
+            if var in numeric_kinds and var in knots:
+                raise ValueError(f"{var!r}: numeric_kinds uses breaks, not knots")
+            if var in numeric_kinds and not is_numeric:
+                raise ValueError(f"{var!r} is not numeric; it cannot use an AGLM basis")
+            if is_numeric and var in numeric_kinds:
+                encoders[var] = aglm_encoder_from_data(
+                    var,
+                    s,
+                    kind=numeric_kinds[var],
+                    breaks=breaks.get(var),
+                    n_breaks=n_breaks,
+                    extrapolation=extrapolation.get(var, "extend"),
+                    null_indicator=null_indicator,
+                    penalty_weight=float(pweight.get(var, 1.0)),
+                )
+            elif var in linear_vars and not is_numeric:
                 raise ValueError(f"{var!r} is not numeric; it cannot be a linear term")
-            if is_numeric and var in linear_vars:
+            elif is_numeric and var in linear_vars:
                 encoders[var] = linear_encoder_from_data(
                     var,
                     s,
@@ -1197,7 +1500,7 @@ class DesignSpec:
         out = np.zeros((n, self.n_features), dtype=np.float64)
         for var, sl in self.slices().items():
             enc = self.encoders[var]
-            if isinstance(enc, LinearEncoder):
+            if isinstance(enc, (LinearEncoder, _AglmEncoder)):
                 out[:, sl] = enc.transform_frame(data)
                 continue
             code = enc.codes(data)
@@ -1286,7 +1589,7 @@ class DesignSpec:
                 if enc.null_indicator:
                     dense_cols.append(sl.start + n_knots)
                     dense_values.append(code == n_knots + 1)
-            elif isinstance(enc, LinearEncoder):
+            elif isinstance(enc, (LinearEncoder, _AglmEncoder)):
                 block = enc.transform_frame(data)
                 for j in range(enc.n_features):
                     dense_cols.append(sl.start + j)
@@ -1345,7 +1648,7 @@ class DesignSpec:
         for enc in self.encoders.values():
             if isinstance(enc, StepEncoder):
                 per_row += 4 + (8 if enc.null_indicator else 0)
-            elif isinstance(enc, LinearEncoder):
+            elif isinstance(enc, (LinearEncoder, _AglmEncoder)):
                 per_row += 8 * enc.n_features
             else:
                 per_row += 4
@@ -1422,6 +1725,8 @@ class DesignSpec:
                 parts.append(
                     f"{var}: linear({len(enc.knots)} knots, clamp {enc.lo:g}–{enc.hi:g})"
                 )
+            elif isinstance(enc, _AglmEncoder):
+                parts.append(f"{var}: {enc.kind}({len(enc.breaks)} breaks)")
             elif isinstance(enc, InteractionEncoder):
                 parts.append(
                     f"{var}: interaction({len(enc.cells)} of "

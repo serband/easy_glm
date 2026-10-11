@@ -85,42 +85,12 @@ from easy_glm.workflow import (
 PROJECT_SUFFIX = ".easyglm-project.json"
 RUNS_SUFFIX = ".easyglm-runs"
 _SAMPLE_KEYS = ("sample_rows", "sample_seed")
-#: Bump whenever the shape **or the meaning** of anything pickled (ModelRun,
-#: GLMFit, RateModel, DesignSpec, their coefficients, ...) changes, so older
-#: pickles are treated as cache misses even in a development checkout where the
-#: installed version number does not move. A change of meaning that leaves the
-#: shape alone is the dangerous case: it unpickles cleanly and is then read
-#: wrongly.
-#: 3 — B2: a ``LinearEncoder``'s coefficients became per-band slopes instead of
-#: hinge (change-of-slope) coefficients. Nothing about the pickle's shape moved,
-#: so a run cached by an earlier 0.4 development build would have been re-read
-#: as if its numbers were slopes.
-#: 4 — merge of W4 (per-session .fitting markers, pruning rules) and B2 above;
-#: both bumped 2 → 3 independently, so the merged tree moves on to 4.
-#: 5 — A2: a model with interactions is now fitted in **two stages** and its run
-#: holds a ``TwoStageFit`` (mains frozen, cells fitted on top as adjustments).
-#: A run pickled by an earlier build holds a joint fit whose main tables include
-#: part of the interaction — the same shape, a different meaning — so those runs
-#: are a cache miss and are refitted.
-#: 6 — D5 merged with A2: both pieces claimed 5 while they were on their own
-#: branches, so the merged tree moves on. D5's own reason: rate-table rows carry
-#: the training exposure that fell in them (``FromToRow.exposure`` /
-#: ``BandRow.exposure``, from the new ``GLMFit.row_exposure``) — an older pickle
-#: has rows without the attribute at all, and the relativity tooling weights
-#: bands by it.
-#: 6 — merge of A2 (above) and E: every encoder gained ``penalty_weight``,
-#: ``ModelMetadata`` gained ``offset_is_premium`` and ``ModelConfig`` gained
-#: ``tweedie_power``, so a run pickled by an earlier build unpickles *without*
-#: those attributes and anything reading them (the penalty rule, the table
-#: labels, the family) would see a half-built object. Both pieces bumped 4 → 5
-#: independently, so the merged tree moves on to 6.
-#: 7 — E merged after D5 and G: D5+A2 and E+A2 had each moved the merged tree
-#: to 6 on their own branches, so the release tree moves on once more. Every
-#: reason above applies to a run pickled before this number.
-#: 10 — pair-stage configs and artifacts gained automatic search state. Old
-#: staged pickles lack those fields, so persisted runs need a format miss.
-#: 11 — fitted metrics include family-specific losses and shared validity rules.
-PERSIST_FORMAT = 12
+#: Bump whenever the shape or meaning of persisted ModelRun, GLMFit,
+#: RateModel or DesignSpec objects changes. Older pickles then become cache
+#: misses and are refitted, even when the installed version is unchanged.
+#: Changes to coefficient meaning require a bump too: matching object fields
+#: do not prove that a saved fit can be interpreted under the current rules.
+PERSIST_FORMAT = 14
 #: A marker left by *another* session is only removed once it is this old:
 #: younger than this it may belong to a fit that is still running in another
 #: tab, and taking its marker away would cost that tab its own warning.
@@ -200,6 +170,8 @@ def model_hash(project: Project, model: str) -> str:
     if not staged:
         cfg.pop("base_rate_override", None)
     cfg.pop("notes", None)
+    # Model-flow provenance is navigation metadata, not fit input.
+    cfg.pop("lineage", None)
     design_names = set(cfg["predictors"])
     for stage in cfg.get("pair_stages", []):
         design_names.update((stage["a"], stage["b"]))
@@ -854,6 +826,16 @@ def _design_matches(p: Project, model: str, run: ModelRun) -> bool:
     return list(spec.feature_names) == list(run.spec.feature_names)
 
 
+def _forbidden_gaussian_interactions(p: Project, model: str) -> bool:
+    """Reject an old cached fit that predates the Gaussian interaction gate."""
+    cfg = p.models[model]
+    return (
+        cfg.family in ("gaussian", "normal")
+        and cfg.link not in (None, "log")
+        and bool(cfg.interactions or cfg.pair_stages)
+    )
+
+
 def load_persisted_run(model: str) -> ModelRun | None:
     """Load the persisted run for ``model`` when its key matches the current
     spec, data file, library versions and pickle format; otherwise None.
@@ -870,6 +852,8 @@ def load_persisted_run(model: str) -> ModelRun | None:
         return None
     p = project()
     if model not in p.models:
+        return None
+    if _forbidden_gaussian_interactions(p, model):
         return None
     target = run_file(folder, model, run_key(p, model))
     if not target.exists():
@@ -925,6 +909,8 @@ def get_run(model: str) -> ModelRun | None:
     model references a missing column)."""
     p = project()
     if model not in p.models:
+        return None
+    if _forbidden_gaussian_interactions(p, model):
         return None
     prepared = st.session_state.get("prepared")
     if prepared is not None and p.missing_columns(prepared[1].columns, model):

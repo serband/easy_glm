@@ -22,6 +22,9 @@ from uuid import uuid4
 
 from easy_glm.engine.models import INTERACTION_SEP
 
+from .model_plan import ModelPlan
+from .stack_types import ComponentRecipe, validate_catboost_tuning_settings
+
 
 def _is_finite_number(value: Any) -> bool:
     """Whether ``value`` is a real, finite number.
@@ -141,7 +144,7 @@ def safe_filename(name: str, fallback: str = "model") -> str:
     return cleaned[:80] if re.search(r"\w", cleaned) else fallback
 
 
-PROJECT_VERSION = 3  # v3 adds ordered CatBoost pair-stage configuration
+PROJECT_VERSION = 7  # v7 adds the explicit logical-model plan format
 
 ROLES = (
     "target",
@@ -282,6 +285,57 @@ class VariableDesign:
     #: penalised at all** (every band or level is kept). See
     #: :func:`easy_glm.core.fit.penalty_weights`.
     penalty_weight: float = 1.0
+    #: AGLM only: full break grid including both endpoints; None uses training
+    #: quantiles. These are separate from step cuts and band counts.
+    breaks: list[float] | None = None
+    n_breaks: int | None = None
+    #: AGLM only: "extend" (default) or "flat" outside the break grid.
+    extrapolation: str | None = None
+
+
+def numeric_method_problems(variable: str, design: VariableDesign) -> list[str]:
+    """Validate the additional curve controls without rewriting older designs."""
+    where = f"design[{variable!r}]"
+    if design.kind not in ("aglm", "aglm_l"):
+        if any(
+            value is not None
+            for value in (design.breaks, design.n_breaks, design.extrapolation)
+        ):
+            return [f"{where}: break grids and extrapolation require an AGLM curve"]
+        return []
+    problems: list[str] = []
+    if (
+        design.knots != "quantile"
+        or design.n_bins is not None
+        or design.clamp is not None
+    ):
+        problems.append(
+            f"{where}: use breaks/n_breaks for an AGLM curve, rather than cuts, "
+            "band counts or clamps"
+        )
+    if design.monotone is not None:
+        problems.append(f"{where}: AGLM curves do not support monotone constraints")
+    if design.breaks is not None and not (
+        isinstance(design.breaks, list)
+        and len(design.breaks) >= 2
+        and all(_is_finite_number(value) for value in design.breaks)
+        and all(
+            left < right
+            for left, right in zip(design.breaks, design.breaks[1:], strict=False)
+        )
+    ):
+        problems.append(
+            f"{where}.breaks must include at least two finite, increasing endpoints"
+        )
+    if design.n_breaks is not None and (
+        isinstance(design.n_breaks, bool)
+        or not isinstance(design.n_breaks, int)
+        or not 2 <= design.n_breaks <= 200
+    ):
+        problems.append(f"{where}.n_breaks must be a whole number from 2 to 200")
+    if design.extrapolation not in (None, "extend", "flat"):
+        problems.append(f"{where}.extrapolation must be 'extend' or 'flat'")
+    return problems
 
 
 @dataclass
@@ -419,6 +473,22 @@ class PairStageConfig:
     search: PairSearchConfig | None = None
 
 
+@dataclass(frozen=True)
+class ModelLineage:
+    """Durable navigation provenance for a named model candidate.
+
+    This deliberately records an identity, rather than a scorer.  A saved
+    project can therefore show an old branch after its local fit artefact has
+    gone away, but can never silently use that old scorer to fit a successor.
+    """
+
+    parent_name: str
+    parent_fit_id: str
+    parent_key: str
+    parent_prefix_fingerprint: str
+    prefix_length: int
+
+
 @dataclass
 class ModelConfig:
     family: str = "poisson"
@@ -432,12 +502,19 @@ class ModelConfig:
     offset: str | None = None
     divide_target_by_weight: bool = False
     predictors: list[str] = field(default_factory=list)
+    #: A staged-plan root may deliberately promote an unassigned raw column
+    #: for this one model without changing the shared Variables roles.
+    allow_unassigned_factors: bool = False
     penalty: Penalty = field(default_factory=Penalty)
     monotone: dict[str, str] = field(default_factory=dict)
     interactions: list[Interaction] = field(default_factory=list)
     pair_method: str = "legacy_glm"
     pair_time_limit_minutes: float = 15.0
     pair_stages: list[PairStageConfig] = field(default_factory=list)
+    components: list[ComponentRecipe] = field(default_factory=list)
+    #: Private, per-model copy of the band definitions used for this fit.
+    #: It keeps later Variables edits from changing an already named model.
+    design: dict[str, Any] | None = None
     base: str = "modal"
     base_rate_override: float | None = None
     adjustments: list[Adjustment] = field(default_factory=list)
@@ -446,6 +523,9 @@ class ModelConfig:
     #: invalidate one
     snapshots: list[TableSnapshot] = field(default_factory=list)
     notes: str = ""
+    #: Provenance for the visual model-flow diagram.  It has no modelling
+    #: meaning and is excluded from all fit identities.
+    lineage: ModelLineage | None = None
 
     def drop_adjustments_for(self, variable: str) -> int:
         """Remove every adjustment on ``variable`` — from the working set **and
@@ -589,7 +669,13 @@ class Project:
     data: DataConfig = field(default_factory=DataConfig)
     design: DesignConfig = field(default_factory=DesignConfig)
     models: dict[str, ModelConfig] = field(default_factory=dict)
+    #: The editable workbench recipe.  Saved fits stay in ``models`` and are
+    #: intentionally not changed when this plan changes.
+    model_plan: ModelPlan | None = None
     champion: str | None = None
+    # Saved descriptors for optional new-data scoring sources.  They are outside
+    # DataConfig because they must never change a training fit fingerprint.
+    scoring_sources: list[dict[str, Any]] = field(default_factory=list)
     exploration: dict[str, Any] = field(
         default_factory=lambda: {"leakage": {"ignored": [], "acknowledged": []}}
     )
@@ -912,6 +998,10 @@ class Project:
         """Return a list of problems (empty = valid). With ``columns`` (the
         prepared data's columns) every column reference is checked too."""
         problems: list[str] = []
+        if self.model_plan is not None:
+            from .model_plan import structural_problems
+
+            problems.extend(structural_problems(self.model_plan, FAMILIES))
         if columns is not None:
             problems.extend(self.missing_columns(columns, model))
         if self.data.split.mode == "random" and not str(self.data.split.column).strip():
@@ -930,11 +1020,20 @@ class Project:
         ):
             problems.append("split.fraction must be in (0, 1)")
         for var, vd in self.design.variables.items():
-            if vd.kind not in (None, "step", "linear", "continuous", "categorical"):
+            if vd.kind not in (
+                None,
+                "step",
+                "linear",
+                "continuous",
+                "categorical",
+                "aglm",
+                "aglm_l",
+            ):
                 problems.append(
                     f"design[{var!r}].kind must be 'step', 'linear', 'continuous' "
-                    "or 'categorical'"
+                    "'categorical', 'aglm' or 'aglm_l'"
                 )
+            problems.extend(numeric_method_problems(var, vd))
             if vd.monotone not in (None, "increasing", "decreasing"):
                 problems.append(f"design[{var!r}].monotone invalid")
             if vd.monotone and vd.kind == "categorical":
@@ -1022,9 +1121,87 @@ class Project:
                     f"{name}: l1_ratio must be between 0 (ridge) and 1 (lasso), "
                     f"got {cfg.penalty.l1_ratio!r}"
                 )
-            if not cfg.predictors and cfg.pair_method == "legacy_glm":
+            if (
+                not cfg.predictors
+                and not cfg.components
+                and cfg.pair_method == "legacy_glm"
+            ):
                 problems.append(f"{name}: no predictors")
-            bad = [p for p in cfg.predictors if self.data.roles.get(p) != "predictor"]
+            if cfg.design is not None:
+                try:
+                    from .stack_types import validate_component_design
+
+                    validate_component_design(cfg.design, tuple(cfg.predictors))
+                except ValueError as exc:
+                    problems.append(f"{name}: {exc}")
+            if cfg.components:
+                single_glm_component = (
+                    len(cfg.components) == 1 and cfg.components[0].kind == "glm"
+                )
+                if not single_glm_component and (
+                    cfg.family not in ("poisson", "tweedie", "gaussian")
+                    or cfg.link
+                    not in (("log",) if cfg.family == "gaussian" else (None, "log"))
+                ):
+                    problems.append(
+                        f"{name}: stacks require Poisson, Tweedie or Gaussian with log link"
+                    )
+                component_ids = [item.component_id for item in cfg.components]
+                if any(not value.strip() for value in component_ids) or len(
+                    component_ids
+                ) != len(set(component_ids)):
+                    problems.append(
+                        f"{name}: component IDs must be nonblank and unique"
+                    )
+                for item in cfg.components:
+                    if item.kind == "legacy":
+                        source_name = item.settings.get("model_name")
+                        source = (
+                            self.models.get(source_name)
+                            if isinstance(source_name, str)
+                            else None
+                        )
+                        if (
+                            source_name == name
+                            or source is None
+                            or source.components
+                            or item.component_id != "legacy"
+                        ):
+                            problems.append(
+                                f"{name}: legacy adapter must reference another existing legacy model"
+                            )
+                    elif item.kind not in (
+                        "glm",
+                        "catboost",
+                        "interaction",
+                        "catalogue",
+                    ):
+                        problems.append(
+                            f"{name}: unsupported component kind {item.kind!r}"
+                        )
+                    try:
+                        validate_catboost_tuning_settings(item.kind, item.settings)
+                    except ValueError as exc:
+                        problems.append(f"{name}: component {item.name!r}: {exc}")
+                    if item.kind != "catalogue":
+                        forbidden = [
+                            factor
+                            for factor in item.factors
+                            if factor in (cfg.target, cfg.weight, cfg.offset)
+                        ]
+                        if forbidden:
+                            problems.append(
+                                f"{name}: component {item.name!r} uses response/weight/offset as predictors: {forbidden}"
+                            )
+            bad = [
+                p
+                for p in cfg.predictors
+                if self.data.roles.get(p) != "predictor"
+                and not (
+                    cfg.allow_unassigned_factors
+                    and self.data.roles.get(p) in (None, "unassigned")
+                )
+            ]
             if bad:
                 problems.append(f"{name}: not predictor-role columns: {bad}")
             if cfg.penalty.alpha is None and cfg.penalty.cv is None:
@@ -1053,12 +1230,18 @@ class Project:
                 problems.append(
                     f"{name}: pair stages cannot be mixed with legacy interactions"
                 )
+            if (
+                (cfg.pair_stages or cfg.interactions)
+                and cfg.family == "gaussian"
+                and cfg.link not in (None, "log")
+            ):
+                problems.append(f"{name}: Gaussian interactions require the log link")
             if cfg.pair_stages and (
-                cfg.family not in ("poisson", "tweedie")
+                cfg.family not in ("poisson", "tweedie", "gaussian")
                 or cfg.link not in (None, "log")
             ):
                 problems.append(
-                    f"{name}: pair stages support Poisson/log and Tweedie/log only"
+                    f"{name}: pair stages support Gaussian/log, Poisson/log and Tweedie/log only"
                 )
             stage_ids: set[str] = set()
             for stage in cfg.pair_stages:
@@ -1248,19 +1431,62 @@ class Project:
     # -- (de)serialisation ---------------------------------------------
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
+        # Optional curve controls must not change unchanged legacy project JSON
+        # or fitted-recipe fingerprints just because this package was upgraded.
+        for definition in d["design"]["variables"].values():
+            for key in ("breaks", "n_breaks", "extrapolation"):
+                if definition.get(key) is None:
+                    definition.pop(key, None)
+        # ``asdict`` sees the compatibility ``ModelPlan.stages`` projection.
+        # The plan itself owns its wire format: v1 preserves stages, while v2
+        # writes only its logical named models.
+        if self.model_plan is not None:
+            d["model_plan"] = self.model_plan.to_dict()
         # Keep ordinary legacy projects readable by version-2 installations.
         d["version"] = (
-            3
-            if any(
-                m.pair_method == "sequential_catboost" or m.pair_stages
-                for m in self.models.values()
+            7
+            if self.model_plan is not None and self.model_plan.is_logical_models_plan
+            else (
+                6
+                if self.model_plan is not None
+                else (
+                    5
+                    if any(m.lineage is not None for m in self.models.values())
+                    else (
+                        4
+                        if any(m.components for m in self.models.values())
+                        else (
+                            3
+                            if any(
+                                m.pair_method == "sequential_catboost" or m.pair_stages
+                                for m in self.models.values()
+                            )
+                            else 2
+                        )
+                    )
+                )
             )
-            else 2
         )
+        if self.model_plan is None:
+            d.pop("model_plan", None)
+        if not self.scoring_sources:
+            d.pop("scoring_sources", None)
         for m in d["models"].values():
+            if m.get("design") is None:
+                m.pop("design", None)
+            if not m.get("allow_unassigned_factors", False):
+                m.pop("allow_unassigned_factors", None)
+            if m.get("lineage") is None:
+                m.pop("lineage", None)
             if m["pair_stages"]:
                 m["pair_method"] = "sequential_catboost"
             m["adjustments"] = [_adjustment_to_dict(a) for a in m["adjustments"]]
+            # Component-local definitions were added after stack projects were
+            # already fingerprinted.  Preserve every old serialised form when
+            # a recipe still inherits the project-wide design.
+            for component in m.get("components", []):
+                if component.get("design") is None:
+                    component.pop("design", None)
             for snap in m.get("snapshots", []):
                 snap["adjustments"] = [
                     _adjustment_to_dict(a) for a in snap["adjustments"]
@@ -1296,6 +1522,8 @@ class Project:
             filters=list(d.get("filters", [])),
             split=_build(Split, d.get("split", {}), "data.split"),
         )
+        plan_raw = raw.get("model_plan")
+        plan = ModelPlan.from_dict(plan_raw) if plan_raw is not None else None
         g = raw.get("design", {})
         _warn_unknown(g, {f.name for f in fields(DesignConfig)}, "design")
         design = DesignConfig(
@@ -1308,6 +1536,27 @@ class Project:
         models: dict[str, ModelConfig] = {}
         for name, m in raw.get("models", {}).items():
             m = dict(m)
+            raw_lineage = m.pop("lineage", None)
+            if raw_lineage is not None:
+                if not isinstance(raw_lineage, dict):
+                    raise ValueError(f"models[{name!r}].lineage must be an object")
+                lineage = _build(ModelLineage, raw_lineage, f"models[{name!r}].lineage")
+                if (
+                    not all(
+                        isinstance(value, str) and value.strip()
+                        for value in (
+                            lineage.parent_name,
+                            lineage.parent_fit_id,
+                            lineage.parent_key,
+                            lineage.parent_prefix_fingerprint,
+                        )
+                    )
+                    or not isinstance(lineage.prefix_length, int)
+                    or lineage.prefix_length < 0
+                ):
+                    raise ValueError(f"models[{name!r}].lineage is invalid")
+            else:
+                lineage = None
             penalty = _build(Penalty, m.pop("penalty", {}), f"models[{name!r}].penalty")
             adjustments = [
                 _adjustment_from_dict(a, f"models[{name!r}].adjustments")
@@ -1337,6 +1586,9 @@ class Project:
             interactions = [
                 _build(Interaction, it, f"models[{name!r}].interactions")
                 for it in m.pop("interactions", [])
+            ]
+            components = [
+                ComponentRecipe.from_dict(item) for item in m.pop("components", [])
             ]
             pair_stages = []
             raw_stages = m.pop("pair_stages", [])
@@ -1408,6 +1660,8 @@ class Project:
                         "sequential_catboost" if pair_stages else "legacy_glm",
                     ),
                     "pair_stages": pair_stages,
+                    "components": components,
+                    "lineage": lineage,
                 },
                 f"models[{name!r}]",
             )
@@ -1420,7 +1674,9 @@ class Project:
             data=data,
             design=design,
             models=models,
+            model_plan=plan,
             champion=raw.get("champion"),
+            scoring_sources=list(raw.get("scoring_sources", [])),
             exploration=exploration,
         )
 

@@ -1,4 +1,4 @@
-"""Fresh-process readiness measurements for the local Svelte experiment.
+"""Measure browser workbench startup time in fresh processes.
 
 Run from an installed checkout: python scripts/bench_desktop.py --runs 5.
 OS disk caches are not flushed; this is not a first-install measurement.

@@ -184,7 +184,9 @@ def _is_null_row(row: Any) -> bool:
     return row.from_ is None and row.to_ is None
 
 
-def _validate_linear_rows(name: str, rows: list[Any]) -> list[int]:
+def _validate_linear_rows(
+    name: str, rows: list[Any], extrapolation: str = "flat"
+) -> list[int]:
     """Check the shape of a linear table's rows and return their indices in
     curve order: the ``(None, lo)`` row, the sloped bands by ``from``, the
     ``(hi, None)`` row, then the null row. Raises for anything that is not a
@@ -226,7 +228,7 @@ def _validate_linear_rows(name: str, rows: list[Any]) -> list[int]:
                 f"Linear table for {name!r}: band {b.from_!r}–{b.to_!r} has zero "
                 "width; every sloped band needs from < to"
             )
-    if bands[0].slope != 0.0 or bands[-1].slope != 0.0:
+    if extrapolation == "flat" and (bands[0].slope != 0.0 or bands[-1].slope != 0.0):
         raise ValueError(
             f"Linear table for {name!r}: the open end bands must have slope 0 "
             "(the curve is flat outside the clamp range)"
@@ -570,6 +572,12 @@ class RateModel:
             raise ValueError(
                 f"Linear table for {name!r} lacks columns {sorted(missing)}"
             )
+        extrapolation = (
+            table["extrapolation"][0] if "extrapolation" in table.columns else "flat"
+        )
+        curve_kind = table["curve_kind"][0] if "curve_kind" in table.columns else None
+        if extrapolation not in ("flat", "extend"):
+            raise ValueError(f"Linear table for {name!r} has invalid extrapolation")
         has_base = "is_base" in table.columns
         has_exposure = "exposure" in table.columns
         cols = (
@@ -600,7 +608,7 @@ class RateModel:
             )
             given_slopes.append(None if slope is None else float(slope))
             base_flags.append(bool(rec[4]) if has_base else False)
-        order = _validate_linear_rows(name, rows)
+        order = _validate_linear_rows(name, rows, str(extrapolation))
         bands = [rows[i] for i in order if not _is_null_row(rows[i])]
         null_rows = [rows[i] for i in order if _is_null_row(rows[i])]
         if not null_rows:
@@ -620,10 +628,17 @@ class RateModel:
         bands[0].relativity = v_first
         # slopes come from the nodes: continuity is then by construction
         derive_slopes(bands)
+        if extrapolation == "extend":
+            # Open-tail slopes are fitted coefficients, not implied by a node
+            # inside the grid. Keep them when a table is read back.
+            for position in (0, len(bands) - 1):
+                given = given_slopes[order[position]]
+                if given is not None:
+                    bands[position].slope = given
         for i, b in zip(order, (rows[i] for i in order), strict=True):
             given = given_slopes[i]
             if given is None or _is_null_row(b) or b.from_ is None or b.to_ is None:
-                if given and not _is_null_row(b):
+                if given and not _is_null_row(b) and extrapolation == "flat":
                     raise ValueError(
                         f"Linear table for {name!r}: the open end bands must have "
                         "slope 0 (the curve is flat outside the clamp range)"
@@ -651,7 +666,13 @@ class RateModel:
                 x_base = b.from_ if b.from_ is not None else b.to_
             elif len(ones) == 2 and ones[0] is bands[0] and ones[1] is bands[1]:
                 x_base = bands[1].from_
-        return VariableConfig(type="linear", table=bands + null_rows, x_base=x_base)
+        return VariableConfig(
+            type="linear",
+            table=bands + null_rows,
+            x_base=x_base,
+            extrapolation=str(extrapolation),
+            curve_kind=curve_kind,
+        )
 
     @staticmethod
     def _config_from_cell_table(
@@ -1136,7 +1157,7 @@ class RateModel:
         old_value = row.relativity
         row.relativity = new_value
         if not _is_null_row(row):
-            order = _validate_linear_rows(var, rows)
+            order = _validate_linear_rows(var, rows, config.extrapolation)
             bands = [rows[i] for i in order if not _is_null_row(rows[i])]
             pos = bands.index(row)
             if pos <= 1:  # the node at lo is shared by the first two rows
@@ -1426,6 +1447,18 @@ class RateModel:
                         else {}
                     ),
                     **(
+                        {
+                            "extrapolation": config.extrapolation,
+                            "curve_kind": config.curve_kind,
+                        }
+                        if config.type == "linear"
+                        and (
+                            config.extrapolation != "flat"
+                            or config.curve_kind is not None
+                        )
+                        else {}
+                    ),
+                    **(
                         {"other_label": config.other_label}
                         if config.type == "categorical" and config.other_label
                         else {}
@@ -1507,13 +1540,20 @@ class RateModel:
                 )
             table = _rows_from_list(vdata["table"])
             if vdata["type"] == "linear":
-                table = [table[i] for i in _validate_linear_rows(name, table)]
+                table = [
+                    table[i]
+                    for i in _validate_linear_rows(
+                        name, table, vdata.get("extrapolation", "flat")
+                    )
+                ]
             parents = vdata.get("parents")
             variables[name] = VariableConfig(
                 type=vdata["type"],
                 table=table,
                 parents=tuple(parents) if parents else None,
                 x_base=vdata.get("x_base"),
+                extrapolation=vdata.get("extrapolation", "flat"),
+                curve_kind=vdata.get("curve_kind"),
                 other_label=vdata.get("other_label"),
             )
 

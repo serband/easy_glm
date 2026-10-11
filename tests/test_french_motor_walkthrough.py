@@ -1,8 +1,7 @@
-"""Developer verification for the interactive French motor Python lesson."""
+"""Execute the public pricing walkthrough and verify its fitted models and exports."""
 
 from __future__ import annotations
 
-import ast
 import re
 from pathlib import Path
 
@@ -10,42 +9,13 @@ import numpy as np
 import plotly.graph_objects as go
 
 ROOT = Path(__file__).resolve().parents[1]
-LESSON = ROOT / "docs" / "examples" / "french_motor_walkthrough.py"
 GUIDE = ROOT / "examples" / "pricing_walkthrough.md"
-CELL_MARKER = re.compile(r"(?m)^# %% (\d+) — (.+)$")
 PYTHON_FENCE = re.compile(r"(?ms)^```python[^\n]*\n(.*?)^```[ \t]*$")
 
 
-def lesson_cells(source: str) -> list[tuple[int, str, str]]:
-    """Return numbered cell source without treating the file as one-shot code."""
-    matches = list(CELL_MARKER.finditer(source))
-    return [
-        (
-            int(match.group(1)),
-            match.group(2),
-            (
-                source[match.end() : matches[index + 1].start()]
-                if index + 1 < len(matches)
-                else source[match.end() :]
-            ),
-        )
-        for index, match in enumerate(matches)
-    ]
-
-
 def markdown_python_blocks(source: str) -> list[str]:
-    """Extract the guide's executable Python without reading its companion."""
+    """Extract the guide's executable Python blocks in order."""
     return [match.group(1) for match in PYTHON_FENCE.finditer(source)]
-
-
-def test_optional_script_contains_the_same_cells_as_the_walkthrough():
-    """The convenient script must not teach a second, incompatible workflow."""
-    cells = lesson_cells(LESSON.read_text(encoding="utf-8"))
-    blocks = markdown_python_blocks(GUIDE.read_text(encoding="utf-8"))
-    assert len(cells) == len(blocks)
-    assert [ast.dump(ast.parse(body)) for _number, _title, body in cells] == [
-        ast.dump(ast.parse(block)) for block in blocks
-    ]
 
 
 def test_markdown_walkthrough_executes_independently_on_full_fixture(

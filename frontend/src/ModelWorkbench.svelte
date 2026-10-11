@@ -6,6 +6,7 @@
     import InteractionEditor from './InteractionEditor.svelte';
     import PairStageEditor from './PairStageEditor.svelte';
     import DiagnosticTable from './DiagnosticTable.svelte';
+    import SearchableVariableSelect from './SearchableVariableSelect.svelte';
     import { comparisonIssue, comparisonMetrics, comparisonSettings } from './comparison.js';
     import { rateChartKind } from './rateChartData.js';
     const familyLabels = {
@@ -17,17 +18,34 @@
         inverse_gaussian: ['Inverse Gaussian', 'Positive amounts.'],
     };
     export let comparison = '',
+        requestedModel = '',
         onContext = () => {};
+    export let onRequestedModelConsumed = () => {};
+    export let initialSubset = 'holdout';
+    export let showBothDiagnosticSubsets = true;
     let comparisonResult = null,
         comparisonKey = '',
         sentContext = '',
         readingComparison = false;
+    $: legacyNames = wb
+        ? Object.keys(wb.models).filter((name) => !wb.models[name]?.components?.length)
+        : [];
+    $: if (loaded && requestedModel && legacyNames.includes(requestedModel)) {
+        if (selected !== requestedModel) {
+            selected = requestedModel;
+            pickModel();
+        }
+        onRequestedModelConsumed();
+    }
     $: effectiveChallenger =
-        view === 'compare' && comparison !== selected && jobs[comparison]?.applicable
+        view === 'compare' &&
+        legacyNames.includes(comparison) &&
+        comparison !== selected &&
+        jobs[comparison]?.applicable
             ? comparison
             : '';
     $: context = JSON.stringify({
-        fitted: Object.keys(jobs).filter((n) => jobs[n].applicable),
+        fitted: legacyNames.filter((name) => jobs[name]?.applicable),
         selected,
         champion: wb?.champion,
     });
@@ -165,6 +183,9 @@
     }
     async function includePairDraft({ a, b }) {
         if (pairMethod !== 'sequential') return false;
+        if (!supportsPair(cfg)) {
+            throw new Error(pairPrerequisite(cfg));
+        }
         const eligible = wb.pair_candidates
             ? [...wb.pair_candidates.predictors, ...wb.pair_candidates.unassigned]
             : wb.predictors;
@@ -238,7 +259,7 @@
     let pairMethod = 'legacy';
     let termSearch = '',
         termScroll = 0,
-        subset = 'holdout',
+        subset = initialSubset,
         tableName = '',
         table = null,
         tableOffset = 0,
@@ -250,7 +271,8 @@
         timer = null;
     $: signature = state ? state.session_id + ':' + state.revision : '';
     $: if (
-        (['model', 'diagnostics', 'compare', 'tables'].includes(view) || state?.models?.length) &&
+        (['model', 'diagnostics', 'compare', 'tables', 'export'].includes(view) ||
+            state?.models?.length) &&
         state &&
         !loading &&
         !saving &&
@@ -290,13 +312,25 @@
     function supportsPair(model) {
         return (
             (model?.family === 'poisson' ||
+                model?.family === 'gaussian' ||
                 (model?.family === 'tweedie' &&
                     model.tweedie_power > 1 &&
                     model.tweedie_power < 2)) &&
             (model?.link == null || model.link === 'log')
         );
     }
+    function gaussianInteractionsAllowed(model) {
+        return model?.family !== 'gaussian' || model?.link == null || model.link === 'log';
+    }
+    function pairPrerequisite(model) {
+        return model?.family === 'gaussian'
+            ? 'Gaussian interactions require a log link.'
+            : 'Sequential pairs require Gaussian, Poisson or Tweedie with a log link, and Tweedie power strictly between 1 and 2.';
+    }
     $: pairCapability = supportsPair(cfg);
+    $: interactionsAllowed = gaussianInteractionsAllowed(cfg);
+    $: invalidInteractionLink =
+        !interactionsAllowed && Boolean(cfg?.interactions?.length || cfg?.pair_stages?.length);
     $: savedStages = wb?.models[selected]?.pair_stages || [];
     $: mainChanged =
         selected === '__new__' ||
@@ -438,14 +472,17 @@
         const keepDraft = keep && dirty;
         try {
             wb = await api('workbench');
+            const names = Object.keys(wb.models).filter(
+                (name) => !wb.models[name]?.components?.length,
+            );
             jobs = wb.jobs;
             known = wb.session_id + ':' + wb.revision;
             loaded = true;
-            if (selected !== '__new__' && !wb.models[selected])
-                selected = Object.keys(wb.models)[0] || '__new__';
-            if (!cfg && Object.keys(wb.models).length)
-                selected =
-                    wb.champion && wb.models[wb.champion] ? wb.champion : Object.keys(wb.models)[0];
+            if (selected !== '__new__' && !names.includes(selected))
+                selected = names[0] || '__new__';
+            if (requestedModel && names.includes(requestedModel)) selected = requestedModel;
+            else if (!cfg && names.length)
+                selected = wb.champion && names.includes(wb.champion) ? wb.champion : names[0];
             if (!keepDraft || !cfg) pickModel();
             else
                 notice =
@@ -464,7 +501,7 @@
             jobs = await api('jobs');
             const completed = JSON.stringify(
                 Object.entries(jobs)
-                    .filter(([, job]) => job.applicable)
+                    .filter(([name, job]) => legacyNames.includes(name) && job.applicable)
                     .map(([name, job]) => [name, job.id])
                     .sort(([a], [b]) => a.localeCompare(b)),
             );
@@ -518,7 +555,8 @@
         if (
             !interactionsValid ||
             !pairStagesValid ||
-            ((cfg.pair_stages || []).length > 0 && !pairCapability)
+            ((cfg.pair_stages || []).length > 0 && !pairCapability) ||
+            invalidInteractionLink
         ) {
             error = 'Check the pair settings before saving.';
             return;
@@ -585,6 +623,10 @@
         }
     }
     async function fit() {
+        if (invalidInteractionLink || (cfg.pair_stages?.length && !pairCapability)) {
+            error = pairPrerequisite(cfg);
+            return;
+        }
         saving = true;
         error = '';
         notice = '';
@@ -746,7 +788,7 @@
                     bind:value={selected}
                     onchange={chooseModel}
                     >{#if view !== 'compare'}<option value="__new__">Create a new model</option
-                        >{/if}{#each Object.keys(wb.models).filter((n) => view !== 'compare' || jobs[n]?.applicable) as name}<option
+                        >{/if}{#each legacyNames.filter((name) => view !== 'compare' || jobs[name]?.applicable) as name}<option
                             value={name}>{name}</option
                         >{/each}</select
                 ></label
@@ -757,7 +799,7 @@
                 <label
                     >Challenger<select aria-label="Compare with challenger" bind:value={comparison}
                         ><option value="">None</option
-                        >{#each Object.keys(jobs).filter((n) => n !== selected && jobs[n].applicable) as name}<option
+                        >{#each legacyNames.filter((name) => name !== selected && jobs[name]?.applicable) as name}<option
                                 value={name}>{name}</option
                             >{/each}</select
                     ></label
@@ -814,7 +856,10 @@
                                 bind:value={() => cfg.link, (value) => setModelField('link', value)}
                                 ><option value={null}>Family default</option><option value="log"
                                     >Log</option
-                                ><option value="logit">Logit</option></select
+                                ><option value="logit">Logit</option
+                                >{#if cfg.link && !['log', 'logit'].includes(cfg.link)}<option
+                                        value={cfg.link}>{cfg.link}</option
+                                    >{/if}</select
                             ></label
                         >
                         {#each ['target', 'weight', 'offset'] as field}<label
@@ -868,8 +913,8 @@
                     </div>
                     {#if !wb.predictors.length}
                         <p>No predictors assigned yet.</p>
-                        <button onclick={() => onNavigate('variables')}
-                            >Assign predictors in Variables</button
+                        <button onclick={() => onNavigate('project')}
+                            >Assign predictors in Project &amp; data</button
                         >
                     {:else}
                         <p class="help-text">
@@ -879,10 +924,11 @@
                         <details>
                             <summary>Defaults for every predictor</summary>
                             <p class="help-text">
-                                Numeric binning is shared across models. Change it in Variables.
+                                Numeric binning is shared across legacy models. Change it in Project
+                                &amp; data.
                             </p>
-                            <button type="button" onclick={() => onNavigate('variables')}
-                                >Edit numeric binning in Variables</button
+                            <button type="button" onclick={() => onNavigate('project')}
+                                >Edit numeric binning in Project &amp; data</button
                             >
                             <div class="form-grid compact">
                                 <label
@@ -967,8 +1013,7 @@
                         {/if}
                         {#if pairMethod === 'sequential'}
                             {#if !pairCapability}<p class="prerequisites" role="alert">
-                                    Sequential pairs currently require Poisson or Tweedie with a log
-                                    link and Tweedie power strictly between 1 and 2.
+                                    {pairPrerequisite(cfg)}
                                 </p>{/if}
                             <PairStageEditor
                                 stages={cfg.pair_stages || []}
@@ -981,6 +1026,7 @@
                                 {mainChanged}
                                 newModel={selected === '__new__'}
                                 {savedStages}
+                                allowAdd={pairCapability}
                                 bind:valid={pairStagesValid}
                             />
                         {:else}
@@ -988,8 +1034,12 @@
                                 interactions={cfg.interactions}
                                 onchange={(pairs) => (cfg = { ...cfg, interactions: pairs })}
                                 predictors={cfg.predictors}
+                                allowAdd={interactionsAllowed}
                                 bind:valid={interactionsValid}
                             />
+                            {#if !interactionsAllowed}<p class="prerequisites" role="alert">
+                                    Gaussian interactions require a log link.
+                                </p>{/if}
                             {#if selected !== '__new__' && pairCapability}
                                 <button
                                     type="button"
@@ -1026,7 +1076,8 @@
                             <strong>Before fitting</strong>{#each wb.problems as problem}<p>
                                     {problem}
                                 </p>{/each}
-                            <button onclick={() => onNavigate('variables')}>Review Variables</button
+                            <button onclick={() => onNavigate('project')}
+                                >Review Project &amp; data</button
                             >
                         </div>{/if}
                     <h3>Fit settings</h3>
@@ -1111,7 +1162,8 @@
                             onclick={saveModel}
                             disabled={!interactionsValid ||
                                 !pairStagesValid ||
-                                (cfg.pair_stages?.length && !pairCapability)}
+                                (cfg.pair_stages?.length && !pairCapability) ||
+                                invalidInteractionLink}
                             >{selected === '__new__'
                                 ? 'Create model'
                                 : 'Save model settings'}</button
@@ -1123,7 +1175,9 @@
                             disabled={selected === '__new__' ||
                                 dirty ||
                                 active ||
-                                wb.problems.length > 0}
+                                wb.problems.length > 0 ||
+                                invalidInteractionLink ||
+                                (cfg.pair_stages?.length && !pairCapability)}
                             >{cfg.pair_stages?.length
                                 ? fitAllStages
                                     ? 'Fit all stages'
@@ -1270,6 +1324,7 @@
                         </div>
                         <ReviewPanel
                             diagnosticTab={comparisonTab}
+                            {showBothDiagnosticSubsets}
                             challenger={effectiveChallenger}
                             fitIdentity={job?.id || ''}
                             comparisonFitIdentity={jobs[effectiveChallenger]?.id || ''}
@@ -1320,9 +1375,8 @@
                     </div>
                     <div class="result-totals">
                         {#each (result.diagnostic_info?.metric_definitions?.[subset] || []).filter((definition) => definition.section === 'secondary') as definition}<span
-                                >{definition.label}: <b
-                                    >{num(result.metrics[subset]?.[definition.key])}</b
-                                ></span
+                                >{definition.label}:
+                                <b>{num(result.metrics[subset]?.[definition.key])}</b></span
                             >{/each}
                     </div>
                     <div class="result-totals">
@@ -1333,8 +1387,9 @@
                     <p class="help-text">{result.diagnostic_info?.gini_note || ''}</p>
                     {#if Object.keys(result.metrics[subset]?.metric_reasons || {}).length}<p
                             class="help-text"
-                            >{Object.values(result.metrics[subset].metric_reasons).join(' ')}</p
-                        >{/if}
+                        >
+                            {Object.values(result.metrics[subset].metric_reasons).join(' ')}
+                        </p>{/if}
                 {/if}
                 <div class="workflow-tabs" role="tablist" aria-label="Diagnostics views">
                     {#each [['variable', 'A/E by variable'], ['time', 'Time stability'], ['pair', 'A/E by pair'], ['lift', 'Lift'], ['residual', 'Residual factors'], ['importance', 'Variable importance'], ['path', 'Regularisation path'], ['coefficients', 'Coefficients']] as [key, label]}<button
@@ -1360,6 +1415,7 @@
                     {:else}
                         <ReviewPanel
                             {diagnosticTab}
+                            {showBothDiagnosticSubsets}
                             onIncludePair={includePairDraft}
                             challenger={effectiveChallenger}
                             fitIdentity={job?.id || ''}
@@ -1379,23 +1435,28 @@
                 {#each result.warnings as warning}<div class="message">{warning}</div>{/each}
             {:else}
                 <div class="results-toolbar">
-                    <label
-                        >Variable<select
-                            aria-label="Rate table variable"
-                            disabled={Object.keys(rowEdits).length > 0}
-                            bind:value={tableName}
-                            onchange={() => {
-                                tableOffset = 0;
-                                loadTable();
-                            }}
-                            >{#each result.table_index as item}<option value={item.name}
-                                    >{item.label || item.name} · {item.rows} rows</option
-                                >{/each}</select
-                        ></label
-                    >
+                    <SearchableVariableSelect
+                        options={result.table_index.map((item) => ({
+                            value: item.name,
+                            label: `${item.label || item.name} · ${item.rows} rows`,
+                            sortLabel: item.label || item.name,
+                        }))}
+                        bind:value={tableName}
+                        label="Variable"
+                        selectLabel="Rate table variable"
+                        searchLabel="Search rate table variables"
+                        disabled={Object.keys(rowEdits).length > 0}
+                        contextKey={`${selected}:${resultId}:${state?.revision}`}
+                        onChange={(chosen) => {
+                            tableName = chosen;
+                            tableOffset = 0;
+                            loadTable();
+                        }}
+                    />
                 </div>
                 {#if table?.kind === 'pair'}
                     <ReviewPanel
+                        {showBothDiagnosticSubsets}
                         challenger={effectiveChallenger}
                         fitIdentity={job?.id || ''}
                         comparisonFitIdentity={jobs[effectiveChallenger]?.id || ''}
@@ -1506,6 +1567,7 @@
                     </ReviewPanel>
                 {:else if table}<div class="rate-primary">
                         <ReviewPanel
+                            {showBothDiagnosticSubsets}
                             challenger={effectiveChallenger}
                             fitIdentity={job?.id || ''}
                             comparisonFitIdentity={jobs[effectiveChallenger]?.id || ''}

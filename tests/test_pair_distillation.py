@@ -11,6 +11,7 @@ import pytest
 from scipy.optimize import minimize_scalar
 
 from easy_glm.workflow.pair_distillation import (
+    _GaussianLogObjective,
     distill_pair_cells,
     fit_catboost_pair_raw,
     teacher_mean_from_raw,
@@ -166,6 +167,77 @@ def test_family_gate():
         distill_pair_cells([0], [1], [1], family="gamma", n_cells=1)
     with pytest.raises(ValueError, match="supports"):
         distill_pair_cells([0], [1], [1], family="tweedie", tweedie_power=2, n_cells=1)
+
+
+def test_gaussian_log_derivative_and_distillation() -> None:
+    objective = _GaussianLogObjective()
+    eta = np.array([-1.2, 0.4, 1.1])
+    target = np.array([-3.0, 0.0, 7.0])
+    weight = np.array([0.4, 1.2, 2.0])
+    derivatives = objective.calc_ders_range(eta, target, weight)
+    delta = 1e-6
+    for index, (gradient, curvature) in enumerate(derivatives):
+
+        def loss(value: float, row: int = index) -> float:
+            return 0.5 * weight[row] * (target[row] - np.exp(value)) ** 2
+
+        finite_difference = (loss(eta[index] + delta) - loss(eta[index] - delta)) / (
+            2 * delta
+        )
+        assert gradient == pytest.approx(-finite_difference, rel=1e-8)
+        assert curvature == pytest.approx(-weight[index] * np.exp(2 * eta[index]))
+        assert curvature < 0
+
+    baseline = np.array([1.0, 3.0, 8.0, 2.0])
+    teacher = np.array([2.0, 1.0, 5.0, 4.0])
+    weights = np.array([1.0, 2.0, 0.5, 3.0])
+    result = distill_pair_cells(
+        [0, 0, 0, 0],
+        baseline,
+        teacher,
+        sample_weight=weights,
+        family="gaussian",
+        n_cells=1,
+    )
+    optimum = minimize_scalar(
+        lambda r: np.sum(weights * (teacher - r * baseline) ** 2),
+        bounds=(0.01, 10),
+        method="bounded",
+    )
+    assert optimum.success
+    assert result.relativities[0] == pytest.approx(optimum.x, rel=1e-7)
+
+
+def test_gaussian_teacher_handles_signed_targets_and_large_outlier() -> None:
+    rng = np.random.default_rng(3)
+    features = rng.normal(size=(1000, 2))
+    baseline = np.full(1000, 1000.0)
+    target = baseline * np.where(features[:, 0] * features[:, 1] > 0, 1.5, 0.7)
+    target += rng.normal(0, 50, 1000)
+    target[0:8] = -target[0:8]
+    baseline[-1] = target[-1] = 1e7
+    scale = float(np.median(np.maximum(np.abs(target), baseline)))
+    teacher = fit_catboost_pair_raw(
+        features,
+        target,
+        baseline,
+        family="gaussian",
+        target_scale=scale,
+        iterations=120,
+        depth=3,
+        learning_rate=0.05,
+        l2_leaf_reg=3.0,
+        thread_count=1,
+    )
+    predicted = teacher.predict_mean(features, baseline)
+    assert np.all(np.isfinite(predicted) & (predicted > 0))
+    baseline_loss = np.sum((baseline[8:-1] - target[8:-1]) ** 2)
+    fitted_loss = np.sum((predicted[8:-1] - target[8:-1]) ** 2)
+    assert fitted_loss < 0.2 * baseline_loss
+    with pytest.raises(ValueError, match="target must be finite"):
+        fit_catboost_pair_raw(
+            features[:2], [np.nan, -1], baseline[:2], family="gaussian"
+        )
 
 
 @pytest.mark.parametrize("family,power", [("poisson", None), ("tweedie", 1.5)])

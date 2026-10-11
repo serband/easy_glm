@@ -72,6 +72,83 @@ def _case() -> tuple[Project, pl.DataFrame]:
     return project, frame
 
 
+def test_gaussian_pair_stage_uses_original_response_sse_and_signed_labels() -> None:
+    project, frame = _case()
+    cfg = project.models["pair"]
+    cfg.family = "gaussian"
+    cfg.link = None  # Package default is log, including for Gaussian.
+    cfg.pair_stages = cfg.pair_stages[:1]
+    a = frame["A"].to_numpy()
+    b = frame["B"].to_numpy()
+    main = frame["main"].to_numpy()
+    rng = np.random.default_rng(14)
+    y = 3.0 + 0.25 * main + np.where(a * b > 0, 1.5, -0.7)
+    y += rng.normal(0, 0.4, len(y))
+    y[:3] = [-1.0, 0.0, -0.5]
+    frame = frame.with_columns(pl.Series("y", y))
+    assert not project.validate("pair", columns=frame.columns)
+    run = run_model(project, frame, "pair")
+    stage = run.pair_stages[0]
+    assert stage.scaling_policy == "gaussian_fold_train_median_max_abs_target_baseline"
+    assert stage.target_scale > 0
+    assert np.all(run.predict(frame) > 0)
+    assert stage.table_cv_loss == pytest.approx(
+        sum(
+            fold.loss_sum
+            for fold in next(
+                candidate
+                for candidate in stage.cv_candidates
+                if candidate.candidate == stage.chosen_candidate
+            ).folds
+        )
+        / sum(fold.weight_sum for fold in stage.cv_candidates[0].folds)
+    )
+    assert stage.training_table_loss == pytest.approx(
+        float(np.mean((y[:130] - run.predict(frame[:130])) ** 2))
+    )
+
+
+def test_gaussian_loss_and_tie_decision_change_consistently_with_units() -> None:
+    actual = np.array([-1.0, 0.0, 5.0])
+    baseline = np.array([1.0, 2.0, 3.0])
+    weight = np.array([1.0, 2.0, 0.5])
+    loss = pair_stages._pair_loss_sum(actual, baseline, weight, "gaussian", 1.0)
+    assert loss == pytest.approx(float(np.sum(weight * (actual - baseline) ** 2)))
+    for factor in (1e-4, 1e4):
+        scaled = pair_stages._pair_loss_sum(
+            actual * factor, baseline * factor, weight, "gaussian", 1.0
+        )
+        assert scaled == pytest.approx(loss * factor * factor)
+        assert pair_stages._tie_allowance(scaled, "gaussian") == pytest.approx(
+            pair_stages._tie_allowance(loss, "gaussian") * factor * factor
+        )
+
+
+def test_gaussian_nested_cv_selection_is_response_unit_invariant() -> None:
+    project, frame = _case()
+    cfg = project.models["pair"]
+    cfg.family = "gaussian"
+    cfg.pair_stages = cfg.pair_stages[:1]
+    cfg.predictors = []
+    cfg.pair_method = "sequential_catboost"
+    a = frame["A"].to_numpy()
+    b = frame["B"].to_numpy()
+    y = 2.5 + np.where(a * b > 0, 1.5, -0.8)
+    y[:2] = [-0.4, 0.0]
+    frame = frame.with_columns(pl.Series("y", y))
+    original = run_model(project, frame, "pair").pair_stages[0]
+    larger = run_model(
+        project, frame.with_columns((pl.col("y") * 100).alias("y")), "pair"
+    ).pair_stages[0]
+    assert larger.chosen_candidate == original.chosen_candidate
+    assert larger.table_cv_loss == pytest.approx(
+        original.table_cv_loss * 10_000, rel=2e-5
+    )
+    assert larger.prefix_cv_loss == pytest.approx(
+        original.prefix_cv_loss * 10_000, rel=2e-5
+    )
+
+
 class _FakeClock:
     current = 0.0
 

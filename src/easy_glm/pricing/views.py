@@ -12,7 +12,13 @@ import plotly.graph_objects as go
 import polars as pl
 from plotly.subplots import make_subplots
 
-from easy_glm.core.design import NUMERIC_DTYPES, frequent_levels, quantile_knots
+from easy_glm.core.design import (
+    NUMERIC_DTYPES,
+    AglmLEncoder,
+    AglmOEncoder,
+    frequent_levels,
+    quantile_knots,
+)
 from easy_glm.core.excel import pair_table_frames, rate_model_tables
 from easy_glm.engine._scoring import row_index
 from easy_glm.engine.models import FromToRow, VariableConfig, level_label
@@ -78,7 +84,9 @@ def _frame(model: Any, subset: str) -> pl.DataFrame:
 def _actual_expected(
     model: Any, frame: pl.DataFrame
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    prediction = model._run.rate_model.predict(frame, exposure_col=None)
+    prediction = getattr(model, "_scorer", model._run.rate_model).predict(
+        frame, exposure_col=None
+    )
     return totals(frame, model._run.config, prediction)
 
 
@@ -176,7 +184,14 @@ def _candidate_axis(model: Any, train: pl.DataFrame, variable: str) -> VariableC
             other_label=other_label_for(levels),
         )
     else:
-        if design is not None and isinstance(design.knots, (list, tuple)):
+        if kind in ("aglm", "aglm_l"):
+            from easy_glm.workflow.run import encoder_for
+
+            encoder = encoder_for(variable, series, design, model._project)
+            if not isinstance(encoder, (AglmOEncoder, AglmLEncoder)):
+                raise TypeError(f"{variable!r} does not have numeric band edges")
+            cuts = encoder.band_edges()
+        elif design is not None and isinstance(design.knots, (list, tuple)):
             cuts = [float(value) for value in design.knots]
         elif design is not None and design.knots == "integer":
             cuts = integer_knots(series, defaults.max_integer_knots) or quantile_knots(
@@ -339,13 +354,23 @@ def ae(
 ) -> DisplayResult:
     """Actual-versus-expected by one factor or a two-factor grid."""
     frame = _frame(model, subset)
+    if getattr(model._run, "stack", None) is not None:
+        frame = model._run.stack.enrich(frame)
     actual, expected, weight = _actual_expected(model, frame)
     scorer = model._run.rate_model
     if b is None:
-        if a in scorer.variables and scorer.variables[a].type != "interaction":
+        if (
+            scorer is not None
+            and a in scorer.variables
+            and scorer.variables[a].type != "interaction"
+        ):
             table = _axis_table(frame, a, scorer.variables[a], actual, expected, weight)
         else:
-            train = _frame(model, "train")
+            train = (
+                model._enriched("train")
+                if hasattr(model, "_enriched")
+                else _frame(model, "train")
+            )
             table = _axis_table(
                 frame, a, _candidate_axis(model, train, a), actual, expected, weight
             )
@@ -354,7 +379,12 @@ def ae(
         return DisplayResult(table, _ae_chart(table, model.name, detail), title)
 
     deployed = next(
-        (table for table in scorer.pair_tables if set(table.parents) == {a, b}), None
+        (
+            table
+            for table in (scorer.pair_tables if scorer is not None else [])
+            if set(table.parents) == {a, b}
+        ),
+        None,
     )
     if deployed is not None:
         if deployed.parents == (a, b):
@@ -363,7 +393,11 @@ def ae(
             names, axes = (a, b), (deployed.axes[1], deployed.axes[0])
         table = _pair_table(frame, names, axes, actual, expected, weight)
     else:
-        train = _frame(model, "train")
+        train = (
+            model._enriched("train")
+            if hasattr(model, "_enriched")
+            else _frame(model, "train")
+        )
         table = _pair_table(
             frame,
             (a, b),
@@ -382,6 +416,44 @@ def relativities(
 ) -> DisplayResult:
     """Show the exact current scoring table for a main factor or pair stage."""
     scorer = model._run.rate_model
+    stack = getattr(model._run, "stack", None)
+    if stack is not None:
+        from easy_glm.workflow.stack_types import RateModelScorer
+
+        choices = [
+            (artifact.name, artifact.scorer.rate_model)
+            for artifact in stack.components
+            if isinstance(artifact.scorer, RateModelScorer)
+        ]
+        if a is None:
+            frames = [
+                frame.with_columns(
+                    pl.lit(component).alias("component"),
+                    pl.lit(factor).alias("variable"),
+                )
+                for component, rate_model in choices
+                for factor, frame in rate_model_tables(rate_model).items()
+            ]
+            return DisplayResult(
+                pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame(),
+                title=f"{model.name}: deployed component tables",
+            )
+        matches = [
+            rate_model
+            for _, rate_model in choices
+            if (
+                a in rate_model.variables
+                if b is None
+                else any(
+                    set(table.parents) == {a, b} for table in rate_model.pair_tables
+                )
+            )
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"{a!r} appears in {len(matches)} component tables; select a named component with component(...).show()"
+            )
+        scorer = matches[0]
     if a is None:
         frames = []
         for variable, table in rate_model_tables(scorer).items():

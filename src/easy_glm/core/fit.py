@@ -1,6 +1,6 @@
 """Fit a penalised GLM on the design matrix of a :class:`DesignSpec`.
 
-Three things here are about **size** rather than statistics (piece G):
+Three choices control memory use without changing the statistical model:
 
 * the design handed to glum is whatever :meth:`DesignSpec.build` returns — a
   dense float64 array for a small book, a compact tabmat ``SplitMatrix`` for a
@@ -38,6 +38,8 @@ from sklearn.model_selection import KFold
 
 from .design import (
     SCORING_CHUNK_ROWS,
+    AglmLEncoder,
+    AglmOEncoder,
     DesignSpec,
     InteractionEncoder,
     LinearEncoder,
@@ -153,6 +155,11 @@ def monotone_bounds(
     for var, direction in monotone.items():
         if var not in spec:
             raise KeyError(f"monotone: {var!r} is not a predictor in the spec")
+        if isinstance(spec[var], AglmOEncoder | AglmLEncoder):
+            raise ValueError(
+                f"monotone: {var!r} uses an AGLM basis whose combined slopes "
+                "cannot yet be constrained"
+            )
         if not isinstance(spec[var], StepEncoder | LinearEncoder):
             raise ValueError(
                 f"monotone: {var!r} is categorical or an interaction; only numeric "
@@ -431,7 +438,7 @@ def _modal_bins(
             continue
         counts = exposures[var].copy()
         if (
-            isinstance(enc, StepEncoder | LinearEncoder)
+            isinstance(enc, StepEncoder | LinearEncoder | AglmOEncoder | AglmLEncoder)
             and enc.null_indicator
             and len(counts) > 1
         ):
@@ -666,6 +673,10 @@ def design_row_key(
             columns[f"x:{var}"] = pl.Series(
                 f"x:{var}", np.clip(np.where(np.isnan(x), enc.lo, x), enc.lo, enc.hi)
             )
+        elif isinstance(enc, AglmOEncoder | AglmLEncoder):
+            columns[f"x:{var}"] = pl.Series(
+                f"x:{var}", enc.aggregation_values(data[var])
+            )
     if offset is not None:
         columns["o:"] = pl.Series("o:", np.asarray(offset, dtype=float))
     if not columns:
@@ -843,6 +854,10 @@ def fit_glm(
 
     fam, family_name, default_link = resolve_family(family, tweedie_power)
     link = glum_kwargs.pop("link", default_link)
+    if spec.interactions and family_name == "normal" and link not in (None, "log"):
+        raise ValueError("Gaussian interactions require the log link")
+    if family_name == "normal" and link is None:
+        link = default_link
 
     y = data[target].cast(pl.Float64).to_numpy()
     sw = None
@@ -920,7 +935,7 @@ def fit_glm(
         upper = mup if upper is None else np.minimum(np.asarray(upper, float), mup)
     # float64 for everything the solver touches: a float32 design silently
     # stops converging past a million rows and segfaults tabmat when the
-    # sample weight is not cast to match (docs/spikes/g-scale, §4.2)
+    # sample weight is not cast to match.
     if lower is not None:
         lower = np.asarray(lower, dtype=np.float64)
     if upper is not None:
@@ -1227,6 +1242,11 @@ def fit_two_stage(
             "fit_two_stage needs a spec with at least one interaction; use "
             "fit_glm for a mains-only design"
         )
+    _, family_name, _ = resolve_family(
+        kwargs.get("family", "poisson"), kwargs.get("tweedie_power")
+    )
+    if family_name == "normal" and kwargs.get("link") not in (None, "log"):
+        raise ValueError("Gaussian interactions require the log link")
     if spec.interactions_spec().n_features == 0:
         # no cell had enough exposure to be rated on its own, so there is
         # nothing for a second stage to fit and the design *is* the main-effect

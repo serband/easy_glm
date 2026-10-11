@@ -67,6 +67,20 @@ def _book(seed: int = 5, n: int = 6000) -> pl.DataFrame:
     ).with_columns(pl.col("DrivAge").fill_nan(None))
 
 
+def test_gaussian_interactions_reject_nonlog_before_fitting(book, spec) -> None:
+    for family in ("gaussian", "normal"):
+        with pytest.raises(
+            ValueError, match="Gaussian interactions require the log link"
+        ):
+            fit_two_stage(
+                book, spec, "ClaimNb", family=family, link="identity", alpha=0.1
+            )
+        with pytest.raises(
+            ValueError, match="Gaussian interactions require the log link"
+        ):
+            fit_glm(book, spec, "ClaimNb", family=family, link="identity", alpha=0.1)
+
+
 @pytest.fixture(scope="module")
 def book() -> pl.DataFrame:
     return _book()

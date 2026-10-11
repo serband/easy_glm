@@ -1,27 +1,26 @@
 # Building a pricing model
 
-This walkthrough demonstrates an interactive modelling workflow for a pricing actuary using EasyGLM. We use French motor data to build a claim-frequency model, starting with two main effects and adding to the model as we review the results.
+We will build a claim-frequency model on French motor data: fit driver age and
+vehicle age, look for missing factors, add two interaction tables, amend rates,
+check the model on holdout and export it to Excel.
 
-We will cover:
+The code follows the order you would use while modelling. Each new fit gets a
+name, so you can return to an earlier model and try a different change. Run the
+blocks in order in the same notebook or Python session.
 
-- **Data and model setup:** specify claims, exposure and the training/test split; choose automatic numeric bins or supply your own cut points.
-- **Main effects:** fit a GLM using cross-validation, inspect its relativities and plot actual versus expected (A/E).
-- **Missing variables:** search for rating factors the model may be missing, inspect them and refit with the factors we choose to add.
-- **Interactions:** fit a CatBoost correction for two variables, convert it to a rating table, then fit another interaction using the GLM and the first table as its offset.
-- **Rate amendments:** edit main-effect or interaction relativities, preview their effect on expected claims, and choose whether to keep later interaction tables fixed or refit them.
-- **Validation and export:** compare models on holdout data, export the chosen rating tables to Excel, and save and reopen the model for scoring.
-
-Each step leaves the earlier models available for comparison. Run the blocks in order in the same notebook or Python session, inspecting the results before choosing the next change. All the code to run is on this page.
+For more worked examples and the browser workflow, see
+[Examples and workflows](workflows.md).
 
 ## Load the data
 
-The complete package is installed with:
+Install EasyGLM:
 
 ```bash
 python -m pip install easy-glm
 ```
 
-`load_external_dataframe` loads the French motor claims data and caches the download. We take 50,000 rows for this example.
+`load_external_dataframe` downloads the French motor data and caches it for
+later use. Take 50,000 rows for this walkthrough:
 
 ```python
 from easy_glm import load_external_dataframe
@@ -36,15 +35,16 @@ data = (
 
 ## Define the project
 
-`PricingSession` is how we set up a modelling project in EasyGLM. It holds the data and the settings we will use to build models: the target, exposure or weight, model family, training/holdout split and binning rules.
+A `PricingSession` holds the data and settings shared by the models you build:
+the target, exposure, family, split and variable bands. We will call it `work`.
+Creating the session sets up the project; it does not fit a model.
 
-We create a session once, then use it to fit and compare different models using the same data and split. Each fitted model keeps its own results. We will set the binning rules in the next section.
+Use a Poisson model for claim frequency. `ClaimNb` is the claim count and
+`Exposure` is in policy-years. The fitted prediction is frequency; the A/E
+checks use expected claim counts.
 
-For this project, we choose a Poisson model for claim frequency. `ClaimNb` contains claim counts and `Exposure` contains policy-years. EasyGLM fits frequency with exposure weights and calculates expected claim counts for A/E checks.
-
-Use `ignored` for columns you want to exclude from modelling. They stay in the data, but EasyGLM excludes them from main effects, interactions and the searches for missing variables and interactions. Here, we exclude `VehGas` (fuel type). Use `ignored=[]` if you have no exclusions.
-
-We call our session `work`. The code below sets up the project; we will choose the main effects and fit the first GLM later.
+`ignored` excludes a column from all modelling and searches. Here we exclude
+`VehGas`, the fuel type. Leave the list empty if you have no exclusions.
 
 ```python
 from easy_glm import PricingSession
@@ -62,14 +62,14 @@ work = PricingSession(
 work.summary()
 ```
 
-This splits by policy ID: 70% go into training and the rest into holdout. Rows sharing an ID stay together, and reordering the policies does not change their split. Every model from the session uses it.
+The split puts 70% of IDs into training and reserves the rest for holdout.
+Rows sharing an ID stay together, even if you reorder the data. Every model
+from this session uses the same split.
 
-If your data already has a split column, pass its name with `split`. `PricingSession` uses these fixed values:
-
-- **`1` = training:** these rows are used for fitting and searching for variables and interactions.
-- **`0` = holdout (test):** these rows are reserved for validation when you request it.
-
-For example, `split="traintest"` reads the `traintest` column and keeps its existing assignments. It does not create a new random split. Convert labels such as `"Train"` and `"Test"` to `1` and `0` first; missing or other values are rejected.
+If you already have a split column, pass its name instead. `PricingSession`
+expects **1 for training** and **0 for holdout**, with no missing or other
+values. Convert labels such as `"Train"` and `"Test"` to those values first.
+This alternative keeps the existing assignments:
 
 ```python
 # work = PricingSession(
@@ -83,47 +83,48 @@ For example, `split="traintest"` reads the `traintest` column and keeps its exis
 # )
 ```
 
-Claims, exposure, ID and split are excluded from factor searches automatically.
-
-We will start with `DrivAge` and `VehAge`. We leave `BonusMalus`, `Density`, `Area`, `Region`, `VehPower` and `VehBrand` out of the first GLM, but keep them available for searches and later models. For example, we will use `Region` in an interaction later. `VehGas`, which we explicitly ignored, is excluded from all of these steps.
+Start with `DrivAge` and `VehAge`. Leave `BonusMalus`, `Density`, `Area`,
+`Region`, `VehPower` and `VehBrand` out of the first GLM, but available for
+searches and later fits. For example, we will use `Region` only in an
+interaction. Unlike these unselected factors, the ignored `VehGas` cannot be
+used later. Claims, exposure, ID and split are automatically excluded from
+factor searches.
 
 ## Set how numeric variables are binned
 
-EasyGLM groups numeric values into ranges, called bins or bands. The GLM fits a relativity for each band. For example, grouping driver ages 25–34 together gives those ages the same driver-age relativity.
+EasyGLM groups numeric values into bands and fits a relativity for each band.
+For example, a driver-age band from 25 to below 35 gives ages 25–34 the same
+driver-age relativity.
 
-You control the binning with `work.bands`. You can:
-
-- Set a **default number of bins** for numeric variables.
-- Give a **specific variable its own bin count**.
-- Supply **exact cut points** for a variable to define the bands yourself.
-
-When you specify a count, EasyGLM chooses the boundaries using **training data only**. When you supply cut points, it uses those boundaries instead.
-
-Start with eight bins as the default:
+You can ask EasyGLM to choose the bands or set the boundaries yourself. Start
+with eight automatic bands as the default for numeric variables:
 
 ```python
 work.bands(default=8)
 ```
 
-Each numeric variable uses this count unless you give it its own settings. Repeated values may produce fewer distinct bins than requested.
+Automatic boundaries use training data only. Repeated values can give fewer
+distinct bands than requested.
 
-To use six automatic bins for vehicle age while keeping the default for other variables:
+Give vehicle age its own count of six bands:
 
 ```python
 work.bands("VehAge", number=6).show()
 ```
 
-That overrides the eight-band default for `VehAge`. The preview shows the boundaries and training exposure in each band.
+`VehAge` now uses six bands; other numeric variables still use eight. `.show()`
+displays the boundaries and training exposure in each band.
 
-Use explicit driver-age cuts:
+For driver age, choose the boundaries yourself:
 
 ```python
 work.bands("DrivAge", cuts=[25, 35, 45, 55, 65, 75]).show()
 ```
 
-These replace automatic binning for `DrivAge`. The band starting at 35 includes age 35 and ends just before 45. Changing the default count will not move these boundaries.
+Age 35 goes into the band from 35 to below 45. These cuts replace automatic
+binning for driver age, so changing the default count will not move them.
 
-For the remaining fits, also use fixed cuts for vehicle age, bonus-malus and density. Each line changes one variable's settings:
+Set explicit cuts for vehicle age, bonus-malus and density as well:
 
 ```python
 work.bands("VehAge", cuts=[1, 3, 6, 10, 15]).show()
@@ -131,15 +132,17 @@ work.bands("BonusMalus", cuts=[50, 60, 75, 100, 125]).show()
 work.bands("Density", cuts=[50, 200, 1_000, 5_000, 10_000]).show()
 ```
 
-The precedence is **explicit cuts, then the variable's own count, then the default count**. The same settings supply bands for diagnostics and interaction tables.
+The vehicle-age cuts replace the six-band setting we tried above. The order
+of precedence is **explicit cuts → variable's own count → default count**.
+Diagnostics and interaction tables use these bands too.
 
-Region codes represent categories, not a numeric scale:
+Region codes identify categories. Tell EasyGLM to treat them that way:
 
 ```python
 work.categories("Region").show()
 ```
 
-Save the column choices, split settings and bands as JSON:
+Save the setup if you want to return to these column choices, split and bands:
 
 ```python
 work.save_settings("motor_settings.json")
@@ -150,18 +153,22 @@ work.save_settings("motor_settings.json")
 
 ## Fit the first GLM
 
-`factors` lists this model's main effects:
+`factors` names the main effects to fit together. Start with driver age and
+vehicle age:
 
 ```python
 basic = work.fit_glm("Age model", factors=["DrivAge", "VehAge"])
 basic.summary()
 ```
 
-By default, five training folds select the regularisation penalty. The summary identifies the fitted factors and any dropped because they have no usable variation.
+EasyGLM uses five training folds to choose the regularisation penalty. The
+summary lists the fitted factors and any dropped because they have no usable
+variation.
 
-`basic` keeps its own fitted tables and settings. Later changes to `work` do not alter it.
+`basic` is the fitted Age model. Changing the session settings later leaves
+this fit available with its original rates.
 
-Inspect the driver-age relativities, then actual versus expected for both factors:
+Inspect the driver-age rates and A/E for both factors:
 
 ```python
 basic.relativities("DrivAge").show()
@@ -169,9 +176,14 @@ basic.ae("DrivAge").show()
 basic.ae("VehAge").show()
 ```
 
-A/E charts show actual and predicted frequency with exposure behind them. The table includes claim counts and A/E. Above one means actual claims exceed expected claims.
+The charts show actual and predicted frequency, with exposure bars behind
+them. The table also shows claim counts and A/E. An A/E above one means the
+model underpredicts claims in that band.
 
-Inspect persistent gaps and bands with little exposure. To try different boundaries, change the settings and fit a separately named candidate:
+### Try revised bands
+
+Look at where actual and expected differ, and how much exposure supports the
+gap. To try another set of driver-age bands, change the settings and refit:
 
 ```python
 # work.bands("DrivAge", cuts=[25, 35, 45, 55, 65, 70, 75])
@@ -179,24 +191,29 @@ Inspect persistent gaps and bands with little exposure. To try different boundar
 # different_bands.compare(basic, cv=True)
 ```
 
-`cv=True` compares predictions on held-back training folds, rebuilding learned bands and fits within each fold. Without it, `compare` reports current in-sample training results.
+`cv=True` compares the models on held-back training folds. Each fold learns
+its own automatic bands and fit. Without `cv=True`, the comparison uses the
+rows fitted, so it is an in-sample check. We will leave holdout until the model
+choices are settled.
 
 ## Find missing main effects
 
-Search the Age model's training residuals:
+Ask which unused factors might explain what the Age model misses:
 
 ```python
 basic.find_missing_factors().show()
 ```
 
-The search ranks variables outside the main GLM. Nothing is added automatically. Inspect candidates using the current model's A/E:
+The search ranks factors to investigate. It does not add them to the model.
+Look at the Age model's A/E by bonus-malus and density:
 
 ```python
 basic.ae("BonusMalus").show()
 basic.ae("Density").show()
 ```
 
-Neither variable needs to be in the GLM to inspect its A/E. For this example, test adding both:
+You can group A/E by a factor even when it is absent from the GLM. Here we will
+test adding both bonus-malus and density:
 
 ```python
 main = basic.refit("Four-factor model", add=["BonusMalus", "Density"])
@@ -207,9 +224,11 @@ main.ae("Density").show()
 main.find_missing_factors().show()
 ```
 
-`refit` estimates all four main effects together and leaves `basic` unchanged. Use the comparison and fitted shapes to decide which model to retain. These choices demonstrate the actions; inspect your search results before making the same additions.
+`refit` estimates all four main effects together. Compare the models, then
+inspect the new rates and A/E. Keep the extra factors if they improve the model
+and the fitted effects make sense for pricing.
 
-To test removing a factor:
+To check whether density earns its place, fit a version without it:
 
 ```python
 # without_density = main.refit("Without density", remove=["Density"])
@@ -218,14 +237,19 @@ To test removing a factor:
 
 ## Fit the first interaction
 
-Search the four-factor model's residuals and inspect driver age by bonus-malus:
+An interaction lets the effect of one factor vary with another. For example,
+the driver-age pattern may differ by bonus-malus.
+
+Search for pairs, then inspect A/E for driver age and bonus-malus:
 
 ```python
 main.find_interactions().show()
 main.ae("DrivAge", "BonusMalus").show()
 ```
 
-Two variables produce an A/E heatmap. Check the exposure and claims supporting each cell.
+Passing two factors gives an A/E heatmap. Look for a pattern across cells,
+alongside their exposure and claims. Fit this pair on top of the four-factor
+GLM:
 
 ```python
 first = main.fit_interaction(
@@ -237,15 +261,20 @@ first.ae("DrivAge", "BonusMalus").show()
 first.compare(main)
 ```
 
-CatBoost receives the two raw columns, with the fixed GLM as its offset. Training cross-validation selects its settings. The correction is then converted into a table on our selected bands. **That table** is what we score, inspect and export.
+CatBoost uses the GLM prediction as its offset and fits a correction from the
+two raw factors. Training cross-validation chooses its settings. EasyGLM then
+turns the correction into a rating table using our bands. That table is included
+in `first`; the GLM rates stay fixed.
 
-The summary reports validation of the table and the loss from converting CatBoost to a table. A search that finds no improvement produces a neutral correction. The pair can also capture remaining one-way effects.
-
-The matrix displays at most three decimal places and marks unsupported cells. Its scoring values retain full precision.
+Review the table and A/E, then compare `first` with `main`. The summary shows
+the table's validation result and how much fit was lost when converting CatBoost
+to a table. If no improvement was selected, the correction leaves the score
+unchanged.
 
 ## Fit the next interaction
 
-Search again from `first`, which includes the first interaction table:
+Search again using `first`, so the search accounts for the interaction already
+added:
 
 ```python
 first.find_missing_factors().show()
@@ -253,7 +282,8 @@ first.find_interactions().show()
 first.ae("VehAge", "Region").show()
 ```
 
-Region is absent from the main GLM. We can deliberately use it only in an interaction:
+Region is absent from the main GLM. Use it with vehicle age in a second
+interaction, without making it a main effect:
 
 ```python
 second = first.fit_interaction(
@@ -265,26 +295,27 @@ second.ae("VehAge", "Region").show()
 second.compare(first)
 ```
 
-| Model | Scoring prediction |
+| Model | Prediction used for A/E and scoring |
 | --- | --- |
 | `main` | GLM |
 | `first` | GLM × first interaction table |
 | `second` | GLM × first table × second table |
 
-The second CatBoost fit offsets the prediction from `first`, using its **table**, not its raw CatBoost predictions. Adding the second pair leaves the main tables and first pair fixed.
-
-Keep all three candidates available. You can export whichever you accept.
+The second fit uses the complete prediction from `first` as its offset,
+including the first rating table. It leaves the GLM and first table fixed.
+Compare the result with `first` before choosing whether to keep it.
 
 ## Amend a relativity
 
-Inspect driver age in the complete model:
+Inspect the driver-age rates and A/E in `second`:
 
 ```python
 second.relativities("DrivAge").show()
 second.ae("DrivAge").show()
 ```
 
-Open a rate review to try an edit. The value below demonstrates the operation; it is not a recommended driver-age rate.
+Try setting the relativity for ages 25–34 to 0.95. `edit_rates` opens a rate
+review, where you can preview a change before applying it:
 
 ```python
 rates = second.edit_rates(name="Reviewed rates")
@@ -292,9 +323,10 @@ rates.set_relativity("DrivAge", lower=25, upper=35, value=0.95)
 rates.preview().show()
 ```
 
-The preview shows the old and proposed rates, A/E and total expected claims. `second` has not changed.
+The preview shows the old and proposed rates, A/E and total expected claims.
+Use it to assess the size of the change.
 
-To keep the later interaction tables fixed as a pricing adjustment:
+Apply the edit while keeping both interaction tables fixed:
 
 ```python
 adjusted = rates.apply(refit_later_interactions=False)
@@ -302,7 +334,8 @@ adjusted.ae("DrivAge").show()
 adjusted.compare(second)
 ```
 
-Alternatively, refit them against the amended main table:
+Or keep the driver-age edit and refit the interactions against the changed
+GLM rates:
 
 ```python
 refit_rates = second.edit_rates(name="Reviewed rates with refitted interactions")
@@ -312,9 +345,12 @@ refitted.ae("DrivAge").show()
 refitted.compare(adjusted)
 ```
 
-The 0.95 edit stays in place. Fixed numeric cuts allow the same edited band to be identified in each validation fold. Both versions remain separate from `second`.
+`refitted` keeps the 0.95 edit. It refits the first interaction, then the second
+using the revised score. `adjusted`, `refitted` and the original `second` remain
+available to compare.
 
-Rebalancing is a separate choice. In the original rate review, `rebalance()` would restore the training total from before the edit. Preview it before applying:
+If you want the rate amendment to leave total training expected claims at their
+previous level, use `rebalance()` before applying. Preview that change too:
 
 ```python
 # rates.rebalance()
@@ -322,7 +358,8 @@ Rebalancing is a separate choice. In the original rate review, `rebalance()` wou
 # balanced = rates.apply(refit_later_interactions=False)
 ```
 
-To amend an interaction cell, specify both bands. This example changes the first pair for drivers aged 25–34 with bonus-malus from 50 to below 60:
+You can also edit one interaction cell. Set the correction to 1.05 for drivers
+aged 25–34 with bonus-malus from 50 to below 60:
 
 ```python
 cell_review = second.edit_rates(name="One interaction cell changed")
@@ -337,11 +374,13 @@ cell_candidate = cell_review.apply(refit_later_interactions=False)
 cell_candidate.relativities("DrivAge", "BonusMalus").show()
 ```
 
-Here we deliberately keep the second pair fixed. Use `True` to refit that later pair against the edited first table. The full first table, including the edited cell, stays fixed.
+This keeps the second interaction fixed. Set `refit_later_interactions=True`
+to refit it against the changed first table.
 
 ## Compare on holdout
 
-All searches and A/E views above used training rows. Once the specifications and edits are settled, compare the candidates on the reserved holdout:
+Once you have chosen the factors, bands and amendments, compare the candidates
+on the reserved holdout:
 
 ```python
 refitted.validate_holdout(compare_with=[basic, main, first, second, adjusted])
@@ -349,9 +388,12 @@ refitted.ae("DrivAge", subset="holdout").show()
 refitted.ae("VehAge", "Region", subset="holdout").show()
 ```
 
-For this Poisson model, compare deviance and A/E, then calibration by factor and pair. If these holdout results prompt further tuning, the holdout is now part of development.
+For this Poisson fit, lower deviance means better fit. Check overall A/E and
+the factor and pair plots as well. If you use holdout to make more modelling
+changes, those rows have become part of development.
 
-Choose what to export explicitly. Change the next line to `main`, `first`, `second` or `adjusted` if that is the model you accept:
+Choose the version to export. Below we choose `refitted`; change this to `main`,
+`first`, `second` or `adjusted` if you prefer one of those:
 
 ```python
 accepted = refitted
@@ -359,14 +401,18 @@ accepted = refitted
 
 ## Export and reopen
 
+Write the reviewed tables to Excel and save the fitted model:
+
 ```python
 accepted.to_excel("motor_pricing_tables.xlsx")
 accepted.save("motor_pricing_model.easyglm")
 ```
 
-The workbook contains the current base rate, main effects and ordered interaction tables, including accepted edits, support and validation information. The saved model contains scoring tables and settings, but no policy data.
+The workbook contains the base rate, main-effect rates and interaction tables,
+including the edits. The saved model contains the fitted rates and settings;
+it does not contain the data.
 
-Reopen without fitting:
+Reopen it with the data to inspect rates and A/E without fitting again:
 
 ```python
 from easy_glm import PricingModel  # Reopen a saved fitted model.
@@ -376,11 +422,12 @@ reopened.relativities("DrivAge").show()
 reopened.ae("DrivAge").show()
 ```
 
-Score policies:
+Use the reopened model to calculate frequency or expected claim counts:
 
 ```python
 predicted_frequency = reopened.predict(data)
 expected_claims = reopened.predict(data, expected=True)
 ```
 
-The first returns claims per policy-year; the second uses policy exposure to return expected claim counts.
+`predicted_frequency` is claims per policy-year. `expected_claims` uses each
+row's exposure to give the expected claim count.

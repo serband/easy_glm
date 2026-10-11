@@ -4,6 +4,7 @@
 
     export let api, state, setup, context, prepare, onRemove;
     export let disabled = false;
+    export let active = true;
     let sampleRows = 10000,
         missingPercent = 70,
         correlationThreshold = 0.95,
@@ -21,6 +22,7 @@
     let sequence = 0,
         timer = null,
         alive = true,
+        wasActive = true,
         seenScope = '',
         reportScope = '';
     const pageSize = 8;
@@ -34,6 +36,10 @@
     };
     $: scope = JSON.stringify([context, options]);
     $: if (scope !== seenScope) invalidate(scope);
+    $: if (active !== wasActive) {
+        wasActive = active;
+        if (!active) suspend();
+    }
     $: predictors = new Set(setup?.roles.predictor || []);
     $: weight = setup?.assignments.weight;
     $: validOptions =
@@ -109,8 +115,16 @@
         error = '';
         note = hadReport ? message : '';
     }
+    function suspend() {
+        sequence += 1;
+        clearTimer();
+        cancelJob(job);
+        job = null;
+        pending = false;
+        starting = false;
+    }
     function isCurrent(request, requestedScope) {
-        return alive && request === sequence && requestedScope === currentScope();
+        return alive && active && request === sequence && requestedScope === currentScope();
     }
     function sameGeneration(packet) {
         return (
@@ -164,12 +178,12 @@
         }
     }
     async function check() {
-        if (disabled || pending || starting || !validOptions) return;
+        if (disabled || !active || pending || starting || !validOptions) return;
         starting = true;
         try {
             if (!prepare()) return;
             await tick();
-            if (!alive || disabled) return;
+            if (!alive || !active || disabled) return;
             invalidate(currentScope(), '');
             const requestedScope = currentScope(),
                 request = ++sequence;
@@ -485,8 +499,8 @@
                         {num(result.excluded_target_rows)} rows excluded from target association.
                     </p>{/if}
                 {#if result.category_mixed_pairs_checked}<p>
-                        {num(result.category_mixed_pairs_checked)} category or mixed pairs passed
-                        through a {num(result.category_pilot_rows)}-row pilot; {num(
+                        {num(result.category_mixed_pairs_checked)} category or mixed pairs passed through
+                        a {num(result.category_pilot_rows)}-row pilot; {num(
                             result.category_mixed_pairs_confirmed,
                         )} were checked on the full screening sample. Category limit: {num(
                             result.category_level_limit,

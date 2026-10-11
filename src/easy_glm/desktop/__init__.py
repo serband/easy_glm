@@ -21,6 +21,7 @@ def launch(
     project_path: str | Path | None = None,
     *,
     data: Any | None = None,
+    scoring_data: dict[str, Any] | None = None,
     port: int = 0,
     open_browser: bool = True,
     host: str | None = "localhost",
@@ -31,16 +32,25 @@ def launch(
     Return the server process; call ``process.terminate()`` to stop it. Applied
     edits live only for this process. Export project JSON to retain them.
     """
-    from easy_glm.app import _launcher_env, _temporary_project_for
+    from easy_glm.app import _launcher_env, _temporary_project_and_scoring
 
     if host not in (None, "localhost", "127.0.0.1"):
         raise ValueError("The workbench is local: use host='localhost' or '127.0.0.1'.")
-    if demo and (data is not None or project_path is not None):
+    if demo and (
+        data is not None or project_path is not None or scoring_data is not None
+    ):
         raise ValueError("Pass a project or data, or choose demo=True.")
     if data is not None and project_path is not None:
         raise ValueError("Pass project_path or data, not both.")
+    scoring_manifest = None
     if data is not None:
-        project_path = _temporary_project_for(data)
+        project_path, scoring_manifest = _temporary_project_and_scoring(
+            data, scoring_data
+        )
+    elif scoring_data is not None:
+        raise ValueError(
+            "scoring_data requires data= so its private snapshots have a session."
+        )
     if not port:
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
@@ -60,6 +70,8 @@ def launch(
         args.append("--demo")
     if project_path is not None:
         args += ["--project", str(Path(project_path).resolve())]
+    if scoring_manifest is not None:
+        args += ["--scoring-data", str(scoring_manifest)]
     fd, log_path = tempfile.mkstemp(prefix="easyglm_svelte_", suffix=".log")
     with os.fdopen(fd, "w", encoding="utf-8") as log:
         process = subprocess.Popen(

@@ -8,7 +8,13 @@ from typing import Any
 
 import polars as pl
 
-from easy_glm.core.design import NUMERIC_DTYPES, frequent_levels, quantile_knots
+from easy_glm.core.design import (
+    NUMERIC_DTYPES,
+    AglmLEncoder,
+    AglmOEncoder,
+    frequent_levels,
+    quantile_knots,
+)
 from easy_glm.workflow.diagnostics import (
     pearson_dispersion,
     residual_factor_search,
@@ -22,7 +28,11 @@ from .views import DisplayResult
 
 
 def _candidate_columns(model: Any) -> list[str]:
-    frame = model._frame("train")
+    frame = (
+        model._enriched("train")
+        if hasattr(model, "_enriched")
+        else model._frame("train")
+    )
     protected = protected_columns(model._project, model.name)
     return [
         name
@@ -34,8 +44,13 @@ def _candidate_columns(model: Any) -> list[str]:
 
 
 def _residual_inputs(model: Any) -> tuple[pl.DataFrame, Any, Any, Any]:
-    frame = model._frame("train")
-    prediction = model._run.rate_model.predict(frame, exposure_col=None)
+    frame = (
+        model._enriched("train")
+        if hasattr(model, "_enriched")
+        else model._frame("train")
+    )
+    scorer = getattr(model, "_scorer", model._run.rate_model)
+    prediction = scorer.predict(frame, exposure_col=None)
     actual, expected, weight = totals(frame, model._run.config, prediction)
     return frame, actual, expected, weight
 
@@ -47,7 +62,7 @@ def _design_bands(
     levels: dict[str, list[str]] = {}
     scorer = model._run.rate_model
     for variable in variables:
-        config = scorer.variables.get(variable)
+        config = scorer.variables.get(variable) if scorer is not None else None
         if config is not None and config.type in ("numeric", "linear"):
             boundaries = {
                 float(value)
@@ -83,6 +98,13 @@ def _design_bands(
                     max_levels=maximum,
                     weights=frame[weight_col] if weight_col else None,
                 )
+        elif kind in ("aglm", "aglm_l"):
+            from easy_glm.workflow.run import encoder_for
+
+            encoder = encoder_for(variable, frame[variable], design, model._project)
+            if not isinstance(encoder, (AglmOEncoder, AglmLEncoder)):
+                raise TypeError(f"{variable!r} does not have numeric band edges")
+            knots[variable] = encoder.band_edges()
         elif design is not None and isinstance(design.knots, (list, tuple)):
             knots[variable] = [float(value) for value in design.knots]
         else:
@@ -132,6 +154,12 @@ def find_missing_factors(
         model._project, frame, requested, model_name=model.name
     )
     fitted = set(model._run.config.predictors)
+    if getattr(model._run, "stack", None) is not None:
+        fitted.update(
+            factor
+            for artifact in model._run.stack.components
+            for factor in artifact.factors
+        )
     variables = [name for name in requested if name not in fitted]
     knots, levels = _design_bands(model, frame, variables, n_bins)
     search_frame = _banded_search_frame(frame, variables, knots, levels)
@@ -167,7 +195,20 @@ def find_interactions(
     variables = validate_factors(
         model._project, frame, variables, pair_only=True, model_name=model.name
     )
-    used = {frozenset(table.parents) for table in model._run.rate_model.pair_tables}
+    used = {
+        frozenset(table.parents)
+        for table in (
+            model._run.rate_model.pair_tables
+            if model._run.rate_model is not None
+            else []
+        )
+    }
+    if getattr(model._run, "stack", None) is not None:
+        used.update(
+            frozenset(artifact.factors)
+            for artifact in model._run.stack.components
+            if artifact.kind == "interaction"
+        )
     pairs = [pair for pair in combinations(variables, 2) if frozenset(pair) not in used]
     knots, levels = _design_bands(model, frame, variables, n_bins)
     table = residual_pair_search(

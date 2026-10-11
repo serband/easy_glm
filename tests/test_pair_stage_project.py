@@ -88,7 +88,12 @@ def test_pair_validation_rejects_reversed_duplicate_mixing_and_role() -> None:
     cfg.interactions.clear()
     cfg.pair_stages.pop()
     cfg.family = "gaussian"
-    assert any("Poisson/log and Tweedie/log" in e for e in p.validate("m"))
+    cfg.link = None
+    assert not any("pair stages support" in e for e in p.validate("m"))
+    cfg.link = "identity"
+    assert any(
+        "Gaussian interactions require the log link" in e for e in p.validate("m")
+    )
 
 
 def test_rename_then_ignore_removes_stages_and_pair_adjustments() -> None:

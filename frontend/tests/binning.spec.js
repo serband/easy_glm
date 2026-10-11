@@ -23,6 +23,13 @@ function previewResponse(page, column, accepts = () => true) {
     });
 }
 
+async function openBinning(page) {
+    await page.goto('/?view=project');
+    const steps = page.getByRole('navigation', { name: 'Project setup steps' });
+    await steps.getByRole('button', { name: /Shared columns/ }).click();
+    await expect(page.getByRole('region', { name: 'Numeric binning' })).toBeVisible();
+}
+
 test('numeric binning stays in sync and reaches fitted rate tables', async ({ page }, testInfo) => {
     const errors = [];
     let previews = 0;
@@ -31,7 +38,7 @@ test('numeric binning stays in sync and reaches fitted rate tables', async ({ pa
         if (request.url().endsWith('/api/variables/binning-preview')) previews++;
     });
     const firstPreview = previewResponse(page, 'DriverAge');
-    await page.goto('/');
+    await openBinning(page);
     const button = (name) => page.getByRole('button', { name, exact: true });
     const panel = page.getByRole('region', { name: 'Numeric binning' });
     await expect(panel).toBeVisible();
@@ -132,7 +139,7 @@ test('numeric binning stays in sync and reaches fitted rate tables', async ({ pa
     const exported = await api('project');
     expect(exported.body.design.defaults.n_bins).toBe(8);
     expect(exported.body.design.variables.VehicleAge.knots).toEqual([0, 1, 2, 3, 4, 5]);
-    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await panel.getByRole('button', { name: /^VehicleAge/ }).click();
     await expect(panel).toContainText('7 actual bins');
     await page.setViewportSize({ width: 799, height: 803 });
@@ -152,10 +159,19 @@ test('numeric binning stays in sync and reaches fitted rate tables', async ({ pa
     const projectPath = testInfo.outputPath('binning-project.json');
     await download.saveAs(projectPath);
     await button('Project & data').click();
+    await page
+        .getByRole('navigation', { name: 'Project setup steps' })
+        .getByRole('button', { name: /Data/ })
+        .click();
     await page.getByRole('radio', { name: 'Saved project', exact: true }).check();
     await page.getByLabel('Project file', { exact: true }).setInputFiles(projectPath);
     await page.getByLabel('Replace this session.', { exact: false }).check();
     await button('Open project').click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await page
+        .getByRole('navigation', { name: 'Project setup steps' })
+        .getByRole('button', { name: /Shared columns/ })
+        .click();
     await expect(page.getByLabel('Default number of bins', { exact: true })).toHaveValue('9');
     await button('Variables JSON').click();
     const reopened = JSON.parse(await jsonEditor.inputValue()).binning;
@@ -167,7 +183,7 @@ test('numeric binning stays in sync and reaches fitted rate tables', async ({ pa
 test('distribution bars follow the selected model bins and their exact row counts', async ({
     page,
 }) => {
-    await page.goto('/');
+    await openBinning(page);
     const panel = page.getByRole('region', { name: 'Numeric binning' });
     const firstResponse = previewResponse(page, 'Mileage');
     await panel.getByRole('button', { name: /^Mileage/ }).click();
@@ -288,7 +304,7 @@ test('distribution bars follow the selected model bins and their exact row count
 });
 
 test('a delayed preview cannot overwrite a newer draft', async ({ page }) => {
-    await page.goto('/');
+    await openBinning(page);
     const panel = page.getByRole('region', { name: 'Numeric binning' });
     await panel.getByRole('button', { name: /^VehicleAge/ }).click();
     await page.getByLabel('Binning method for VehicleAge').selectOption('cuts');
@@ -344,7 +360,7 @@ test('automatic previews debounce edits, skip invalid drafts, and stop off the V
             requests.push(request.postDataJSON());
     });
     const initial = previewResponse(page, 'DriverAge');
-    await page.goto('/');
+    await openBinning(page);
     const panel = page.getByRole('region', { name: 'Numeric binning' });
     await initial;
     await expect(panel).toContainText('Training preview · DriverAge');
@@ -396,10 +412,10 @@ test('automatic previews debounce edits, skip invalid drafts, and stop off the V
         input.value = '11';
         input.dispatchEvent(new Event('input', { bubbles: true }));
         [...document.querySelectorAll('button')]
-            .find((button) => button.textContent.trim() === 'Model')
+            .find((button) => button.textContent.trim() === 'Explore')
             .click();
     });
-    await expect(page.getByRole('button', { name: 'Fit model' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'One-way effects', exact: true })).toBeVisible();
     await page.waitForTimeout(450);
     expect(requests.length).toBe(beforeNavigation);
     const resumed = previewResponse(
@@ -407,7 +423,7 @@ test('automatic previews debounce edits, skip invalid drafts, and stop off the V
         'DriverAge',
         (request) => request.setup.binning.default_bins === 11,
     );
-    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
     await resumed;
     await expect(panel.locator('figure.binning-histogram')).toBeVisible();
 

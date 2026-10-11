@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import re
 from collections.abc import Sequence
 from html import escape
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import polars as pl
@@ -24,9 +26,13 @@ from easy_glm.workflow.run import ModelRun, exposure_for
 from .validation import (
     compare_models,
     metric_row,
+    protected_columns,
     validate_factors,
     validate_holdout_models,
 )
+
+if TYPE_CHECKING:
+    from easy_glm.workflow.scoring import ScoringResult
 
 
 class PricingModel:
@@ -54,7 +60,11 @@ class PricingModel:
         # as immutable; every mutable public artefact is detached explicitly.
         self._run = copy.copy(run)
         self._run.config = self._project.models[run.name]
-        self._run.rate_model = run.rate_model.clone()
+        if run.rate_model is not None:
+            self._run.rate_model = run.rate_model.clone()
+        if getattr(run, "stack", None) is not None:
+            assert run.stack is not None
+            self._run.stack = run.stack.clone()
         self._run.tables = {name: table.clone() for name, table in run.tables.items()}
         self._run.metrics = copy.deepcopy(run.metrics)
         self._run.project_snapshot = self._project.to_dict()
@@ -74,6 +84,16 @@ class PricingModel:
     @property
     def evidence(self) -> dict[str, Any]:
         return copy.deepcopy(self._evidence)
+
+    @property
+    def _scorer(self) -> Any:
+        """The accepted complete scorer, including every stacked component."""
+        return getattr(self._run, "stack", None) or self._run.rate_model
+
+    def _enriched(self, subset: str = "train") -> pl.DataFrame:
+        frame = self._frame(subset)
+        stack = getattr(self._run, "stack", None)
+        return stack.enrich(frame) if stack is not None else frame
 
     def _frame(self, subset: str = "train") -> pl.DataFrame:
         """Prepared rows from the session's one fixed split."""
@@ -102,6 +122,26 @@ class PricingModel:
         rebuild_main: bool = False,
     ) -> PricingModel:
         """Explicitly refit all main effects using current session band settings."""
+        if getattr(self._run, "stack", None) is not None:
+            if factors is not None or add or remove:
+                raise ValueError(
+                    "This model has several named components. Select a component "
+                    "and fit a new checkpoint; refit cannot choose which GLM to change."
+                )
+            project = Project.from_dict(self._project.to_dict())
+            problem = validate_model_name(name, project.models)
+            if problem:
+                raise ValueError(problem)
+            project.design = copy.deepcopy(self._session._project.design)
+            project.models[name] = copy.deepcopy(self._run.config)
+            return self._session._fit_stack(
+                project,
+                name,
+                history=[
+                    *self._history,
+                    {"action": "refit_stack", "from": self.name, "name": name},
+                ],
+            )
         if factors is not None and (add or remove):
             raise ValueError("Use factors=..., or add/remove, not both")
         project = Project.from_dict(self._project.to_dict())
@@ -149,6 +189,206 @@ class PricingModel:
         ]
         return self._session._fit(project, name, history=history)
 
+    def _append_component(
+        self,
+        name: str,
+        *,
+        kind: str,
+        factors: Sequence[str],
+        settings: dict[str, Any],
+    ) -> PricingModel:
+        """Append against this checkpoint's complete frozen accepted scorer."""
+        from easy_glm.workflow.stack import stack_from_legacy
+        from easy_glm.workflow.stack_types import ComponentRecipe
+
+        project = Project.from_dict(self._project.to_dict())
+        problem = validate_model_name(name, project.models)
+        if problem:
+            raise ValueError(problem)
+        if kind == "catalogue":
+            selected = [str(factor) for factor in factors]
+        else:
+            selected = validate_factors(project, self._enriched("all"), factors)
+        prefix = getattr(self._run, "stack", None)
+        if prefix is None:
+            prefix = stack_from_legacy(project, self._run)
+        prefix = prefix.clone()
+        config = copy.deepcopy(self._run.config)
+        config.components = (
+            copy.deepcopy(self._run.config.components)
+            if self._run.config.components
+            else [
+                copy.deepcopy(item.recipe)
+                for item in prefix.components
+                if item.kind != "baseline"
+            ]
+        )
+        used = {item.component_id for item in config.components}
+        index = 1
+        component_id = f"{kind}_{index}"
+        while component_id in used:
+            index += 1
+            component_id = f"{kind}_{index}"
+        config.components.append(
+            ComponentRecipe(
+                component_id=component_id,
+                name=name,
+                kind=kind,
+                factors=tuple(selected),
+                settings=copy.deepcopy(settings),
+            )
+        )
+        project.models[name] = config
+        return self._session._fit_stack(
+            project,
+            name,
+            frozen_prefix=prefix,
+            history=[
+                *self._history,
+                {
+                    "action": f"fit_{kind}",
+                    "from": self.name,
+                    "name": name,
+                    "factors": selected,
+                },
+            ],
+        )
+
+    def fit_glm(
+        self,
+        name: str,
+        *,
+        factors: Sequence[str],
+        cv: int = 5,
+        n_alphas: int = 20,
+        alpha: float | None = None,
+        l1_ratio: float = 1.0,
+    ) -> PricingModel:
+        """Append a GLM correction; its intercept belongs to this component."""
+        return self._append_component(
+            name,
+            kind="glm",
+            factors=factors,
+            settings={
+                "cv": cv,
+                "n_alphas": n_alphas,
+                "alpha": alpha,
+                "l1_ratio": float(l1_ratio),
+            },
+        )
+
+    def fit_catboost(
+        self,
+        name: str,
+        *,
+        factors: Sequence[str],
+        iterations: int = 300,
+        depth: int = 6,
+        learning_rate: float = 0.05,
+        l2_leaf_reg: float = 3.0,
+        seed: int | None = None,
+        thread_count: int = 2,
+        time_limit_minutes: float | None = None,
+        trials: int = 8,
+        cv: int = 5,
+        tune: bool | None = None,
+        tuning_budget: str | None = None,
+    ) -> PricingModel:
+        """Append a direct CatBoost correction.
+
+        Pass ``tune=True`` to tune on training folds, with ``tuning_budget``
+        set to ``"trials"`` or ``"time"``.  The unchanged preceding model is
+        retained when no sampled tree improves it.  Pass ``tune=False`` to fit
+        the supplied CatBoost settings once on all training rows.
+        """
+        explicit = tune is not None or tuning_budget is not None
+        settings: dict[str, Any] = (
+            {
+                "iterations": iterations,
+                "depth": depth,
+                "learning_rate": learning_rate,
+                "l2_leaf_reg": l2_leaf_reg,
+                "seed": self._project.data.split.seed if seed is None else seed,
+                "thread_count": thread_count,
+                "time_limit_minutes": time_limit_minutes,
+                "trials": trials,
+                "cv": cv,
+            }
+            if explicit
+            else {
+                "iterations": int(iterations),
+                "depth": int(depth),
+                "learning_rate": float(learning_rate),
+                "l2_leaf_reg": float(l2_leaf_reg),
+                "seed": int(self._project.data.split.seed if seed is None else seed),
+                "thread_count": int(thread_count),
+                "time_limit_minutes": time_limit_minutes,
+                "trials": int(trials),
+                "cv": int(cv),
+            }
+        )
+        if explicit:
+            # Keep legacy calls byte-for-byte compatible, but let the new
+            # explicit controls validate the values the caller actually gave.
+            settings["tune"] = True if tune is None else tune
+            if tune is True or tune is None:
+                settings["tuning_budget"] = (
+                    "trials" if tuning_budget is None else tuning_budget
+                )
+            elif tuning_budget is not None:
+                settings["tuning_budget"] = tuning_budget
+        return self._append_component(
+            name,
+            kind="catboost",
+            factors=factors,
+            settings=settings,
+        )
+
+    def fit_catalogue(
+        self,
+        name: str,
+        *,
+        catalogue: pl.DataFrame | Any,
+        key: str,
+        factors: Sequence[str],
+        method: str = "catboost",
+        fallback: float | None = None,
+        **catboost_settings: Any,
+    ) -> PricingModel:
+        """Append a pinned complete catalogue lookup."""
+        table = (
+            catalogue
+            if isinstance(catalogue, pl.DataFrame)
+            else pl.DataFrame(catalogue)
+        )
+        if key not in table.columns:
+            raise KeyError(f"Catalogue key {key!r} is missing")
+        forbidden = [
+            column
+            for column in (key, *factors)
+            if column in protected_columns(self._project, self.name)
+        ]
+        if forbidden:
+            raise ValueError(f"Catalogue uses protected columns: {forbidden}")
+        if any(factor not in table.columns for factor in factors):
+            raise KeyError("Every catalogue factor must be a catalogue column")
+        return self._append_component(
+            name,
+            kind="catalogue",
+            factors=factors,
+            settings={
+                "key": key,
+                "attributes": list(factors),
+                "method": method,
+                "catalogue": table.to_dict(as_series=False),
+                "catalogue_schema": {
+                    column: str(dtype) for column, dtype in table.schema.items()
+                },
+                "fallback": fallback,
+                **catboost_settings,
+            },
+        )
+
     def fit_interaction(
         self,
         a: str,
@@ -168,6 +408,21 @@ class PricingModel:
         and the final full-training refit do not count. When omitted, the
         checkpoint's configured limit is inherited.
         """
+        if getattr(self._run, "stack", None) is not None:
+            return self._append_component(
+                name,
+                kind="interaction",
+                factors=(a, b),
+                settings={
+                    "trials": trials,
+                    "prefix_trials": prefix_trials,
+                    "min_weight_share": min_weight_share,
+                    "seed": int(
+                        self._project.data.split.seed if seed is None else seed
+                    ),
+                    "time_limit_minutes": time_limit_minutes,
+                },
+            )
         if a == b:
             raise ValueError("An interaction needs two different variables")
         if trials < 1 or prefix_trials < 1:
@@ -282,6 +537,16 @@ class PricingModel:
 
         return RateReview(self, name=name)
 
+    def component(self, name: str):
+        """Inspect one named accepted component and its deployed values."""
+        from .component import ComponentView
+
+        return ComponentView(self, name)
+
+    def export_lookup(self, component: str, path: str | Path) -> Path:
+        """Export one accepted catalogue file at scoring precision."""
+        return self.component(component).export_lookup(path)
+
     def compare(
         self,
         other: PricingModel | Sequence[PricingModel],
@@ -308,15 +573,134 @@ class PricingModel:
             if data is None
             else (data if isinstance(data, pl.DataFrame) else pl.DataFrame(data))
         )
-        prediction = self._run.rate_model.predict(frame, exposure_col=None)
+        prediction = self._scorer.predict(frame, exposure_col=None)
         if expected:
             column = exposure_for(self._project, self._run.config)
             if column:
                 prediction = prediction * frame[column].cast(pl.Float64).to_numpy()
         return np.asarray(prediction, dtype=float)
 
+    def score(
+        self,
+        data: pl.DataFrame | Any,
+        *,
+        scope: str = "full",
+        model: str | None = None,
+        exposure_col: str | None = None,
+        column_prefix: str = "easyglm_",
+    ) -> ScoringResult:
+        """Score a new book from this frozen checkpoint without refitting it.
+
+        ``model`` is an accepted physical component name or id for ``through``,
+        ``model`` and ``catalogue`` scopes.  The returned result keeps every
+        input row and column and can be exported as CSV or Parquet.
+        """
+        from easy_glm.workflow.scoring import score_data
+
+        scorer = self._scorer
+        if scorer is None:
+            raise ValueError("This saved model has no accepted scorer")
+        component_ids: tuple[str, ...] = ()
+        through: str | None = None
+        if model is not None and getattr(self._run, "stack", None) is not None:
+            plan = self._project.model_plan
+            logical = (
+                next(
+                    (
+                        item
+                        for item in plan.models
+                        if item.model_id == model or item.name == model
+                    ),
+                    None,
+                )
+                if plan is not None and plan.is_logical_models_plan
+                else None
+            )
+            if logical is not None:
+                component_ids = tuple(
+                    item.component_id for item in logical.physical_components
+                )
+                through = logical.physical_components[-1].component_id
+            else:
+                # Legacy plans expose physical accepted components directly.
+                physical_id = scorer.component(model).recipe.component_id
+                component_ids = (physical_id,)
+                through = physical_id
+        elif model is not None:
+            component_ids = (model,)
+        result = score_data(
+            scorer,
+            data,
+            project=self._project,
+            scope=scope,  # type: ignore[arg-type]
+            component_ids=component_ids,
+            through=through if scope == "through" else None,
+            exposure_col=exposure_col,
+            column_prefix=column_prefix,
+        )
+        result.metadata.update(
+            {
+                "saved_model_name": self.name,
+                "saved_model_created_at": self._run.created_at,
+                "saved_model_scorer_fingerprint": (
+                    scorer.fingerprint()
+                    if hasattr(scorer, "fingerprint")
+                    else hashlib.sha256(
+                        json.dumps(scorer.to_dict(), sort_keys=True).encode()
+                    ).hexdigest()
+                ),
+                "requested_model": model,
+                "logical_model_name": (
+                    logical.name
+                    if "logical" in locals() and logical is not None
+                    else None
+                ),
+                "logical_component_ids": list(component_ids),
+            }
+        )
+        return result
+
     def summary(self) -> dict[str, Any]:
         """Training-only fit summary; holdout stays closed until requested."""
+        if getattr(self._run, "stack", None) is not None:
+            assert self._run.stack is not None
+            components = []
+            for artifact in self._run.stack.components:
+                if artifact.kind == "legacy" and self._run.stack.virtual_components:
+                    for visible in self._run.stack.virtual_components:
+                        components.append(
+                            {
+                                "name": visible.name,
+                                "id": visible.recipe.component_id,
+                                "kind": visible.kind,
+                                "factors": list(visible.factors),
+                                "status": visible.status,
+                                "evidence": copy.deepcopy(visible.evidence),
+                            }
+                        )
+                else:
+                    components.append(
+                        {
+                            "name": artifact.recipe.name,
+                            "id": artifact.recipe.component_id,
+                            "kind": artifact.recipe.kind,
+                            "factors": list(artifact.recipe.factors),
+                            "status": artifact.status,
+                            "evidence": copy.deepcopy(artifact.evidence),
+                        }
+                    )
+            return {
+                "name": self.name,
+                "family": self._run.config.family,
+                "components": components,
+                "training": (
+                    metric_row(self, "train")
+                    if getattr(self._session, "_data", None) is not None
+                    else copy.deepcopy(self._run.metrics.get("train", {}))
+                ),
+                "fit_warnings": list(self._evidence.get("fit_warnings", [])),
+                "history": self.history,
+            }
         stages = []
         warnings = list(self._evidence.get("fit_warnings", []))
         for artifact in self._run.pair_stages:
@@ -374,6 +758,12 @@ class PricingModel:
         }
 
     def __repr__(self) -> str:
+        stack = getattr(self._run, "stack", None)
+        if stack is not None:
+            return (
+                f"PricingModel(name={self.name!r}, family={self._run.config.family!r}, "
+                f"components={len(stack.components)})"
+            )
         pairs = len(self._run.config.pair_stages)
         return (
             f"PricingModel(name={self.name!r}, family={self._run.config.family!r}, "
@@ -382,6 +772,7 @@ class PricingModel:
 
     def _repr_html_(self) -> str:
         summary = self.summary()
+        stack = getattr(self._run, "stack", None)
         training = summary["training"]
         ae = training.get("ae")
         deviance = training.get("mean_deviance", training.get("deviance"))
@@ -402,8 +793,12 @@ class PricingModel:
         return (
             f"<h3>{escape(self.name)}</h3>"
             f"<p>{escape(self._run.config.family.title())} · "
-            f"{len(self._run.config.predictors)} main effects · "
-            f"{len(self._run.config.pair_stages)} pair stages</p>"
+            + (
+                f"{len(stack.components)} components"
+                if stack is not None
+                else f"{len(self._run.config.predictors)} main effects · {len(self._run.config.pair_stages)} pair stages"
+            )
+            + "</p>"
             f"{metric_html}{warning_html}"
         )
 

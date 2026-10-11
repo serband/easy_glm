@@ -8,7 +8,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal, cast
 
 import numpy as np
 import polars as pl
@@ -21,6 +21,7 @@ from easy_glm.core.design import (
     Encoder,
     InteractionEncoder,
     StepEncoder,
+    aglm_encoder_from_data,
     frequent_levels,
     linear_encoder_from_data,
     quantile_knots,
@@ -43,9 +44,11 @@ from .project import (
     ModelConfig,
     Project,
     VariableDesign,
+    numeric_method_problems,
     pair_time_limit_seconds,
     premium_offset_column,
 )
+from .stack_types import StackScorer
 
 #: sentinel for "keep the model config's own base-rate override"
 _KEEP: Any = object()
@@ -89,6 +92,30 @@ def encoder_for(
     numeric = series.dtype in NUMERIC_DTYPES
     kind = vd.kind or ("step" if numeric else "categorical")
     pw = float(vd.penalty_weight)
+    curve_problems = numeric_method_problems(variable, vd)
+    if curve_problems:
+        raise ValueError("; ".join(curve_problems))
+    if kind in ("aglm", "aglm_l"):
+        if not numeric:
+            raise ValueError(f"{variable!r} is not numeric; cannot use an AGLM curve")
+        usable = series.drop_nulls().cast(pl.Float64).drop_nans()
+        if vd.breaks is None and usable.n_unique() < 2:
+            raise UnusableColumnError(
+                f"Cannot derive a break grid for {variable!r} "
+                "(constant or all-null on train)"
+            )
+        return aglm_encoder_from_data(
+            variable,
+            series,
+            kind=cast(Literal["aglm", "aglm_l"], kind),
+            breaks=vd.breaks,
+            n_breaks=vd.n_breaks if vd.n_breaks is not None else 100,
+            extrapolation=cast(Literal["extend", "flat"], vd.extrapolation or "extend"),
+            null_indicator=(
+                d.null_indicator if vd.null_indicator is None else vd.null_indicator
+            ),
+            penalty_weight=pw,
+        )
     if kind in ("step", "linear", "continuous"):
         if not numeric:
             raise ValueError(f"{variable!r} is not numeric; cannot use a {kind} design")
@@ -248,15 +275,21 @@ class ModelRun:
     dropped_predictors: list[str] = field(default_factory=list)
     #: Ordered frozen CatBoost pair tables and their fold-local selection evidence.
     pair_stages: list[Any] = field(default_factory=list)
+    #: Ordered accepted scorer for new mixed models. Legacy models leave this null.
+    stack: StackScorer | None = None
 
     def predict(self, df: pl.DataFrame) -> np.ndarray:
         """Per-unit predictions from the (possibly adjusted) rate model."""
+        if self.stack is not None:
+            return self.stack.predict_unit(df)
+        if self.rate_model is None:
+            raise RuntimeError("A legacy run has no rate model scorer")
         return self.rate_model.predict(df, exposure_col=None)
 
     @property
     def alpha(self) -> float:
         """Stage 1's penalty — the one that fitted the main effects."""
-        return self.fit.alpha
+        return self.fit.alpha if self.fit is not None else float("nan")
 
     @property
     def alpha_stage2(self) -> float | None:
@@ -267,9 +300,24 @@ class ModelRun:
     @property
     def cells_kept(self) -> int:
         """Cell columns the second stage fitted (cells with enough exposure)."""
-        return sum(len(e.cells) for e in self.spec.interactions)
+        return (
+            sum(len(e.cells) for e in self.spec.interactions)
+            if self.spec is not None
+            else 0
+        )
 
     def summary(self) -> dict[str, Any]:
+        if self.stack is not None:
+            return {
+                "name": self.name,
+                "family": self.config.family,
+                "components": [item.recipe.to_dict() for item in self.stack.components],
+                "train_rows": self.train_rows,
+                "holdout_rows": self.holdout_rows,
+                "created_at": self.created_at,
+            }
+        if self.fit is None or self.spec is None:
+            raise RuntimeError("A legacy run is missing its fitted GLM")
         h = self.metrics.get("holdout", {})
         t = self.metrics.get("train", {})
         return {
@@ -437,10 +485,15 @@ def run_model(
     it with no intercept and stage 1's linear predictor as the offset. Main
     rate tables and the base rate therefore never move when an interaction is
     added, and every cell is a pure adjustment (1.00 = none)."""
+    cfg = project.models[model_name]
+    if cfg.components:
+        from .stack import fit_stack
+
+        train, _holdout = train_holdout(df, project.data.split)
+        return fit_stack(project, train, cfg, progress=progress)
     problems = project.validate(model_name)
     if problems:
         raise ValueError("Project is not valid:\n- " + "\n- ".join(problems))
-    cfg = project.models[model_name]
     if frozen_pair_prefix and not cfg.pair_stages:
         raise ValueError("A frozen pair prefix needs configured pair stages")
     if frozen_pair_rate_model is not None and frozen_pair_prefix is None:
@@ -462,9 +515,17 @@ def run_model(
             deadline_seconds=pair_time_limit_seconds(cfg.pair_time_limit_minutes),
         )
 
+    # A plan-stage single GLM carries a private band snapshot.  It is made into
+    # a throw-away project view for fitting; the project-wide Variables choices
+    # and older named fits remain untouched.
+    design_project = project
+    if cfg.design is not None:
+        snapshot = project.to_dict()
+        snapshot["design"] = cfg.design
+        design_project = Project.from_dict(snapshot)
     dropped: list[str] = []
     spec = build_design(
-        project,
+        design_project,
         train,
         cfg.predictors,
         weight_col=cfg.weight,
@@ -490,7 +551,7 @@ def run_model(
         n_alphas=pen.n_alphas,
         l1_ratio=pen.l1_ratio,
         min_alpha_ratio=pen.min_alpha_ratio,
-        monotone=monotone_for(project, cfg),
+        monotone=monotone_for(design_project, cfg),
         progress=progress,
         **kwargs,
     )

@@ -1,6 +1,6 @@
 """Exact rate tables read straight off a fitted GLM's coefficients.
 
-With step (O-dummy) and one-hot features and a log link, the linear
+With threshold-indicator and one-hot features and a log link, the linear
 predictor decomposes additively by variable, so every bin's relativity is
 ``exp`` of a partial sum of coefficients and the product of the per-variable
 relativities times the base rate reproduces the GLM prediction *exactly*
@@ -29,6 +29,8 @@ from easy_glm.engine.models import (
 from easy_glm.engine.rate_model import RateModel
 
 from .design import (
+    AglmLEncoder,
+    AglmOEncoder,
     CategoricalEncoder,
     InteractionEncoder,
     LinearEncoder,
@@ -48,6 +50,33 @@ def _bin_rows(fit: GLMFit, variable: str) -> tuple[list[Any], np.ndarray]:
     (``fit.row_exposure``; 0.0 for a fit made before it was recorded)."""
     enc = fit.spec[variable]
     coef = fit.coef[fit.spec.slices()[variable]]
+    if isinstance(enc, (AglmOEncoder, AglmLEncoder)):
+        edges = enc.band_edges()
+        aglm_slopes = enc._tail_and_band_slopes(coef)
+        if enc.extrapolation == "flat":
+            aglm_slopes[0] = aglm_slopes[-1] = 0.0
+        null_contrib = float(coef[-1]) if enc.null_indicator else 0.0
+
+        def value_at(x: float) -> float:
+            return float(
+                enc.transform(pl.Series(enc.variable, [x]))[
+                    0, : len(coef) - int(enc.null_indicator)
+                ]
+                @ coef[: len(coef) - int(enc.null_indicator)]
+            )
+
+        aglm_rows: list[Any] = [BandRow(None, edges[0], 1.0, aglm_slopes[0])]
+        aglm_contrib = np.asarray([value_at(edges[0])])
+        for j, (lo, hi) in enumerate(zip(edges[:-1], edges[1:], strict=True)):
+            aglm_rows.append(BandRow(lo, hi, 1.0, aglm_slopes[j + 1]))
+            aglm_contrib = np.append(aglm_contrib, value_at(lo))
+        aglm_rows.append(BandRow(edges[-1], None, 1.0, aglm_slopes[-1]))
+        aglm_contrib = np.append(aglm_contrib, value_at(edges[-1]))
+        if enc.null_indicator:
+            aglm_rows.append(BandRow(None, None, 1.0, 0.0))
+            aglm_contrib = np.append(aglm_contrib, null_contrib)
+        _set_exposure(fit, variable, aglm_rows)
+        return aglm_rows, aglm_contrib
     if isinstance(enc, LinearEncoder):
         starts = np.asarray(enc.band_starts())
         widths = np.asarray(enc.band_widths())
@@ -178,7 +207,7 @@ def rate_tables(fit: GLMFit, *, base: Base = "modal") -> dict[str, pl.DataFrame]
             "exposure": [r.exposure for r in rows],
             "is_base": [i == b for i in range(len(rows))],
         }
-        if isinstance(enc, LinearEncoder):
+        if isinstance(enc, (LinearEncoder, AglmOEncoder, AglmLEncoder)):
             slopes = np.array([r.slope for r in rows])
             width = np.array(
                 [
@@ -192,6 +221,14 @@ def rate_tables(fit: GLMFit, *, base: Base = "modal") -> dict[str, pl.DataFrame]
             )
             columns["slope"] = slopes
             columns["relativity_to"] = np.exp(rel_lp + slopes * width)
+            columns["extrapolation"] = [
+                (
+                    enc.extrapolation
+                    if isinstance(enc, (AglmOEncoder, AglmLEncoder))
+                    else "flat"
+                )
+            ] * len(rows)
+            columns["curve_kind"] = [enc.kind] * len(rows)
         out[var] = pl.DataFrame(columns)
     return out
 
@@ -205,7 +242,11 @@ def _other_label(enc) -> str | None:
 
 
 def _edge_dtype(enc) -> Any:
-    return pl.Float64 if isinstance(enc, StepEncoder | LinearEncoder) else pl.Utf8
+    return (
+        pl.Float64
+        if isinstance(enc, StepEncoder | LinearEncoder | AglmOEncoder | AglmLEncoder)
+        else pl.Utf8
+    )
 
 
 def _interaction_table(fit: GLMFit, variable: str) -> pl.DataFrame:
@@ -312,10 +353,20 @@ def to_rate_model(
         rel = np.exp(contrib - contrib[b])
         for row, r in zip(rows, rel, strict=True):
             row.relativity = float(r)
-        if isinstance(enc, LinearEncoder):
+        if isinstance(enc, (LinearEncoder, AglmOEncoder, AglmLEncoder)):
             base_row = rows[b]
             x_base = base_row.from_ if base_row.from_ is not None else base_row.to_
-            variables[var] = VariableConfig(type="linear", table=rows, x_base=x_base)
+            variables[var] = VariableConfig(
+                type="linear",
+                table=rows,
+                x_base=x_base,
+                extrapolation=(
+                    enc.extrapolation
+                    if isinstance(enc, (AglmOEncoder, AglmLEncoder))
+                    else "flat"
+                ),
+                curve_kind=enc.kind,
+            )
             continue
         kind: TableType = "numeric" if isinstance(enc, StepEncoder) else "categorical"
         variables[var] = VariableConfig(

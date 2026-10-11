@@ -83,6 +83,10 @@ def _recorded_validation(model: Any) -> dict[str, dict[str, Any]]:
 
 def export_excel(model: Any, path: str | Path) -> Path:
     """Export exactly scored tables plus amendments, evidence and scoring rules."""
+    if getattr(model._run, "stack", None) is not None:
+        return export_stack_excel(
+            model._run, path, validation=_recorded_validation(model)
+        )
     scorer = model._run.rate_model
     tables = rate_model_tables(scorer)
     amendments = []
@@ -168,4 +172,81 @@ def export_excel(model: Any, path: str | Path) -> Path:
         path,
         summary=summary,
         pair_tables=scorer.pair_tables or None,
+    )
+
+
+def export_stack_excel(
+    run: Any,
+    path: str | Path,
+    *,
+    validation: dict[str, dict[str, Any]] | None = None,
+) -> Path:
+    """Keep every component's values in its own labelled workbook sheets."""
+    from easy_glm.core.excel import pair_table_frames
+    from easy_glm.workflow.stack_types import LookupScorer, RateModelScorer
+
+    tables: dict[str, pl.DataFrame] = {}
+    rows: list[dict[str, Any]] = []
+    if run.stack is None:
+        raise ValueError("This run has no ordered stack")
+    visible_artifacts = [
+        visible
+        for artifact in run.stack.components
+        for visible in (
+            run.stack.virtual_components
+            if artifact.kind == "legacy" and run.stack.virtual_components
+            else [artifact]
+        )
+    ]
+    for index, artifact in enumerate(visible_artifacts, start=1):
+        scorer = artifact.scorer
+        label = f"{index} {artifact.name}"[:22]
+        unit = (
+            "unit prediction"
+            if artifact.kind in {"catalogue", "glm"}
+            and index == 1
+            and run.stack.offset_col is None
+            else "incremental multiplier"
+        )
+        rows.append(
+            {
+                "order": index,
+                "component": artifact.name,
+                "kind": artifact.kind,
+                "factors": ", ".join(artifact.factors),
+                "status": artifact.status,
+                "value_type": unit,
+            }
+        )
+        if isinstance(scorer, RateModelScorer):
+            for factor, frame in rate_model_tables(scorer.rate_model).items():
+                tables[f"{label} {factor}"[:31]] = frame
+            for stage_id, frame in pair_table_frames(scorer.rate_model).items():
+                tables[f"{label} {stage_id}"[:31]] = frame
+        elif isinstance(scorer, LookupScorer):
+            if scorer.table.height > 1_000_000:
+                raise ValueError(
+                    f"Lookup {artifact.name!r} exceeds Excel's row limit; export it as CSV or Parquet"
+                )
+            tables[f"{label} lookup"[:31]] = scorer.table.with_columns(
+                pl.lit(unit).alias("value_type")
+            )
+    tables["Components"] = pl.DataFrame(rows)
+    tables["Validation"] = _audit_frame(
+        [
+            {"subset": subset, "metric": key, "value": json.dumps(value, default=str)}
+            for subset, metrics in (validation or run.metrics).items()
+            for key, value in metrics.items()
+        ],
+        {"subset": pl.Utf8, "metric": pl.Utf8, "value": pl.Utf8},
+    )
+    return write_rate_tables_xlsx(
+        tables,
+        path,
+        summary={
+            "model": run.name,
+            "family": run.config.family,
+            "link": run.stack.link,
+            "scoring": "Multiply components in listed order; apply offset once and exposure once",
+        },
     )

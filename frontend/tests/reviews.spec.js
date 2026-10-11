@@ -1,14 +1,37 @@
 import { test, expect } from '@playwright/test';
+import { saveLegacyGlm } from './legacy-models.helpers.js';
 
 test('diagnostic searches and table preview/apply/undo preserve the fit', async ({ page }) => {
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
     const button = (name) => page.getByRole('button', { name, exact: true });
     await page.goto('/');
+    const session = await (await page.request.get('/api/session')).json();
+    const headers = { 'X-EasyGLM-Token': session.token };
+    const variables = await (await page.request.get('/api/variables', { headers })).json();
+    const setup = structuredClone(variables.setup);
+    setup.roles.unassigned = setup.roles.unassigned.filter((name) => name !== 'AnnualMileage');
+    setup.roles.predictor.push('AnnualMileage');
+    const assigned = await page.request.post('/api/variables/apply', {
+        headers,
+        data: { session_id: variables.session_id, revision: variables.revision, setup },
+    });
+    expect(assigned.ok(), await assigned.text()).toBe(true);
+    await saveLegacyGlm(page, `Imported legacy ${Date.now()}`, [
+        'DriverAge',
+        'VehicleAge',
+        'Region',
+        'AnnualMileage',
+    ]);
+    await page.reload();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await page.getByRole('navigation', { name: 'Project setup steps' })
+        .getByRole('button', { name: /Shared columns/ }).click();
     await page.getByLabel('Role for AnnualMileage', { exact: true }).selectOption('unassigned');
     await button('Preview changes').click();
     await button('Apply changes').click();
     await button('Model').click();
+    await page.getByLabel('Model selection', { exact: true }).selectOption('__new__');
     await button('Create model').click();
     await button('Fit model').click();
     await expect(page.getByText('Fit complete', { exact: true })).toBeVisible();
@@ -19,6 +42,23 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await expect(
         page.getByRole('img', { name: 'Actual fitted and adjusted by variable', exact: true }),
     ).toBeVisible();
+    const diagnosticVariable = page.getByLabel('Diagnostic variable', { exact: true });
+    const diagnosticSearch = page.getByLabel('Search diagnostic variables', { exact: true });
+    const initialDiagnostic = await diagnosticVariable.inputValue();
+    let reviewRequests = 0;
+    page.on('request', (request) => {
+        if (request.method() === 'POST' && request.url().includes('/api/review/'))
+            reviewRequests += 1;
+    });
+    await diagnosticSearch.fill('rEg');
+    await expect(diagnosticVariable.locator('option').last()).toHaveText('Region');
+    await expect(diagnosticVariable).toHaveValue(initialDiagnostic);
+    expect(reviewRequests).toBe(0);
+    await diagnosticVariable.selectOption('Region');
+    await expect(diagnosticVariable).toHaveValue('Region');
+    await expect(
+        page.getByRole('img', { name: 'Actual fitted and adjusted by variable', exact: true }),
+    ).toContainText('Region');
     await page.getByRole('tab', { name: 'Residual factors', exact: true }).click();
     await button('Find missing factors').click();
     await expect(page.getByRole('heading', { name: 'Missing factors', exact: true })).toBeVisible();
@@ -48,6 +88,16 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await expect(
         page.getByRole('img', { name: 'Actual fitted and adjusted by variable', exact: true }),
     ).toBeVisible();
+    const rateVariable = page.getByLabel('Rate table variable', { exact: true });
+    const rateSearch = page.getByLabel('Search rate table variables', { exact: true });
+    const rateBefore = await rateVariable.inputValue();
+    const countBeforeSearch = reviewRequests;
+    await rateSearch.fill('REGION');
+    await expect(rateVariable.locator('option').last()).toContainText('Region ·');
+    await expect(rateVariable).toHaveValue(rateBefore);
+    expect(reviewRequests).toBe(countBeforeSearch);
+    await rateSearch.press('Escape');
+    await expect(rateSearch).toHaveValue('');
     await page.setViewportSize({ width: 884, height: 773 });
     await page.evaluate(() => window.scrollTo(0, 0));
     await expect(page.locator('.rate-grid')).not.toBeVisible();
@@ -66,6 +116,8 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await page.screenshot({ path: '/tmp/easyglm-rate-layout-884.png', fullPage: true });
     await page.locator('.rate-table-card > summary').click();
     await page.getByLabel('Relativity row 2', { exact: true }).fill('2.1');
+    await expect(rateVariable).toBeDisabled();
+    await expect(rateSearch).toBeDisabled();
     await page.getByLabel('Relativity row 2', { exact: true }).press('Tab');
     await page.locator('.rate-table-card > summary').click();
     await expect(page.locator('.rate-grid')).not.toBeVisible();
@@ -80,7 +132,8 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
     await button('Apply adjustment').click();
     await expect(page.getByLabel('Relativity row 2', { exact: true })).not.toHaveValue('2.1');
     await page.getByLabel('Adjustment method', { exact: true }).selectOption('cap');
-    await page.getByLabel('Relativity cap').fill('1.1');
+    await page.getByLabel('Relativity cap').fill('0.5');
+    await page.getByLabel('Relativity cap').press('Tab');
     await expect(button('Apply adjustment')).toBeEnabled();
     await expect(page.getByText('Preview · not applied', { exact: true })).toBeVisible();
     await button('Discard preview').click();
@@ -106,7 +159,9 @@ test('diagnostic searches and table preview/apply/undo preserve the fit', async 
         .click();
     await expect(page.getByLabel('Include AnnualMileage', { exact: true })).toBeChecked();
     await expect(page.getByText('Fit needs updating', { exact: true })).toBeVisible();
-    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    await page.getByRole('navigation', { name: 'Project setup steps' })
+        .getByRole('button', { name: /Shared columns/ }).click();
     await expect(page.getByLabel('Role for AnnualMileage', { exact: true })).toHaveValue(
         'predictor',
     );

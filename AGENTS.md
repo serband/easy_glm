@@ -14,31 +14,50 @@ version for trivial documentation or copy edits.
    decisions.
 2. Inspect the current state, preserve unrelated work, and do implementation on a new
    `codex/` branch.
-3. Have Astra draft the plan, an independent agent critique it, and, for statistical
-   work, a separate actuarial reviewer assess the methods and assumptions. The primary
-   agent synthesizes the reviews and owns the final plan.
-4. Give a Sol builder explicit ownership of the implementation. Keep parallel tasks
-   bounded and independent, with clear file or module ownership; the primary agent
-   integrates the result. Proceed within the user's authorized scope without blanket
-   or repeated permission requests.
-5. Have Astra validate the implementation, then use an independent adversarial agent
-   to try to break the feature and a separate actuarial reviewer to exercise realistic
-   use. Sol fixes the findings, Astra validates the fixes, and the loop repeats until
-   the relevant checks close cleanly.
+3. Have one agent draft the plan, an independent agent critique it, and, for
+   statistical work, a separate actuarial reviewer assess methods and assumptions.
+   The primary agent synthesizes the reviews and owns the final plan.
+4. Give a builder explicit ownership of implementation. Keep parallel tasks bounded
+   and independent, with clear file or module ownership; the primary agent integrates
+   the result. Proceed within the user's authorized scope without repeated permission
+   requests.
+5. Have an agent other than the builder validate the implementation. An independent
+   adversarial reviewer then tries to break it, and a separate actuarial reviewer
+   exercises realistic use. The builder fixes findings; the validator rechecks them.
+   Repeat until the relevant checks close cleanly.
 
-If Astra or Sol is unavailable, use the nearest available equivalent and report the
-relevant limitation. Do not edit the README unless expressly asked. Keep any requested
-changelog concise and human-readable, and release only with explicit authorization.
+For workbench layout changes, review the affected configured form at desktop and
+narrow widths. Check label placement, column edges, control heights, spacing,
+checkbox/help placement, and action alignment in the rendered page. State which
+screens and states were inspected. Passing functional tests or finding no overflow
+does not establish that a layout is aligned or usable.
+
+Choose available agents by capability and independence, without requiring a specific
+provider or model name. If independent review is unavailable, report that limitation.
+Do not edit the README unless expressly asked. Keep any requested changelog concise
+and human-readable, and release only with explicit authorization.
+
+Keep handovers, agent reviews, one-off verification reports, review screenshots
+and local session notes in the gitignored `.internal/` directory. They are working material,
+not release documentation. Public documentation must describe the package, its
+supported workflow or its future roadmap without referring to a checkout, branch,
+agent run or local test session.
+
+---
 
 ## Pricing actuary workflow
+
+EasyGLM is a general modelling package. Domain-specific datasets and outputs
+belong in explicitly identified worked examples, not general package descriptions.
+Do not present an example use case as a built-in product or feature.
 
 The primary user is a pricing actuary working interactively. Use
 `examples/pricing_walkthrough.md` as the public acceptance scenario.
 
-Keep conversation excerpts, agent handoffs, build checklists, verification logs
-and temporary review notes out of Git. Use the ignored `.internal/` directory or
-an external local folder. Commit user documentation, maintainer guidance and
-reproducible tests, not session history or local evidence.
+`examples/workflows.md` maps the GUI, interactive API and Project recipe examples.
+`Project.from_dict` parses settings; `prepare` loads and applies data setup; and
+`run_model` fits an explicit `project.models` entry. The editable GUI plan is not
+itself a Python fitting executor.
 
 - Start from the user's next modelling decision: fit main effects, inspect A/E,
   investigate missing factors, add an interaction, compare, amend, or export.
@@ -56,45 +75,42 @@ reproducible tests, not session history or local evidence.
   usability review as well as statistical and software checks before completion.
 - Keep reviewable examples in the normal project's `examples/` directory. Avoid
   development-checkout installation instructions in the public walkthrough.
+- Keep setup in Project & data: open data, choose the single or staged route,
+  assign shared column roles, then define the model or named stages and their
+  independent variables. The working plan and saved fitted versions are separate.
+  Starting a new plan clears current setup, not fitted history.
 
 ---
 
 ## Build, Lint, and Tests
 
 - Single test: `pytest tests/test_engine.py -k test_clone --maxfail=1 -q`
-- Full suite: `pytest -q` (includes Streamlit `AppTest` smoke tests for every workbench page)
+- Full Python suite: `pytest -q` (includes legacy Streamlit `AppTest` tests and desktop API tests; the Svelte browser checks are separate).
 - Scale budget (deselected by default): `pytest -m slow` — fits 5M rows in a subprocess and fails above 3 GB peak; needs ~3 GB free
-- Scale benchmark: `PYTHONPATH=src .venv/bin/python scripts/bench_scale.py` (one subprocess per size; `--sizes`, `--representations`, `--json`, `--check-budget`)
-- Persona e2e: `EASY_GLM_E2E=1 EASY_GLM_SERVER_PYTHON=.venv/bin/python <python-with-playwright> -m pytest tests/e2e` (navigate via sidebar links only; grids are canvas widgets — edit a cell with `_helpers.edit_grid_cell`, which double-clicks the cell, types into the overlay editor and waits for the expected text; set `EASY_GLM_E2E_SHOTS=<dir>` to get screenshots when an edit does not register). Any message drawn right before `st.rerun()` must go through `ui.flash()` (shown at the top of the next run), or Streamlit ≥ 1.63 drops it.
-- Workbench: `python -m easy_glm.app [project.json]` (or `easy-glm-workbench`); headless: `--headless`
+- Scale benchmark: `PYTHONPATH=src python scripts/bench_scale.py` (one subprocess per size; `--sizes`, `--representations`, `--json`, `--check-budget`)
+- Legacy Streamlit persona e2e: `EASY_GLM_E2E=1 python -m pytest tests/e2e` (navigate via sidebar links only; grids are canvas widgets — edit a cell with `_helpers.edit_grid_cell`, which double-clicks the cell, types into the overlay editor and waits for the expected text; set `EASY_GLM_E2E_SHOTS=<dir>` to get screenshots when an edit does not register). Any message drawn right before `st.rerun()` must go through `ui.flash()` (shown at the top of the next run), or Streamlit ≥ 1.63 drops it.
+- Current browser workbench: `python -m easy_glm.desktop --project project.json` or `python -m easy_glm.app project.json` (`easy-glm-workbench`). The default is FastAPI/Svelte; `python -m easy_glm.app --legacy-streamlit` opens the older Streamlit UI. `--headless` suppresses browser opening for the app launcher. The desktop frontend has separate `npm run check`, `npm run build`, and Playwright checks.
 - Command line: `easy-glm run|export|validate|workbench project.json` (module form for a
   source checkout: `PYTHONPATH=src python -m easy_glm.cli run project.json --out out/`)
 - Lint: `ruff check .`
-- Types: `mypy src/easy_glm/core src/easy_glm/workflow src/easy_glm/pricing --ignore-missing-imports` (a CI step;
-  `core`, `workflow` and `pricing` are kept clean, the app and engine are not checked yet).
-  Only these three packages are type-checked; `[tool.mypy]` in `pyproject.toml`
+- Types: `mypy src/easy_glm/core src/easy_glm/workflow --ignore-missing-imports` (a CI step;
+  `core` and `workflow` are kept clean, the app and engine are not checked yet).
+  Only `core` and `workflow` are type-checked; `[tool.mypy]` in `pyproject.toml`
   sets `follow_imports = "silent"` so errors in the modules they import
   (`engine`, `ui`) don't fail the CI step.
 - Format: `black .`
-- Run all quality steps: `black . && ruff check . && mypy src/easy_glm/core src/easy_glm/workflow src/easy_glm/pricing --ignore-missing-imports && pytest -q`
+- Run all quality steps: `black . && ruff check . && mypy src/easy_glm/core src/easy_glm/workflow --ignore-missing-imports && pytest -q`
 
 ## Releasing
 
 Every `v*` tag pushed to GitHub auto-publishes to PyPI via Trusted Publishing.
 
-```bash
-# 1. Bump version in pyproject.toml
-#    version = "0.2.3"
-
-# 2. Commit and push
-git add pyproject.toml
-git commit -m "v0.2.3: description of changes"
-git push origin main
-
-# 3. Tag and push the tag (must start with 'v' to trigger publish)
-git tag v0.2.3
-git push origin v0.2.3
-```
+Before a release, verify the actual remote base and latest public version, finish
+review and CI, update the version and changelog, build and install a wheel in a fresh
+environment, and run the public examples against that wheel. Only after the owner
+explicitly authorizes release should a reviewed change reach `main` and a `v*` tag
+be pushed. Never infer release status from a local `main` or the version in a feature
+branch.
 
 The workflow lives at `.github/workflows/publish.yml`. PyPI authenticates
 via OpenID Connect (no tokens) — the project's Trusted Publisher is
@@ -103,7 +119,7 @@ configured at https://pypi.org/manage/project/easy-glm/settings/publishing/.
 ## Quick Verification
 
 ```bash
-PYTHONPATH=src .venv/bin/python -c "
+PYTHONPATH=src python -c "
 from easy_glm.engine import RateModel
 from easy_glm.engine.models import FromToRow, VariableConfig
 rm = RateModel(base_rate=0.1, variables={})
@@ -115,24 +131,20 @@ print('OK')
 
 ## Installation
 
-- `uv venv && uv pip install -e ".[dev]"` (dev includes streamlit + plotly)
+The current Svelte UI lives in `frontend/src/`; `src/easy_glm/desktop/static/` is its bundled build output. The `app/` conventions below apply to the legacy Streamlit UI.
+
+- Use an isolated environment when testing a source checkout; for example,
+  `python3 -m venv .venv-test`, then `.venv-test/bin/python -m pip install -e ".[dev]"`.
 - `PYTHONPATH=src` also works as a quick workaround for imports
-- **IMPORTANT**: Tests use `PYTHONPATH=src` and hit the live source. Streamlit
-  uses the *installed* package (site-packages). After editing source, sync with:
-  ```bash
-  rm -rf .venv/lib/python*/site-packages/easy_glm
-  ln -sf "$(pwd)/src/easy_glm" .venv/lib/python*/site-packages/easy_glm
-  ```
+- Verify the checkout used by every test or workbench process with
+  `python -c "import easy_glm; print(easy_glm.__file__)"`. Use a fresh isolated
+  environment and reinstall from the intended checkout when imports point elsewhere.
+  Do not delete or replace site-packages by hand.
 - Dataset caching: `load_external_dataframe()` caches to `~/.cache/easy_glm/` by default
 
 ---
 
 ## Public API (layers)
-
-For the interactive pricing workflow, use `PricingSession` to set data and bands,
-then named `PricingModel` results to fit, inspect, compare, amend and export.
-`examples/pricing_walkthrough.md` exercises that public workflow. Its implementation
-reuses the layers below; tutorial users should not need to assemble them manually.
 
 1. **Recommended:** `EasyGLM.fit()` — full pipeline.
 2. **Building blocks:** `DesignSpec.from_data` → `fit_glm` (returns `GLMFit`) →
@@ -180,7 +192,9 @@ src/easy_glm/
 │   ├── plots.py            # plot_all_ratetables (matplotlib/seaborn via the viz extra)
 │   └── split.py            # TRAIN_FLAG / HOLDOUT_FLAG, validate_train_test_column
 ├── cli.py                  # `easy-glm` console script: run / export / validate / workbench
-├── workflow/               # GUI-agnostic workflow engine (docs/WORKBENCH_PLAN.md)
+├── desktop/              # Current FastAPI workbench server and modelling routes
+├── pricing/              # PricingSession/PricingModel interactive workflow
+├── workflow/               # GUI-agnostic workflow engine
 │   ├── project.py          # Project spec (data/roles/recodes/derived/filters/split,
 │   │                       #   design overrides, model configs, adjustments); JSON; validate
 │   ├── prep.py             # load_source, apply_variables (incl. the derived
@@ -196,7 +210,7 @@ src/easy_glm/
 │   ├── report.py           # to_report_html — ONE self-contained HTML file
 │   └── _svg.py             # the report's charts as plain SVG (no JS, no library)
 │                           #   every chart carries a <title> = its accessible name
-├── app/                    # Streamlit workbench (thin views over workflow + state)
+├── app/                    # Legacy Streamlit workbench (thin views over workflow + state)
 │   ├── main.py             # st.navigation entry; --project=path
 │   ├── state.py            # session Project, hash-keyed caches (raw/prepared/runs/leakage), autosave
 │   ├── charts.py, ui.py    # plotly charts (incl. heatmaps, linear curves), shared widgets
@@ -307,7 +321,7 @@ User edits relativity in table
   read straight off the coefficients and `log_rel_at_from` accumulates from `lo`,
   so continuity is automatic. Nulls are all-zero band columns plus `is null`.
   A `LinearEncoder` with no interior knots is the `continuous` kind (one band).
-- **Legacy GLM interactions are fitted in two stages, never jointly** (`core/fit.py::fit_two_stage`,
+- **Interactions are fitted in two stages, never jointly** (`core/fit.py::fit_two_stage`,
   the actuary's answer to Q5). Stage 1 is `spec.main_effects_spec()` — bit for bit the
   fit the model gets with no interaction — and stage 2 is `spec.interactions_spec()`
   with `fit_intercept=False` and `offset = eta1` (stage 1's linear predictor plus any
@@ -322,23 +336,6 @@ User edits relativity in table
   branches on a stage 2 (the exported script, the Model page, `EasyGLM.save`) must ask
   the fit. Stage 2 carries no intercept, so any overall re-levelling it wants lands in
   the cells — say so wherever a cell is described as a "pure adjustment".
-- **Sequential CatBoost pair corrections are a separate model path.**
-  `ModelConfig.pair_stages` is ordered and cannot be mixed with legacy GLM
-  interactions. Stage 1 remains the GLM. Every pair stage sees exactly its two
-  raw prepared columns, using the main effects and all earlier **rate tables**
-  as its link-scale baseline. Convert the teacher to a loss-optimal table before
-  fitting the next stage. Never pass earlier raw CatBoost predictions downstream.
-  Main tables and the GLM base rate stay frozen; pair corrections may contain
-  residual one-way effects and change total expected claims.
-- Pair tables have stable stage IDs and their own numeric/category axes; a parent
-  need not be a selected main effect. Do not parse display names or insert dummy
-  main variables. Final scoring, diagnostics and exports use `RateModel`'s tables,
-  with no CatBoost dependency for scoring. GLM coefficients and lambda paths
-  describe only the main-effects fit. Fold validation must rebuild and tune its
-  whole prefix exclusively within that fold's training partition. Appending a
-  stage reuses compatible earlier full-training and fold artefacts; changing an
-  upstream table or stage invalidates its dependent suffix. See
-  `docs/plans/PAIR_STAGE_CONTRACTS.md` for the implementation boundaries.
 - **Band columns and interaction cells carry a `P1`** (`core/fit.py::penalty_weights`).
   glum penalises the *standardised* coefficient, so a column with little spread buys a
   large effect cheaply. For a band the effect is its **rise** (`beta_j x width_j`), so
@@ -372,15 +369,12 @@ User edits relativity in table
   row; `_precompute_variables` stores it as `null_relativity` and `score_numeric`
   applies it to NaN. Without that row NaN still raises (legacy behaviour).
 
-### Scale (0.4 piece G) Conventions
+### Scale conventions
 
-- **float64 everywhere, no exceptions.** The design blocks, `P1`, the monotone
-  bounds, `sample_weight`, the offset, `y` and `coef_` are all cast to float64 in
-  `fit_glm`. The G spike measured what float32 does under glum 3.4.1: designs stop
-  converging past 1M rows (they hit `max_iter` and land 0.2–0.4 % off), `coef_`
-  comes back float32, and an uncast float64 `sample_weight` **segfaults tabmat** —
-  silent, data-dependent memory unsafety. `docs/spikes/g-scale/SPIKE_REPORT.md` §4.2
-  is the record. Never reintroduce a float32 design option.
+- **float64 everywhere, no exceptions.** The design blocks, `P1`, monotone bounds,
+  sample weight, offset, response and coefficients are cast to float64 in
+  `fit_glm`. This preserves convergence and avoids an unsafe mixed-dtype path in
+  tabmat. Never reintroduce a float32 design option.
 - **`StepMatrix` blocks come first in the `SplitMatrix`, and that is a correctness
   condition.** `SplitMatrix.sandwich` computes the cross product of blocks `i` and
   `j` (`i < j`) by calling `matrices[i]._cross_sandwich(matrices[j])`, and tabmat's
@@ -424,7 +418,7 @@ User edits relativity in table
   linear band)` is `DesignSpec.expected_design_bytes`, and `scripts/bench_scale.py`
   fails if the real matrix disagrees.
 
-### Rate-change, penalties, families (piece E)
+### Rate-change, penalties and families
 
 - A column with the role **`current_premium`** makes `prep.apply_variables` derive
   `log_<premium>` **after the row filters** (so `pl.col('Premium') > 0` does its job
@@ -464,7 +458,7 @@ User edits relativity in table
   idempotent. Logit models are refused (a probability is not proportional to the base
   rate).
 
-### Command line (piece F)
+### Command line
 
 - `easy_glm/cli.py` never raises through to the user: every failure is a `CliError`
   rendered as a message with exit code 1 (2 is argparse's usage error).
@@ -477,7 +471,7 @@ User edits relativity in table
 - `safe_filename` lives in `workflow.project` (the CLI must not import Streamlit);
   `app.ui` re-exports it.
 
-### Workbench Conventions
+### Legacy Streamlit workbench conventions
 
 - Pages never compute; they call `easy_glm.workflow` and read/write the `Project`
   through `app.state` (`S.project()`, then `S.touch()` after any mutation = autosave).
@@ -492,10 +486,7 @@ User edits relativity in table
   coefficients mean). A change of meaning that leaves the shape alone is the dangerous
   one: the pickle unpickles cleanly, `_design_matches` compares the new feature names
   against themselves and passes, and the cached fit is silently re-read under the new
-  rules. Worked example: piece **B2** turned a `LinearEncoder`'s coefficients from
-  change-of-slope (hinge) numbers into per-band slopes without touching a single pickled
-  field — `PERSIST_FORMAT` 2 → 3 is what makes those runs a cache miss. The installed
-  version number is not a substitute: it does not move in a development checkout.
+  rules. The installed version number is not a substitute for a format change.
 - A browser reload starts a new Streamlit session: the project (spec) survives via the
   autosaved JSON; fitted runs are restored from `<project>.easyglm-runs/` when
   `run_key` (spec hash + data file identity + library versions + `PERSIST_FORMAT`)
@@ -511,7 +502,7 @@ User edits relativity in table
   values are never a change, zeros included. The base rate is both a row of the
   table and, through `base_rate_change`, the headline above it — a band's premium
   change is its relativity change times the level change.
-- **Relativity tooling (D5)**: `engine/tooling.py` computes, the page applies. Every
+- **Relativity tooling:** `engine/tooling.py` computes, the page applies. Every
   tool returns a `ToolResult` (one relativity per table row, in table order) that the
   page previews and then hands to `grids.apply_row_edits`, so a tool writes the same
   band adjustments a typed cell does — no third way for a number to reach the tables.
@@ -572,7 +563,7 @@ User edits relativity in table
   size and a sha1 of the bytes — mtime alone is too coarse on NFS/SMB/FAT) with the one
   this session last read/wrote; a mismatch sets `conflict`, pauses autosave and shows
   `ui.conflict_notice()` (reload = `set_project` from disk, overwrite = forced save).
-- Runs-folder rule (covered by `tests/test_w4_runs_folder.py`): the
+- Runs-folder rule (W4; plain-language page: `docs/checks/w4-runs-folder.md`): the
   folder is shared by every tab, so `persist_run` refuses to write while
   `runs_write_paused()` (the conflict notice is up) and nothing is deleted while
   `runs_delete_paused()` (that, or the project file changed on disk under this tab).
@@ -601,9 +592,11 @@ User edits relativity in table
 - `state.set_project` bumps `project_token` and drops every session-state key that is
   not app state (`_APP_STATE_KEYS`) or `_`-prefixed, so widgets never carry the previous
   project's values; project-page text boxes use `state.widget_key(name)`.
-- When reviewing workbench validation and caching, check offset plausibility and
-  data-file identity explicitly. A file's modification time alone cannot detect
-  every content change; content hashing has a cost on large datasets.
+- Break-it findings left open after W4 (cosmetic): 15, 23, 35 in
+  `docs/reviews/w2-breakage.md`; 6 and 8 in `docs/reviews/w3-breakage-2.md`
+  (offset plausibility needs an actuary's rule; keying a fit on the data file's
+  contents instead of its mtime means reading the whole book on every page).
+  Everything else in both reports is fixed.
 - Widget rule: Streamlit refuses to set a widget's session-state key once the widget
   exists in that run, so a page that has to change a box's value (Create selecting the
   new model, `ui.number_in_range` putting a refused number back, the divide box after
@@ -628,21 +621,21 @@ User edits relativity in table
 
 | File | What it tests |
 |---|---|
-| `test_engine.py` | RateModel: from_rate_tables (0.3 table format, null/Other rows, validation), from_glm_model, predict (numeric/categorical/multi), update_relativity, snapshots (+ metrics), switch_to, clone, JSON roundtrip, exposure, column mapping, metadata |
+| `test_engine.py` | RateModel construction, scoring, relativity updates, snapshots, JSON, exposure and metadata |
 | `test_golden.py` | Golden French-motor numbers on the checked-in 50k subsample (runs in CI) |
 | `test_invariants.py` | RateModel == GLM, JSON and Excel round-trips over step / categorical (string and integer) / mixed / offset / interaction (joint **and** two-stage) / piecewise-linear designs with nulls and unseen levels |
-| `test_linear.py` | Pieces B / B2: `LinearEncoder` (clamp, per-band slope columns, nulls, the one-band `continuous` kind), band slope = the coefficient itself, continuity, monotone as a sign bound on slopes, exactness at/beyond the clamp, band-edit rule, snapshots/JSON/Excel/`from_rate_tables`, interaction with a linear parent, project validation, script round trip, workbench pages |
-| `test_interactions.py` | Piece A / A2: `InteractionEncoder` (cells, exposure, symmetry, JSON), the engine's cell table, Excel long + matrix sheets, the cell `P1` rule, and the two-stage fit (`TwoStageFit` composition, frozen mains, exactness, offsets, what it refuses) |
-| `test_scale.py` | Piece G: `StepMatrix` against the dense block for every operation (row/column subsets, cross-sandwich with step/categorical/dense blocks, `standardize`), the compact and dense design matrices being the same matrix, the block-order rule, the design-bytes formula, fit equivalence (fixed alpha, CV, monotone, two-stage, linear, continuous, nulls and unseen levels; 50k fixture and a 300k synthetic book), scoring without a matrix, exact aggregation, progress, the `-m slow` 5M-row memory budget, and **A2's final behaviour re-checked on the compact path** (an `offset=` array folded into `eta1`, the v3 `EasyGLM` bundle holding both stages, stage 1's `P1` not reaching the cells, and the exported script — which takes the row-count default and so runs dense — reproducing a run that was fitted sparse) |
-| `test_recovery.py` | Planted truth: the `Age x Region` cell recovered at a fixed and a CV alpha with thin cells left at 1.00, main tables unmoved by adding the interaction, and the flat/sloped/flat mileage curve of B2 |
-| `test_c1_foundations.py` | 0.3 bug regressions, format versions and migrations, editor defaults |
+| `test_linear.py` | Piecewise-linear and continuous factors, constraints, persistence and workflow round trips |
+| `test_interactions.py` | Interaction encoding, two-stage fitting, tables, offsets and exports |
+| `test_scale.py` | Dense and compact design equivalence, block ordering, aggregation, chunked scoring and scale budget |
+| `test_recovery.py` | Planted interaction and numeric-curve recovery, with fixed main effects |
+| `test_c1_foundations.py` | Regression coverage for formats, migrations and editor defaults |
 | `test_scoring.py` | Isolated scoring: score_numeric (searchsorted), score_categorical (dict lookup), edge cases, fallbacks |
 | `test_workflow.py` | Project JSON/validation, prep steps, univariate, leakage report on planted leaks, build_design overrides, run_model (metrics, exactness, adjustments, CV, the two stages and `Interaction.alpha`), diagnostics, exported script executed in a subprocess and compared |
-| `test_e_f_extras_cli.py` | Pieces E/F: the `current_premium` role and its derived offset (error message, filter order), the "multiplier on current premium" labels through Excel and JSON, the **offset identity** of plan §R6/S1 (Poisson, `scale_predictors=False`, alpha x sum(P)/n, 1e-8) with Gamma recorded as *not* matching, per-variable penalty weights (`P1` aligned with `spec.features`, an unpenalised categorical keeping every level), Tweedie power, binomial (probabilities, odds labels, three refusals of exposure), `solve_base_rate` (rate change, rebalance, weights, an existing override, idempotence), and the `easy-glm` CLI through `subprocess` |
-| `test_w4_runs_folder.py` | Shared runs-folder safety, concurrent sessions, stale fits, interrupted writes and cleanup |
-| `test_d3_d4_compare_report.py` | D3/D4: `relativity_diff` (identical runs, one known adjustment, a moved knot on the common grid, step-vs-linear, symmetry, the base rate, the tolerance boundary, two zeros), `to_report_html` (self-contained, **no `<script>` at all**, one section per predictor, an accessible name per chart, compare section only with a challenger — and an explanation when the challenger cannot be scored, size), `_svg` (ticks, degenerate charts, escaping), the Compare page / sidebar challenger / Export report button through AppTest. **D4's "opens in a browser with no console error"**: the static half (no script, no external `src`/`href`) is proved here on every run; the browser half is `test_it_opens_in_a_headless_browser_without_console_errors`, which *skips* where Playwright is absent (the default venv) and runs in the Playwright venv and in `tests/e2e/test_persona_data_scientist.py` — CI must run one of those two for the criterion to be covered |
-| `test_d5_tooling.py` | D5: `engine.tooling` per tool (weighted log mean preserved to 1e-12, isotonic monotone, cap/round idempotent, the null row untouched, linear nodes and continuity, a categorical refused without a confirmed order), exposure from the fit through the tables / JSON / Excel, exactness after a tool, and the Rate tables page's apply / undo / redo / snapshot / snapshot-diff through AppTest |
-| `test_w2_pages.py` | W2 pages: interaction section, linear editor, kind selector, A/E-by-pair, pair search, cell/band edits via `app.grids`, break-it (empty project, missing file, removed predictor) |
+| `test_e_f_extras_cli.py` | Premium offsets, penalties, family rules, base-rate solving and the command line |
+| `test_w4_runs_folder.py` | Persisted workbench runs across sessions |
+| `test_d3_d4_compare_report.py` | Model comparison, HTML reports and the Compare/Export pages |
+| `test_d5_tooling.py` | Rate-table tools, exactness and the Rate tables page |
+| `test_w2_pages.py` | Legacy workbench interaction, numeric and edit flows |
 | `tests/e2e/` | Playwright persona runs (actuary rate review, data-scientist comparison incl. the Compare page and the downloaded HTML report); opt-in `EASY_GLM_E2E=1`, server from `EASY_GLM_SERVER_PYTHON` |
 | `test_app.py` | AppTest: every workbench page renders (with and without a fit), main entry point, leakage scan action |
 | `test_design_fit_tables.py` | 0.3 core: DesignSpec/encoders, fit_glm (alpha/cv/monotone/validation), exact RateModel reproduction incl. nulls + unseen levels, numeric null row scoring, EasyGLM save/load, A/E masks |

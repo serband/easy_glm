@@ -121,7 +121,8 @@ def fit_result(
             progress(message)
 
     main_cache: dict[str, Any] | None = None
-    if main_cache_path is not None:
+    stacked = bool(getattr(project.models[name], "components", ()))
+    if main_cache_path is not None and not stacked:
         main_cache = {}
         try:
             with main_cache_path.open("rb") as handle:
@@ -142,7 +143,7 @@ def fit_result(
         ):
             pass
     pair_cache: dict[str, Any] = {"full_prefix": {}}
-    if pair_cache_path is not None and project.models[name].pair_stages:
+    if pair_cache_path is not None and project.models[name].pair_stages and not stacked:
         try:
             with pair_cache_path.open("rb") as handle:
                 saved_pair_cache = pickle.load(handle)
@@ -164,39 +165,110 @@ def fit_result(
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         try:
-            run = run_model(
-                project,
-                frame,
-                name,
-                progress=fit_progress,
-                main_effects_cache=main_cache,
-                pair_stages_cache=pair_cache,
-            )
+            if artifact is not None and (artifact / "amendment.json").exists():
+                from easy_glm.workflow.prep import train_holdout
+                from easy_glm.workflow.stack import amend_stack
+
+                amendment = json.loads((artifact / "amendment.json").read_text())
+                with (artifact / "prefix-fit.pkl").open("rb") as handle:
+                    preceding = pickle.load(handle)  # private fitted artifact
+                train, _holdout = train_holdout(frame, project.data.split)
+                progress(
+                    "Refitting later components against the amended accepted scorer…"
+                )
+                run = amend_stack(
+                    project,
+                    train,
+                    preceding,
+                    amendment["component_id"],
+                    amendment["operation"],
+                    lower=amendment.get("lower"),
+                    upper=amendment.get("upper"),
+                    decimals=amendment.get("decimals"),
+                    refit_later=True,
+                )
+                run.name = name
+                run.config = project.models[name]
+                run.project_snapshot = project.to_dict()
+            elif artifact is not None and (artifact / "frozen-source.json").exists():
+                from easy_glm.workflow.prep import train_holdout
+                from easy_glm.workflow.stack import fit_stack, stack_from_legacy
+
+                source_name = json.loads((artifact / "frozen-source.json").read_text())[
+                    "name"
+                ]
+                with (artifact / "prefix-fit.pkl").open("rb") as handle:
+                    source_run = pickle.load(handle)  # private fitted artifact
+                if source_run.name != source_name:
+                    raise ValueError("The frozen source fit identity changed.")
+                train, _holdout = train_holdout(frame, project.data.split)
+                prefix = stack_from_legacy(project, source_run)
+                # A v2 single-GLM plan deliberately retains the direct GLM fit
+                # until it gains its first accepted interaction.  At that point
+                # it is wrapped as the first native stack component without
+                # refitting or changing a single prediction.  The stable core
+                # recipe ID lets the added interaction bind to the planned
+                # physical order rather than the adapter's private ``legacy``
+                # label.
+                target_components = project.models[name].components
+                if (
+                    len(prefix.components) == 1
+                    and target_components
+                    and target_components[0].kind == "glm"
+                    and prefix.components[0].recipe.kind == "legacy"
+                ):
+                    prefix.components[0].recipe = target_components[0]
+                progress(
+                    "Reusing the accepted starting scorer; fitting the new suffix…"
+                )
+                run = fit_stack(
+                    project,
+                    train,
+                    project.models[name],
+                    frozen_prefix=prefix,
+                    progress=fit_progress,
+                )
+            else:
+                run = run_model(
+                    project,
+                    frame,
+                    name,
+                    progress=fit_progress,
+                    main_effects_cache=None if stacked else main_cache,
+                    pair_stages_cache=None if stacked else pair_cache,
+                )
         finally:
-            if pair_cache_path is not None and project.models[name].pair_stages:
+            if (
+                pair_cache_path is not None
+                and project.models[name].pair_stages
+                and not stacked
+            ):
                 _write_optional_pickle(
                     pair_cache_path, {"format": 3, "cache": pair_cache}
                 )
-    if main_cache_path is not None:
+    if main_cache_path is not None and not stacked:
         _write_optional_pickle(main_cache_path, {"format": 2, "cache": main_cache})
     if artifact is not None:
         with (artifact / "fit.pkl").open("wb") as handle:
             pickle.dump(run, handle)
-        from easy_glm.desktop.ae_cache import build_packet
+        if not stacked:
+            from easy_glm.desktop.ae_cache import build_packet
 
-        progress("Preparing fitted-variable diagnostics…")
-        try:
-            build_packet(project, run, frame, artifact, {"model": name})
-        except Exception:
-            # Optional acceleration must never turn a successful fit into failure.
-            progress("Fitted diagnostics will be prepared on demand.")
-        from easy_glm.desktop.importance_cache import build_packet as build_importance
+            progress("Preparing fitted-variable diagnostics…")
+            try:
+                build_packet(project, run, frame, artifact, {"model": name})
+            except Exception:
+                # Optional acceleration must never turn a successful fit into failure.
+                progress("Fitted diagnostics will be prepared on demand.")
+            from easy_glm.desktop.importance_cache import (
+                build_packet as build_importance,
+            )
 
-        progress("Preparing variable importance…")
-        try:
-            build_importance(project, run, frame, artifact)
-        except Exception:
-            progress("Variable importance will be prepared on demand.")
+            progress("Preparing variable importance…")
+            try:
+                build_importance(project, run, frame, artifact)
+            except Exception:
+                progress("Variable importance will be prepared on demand.")
     return {
         **result_for(project, frame, run, [str(w.message) for w in caught]),
         "reuse": reuse,
@@ -229,6 +301,10 @@ def table_payload(rate_model: Any, variable: str, frame: Any) -> dict[str, Any]:
 def result_for(
     project: Any, frame: Any, run: Any, notices: list[str] | None = None
 ) -> dict[str, Any]:
+    if getattr(run, "stack", None) is not None:
+        from easy_glm.desktop.stack_views import stack_result
+
+        return stack_result(project, frame, run, notices)
     from easy_glm.core.excel import rate_model_tables
     from easy_glm.desktop.diagnostic_views import metadata
     from easy_glm.workflow.diagnostics import lift_table, model_metrics, totals

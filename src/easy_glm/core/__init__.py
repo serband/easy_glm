@@ -1,5 +1,7 @@
 from .data import load_external_dataframe, load_swedish_motorcycle_data
 from .design import (
+    AglmLEncoder,
+    AglmOEncoder,
     CategoricalEncoder,
     DesignSpec,
     InteractionEncoder,
@@ -25,6 +27,8 @@ __all__ = [
     "CategoricalEncoder",
     "InteractionEncoder",
     "LinearEncoder",
+    "AglmOEncoder",
+    "AglmLEncoder",
     "GLMFit",
     "TwoStageFit",
     "fit_glm",

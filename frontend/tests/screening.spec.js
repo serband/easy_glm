@@ -1,6 +1,18 @@
 import { test, expect } from '@playwright/test';
+import { openNewLegacyDraft, saveLegacyGlm } from './legacy-models.helpers.js';
 const button = (page, name) => page.getByRole('button', { name, exact: true });
 const panel = (page) => page.getByRole('region', { name: 'Predictor screening', exact: true });
+async function openSharedColumns(page) {
+    await button(page, 'Project & data').click();
+    const steps = page.getByRole('navigation', { name: 'Project setup steps' });
+    await steps.getByRole('button', { name: /Shared columns/ }).click();
+    await expect(page.getByRole('region', { name: 'Shared column assignments' })).toBeVisible();
+}
+async function openScreening(page) {
+    await button(page, 'Explore').click();
+    await expect(panel(page)).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'One-way effects', exact: true })).toBeVisible();
+}
 async function session(page) {
     const { token } = await (await page.request.get('/api/session')).json();
     const headers = { 'X-EasyGLM-Token': token };
@@ -108,9 +120,17 @@ async function mockScan(page, { status = 'complete', holdStart = false, holdPoll
 }
 test.beforeEach(async ({ page }) => {
     await page.goto('/');
+    await saveLegacyGlm(page, `Imported screening ${Date.now()}`);
+    await page.reload();
+    await page.getByRole('button', { name: 'Project & data', exact: true }).click();
+    // An imported legacy model has a supported Shared columns step. Do not choose
+    // a new plan: that would intentionally hide the legacy model selector used by
+    // the actual-scan case below.
+    await openSharedColumns(page);
+    await expect(page.getByRole('region', { name: 'Shared column assignments' })).toBeVisible();
     await expect(page.getByLabel('Role for Claims', { exact: true })).toHaveValue('target');
 });
-test('validated full draft is screened; explicit bulk removal synchronises JSON and previews once', async ({
+test('validated shared draft is screened; explicit bulk removal synchronises JSON and previews once', async ({
     page,
 }, testInfo) => {
     const errors = [];
@@ -124,15 +144,14 @@ test('validated full draft is screened; explicit bulk removal synchronises JSON 
     });
     await page.getByLabel('Name for DriverAge', { exact: true }).fill('Age');
     await page.getByLabel('Name for DriverAge', { exact: true }).press('Tab');
-    await page.getByLabel('Type for DriverAge', { exact: true }).selectOption('categorical');
     await button(page, 'Variables JSON').click();
     const editor = page.getByLabel('Variables JSON', { exact: true }),
         raw = await editor.inputValue();
     await editor.fill(raw + '\n');
+    await openScreening(page);
     await button(page, 'Check selected predictors').click();
     await expect(panel(page)).toContainText('1,400 of 1,400 training rows');
     expect(calls.starts[0].setup.renames.DriverAge).toBe('Age');
-    expect(calls.starts[0].setup.types.categorical).toContain('DriverAge');
     expect(calls.starts[0].options).toEqual({
         sample_rows: 10000,
         seed: 42,
@@ -141,7 +160,6 @@ test('validated full draft is screened; explicit bulk removal synchronises JSON 
         leakage_threshold: 0.9,
         divide_target_by_weight: true,
     });
-    await expect(editor).toHaveValue(raw + '\n');
     await expect(button(page, 'Remove selected predictors (0)')).toBeDisabled();
     await expect(page.getByLabel('Select Claims in possible target leakage')).toBeDisabled();
     await expect(page.getByLabel('Select Derived only in possible target leakage')).toBeDisabled();
@@ -162,7 +180,8 @@ test('validated full draft is screened; explicit bulk removal synchronises JSON 
         true,
     );
     await button(page, 'Remove selected predictors (2)').click();
-    await expect(button(page, 'Apply changes')).toBeEnabled();
+    await openSharedColumns(page);
+    await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeEnabled();
     expect(previews).toBe(1);
     expect(applies).toBe(0);
     const draft = JSON.parse(await editor.inputValue());
@@ -173,32 +192,40 @@ test('validated full draft is screened; explicit bulk removal synchronises JSON 
     await expect(page.getByLabel('Name for DriverAge', { exact: true })).toHaveValue('Age');
     expect(errors).toEqual([]);
 });
-test('invalid raw role JSON is preserved and never submitted for screening', async ({ page }) => {
+test('unfinished raw role JSON is preserved while screening uses the applied setup', async ({ page }) => {
     const calls = await mockScan(page);
+    const { snapshot } = await session(page);
     await button(page, 'Variables JSON').click();
     await page.getByLabel('Variables JSON', { exact: true }).fill('{unfinished');
+    await openScreening(page);
     await button(page, 'Check selected predictors').click();
-    await expect(page.getByRole('alert')).toBeVisible();
+    await expect(panel(page)).toContainText('1,400 of 1,400 training rows');
+    await openSharedColumns(page);
     await expect(page.getByLabel('Variables JSON', { exact: true })).toHaveValue('{unfinished');
-    expect(calls.starts).toHaveLength(0);
+    expect(calls.starts).toHaveLength(1);
+    expect(calls.starts[0].setup).toEqual(snapshot.setup);
 });
-for (const change of ['name', 'type', 'role', 'raw JSON', 'options', 'navigation']) {
+for (const change of ['name', 'split', 'role', 'raw JSON', 'options', 'navigation']) {
     test(`late scan start is discarded and cancelled after a ${change} change`, async ({
         page,
     }) => {
         const calls = await mockScan(page, { status: 'running', holdStart: true });
+        await openScreening(page);
         await button(page, 'Check selected predictors').click();
         await expect.poll(() => Boolean(calls.releaseStart)).toBe(true);
         if (change === 'name') {
+            await openSharedColumns(page);
             await page.getByLabel('Name for DriverAge', { exact: true }).fill('DraftAge');
             await page.getByLabel('Name for DriverAge', { exact: true }).press('Tab');
-        } else if (change === 'type')
-            await page
-                .getByLabel('Type for DriverAge', { exact: true })
-                .selectOption('categorical');
-        else if (change === 'role')
+        } else if (change === 'split') {
+            await openSharedColumns(page);
+            await page.getByLabel('Training fraction', { exact: true }).fill('0.75');
+        }
+        else if (change === 'role') {
+            await openSharedColumns(page);
             await page.getByLabel('Role for DriverAge', { exact: true }).selectOption('ignore');
-        else if (change === 'raw JSON') {
+        } else if (change === 'raw JSON') {
+            await openSharedColumns(page);
             await button(page, 'Variables JSON').click();
             await page.getByLabel('Variables JSON', { exact: true }).fill('{unfinished');
         } else if (change === 'options') {
@@ -207,8 +234,6 @@ for (const change of ['name', 'type', 'role', 'raw JSON', 'options', 'navigation
         } else await button(page, 'Project & data').click();
         calls.releaseStart();
         await expect.poll(() => calls.cancellations).toBe(1);
-        if (change === 'navigation')
-            await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
         await expect(
             page.getByRole('region', { name: 'Possible target leakage', exact: true }),
         ).toHaveCount(0);
@@ -217,7 +242,9 @@ for (const change of ['name', 'type', 'role', 'raw JSON', 'options', 'navigation
 }
 test('cancel prevents a late polled report from becoming removable', async ({ page }) => {
     const calls = await mockScan(page, { status: 'running', holdPoll: true });
+    await openScreening(page);
     await button(page, 'Check selected predictors').click();
+    await expect.poll(() => calls.starts).toHaveLength(1);
     await expect.poll(() => Boolean(calls.releasePoll)).toBe(true);
     await button(page, 'Cancel scan').click();
     await expect.poll(() => calls.cancellations).toBe(1);
@@ -230,7 +257,7 @@ test('cancel prevents a late polled report from becoming removable', async ({ pa
 test('actual training scan is read-only; applying flagged removals cleans model predictors and interactions', async ({
     page,
 }) => {
-    await button(page, 'Model').click();
+    await openNewLegacyDraft(page);
     await button(page, 'Legacy GLM interactions').click();
     await page.getByLabel('Interaction first factor').selectOption('DriverAge');
     await page.getByLabel('Interaction second factor').selectOption('AnnualMileage');
@@ -239,7 +266,7 @@ test('actual training scan is read-only; applying flagged removals cleans model 
     await expect(
         page.getByText('Model settings saved. Fit when ready.', { exact: true }),
     ).toBeVisible();
-    await page.getByRole('button', { name: /^Variables\s*\d*$/ }).click();
+    await openScreening(page);
     const { headers } = await session(page);
     const readProject = async () => (await page.request.get('/api/project', { headers })).json();
     const before = await readProject();
@@ -253,7 +280,8 @@ test('actual training scan is read-only; applying flagged removals cleans model 
     await page.getByLabel('Select AnnualMileage in possible target leakage').check();
     await page.getByLabel('Select Region in mostly missing').check();
     await button(page, 'Remove selected predictors (2)').click();
-    await expect(button(page, 'Apply changes')).toBeEnabled();
+    await openSharedColumns(page);
+    await expect(page.getByRole('button', { name: 'Apply changes', exact: true })).toBeEnabled();
     expect(await readProject()).toEqual(before);
     await button(page, 'Apply changes').click();
     await expect(page.getByRole('status')).toContainText('Settings applied');

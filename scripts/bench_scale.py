@@ -1,4 +1,4 @@
-"""Scale benchmark for piece G: how big a book fits, how long it takes.
+"""Measure model fitting time and peak memory at different dataset sizes.
 
 Fits the same synthetic motor book (about 190 design columns) at several row
 counts, once on the **compact** design matrix and once on the **dense** one,
@@ -271,7 +271,7 @@ def main(argv: list[str] | None = None) -> int:
             if representation == "dense" and n > 1_000_000:
                 print(
                     f"skipping dense at {n:,} rows: {8 * n * 190 / 1024**3:.1f} GB of "
-                    "design alone, which is what piece G exists to avoid",
+                    "design alone; use the compact representation at this size",
                     file=sys.stderr,
                 )
                 continue

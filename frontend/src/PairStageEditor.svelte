@@ -10,6 +10,7 @@
     export let mainChanged = false;
     export let newModel = false;
     export let savedStages = [];
+    export let allowAdd = true;
     export let onchange = () => {};
     export let valid = true;
 
@@ -80,6 +81,7 @@
           );
     $: duplicate = stages.some((stage) => samePair(stage, { a: first, b: second }));
     $: canAdd =
+        allowAdd &&
         defaults?.search?.method === 'optuna' &&
         stages.length < 8 &&
         eligibleNames.includes(first) &&
