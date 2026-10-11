@@ -255,7 +255,9 @@ test('incomplete JSON survives reconnection and a changed project cannot receive
     await stop();
     await start();
     await page.getByRole('button', { name: 'Explore', exact: true }).click();
-    await page.getByLabel('Plot variable', { exact: true }).selectOption('DriverAge');
+    // Cached plots need not contact the restarted server. Export requests the
+    // project even if background polling has already detected its replacement.
+    await page.getByRole('button', { name: 'Export project', exact: true }).click();
     await openSharedColumns(page);
     await expect(
         page.getByRole('alert').filter({ visible: true, hasText: 'different project' }).first(),
